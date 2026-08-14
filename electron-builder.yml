@@ -1,0 +1,25 @@
+appId: me.ash.reader.desktop
+productName: OrigRead
+directories:
+  buildResources: resources
+  output: release
+files:
+  - out/**
+  - resources/**
+  - package.json
+asar: true
+win:
+  target:
+    - nsis
+  artifactName: OrigRead-${version}-Windows-${arch}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+mac:
+  target:
+    - dmg
+  category: public.app-category.news
+  artifactName: OrigRead-${version}-macOS-${arch}.${ext}
+
