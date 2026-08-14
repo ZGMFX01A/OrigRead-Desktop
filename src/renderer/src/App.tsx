@@ -28,8 +28,11 @@ import type { ReaderArticleContent } from '../../shared/reader'
 import type { SyncRuntimeState } from '../../shared/sync-runtime'
 import type { OriginalArticleViewState, OriginalViewBounds } from '../../shared/original-view'
 import { SettingsPanel } from './SettingsPanel'
+import type { AiSummaryDocument } from '../../shared/ai'
+import type { TranslationDocument, TranslationTarget } from '../../shared/translation'
 
 type Destination = 'all' | 'unread' | 'starred' | 'sources'
+type ReaderMode = 'article' | 'ai' | 'translation'
 
 const destinations: Array<{ id: Destination; icon: typeof Inbox; labelKey: string }> = [
   { id: 'all', icon: Inbox, labelKey: 'allArticles' },
@@ -60,6 +63,11 @@ export default function App(): React.JSX.Element {
   const [readerContent, setReaderContent] = useState<ReaderArticleContent | null>(null)
   const [readerContentLoading, setReaderContentLoading] = useState(false)
   const [readerContentError, setReaderContentError] = useState<string | null>(null)
+  const [readerMode, setReaderMode] = useState<ReaderMode>('article')
+  const [aiSummary, setAiSummary] = useState<AiSummaryDocument | null>(null)
+  const [translationDocument, setTranslationDocument] = useState<TranslationDocument | null>(null)
+  const [readerToolLoading, setReaderToolLoading] = useState<ReaderMode | null>(null)
+  const [readerToolError, setReaderToolError] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [syncRuntimeState, setSyncRuntimeState] = useState<SyncRuntimeState | null>(null)
@@ -141,6 +149,10 @@ export default function App(): React.JSX.Element {
 
     setReaderContent(null)
     setReaderContentError(null)
+    setReaderMode('article')
+    setAiSummary(null)
+    setTranslationDocument(null)
+    setReaderToolError(null)
     setReaderContentLoading(true)
     void window.origread.getReaderContent(selectedArticleId)
       .then(async (content) => {
@@ -199,6 +211,50 @@ export default function App(): React.JSX.Element {
     setWorkspaceCollapsed(next)
     setSettings((current) => current ? { ...current, workspaceCollapsed: next } : current)
     void window.origread.updateSettings({ workspaceCollapsed: next })
+  }
+
+  const generateAiSummary = async (forceRefresh = false): Promise<void> => {
+    if (!selectedArticleId || readerToolLoading) return
+    if (originalViewState.open) await closeOriginalArticle()
+    setSettingsOpen(false)
+    setReaderToolLoading('ai')
+    setReaderToolError(null)
+    try {
+      const result = await window.origread.summarizeArticle(selectedArticleId, forceRefresh)
+      setAiSummary(result)
+      setReaderMode('ai')
+    } catch (error) {
+      setReaderToolError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setReaderToolLoading(null)
+    }
+  }
+
+  const translateSelectedArticle = async (forceRefresh = false): Promise<void> => {
+    if (!selectedArticleId || readerToolLoading) return
+    if (originalViewState.open) await closeOriginalArticle()
+    setSettingsOpen(false)
+    setReaderToolLoading('translation')
+    setReaderToolError(null)
+    try {
+      const result = await window.origread.translateArticle(selectedArticleId, undefined, forceRefresh)
+      setTranslationDocument(result)
+      setReaderMode('translation')
+    } catch (error) {
+      setReaderToolError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setReaderToolLoading(null)
+    }
+  }
+
+  const handleConfigurationRestored = async (): Promise<void> => {
+    const [nextSettings, nextSync] = await Promise.all([window.origread.getSettings(), window.origread.getSyncRuntimeState()])
+    setSettings(nextSettings)
+    setSyncRuntimeState(nextSync)
+    setWorkspaceCollapsed(nextSettings.workspaceCollapsed)
+    const language = nextSettings.language === 'system' ? resolveDesktopLanguage(appInfo?.locale ?? navigator.language) : nextSettings.language
+    await i18n.changeLanguage(language)
+    await reloadLibrary()
   }
 
   const updateDesktopSettings = async (patch: Parameters<typeof window.origread.updateSettings>[0]): Promise<void> => {
@@ -456,79 +512,81 @@ export default function App(): React.JSX.Element {
             </div>
           </div>
 
-          {sourceError && !addSourceOpen && (
-            <div className="workspace-error">{sourceError}</div>
-          )}
+          <div className="workspace-list-stage">
+            {sourceError && !addSourceOpen && (
+              <div className="workspace-error">{sourceError}</div>
+            )}
 
-          {destination === 'sources' && visibleFeeds.length > 0 ? (
-            <div className="list-content">
-              {visibleFeeds.map((feed) => (
-                <article className="source-item" key={feed.id}>
-                  <div className="source-icon"><Rss size={16} /></div>
-                  <div className="source-copy">
-                    <strong>{feed.name}</strong>
-                    <span>{feed.url}</span>
-                  </div>
-                  <div className="source-actions">
-                    <span className="source-type">{feed.sourceType.toUpperCase()}</span>
-                    <button
-                      type="button"
-                      className="source-refresh-button"
-                      title={t('refresh')}
-                      aria-label={t('refresh')}
-                      disabled={refreshingFeedId !== null || isRefreshingAll}
-                      onClick={() => void refreshFeed(feed)}
-                    >
-                      <RefreshCw size={13} className={refreshingFeedId === feed.id ? 'spinning' : ''} />
-                    </button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          ) : destination !== 'sources' && visibleArticles.length > 0 ? (
-            <div className="list-content article-list">
-              {visibleArticles.map((article) => (
-                <article
-                  className={`article-item ${selectedArticleId === article.id ? 'selected' : ''}`}
-                  key={article.id}
-                  data-article-id={article.id}
-                  data-feed-id={article.feedId}
-                  onClick={() => selectArticle(article)}
-                >
-                  <div className="article-topline">
-                    <span className={`unread-dot ${article.isUnread ? 'visible' : ''}`} />
-                    <strong>{article.title}</strong>
-                    <button
-                      className={`star-button ${article.isStarred ? 'active' : ''}`}
-                      type="button"
-                      aria-label={t('starred')}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        toggleStarred(article)
-                      }}
-                    >
-                      <Star size={15} fill={article.isStarred ? 'currentColor' : 'none'} />
-                    </button>
-                  </div>
-                  <p>{article.description || t('noSummary')}</p>
-                  <div className="article-meta">
-                    <span>{feeds.find((feed) => feed.id === article.feedId)?.name ?? ''}</span>
-                    <span>{article.isUnread ? t('unreadStatus') : t('readStatus')}</span>
-                  </div>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <div className="empty-list-state">
-              <div className="empty-icon"><Rss size={22} /></div>
-              <h1>{t('timelineEmpty')}</h1>
-              <p>{t('timelineEmptyDesc')}</p>
-              <button className="secondary-action" type="button" onClick={openAddSource}>
-                <Plus size={16} />
-                {t('addSourceNow')}
-              </button>
-            </div>
-          )}
+            {destination === 'sources' && visibleFeeds.length > 0 ? (
+              <div className="list-content source-list">
+                {visibleFeeds.map((feed) => (
+                  <article className="source-item" key={feed.id}>
+                    <div className="source-icon"><Rss size={16} /></div>
+                    <div className="source-copy">
+                      <strong>{feed.name}</strong>
+                      <span>{feed.url}</span>
+                    </div>
+                    <div className="source-actions">
+                      <span className="source-type">{feed.sourceType.toUpperCase()}</span>
+                      <button
+                        type="button"
+                        className="source-refresh-button"
+                        title={t('refresh')}
+                        aria-label={t('refresh')}
+                        disabled={refreshingFeedId !== null || isRefreshingAll}
+                        onClick={() => void refreshFeed(feed)}
+                      >
+                        <RefreshCw size={13} className={refreshingFeedId === feed.id ? 'spinning' : ''} />
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : destination !== 'sources' && visibleArticles.length > 0 ? (
+              <div className="list-content article-list">
+                {visibleArticles.map((article) => (
+                  <article
+                    className={`article-item ${selectedArticleId === article.id ? 'selected' : ''}`}
+                    key={article.id}
+                    data-article-id={article.id}
+                    data-feed-id={article.feedId}
+                    onClick={() => selectArticle(article)}
+                  >
+                    <div className="article-topline">
+                      <span className={`unread-dot ${article.isUnread ? 'visible' : ''}`} />
+                      <strong>{article.title}</strong>
+                      <button
+                        className={`star-button ${article.isStarred ? 'active' : ''}`}
+                        type="button"
+                        aria-label={t('starred')}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          toggleStarred(article)
+                        }}
+                      >
+                        <Star size={15} fill={article.isStarred ? 'currentColor' : 'none'} />
+                      </button>
+                    </div>
+                    <p>{article.description || t('noSummary')}</p>
+                    <div className="article-meta">
+                      <span>{feeds.find((feed) => feed.id === article.feedId)?.name ?? ''}</span>
+                      <span>{article.isUnread ? t('unreadStatus') : t('readStatus')}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-list-state">
+                <div className="empty-icon"><Rss size={22} /></div>
+                <h1>{t('timelineEmpty')}</h1>
+                <p>{t('timelineEmptyDesc')}</p>
+                <button className="secondary-action" type="button" onClick={openAddSource}>
+                  <Plus size={16} />
+                  {t('addSourceNow')}
+                </button>
+              </div>
+            )}
+          </div>
         </section>
       )}
 
@@ -574,8 +632,29 @@ export default function App(): React.JSX.Element {
               </>
             ) : (
               <>
-                <button type="button" disabled><Sparkles size={17} /><span>{t('aiSummary')}</span></button>
-                <button type="button" disabled><Languages size={17} /><span>{t('translation')}</span></button>
+                <button
+                  type="button"
+                  className={`ai-summary-button ${readerMode === 'ai' ? 'active' : ''}`}
+                  disabled={!selectedArticle || readerToolLoading !== null}
+                  onClick={() => aiSummary ? setReaderMode('ai') : void generateAiSummary()}
+                >
+                  {readerToolLoading === 'ai' ? <RefreshCw size={17} className="spinning" /> : <Sparkles size={17} />}
+                  <span>{t('aiSummary')}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`translation-button ${readerMode === 'translation' ? 'active' : ''}`}
+                  disabled={!selectedArticle || readerToolLoading !== null}
+                  onClick={() => translationDocument ? setReaderMode('translation') : void translateSelectedArticle()}
+                >
+                  {readerToolLoading === 'translation' ? <RefreshCw size={17} className="spinning" /> : <Languages size={17} />}
+                  <span>{t('translation')}</span>
+                </button>
+                {(readerMode === 'ai' || readerMode === 'translation') && (
+                  <button type="button" className="reader-mode-button" onClick={() => setReaderMode('article')}>
+                    <BookOpenText size={17} /><span>{t('backToReader')}</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   className="full-content-button"
@@ -609,16 +688,44 @@ export default function App(): React.JSX.Element {
               appInfo={appInfo}
               syncState={syncRuntimeState}
               onChange={(patch) => void updateDesktopSettings(patch)}
+              onConfigurationRestored={() => void handleConfigurationRestored()}
             />
           </>
         ) : selectedArticle ? (
-          <div className="reader-content">
+          <div className={`reader-content reader-mode-${readerMode}`}>
             <div className="article-heading">
               <span>{selectedFeed?.name ?? ''}</span>
-              <h1>{selectedArticle.title}</h1>
+              <h1>{readerMode === 'translation' && translationDocument ? translationDocument.translatedTitle : selectedArticle.title}</h1>
               <div>{selectedArticle.author ?? ''}</div>
             </div>
-            {readerContentLoading ? (
+            {readerToolError && <div className="reader-tool-error">{readerToolError}</div>}
+            {readerMode === 'ai' && aiSummary ? (
+              <div className="ai-summary-view">
+                <div className="ai-result-meta">{aiSummary.providerName} · {aiSummary.model} · {aiSummary.outputLanguage}</div>
+                <SimpleMarkdown text={aiSummary.summary} />
+                {aiSummary.reasoning && <details className="ai-reasoning"><summary>{t('aiReasoning')}</summary><pre>{aiSummary.reasoning}</pre></details>}
+                <button className="mini-action regenerate-button" onClick={() => void generateAiSummary(true)}><RefreshCw size={13}/>{t('regenerate')}</button>
+              </div>
+            ) : readerMode === 'translation' && translationDocument ? (
+              <>
+                <div className="translation-result-meta">{translationTargetLabel(translationDocument.target)} · {translationDocument.targetLanguage} · {translationDocument.displayMode === 'BILINGUAL' ? t('bilingual') : t('translatedOnly')}</div>
+                <div
+                  className="article-body translated-article-body"
+                  onClick={(event) => {
+                    const target = event.target as HTMLElement
+                    const anchor = target.closest('a[href]')
+                    if (!anchor) return
+                    const url = normalizeHttpUrl(anchor.getAttribute('href'))
+                    if (!url) return
+                    event.preventDefault()
+                    void openExternal(url)
+                  }}
+                  // 译文 HTML 由 main TranslationContentProcessor 从已清洗 Reader HTML 重建，不接收模型返回的原始 HTML。
+                  dangerouslySetInnerHTML={{ __html: translationDocument.translatedContent }}
+                />
+                <button className="mini-action regenerate-button" onClick={() => void translateSelectedArticle(true)}><RefreshCw size={13}/>{t('retranslate')}</button>
+              </>
+            ) : readerContentLoading ? (
               <div className="article-body-status">{t('loadingContent')}</div>
             ) : readerContentError ? (
               <div className="article-body-status error">{t('readerContentFailed')}: {readerContentError}</div>
@@ -793,6 +900,83 @@ function normalizeHttpUrl(value: string | null | undefined): string | null {
   } catch {
     return null
   }
+}
+
+function translationTargetLabel(target: TranslationTarget): string {
+  if (target.type === 'ai') return `AI · ${target.providerName} · ${target.model}`
+  return {
+    ML_KIT: '—',
+    MICROSOFT: 'Microsoft Translator',
+    DEEPL: 'DeepL',
+    GOOGLE_CLOUD: 'Google Cloud Translation',
+    DLX: 'DeepLX / DLX'
+  }[target.provider]
+}
+
+/**
+ * AI 摘要只支持阅读所需的 Markdown 子集，绝不把模型输出当 HTML 注入 Renderer。
+ * 这样即使模型返回 script/html，也只会作为普通文本显示。
+ */
+function SimpleMarkdown({ text }: { text: string }): React.JSX.Element {
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  const blocks: React.ReactNode[] = []
+  let listItems: string[] = []
+
+  const flushList = (): void => {
+    if (listItems.length === 0) return
+    blocks.push(
+      <ol key={`list-${blocks.length}`}>
+        {listItems.map((item, index) => <li key={index}>{renderInlineMarkdown(item)}</li>)}
+      </ol>
+    )
+    listItems = []
+  }
+
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (!line) {
+      flushList()
+      continue
+    }
+    const numbered = line.match(/^\d+[.)]\s+(.+)$/)
+    if (numbered?.[1]) {
+      listItems.push(numbered[1])
+      continue
+    }
+    flushList()
+    const heading = line.match(/^(#{1,4})\s+(.+)$/)
+    if (heading?.[1] && heading[2]) {
+      const level = heading[1].length
+      const content = renderInlineMarkdown(heading[2])
+      if (level === 1) blocks.push(<h1 key={blocks.length}>{content}</h1>)
+      else if (level === 2) blocks.push(<h2 key={blocks.length}>{content}</h2>)
+      else if (level === 3) blocks.push(<h3 key={blocks.length}>{content}</h3>)
+      else blocks.push(<h4 key={blocks.length}>{content}</h4>)
+      continue
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/)
+    if (bullet?.[1]) {
+      blocks.push(<p className="markdown-bullet" key={blocks.length}>• {renderInlineMarkdown(bullet[1])}</p>)
+      continue
+    }
+    blocks.push(<p key={blocks.length}>{renderInlineMarkdown(line)}</p>)
+  }
+  flushList()
+  return <div className="ai-summary-markdown">{blocks}</div>
+}
+
+function renderInlineMarkdown(text: string): React.ReactNode[] {
+  const result: React.ReactNode[] = []
+  const pattern = /\*\*(.+?)\*\*/g
+  let start = 0
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text))) {
+    if (match.index > start) result.push(text.slice(start, match.index))
+    result.push(<strong key={`${match.index}-${match[1]}`}>{match[1]}</strong>)
+    start = match.index + match[0].length
+  }
+  if (start < text.length) result.push(text.slice(start))
+  return result
 }
 
 function boundsForElement(element: HTMLElement): OriginalViewBounds {

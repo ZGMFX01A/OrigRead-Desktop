@@ -299,6 +299,11 @@ export class LibraryRepository {
       .get(feedId) as { source_url: string } | undefined
     return row?.source_url ?? null
   }
+
+  listRssHubSourceUrls(): Record<string, string> {
+    const rows = this.database.prepare('SELECT feed_id, source_url FROM rsshub_source_urls').all() as unknown as Array<{ feed_id: string; source_url: string }>
+    return Object.fromEntries(rows.map((row) => [row.feed_id, row.source_url]))
+  }
 }
 
 function toSqlBoolean(value: boolean): number {

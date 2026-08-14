@@ -4,11 +4,13 @@ import type { WebsiteInspectionResult, WebsiteParsedArticle } from '../../../sha
 import { DEFAULT_GROUP_ID } from '../../database/migrations'
 import { LibraryRepository } from '../../database/library-repository'
 import { WebsiteSourceService } from './website-source-service'
+import type { ArticleFilterRepository } from '../../filter/article-filter-repository'
 
 export class WebsiteSubscriptionService {
   constructor(
     private readonly repository: LibraryRepository,
-    private readonly sourceService: WebsiteSourceService
+    private readonly sourceService: WebsiteSourceService,
+    private readonly articleFilters?: ArticleFilterRepository
   ) {}
 
   /** Android subscribeWebsite 后立即 doSyncOneTime：先保存来源，再用同一 WebsiteHelper 同步填充文章。 */
@@ -46,7 +48,8 @@ export class WebsiteSubscriptionService {
     if (!feed) throw new Error(`来源不存在：${feedId}`)
     if (feed.sourceType !== 'website') throw new Error(`来源不是网站：${feed.name}`)
     const parsed = await this.sourceService.fetchArticles(feed, fetchedAt)
-    const articles = parsed.map((item) => toWebsiteArticleRecord(feed.id, item, fetchedAt))
+    const candidateArticles = parsed.map((item) => toWebsiteArticleRecord(feed.id, item, fetchedAt))
+    const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
     const insertedArticles = articles.reduce((count, article) => count + (this.repository.hasArticle(article.id) ? 0 : 1), 0)
     const existing = this.repository.listArticlesByFeed(feed.id)
     const obsolete = this.sourceService.findObsoleteArticleIds(feed, existing, parsed)

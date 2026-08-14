@@ -1,5 +1,6 @@
-import { app, BrowserWindow, ipcMain, Menu, shell, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type IpcMainInvokeEvent } from 'electron'
 import { join } from 'node:path'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { IPC_CHANNELS, type AppInfo } from '../shared/contracts'
 import { resolveBrandName } from '../shared/locale'
 import { DesktopDatabase } from './database/database'
@@ -40,6 +41,16 @@ import {
 } from './content/original-article-view-controller'
 import type { OriginalNavigationAction } from '../shared/original-view'
 import { PeriodicSyncScheduler } from './sync/periodic-sync-scheduler'
+import { ElectronSecretStore } from './security/secret-store'
+import { AiSettingsRepository } from './ai/ai-settings-repository'
+import { AiSummaryService } from './ai/ai-summary-service'
+import { TranslationSettingsRepository } from './translation/translation-settings-repository'
+import { TranslationService } from './translation/translation-service'
+import { ArticleFilterRepository } from './filter/article-filter-repository'
+import { ConfigurationBackupService } from './backup/configuration-backup-service'
+import type { AiProviderPatch, AiSettingsPatch } from '../shared/ai'
+import type { TranslationProviderPatch, TranslationProviderType, TranslationSettingsPatch, TranslationTarget } from '../shared/translation'
+import type { ArticleFilterRuleType } from '../shared/filter-rules'
 
 const isDevelopment = Boolean(process.env.ELECTRON_RENDERER_URL)
 if (process.env.ORIGREAD_E2E_USER_DATA_DIR) {
@@ -71,6 +82,12 @@ let readerContentService: ReaderContentService | null = null
 let articleFullContentService: ArticleFullContentService | null = null
 let originalArticleViewController: OriginalArticleViewController | null = null
 let periodicSyncScheduler: PeriodicSyncScheduler | null = null
+let aiSettingsRepository: AiSettingsRepository | null = null
+let aiSummaryService: AiSummaryService | null = null
+let translationSettingsRepository: TranslationSettingsRepository | null = null
+let translationService: TranslationService | null = null
+let articleFilterRepository: ArticleFilterRepository | null = null
+let configurationBackupService: ConfigurationBackupService | null = null
 
 function localizedAppName(): string {
   return resolveBrandName(app.getLocale())
@@ -97,6 +114,14 @@ function assertTrustedSender(event: IpcMainInvokeEvent): void {
   if (!isTrustedRendererUrl(senderUrl)) {
     throw new Error('Rejected IPC request from an untrusted renderer')
   }
+}
+
+function showOpenDialog(options: Electron.OpenDialogOptions): Promise<Electron.OpenDialogReturnValue> {
+  return mainWindow ? dialog.showOpenDialog(mainWindow, options) : dialog.showOpenDialog(options)
+}
+
+function showSaveDialog(options: Electron.SaveDialogOptions): Promise<Electron.SaveDialogReturnValue> {
+  return mainWindow ? dialog.showSaveDialog(mainWindow, options) : dialog.showSaveDialog(options)
 }
 
 function isTrustedRendererUrl(url: string): boolean {
@@ -371,6 +396,90 @@ function registerIpcHandlers(): void {
     if (!articleFullContentService) throw new Error('Full content service is not ready')
     return articleFullContentService.readOrFetch(validateId(articleId, 'articleId'), true)
   })
+  ipcMain.handle(IPC_CHANNELS.getAiSettings, (event) => {
+    assertTrustedSender(event); if (!aiSettingsRepository) throw new Error('AI settings are not ready'); return aiSettingsRepository.current()
+  })
+  ipcMain.handle(IPC_CHANNELS.updateAiSettings, (event, patch: unknown) => {
+    assertTrustedSender(event); if (!aiSettingsRepository) throw new Error('AI settings are not ready')
+    const value = validateRecord(patch, 'AI settings patch') as AiSettingsPatch
+    let result = aiSettingsRepository.current()
+    if (value.enabled !== undefined) result = aiSettingsRepository.setEnabled(validateBoolean(value.enabled, 'enabled'))
+    if (value.defaultProviderId !== undefined) result = aiSettingsRepository.setDefaultProvider(validateId(value.defaultProviderId, 'providerId'))
+    if (value.outputLanguage !== undefined) result = aiSettingsRepository.setOutputLanguage(validateText(value.outputLanguage, 'outputLanguage', 64))
+    if (value.summaryLength !== undefined) result = aiSettingsRepository.setSummaryLength(value.summaryLength)
+    return result
+  })
+  ipcMain.handle(IPC_CHANNELS.addAiProvider, (event) => {
+    assertTrustedSender(event); if (!aiSettingsRepository) throw new Error('AI settings are not ready'); return aiSettingsRepository.addProvider()
+  })
+  ipcMain.handle(IPC_CHANNELS.updateAiProvider, (event, patch: unknown) => {
+    assertTrustedSender(event); if (!aiSettingsRepository) throw new Error('AI settings are not ready'); return aiSettingsRepository.updateProvider(validateRecord(patch, 'AI provider patch') as unknown as AiProviderPatch)
+  })
+  ipcMain.handle(IPC_CHANNELS.removeAiProvider, (event, providerId: unknown) => {
+    assertTrustedSender(event); if (!aiSettingsRepository) throw new Error('AI settings are not ready'); return aiSettingsRepository.removeProvider(validateId(providerId, 'providerId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.refreshAiModels, async (event, providerId: unknown, draftApiKey?: unknown) => {
+    assertTrustedSender(event); if (!aiSummaryService) throw new Error('AI service is not ready'); return aiSummaryService.refreshModels(validateId(providerId, 'providerId'), draftApiKey === undefined ? undefined : validateOptionalText(draftApiKey, 'apiKey', 16_384))
+  })
+  ipcMain.handle(IPC_CHANNELS.testAiProvider, async (event, providerId: unknown) => {
+    assertTrustedSender(event); if (!aiSummaryService) throw new Error('AI service is not ready'); try { await aiSummaryService.testProvider(validateId(providerId, 'providerId')); return { ok:true,error:null } } catch(error) { return { ok:false,error:error instanceof Error?error.message:String(error) } }
+  })
+  ipcMain.handle(IPC_CHANNELS.summarizeArticle, async (event, articleId: unknown, forceRefresh?: unknown) => {
+    assertTrustedSender(event); if (!aiSummaryService) throw new Error('AI service is not ready'); return aiSummaryService.summarize(validateId(articleId, 'articleId'), forceRefresh === undefined ? false : validateBoolean(forceRefresh, 'forceRefresh'))
+  })
+  ipcMain.handle(IPC_CHANNELS.getTranslationSettings, (event) => {
+    assertTrustedSender(event); if (!translationSettingsRepository) throw new Error('Translation settings are not ready'); return translationSettingsRepository.current()
+  })
+  ipcMain.handle(IPC_CHANNELS.updateTranslationSettings, (event, patch: unknown) => {
+    assertTrustedSender(event); if (!translationSettingsRepository) throw new Error('Translation settings are not ready')
+    const value = validateRecord(patch, 'translation settings patch') as TranslationSettingsPatch; let result=translationSettingsRepository.current()
+    if(value.defaultTarget!==undefined) result=translationSettingsRepository.setDefaultTarget(validateRecord(value.defaultTarget,'translation target') as unknown as TranslationTarget)
+    if(value.targetLanguage!==undefined) result=translationSettingsRepository.setTargetLanguage(validateText(value.targetLanguage,'targetLanguage',64))
+    if(value.displayMode!==undefined) result=translationSettingsRepository.setDisplayMode(value.displayMode)
+    return result
+  })
+  ipcMain.handle(IPC_CHANNELS.updateTranslationProvider, (event, patch: unknown) => {
+    assertTrustedSender(event); if(!translationSettingsRepository)throw new Error('Translation settings are not ready');return translationSettingsRepository.updateProvider(validateRecord(patch,'translation provider patch') as unknown as TranslationProviderPatch)
+  })
+  ipcMain.handle(IPC_CHANNELS.testTranslationProvider, async (event, type: unknown) => {
+    assertTrustedSender(event); if(!translationService)throw new Error('Translation service is not ready');return translationService.testProvider(validateTranslationProviderType(type))
+  })
+  ipcMain.handle(IPC_CHANNELS.translateArticle, async (event, articleId: unknown, target?: unknown, forceRefresh?: unknown) => {
+    assertTrustedSender(event); if(!translationService)throw new Error('Translation service is not ready');return translationService.translateArticle(validateId(articleId,'articleId'),target===undefined?undefined:validateRecord(target,'translation target') as unknown as TranslationTarget,forceRefresh===undefined?false:validateBoolean(forceRefresh,'forceRefresh'))
+  })
+  ipcMain.handle(IPC_CHANNELS.getArticleFilters, (event) => {
+    assertTrustedSender(event); if(!articleFilterRepository)throw new Error('Article filters are not ready');return articleFilterRepository.snapshot()
+  })
+  ipcMain.handle(IPC_CHANNELS.addArticleFilter, (event, keyword: unknown, type: unknown, feedId?: unknown) => {
+    assertTrustedSender(event); if(!articleFilterRepository||!libraryRepository)throw new Error('Article filters are not ready');const normalizedFeedId=feedId===undefined||feedId===null?null:validateId(feedId,'feedId');const feedName=normalizedFeedId?libraryRepository.getFeedById(normalizedFeedId)?.name??null:null;articleFilterRepository.add(validateText(keyword,'keyword',2_000),validateFilterRuleType(type),normalizedFeedId,feedName);return articleFilterRepository.snapshot()
+  })
+  ipcMain.handle(IPC_CHANNELS.setArticleFilterEnabled, (event, id: unknown, enabled: unknown) => {
+    assertTrustedSender(event); if(!articleFilterRepository)throw new Error('Article filters are not ready');articleFilterRepository.setEnabled(validateId(id,'ruleId'),validateBoolean(enabled,'enabled'));return articleFilterRepository.snapshot()
+  })
+  ipcMain.handle(IPC_CHANNELS.deleteArticleFilter, (event, id: unknown) => {
+    assertTrustedSender(event); if(!articleFilterRepository)throw new Error('Article filters are not ready');articleFilterRepository.delete(validateId(id,'ruleId'));return articleFilterRepository.snapshot()
+  })
+  ipcMain.handle(IPC_CHANNELS.getWebsiteSourceRuleSettings, (event, feedId: unknown) => {
+    assertTrustedSender(event); return websiteSourceRuleSettings(validateId(feedId,'feedId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.setWebsiteSourcePreferredRule, (event, feedId: unknown, ruleId: unknown) => {
+    assertTrustedSender(event);const id=validateId(feedId,'feedId');if(!websitePreferenceRepository||!websiteRuleRepository)throw new Error('Website preferences are not ready');const normalized=ruleId===null?null:validateId(ruleId,'ruleId');const rule=normalized?websiteRuleRepository.listRules().find((item)=>item.id===normalized):null;if(normalized&&!rule)throw new Error('网站规则不存在');websitePreferenceRepository.setPreferredRule(id,normalized,rule?.name??null);return websiteSourceRuleSettings(id)!
+  })
+  ipcMain.handle(IPC_CHANNELS.setWebsiteSourceDynamicRendering, (event, feedId: unknown, enabled: unknown) => {
+    assertTrustedSender(event);const id=validateId(feedId,'feedId');if(!websitePreferenceRepository)throw new Error('Website preferences are not ready');websitePreferenceRepository.setDynamicRenderingEnabled(id,validateBoolean(enabled,'enabled'));return websiteSourceRuleSettings(id)!
+  })
+  ipcMain.handle(IPC_CHANNELS.exportConfigurationBackup, async (event, password?: unknown) => {
+    assertTrustedSender(event);if(!configurationBackupService)throw new Error('Backup service is not ready');try{const content=configurationBackupService.exportBackup(password===undefined?'':validateOptionalText(password,'password',1_024));const selected=await showSaveDialog({title:'导出 OrigRead 配置备份',defaultPath:`OrigRead-Configuration-${new Date().toISOString().slice(0,10)}.json`,filters:[{name:'OrigRead JSON Backup',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};writeFileSync(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
+  })
+  ipcMain.handle(IPC_CHANNELS.restoreConfigurationBackup, async (event, password?: unknown) => {
+    assertTrustedSender(event);if(!configurationBackupService)throw new Error('Backup service is not ready');try{const selected=await showOpenDialog({title:'恢复 OrigRead 配置备份',properties:['openFile'],filters:[{name:'OrigRead JSON Backup',extensions:['json']}]});if(selected.canceled||!selected.filePaths[0])return{ok:false,cancelled:true,path:null,error:null};const path=selected.filePaths[0];const restoreResult=configurationBackupService.restoreBackup(readFileSync(path,'utf8'),password===undefined?'':validateOptionalText(password,'password',1_024));periodicSyncScheduler?.reconfigure();return{ok:true,cancelled:false,path,restoreResult,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
+  })
+  ipcMain.handle(IPC_CHANNELS.importRuleFile, async (event, kind: unknown) => {
+    assertTrustedSender(event);const ruleKind=validateRuleKind(kind);try{const selected=await showOpenDialog({title:'导入 OrigRead 规则',properties:['openFile'],filters:[{name:'JSON',extensions:['json']}]});if(selected.canceled||!selected.filePaths[0])return{ok:false,cancelled:true,count:0,error:null};const content=readFileSync(selected.filePaths[0],'utf8');const count=ruleKind==='website'?websiteRuleRepository!.importRules(content):ruleKind==='json'?jsonRuleRepository!.importRules(content):articleFilterRepository!.importRules(content);return{ok:true,cancelled:false,count,error:null}}catch(error){return{ok:false,cancelled:false,count:0,error:error instanceof Error?error.message:String(error)}}
+  })
+  ipcMain.handle(IPC_CHANNELS.exportRuleFile, async (event, kind: unknown) => {
+    assertTrustedSender(event);const ruleKind=validateRuleKind(kind);try{const content=ruleKind==='website'?websiteRuleRepository!.exportRules():ruleKind==='json'?jsonRuleRepository!.exportRules():articleFilterRepository!.exportRules();const selected=await showSaveDialog({title:'导出 OrigRead 规则',defaultPath:`OrigRead-${ruleKind}-rules.json`,filters:[{name:'JSON',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};writeFileSync(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
+  })
   ipcMain.handle(IPC_CHANNELS.openOriginalArticle, (event, url: unknown, bounds: unknown) => {
     assertTrustedSender(event)
     if (!originalArticleViewController) throw new Error('Original article view is not ready')
@@ -414,6 +523,46 @@ function validateId(value: unknown, field: string): string {
   return value
 }
 
+function validateOptionalText(value: unknown, field: string, maxLength: number): string {
+  if (typeof value !== 'string' || value.length > maxLength) throw new TypeError(`${field} must be a string no longer than ${maxLength}`)
+  return value
+}
+
+function validateRecord(value: unknown, field: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${field} must be an object`)
+  return value as Record<string, unknown>
+}
+
+function validateTranslationProviderType(value: unknown): TranslationProviderType {
+  if (value === 'ML_KIT' || value === 'MICROSOFT' || value === 'DEEPL' || value === 'GOOGLE_CLOUD' || value === 'DLX') return value
+  throw new TypeError('Unknown translation provider type')
+}
+
+function validateFilterRuleType(value: unknown): ArticleFilterRuleType {
+  if (value === 'KEYWORD' || value === 'REGEX') return value
+  throw new TypeError('Unknown article filter rule type')
+}
+
+function validateRuleKind(value: unknown): 'website' | 'json' | 'filter' {
+  if (value === 'website' || value === 'json' || value === 'filter') return value
+  throw new TypeError('Unknown rule kind')
+}
+
+function websiteSourceRuleSettings(feedId: string) {
+  if (!libraryRepository || !websitePreferenceRepository) throw new Error('Website preferences are not ready')
+  const feed = libraryRepository.getFeedById(feedId)
+  if (!feed || feed.sourceType !== 'website') return null
+  const preference = websitePreferenceRepository.get(feedId)
+  return {
+    feedId,
+    preferredRuleId: preference?.preferredRuleId ?? null,
+    preferredRuleName: preference?.preferredRuleName ?? null,
+    dynamicRenderingEnabled: preference?.dynamicRenderingEnabled ?? feed.dynamicRendering,
+    cachedAutomaticRuleId: preference?.cachedAutomaticRule?.id ?? null,
+    cachedAutomaticRuleName: preference?.cachedAutomaticRule?.name ?? null
+  }
+}
+
 function validateBoolean(value: unknown, field: string): boolean {
   if (typeof value !== 'boolean') throw new TypeError(`${field} must be a boolean`)
   return value
@@ -434,6 +583,10 @@ app.whenReady().then(() => {
   libraryRepository = new LibraryRepository(desktopDatabase.connection)
   readerContentService = new ReaderContentService(libraryRepository)
   settingsRepository = new SettingsRepository(desktopDatabase.connection)
+  const secretStore = new ElectronSecretStore(join(app.getPath('userData'), 'secrets.json'))
+  aiSettingsRepository = new AiSettingsRepository(desktopDatabase.connection, secretStore)
+  translationSettingsRepository = new TranslationSettingsRepository(desktopDatabase.connection, secretStore)
+  articleFilterRepository = new ArticleFilterRepository(join(app.getPath('userData'), 'article-filter-rules.json'))
   rssHubSettingsRepository = new RssHubSettingsRepository(desktopDatabase.connection)
   rssHubResolver = new RssHubResolver(
     new RssHubRouteMatcher(loadBundledRssHubRoutes()),
@@ -442,11 +595,12 @@ app.whenReady().then(() => {
   rssSubscriptionService = new RssSubscriptionService(
     libraryRepository,
     new RssDiscoveryService(),
-    rssHubResolver
+    rssHubResolver,
+    articleFilterRepository
   )
   jsonRuleRepository = new JsonRuleRepository(join(app.getPath('userData'), 'json-source-rules.json'))
   jsonSourceService = new JsonSourceService(jsonRuleRepository, new JsonArticleParser())
-  jsonSubscriptionService = new JsonSubscriptionService(libraryRepository, jsonSourceService)
+  jsonSubscriptionService = new JsonSubscriptionService(libraryRepository, jsonSourceService, articleFilterRepository)
   websiteRuleRepository = new WebsiteRuleRepository(join(app.getPath('userData'), 'website-rules.json'))
   websitePreferenceRepository = new WebsiteParsePreferenceRepository(join(app.getPath('userData'), 'website-parse-preferences.json'))
   const dynamicWebsiteRenderer = new ElectronDynamicWebsiteRenderer()
@@ -467,7 +621,7 @@ app.whenReady().then(() => {
     contentExtractionService,
     new DynamicArticleContentService(dynamicWebsiteRenderer, contentExtractionService)
   )
-  websiteSubscriptionService = new WebsiteSubscriptionService(libraryRepository, websiteSourceService)
+  websiteSubscriptionService = new WebsiteSubscriptionService(libraryRepository, websiteSourceService, articleFilterRepository)
   rssHubSubscriptionService = new RssHubSubscriptionService(libraryRepository)
   sourceDiscoveryService = new SourceDiscoveryService(
     new RssDiscoveryService(),
@@ -478,6 +632,12 @@ app.whenReady().then(() => {
     jsonSubscriptionService,
     websiteSourceService,
     websiteSubscriptionService
+  )
+  aiSummaryService = new AiSummaryService(libraryRepository, readerContentService, aiSettingsRepository, join(app.getPath('userData'), 'cache', 'ai-summary'))
+  translationService = new TranslationService(libraryRepository, readerContentService, translationSettingsRepository, aiSettingsRepository, join(app.getPath('userData'), 'cache', 'translation'))
+  configurationBackupService = new ConfigurationBackupService(
+    app.getVersion(), libraryRepository, settingsRepository, websiteRuleRepository, jsonRuleRepository,
+    articleFilterRepository, websitePreferenceRepository, rssHubSettingsRepository, translationSettingsRepository, aiSettingsRepository
   )
   sourceSyncService = new SourceSyncService(
     libraryRepository,
@@ -530,6 +690,12 @@ app.on('before-quit', () => {
   readerContentService = null
   articleFullContentService = null
   rssHubSubscriptionService = null
+  aiSettingsRepository = null
+  aiSummaryService = null
+  translationSettingsRepository = null
+  translationService = null
+  articleFilterRepository = null
+  configurationBackupService = null
 })
 
 app.on('window-all-closed', () => {

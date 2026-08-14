@@ -5,11 +5,13 @@ import type { JsonParsedArticle, JsonSourceProbeResult } from '../../../shared/j
 import { DEFAULT_GROUP_ID } from '../../database/migrations'
 import { LibraryRepository } from '../../database/library-repository'
 import { JsonSourceService } from './json-source-service'
+import type { ArticleFilterRepository } from '../../filter/article-filter-repository'
 
 export class JsonSubscriptionService {
   constructor(
     private readonly repository: LibraryRepository,
-    private readonly sourceService: JsonSourceService
+    private readonly sourceService: JsonSourceService,
+    private readonly articleFilters?: ArticleFilterRepository
   ) {}
 
   /** Android subscribeJson：保存探测阶段确认的 endpoint，随后立即执行一次同规则同步。 */
@@ -48,7 +50,8 @@ export class JsonSubscriptionService {
     if (feed.sourceType !== 'json') throw new Error(`来源不是 JSON/API：${feed.name}`)
 
     const parsed = await this.sourceService.fetch(feed, fetchedAt)
-    const articles = parsed.map((article) => toArticleRecord(feed.id, article, fetchedAt))
+    const candidateArticles = parsed.map((article) => toArticleRecord(feed.id, article, fetchedAt))
+    const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
     const insertedArticles = articles.reduce(
       (count, article) => count + (this.repository.hasArticle(article.id) ? 0 : 1),
       0

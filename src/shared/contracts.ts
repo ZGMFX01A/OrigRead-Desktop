@@ -13,6 +13,19 @@ import type {
   OriginalNavigationAction,
   OriginalViewBounds
 } from './original-view'
+import type { AiProviderPatch, AiProviderTestResult, AiSettings, AiSettingsPatch, AiSummaryDocument } from './ai'
+import type { TranslationDocument, TranslationProviderPatch, TranslationProviderTestResult, TranslationSettings, TranslationSettingsPatch, TranslationTarget } from './translation'
+import type { ArticleFilterRule, ArticleFilterSnapshot, ArticleFilterRuleType } from './filter-rules'
+import type { ConfigurationBackupFileResult } from './configuration-backup'
+
+export interface WebsiteSourceRuleSettings {
+  feedId: string
+  preferredRuleId: string | null
+  preferredRuleName: string | null
+  dynamicRenderingEnabled: boolean
+  cachedAutomaticRuleId: string | null
+  cachedAutomaticRuleName: string | null
+}
 
 export interface AppInfo {
   version: string
@@ -61,6 +74,30 @@ export interface OrigReadDesktopApi {
   onSyncRuntimeStateChanged(listener: (state: SyncRuntimeState) => void): () => void
   getReaderContent(articleId: string): Promise<ReaderArticleContent>
   fetchFullContent(articleId: string): Promise<FullContentFetchResult>
+  getAiSettings(): Promise<AiSettings>
+  updateAiSettings(patch: AiSettingsPatch): Promise<AiSettings>
+  addAiProvider(): Promise<AiSettings>
+  updateAiProvider(patch: AiProviderPatch): Promise<AiSettings>
+  removeAiProvider(providerId: string): Promise<AiSettings>
+  refreshAiModels(providerId: string, draftApiKey?: string): Promise<string[]>
+  testAiProvider(providerId: string): Promise<AiProviderTestResult>
+  summarizeArticle(articleId: string, forceRefresh?: boolean): Promise<AiSummaryDocument>
+  getTranslationSettings(): Promise<TranslationSettings>
+  updateTranslationSettings(patch: TranslationSettingsPatch): Promise<TranslationSettings>
+  updateTranslationProvider(patch: TranslationProviderPatch): Promise<TranslationSettings>
+  testTranslationProvider(type: TranslationProviderPatch['type']): Promise<TranslationProviderTestResult>
+  translateArticle(articleId: string, target?: TranslationTarget, forceRefresh?: boolean): Promise<TranslationDocument>
+  getArticleFilters(): Promise<ArticleFilterSnapshot>
+  addArticleFilter(keyword: string, type: ArticleFilterRuleType, feedId?: string | null): Promise<ArticleFilterSnapshot>
+  setArticleFilterEnabled(id: string, enabled: boolean): Promise<ArticleFilterSnapshot>
+  deleteArticleFilter(id: string): Promise<ArticleFilterSnapshot>
+  getWebsiteSourceRuleSettings(feedId: string): Promise<WebsiteSourceRuleSettings | null>
+  setWebsiteSourcePreferredRule(feedId: string, ruleId: string | null): Promise<WebsiteSourceRuleSettings>
+  setWebsiteSourceDynamicRendering(feedId: string, enabled: boolean): Promise<WebsiteSourceRuleSettings>
+  exportConfigurationBackup(password?: string): Promise<ConfigurationBackupFileResult>
+  restoreConfigurationBackup(password?: string): Promise<ConfigurationBackupFileResult>
+  importRuleFile(kind: 'website' | 'json' | 'filter'): Promise<{ ok:boolean;cancelled:boolean;count:number;error:string|null }>
+  exportRuleFile(kind: 'website' | 'json' | 'filter'): Promise<{ ok:boolean;cancelled:boolean;path:string|null;error:string|null }>
   openOriginalArticle(url: string, bounds: OriginalViewBounds): Promise<OriginalArticleViewState>
   updateOriginalArticleBounds(bounds: OriginalViewBounds): Promise<void>
   navigateOriginalArticle(action: OriginalNavigationAction): Promise<OriginalArticleViewState>
@@ -111,6 +148,30 @@ export const IPC_CHANNELS = {
   syncRuntimeStateChanged: 'sync:runtime-state-changed',
   getReaderContent: 'reader:get-content',
   fetchFullContent: 'reader:fetch-full-content',
+  getAiSettings: 'ai:settings:get',
+  updateAiSettings: 'ai:settings:update',
+  addAiProvider: 'ai:provider:add',
+  updateAiProvider: 'ai:provider:update',
+  removeAiProvider: 'ai:provider:remove',
+  refreshAiModels: 'ai:provider:models',
+  testAiProvider: 'ai:provider:test',
+  summarizeArticle: 'ai:summary:generate',
+  getTranslationSettings: 'translation:settings:get',
+  updateTranslationSettings: 'translation:settings:update',
+  updateTranslationProvider: 'translation:provider:update',
+  testTranslationProvider: 'translation:provider:test',
+  translateArticle: 'translation:article:translate',
+  getArticleFilters: 'rules:filter:list',
+  addArticleFilter: 'rules:filter:add',
+  setArticleFilterEnabled: 'rules:filter:set-enabled',
+  deleteArticleFilter: 'rules:filter:delete',
+  getWebsiteSourceRuleSettings: 'rules:source:get',
+  setWebsiteSourcePreferredRule: 'rules:source:set-preferred',
+  setWebsiteSourceDynamicRendering: 'rules:source:set-dynamic',
+  exportConfigurationBackup: 'backup:export',
+  restoreConfigurationBackup: 'backup:restore',
+  importRuleFile: 'rules:file:import',
+  exportRuleFile: 'rules:file:export',
   openOriginalArticle: 'reader:original:open',
   updateOriginalArticleBounds: 'reader:original:update-bounds',
   navigateOriginalArticle: 'reader:original:navigate',

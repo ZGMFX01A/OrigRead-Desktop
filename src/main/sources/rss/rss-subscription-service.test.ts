@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { FeedRecord } from '../../../shared/library'
 import { DesktopDatabase } from '../../database/database'
@@ -6,6 +9,7 @@ import { DEFAULT_GROUP_ID } from '../../database/migrations'
 import { RssDiscoveryService, type RssFetchPayload, type RssFetcher } from './rss-discovery-service'
 import { RssSubscriptionService } from './rss-subscription-service'
 import type { RssHubResolver } from '../rsshub/rsshub-resolver'
+import { ArticleFilterRepository } from '../../filter/article-filter-repository'
 
 describe('RssSubscriptionService', () => {
   it('adds a discovered feed and persists its first article', async () => {
@@ -108,6 +112,26 @@ describe('RssSubscriptionService', () => {
       expect(repository.getRssHubSourceUrl(feed.id)).toBe(sourceUrl)
     } finally {
       database.close()
+    }
+  })
+
+  it('applies global article filters before new RSS articles are persisted', async () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const dir = mkdtempSync(join(tmpdir(), 'origread-rss-filter-'))
+    try {
+      const filters = new ArticleFilterRepository(join(dir, 'filters.json'))
+      filters.add('Article two', 'KEYWORD')
+      const fetcher: RssFetcher = async (url) => rssPayload(url, RSS_TWO)
+      const service = new RssSubscriptionService(repository, new RssDiscoveryService(fetcher), undefined, filters)
+
+      const added = await service.add('https://example.com/feed.xml')
+      expect(added.insertedArticles).toBe(1)
+      expect(repository.listArticles().map((article) => article.title)).toEqual(['Article one updated'])
+      expect(filters.snapshot().stats.totalFiltered).toBe(1)
+    } finally {
+      database.close()
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })

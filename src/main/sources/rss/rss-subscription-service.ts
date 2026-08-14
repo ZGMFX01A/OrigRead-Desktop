@@ -6,6 +6,7 @@ import { DEFAULT_GROUP_ID } from '../../database/migrations'
 import { LibraryRepository } from '../../database/library-repository'
 import type { RssHubResolver } from '../rsshub/rsshub-resolver'
 import { RssDiscoveryService } from './rss-discovery-service'
+import type { ArticleFilterRepository } from '../../filter/article-filter-repository'
 
 export interface RssRefreshResult {
   feedId: string
@@ -17,7 +18,8 @@ export class RssSubscriptionService {
   constructor(
     private readonly repository: LibraryRepository,
     private readonly discovery: RssDiscoveryService = new RssDiscoveryService(),
-    private readonly rssHubResolver?: RssHubResolver
+    private readonly rssHubResolver?: RssHubResolver,
+    private readonly articleFilters?: ArticleFilterRepository
   ) {}
 
   async add(inputUrl: string): Promise<RssSubscriptionResult> {
@@ -32,7 +34,8 @@ export class RssSubscriptionService {
     const now = Date.now()
     const feedId = randomUUID()
     const feed = toFeedRecord(feedId, discovered, now)
-    const articles = discovered.items.map((item) => toArticleRecord(feedId, item, now))
+    const candidateArticles = discovered.items.map((item) => toArticleRecord(feedId, item, now))
+    const articles = this.articleFilters?.filterArticles(feedId, candidateArticles).kept ?? candidateArticles
     this.repository.upsertFeedWithArticles(feed, articles)
 
     return {
@@ -58,7 +61,8 @@ export class RssSubscriptionService {
       if (!recovered) throw error
       discovered = recovered
     }
-    const articles = discovered.items.map((item) => toArticleRecord(existing.id, item, now))
+    const candidateArticles = discovered.items.map((item) => toArticleRecord(existing.id, item, now))
+    const articles = this.articleFilters?.filterArticles(existing.id, candidateArticles).kept ?? candidateArticles
     const insertedArticles = articles.reduce(
       (count, article) => count + (this.repository.hasArticle(article.id) ? 0 : 1),
       0

@@ -29,7 +29,7 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await expect(candidate).toBeVisible({ timeout: 15_000 })
     await expect(candidate.locator('.candidate-kind')).toContainText('RSS')
     await expect(candidate.locator('.candidate-main strong')).toHaveText('OrigRead E2E Feed')
-    await expect(candidate.locator('.candidate-stats')).toContainText(/10/)
+    await expect(candidate.locator('.candidate-stats')).toContainText(/30/)
 
     await page.locator('.dialog-submit').click()
     await expect(page.locator('.source-dialog')).toBeHidden({ timeout: 10_000 })
@@ -38,6 +38,17 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
       const feeds = await page.evaluate(() => window.origread.listFeeds())
       return feeds.some((feed) => feed.url === feedUrl && feed.name === 'OrigRead E2E Feed')
     }).toBe(true)
+
+    const articleList = page.locator('.article-list')
+    await expect(articleList).toBeVisible()
+    const listMetrics = await articleList.evaluate((element) => ({
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight
+    }))
+    expect(listMetrics.scrollHeight).toBeGreaterThan(listMetrics.clientHeight)
+    await articleList.evaluate((element) => { element.scrollTop = 240 })
+    await expect.poll(() => articleList.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+    await articleList.evaluate((element) => { element.scrollTop = 0 })
 
     const currentFixture = await page.evaluate(async (targetFeedUrl) => {
       const feeds = await window.origread.listFeeds()
@@ -115,7 +126,7 @@ async function startFeedServer(): Promise<{ server: Server; feedRequests: () => 
 }
 
 function rssXml(baseUrl: string): string {
-  const items = Array.from({ length: 10 }, (_, index) => `
+  const items = Array.from({ length: 30 }, (_, index) => `
     <item>
       <guid>e2e-${index + 1}</guid>
       <title>OrigRead E2E Article ${index + 1}</title>

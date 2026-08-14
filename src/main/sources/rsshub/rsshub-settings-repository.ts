@@ -96,6 +96,11 @@ export class RssHubSettingsRepository {
     return this.save(defaultRssHubSettings())
   }
 
+  restore(settings: RssHubSettings): RssHubSettings {
+    this.deleteKey(RUNTIME_KEY)
+    return this.save(settings)
+  }
+
   private save(settings: RssHubSettings): RssHubSettings {
     const normalized: RssHubSettings = {
       enabled: settings.enabled,

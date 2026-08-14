@@ -209,25 +209,39 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 - [x] 通用：系统 / 中文 / English 语言设置
 - [x] 阅读：正文字号、行距、版心宽度，修改后即时作用于 Reader 并持久化
 - [x] 同步：周期间隔、启动时同步、当前状态、上次同步、下次同步
-- [x] 数据与规则 / AI 与翻译先保留结构化入口，等待后续能力迁移
+- [x] 设置页按 Android 当前信息架构呈现 AI 阅读 / 翻译设置 / 文章过滤 / JSON 规则 / 网站解析规则 / 备份与恢复；Desktop 额外保留桌面通用设置；内容区固定在 Reader 可视范围并独立滚动
+- [x] 左侧文章 / 来源列表固定占用剩余可视高度并独立滚动，Electron E2E 使用 30 篇文章验证真实滚动
 
 ### Phase 6：AI 与翻译
 
-- [ ] OpenAI Compatible Provider
-- [ ] AI 摘要
-- [ ] 翻译 Provider
-- [ ] AI 翻译目标
-- [ ] 缓存与错误模型
+- [x] OpenAI Compatible Provider：Endpoint 兼容 `/v1` / `/chat/completions` / `/models`，支持 Bearer Key、模型发现、reasoning_content / reasoning / `<think>`
+- [x] AI 摘要：迁移 Android 高信息密度 prompt、BRIEF / STANDARD / DETAILED、24k 正文裁切、按文章/Provider/模型/语言缓存
+- [x] Reader AI 摘要：安全 Markdown 子集渲染，不把模型输出当 HTML；支持 reasoning 折叠与重新生成
+- [x] 翻译 Provider：Microsoft Translator / DeepL / Google Cloud / DeepLX(DLX)；Google ML Kit 仅保留 Android 备份兼容，Desktop 设置 UI 不显示
+- [x] AI 翻译目标：复用 OpenAI Compatible Provider，严格 JSON id 对齐、批次上下文、分段合并
+- [x] 全文翻译：正文块抽取 / 重建，支持仅译文与双语对照；媒体节点保持，译文 HTML 仍走 Reader 安全边界
+- [x] AI / Translation API Key 使用 Electron `safeStorage` 加密保存，不进入普通 SQLite / JSON 配置
+- [x] AI / 翻译设置页的标题、说明、摘要长度说明与 Provider 说明按 Android 当前资源文案对齐；Desktop UI 不展示 Android ML Kit
+- [x] 本地协议单测：OpenAI Compatible + Microsoft / DeepL / Google Cloud / DLX 全部使用 HTTP fixture 验证
+- [x] Electron E2E：本地 RSS → Reader → OpenAI Mock 生成结构化摘要 → DLX Mock 全文翻译，真实 main/preload/Renderer 链路通过
 
 ### Phase 7：配置与迁移
 
-- [ ] WebsiteRule 编辑
-- [ ] JSON Rule 编辑 UI（Repository / IPC / import/export/template 已完成）
+- [x] WebsiteRule 全局管理：列表 / 启停 / 删除 / 导入 / 导出
+- [x] JSON Rule 全局管理：列表 / 启停 / 删除 / 导入 / 导出
+- [x] 文章过滤规则底层：KEYWORD / REGEX，全局或来源级作用域；来源规则优先于全局规则；设置页按 Android 当前页面仅新增全局规则，已有来源级规则仍可显示/恢复
+- [x] 过滤规则真正接入 RSS / JSON / Website 入库前处理，不是仅管理 UI
+- [x] Website 来源级解析策略底层：首选规则 / 自动规则缓存 / 动态 Chromium 开关；不擅自暴露到 Android 当前“网站解析规则”设置页
+- [x] Website 规则 UI 与 Android 对齐：内部 `ithome-home` 规则不出现在规则列表
 - [ ] RSSHub 设置 UI（Repository / IPC / health test 已完成）
 - [ ] OPML 导入导出
-- [ ] Android 配置备份兼容
-- [ ] Desktop 配置备份
-- [ ] Secret 加密
+- [x] Android 配置备份兼容：直接读写 `ConfigurationBackup schemaVersion=1`，订阅按 URL 合并、旧 feedId 重映射规则/偏好/RSSHub source URL
+- [x] Android 加密凭据兼容：PBKDF2-HMAC-SHA256 210000 + AES-256-GCM + 相同 AAD；Android 当前 `ConfigurationBackupCryptoTest` 已实际运行通过
+- [x] Desktop 配置备份：来源 / 分组 / 规则 / RSSHub / AI / 翻译 / 同步 / Desktop 阅读偏好；无密码时不含凭据，填写密码时加密凭据
+- [x] 恢复采用“全量静态校验 + 密码解密成功后才开始写入”，不删除 Desktop 现有额外订阅或文章/已读/星标
+- [x] Desktop 独有偏好写入 namespaced `preferences`；Android 对未知 key 验证放行且恢复时忽略，因此保持双向 envelope 兼容
+- [x] Secret 加密：运行时 safeStorage；可移植备份内 AES-256-GCM
+- [ ] AI 生成 Website / JSON 规则、规则在线试跑、模板保存 UI（Android 有此扩展能力，本轮未纳入核心规则管理）
 
 ### Phase 8：发布
 

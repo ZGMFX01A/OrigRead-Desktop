@@ -59,6 +59,13 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
         typeof window.origread?.getSyncRuntimeState === 'function' &&
         typeof window.origread?.getReaderContent === 'function' &&
         typeof window.origread?.fetchFullContent === 'function' &&
+        typeof window.origread?.getAiSettings === 'function' &&
+        typeof window.origread?.summarizeArticle === 'function' &&
+        typeof window.origread?.getTranslationSettings === 'function' &&
+        typeof window.origread?.translateArticle === 'function' &&
+        typeof window.origread?.getArticleFilters === 'function' &&
+        typeof window.origread?.exportConfigurationBackup === 'function' &&
+        typeof window.origread?.restoreConfigurationBackup === 'function' &&
         typeof window.origread?.openOriginalArticle === 'function' &&
         typeof window.origread?.closeOriginalArticle === 'function' &&
         typeof window.origread?.openExternalUrl === 'function'
@@ -88,6 +95,42 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     }).toEqual({ fontSize: 19, interval: 0, syncOnStart: true, nextRunAt: null })
 
     await expect(page.locator('.app-shell')).toHaveCSS('--reader-font-size', '19px')
+
+    await page.locator('.settings-nav-button').nth(1).click()
+    await expect(page.locator('.provider-card')).toHaveCount(1)
+    await expect(page.getByText('1～2 段摘要 + 4～6 个主要观点，每点补充关键依据、机制或影响', { exact: true })).toBeVisible()
+    await expect(page.getByText('高密度单段摘要，中文建议约 120～220 字，不列要点', { exact: true })).toHaveCount(0)
+
+    await page.locator('.settings-nav-button').nth(2).click()
+    await expect(page.locator('.provider-card')).toHaveCount(4)
+    await expect(page.getByText('Google ML Kit', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('启用服务与默认服务', { exact: true })).toBeVisible()
+    await expect(page.locator('input[name="translation-default-provider"]')).toHaveCount(4)
+    await expect.poll(async () => page.locator('.settings-subpage').evaluate((element) => ({ scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }))).toMatchObject({ scrollHeight: expect.any(Number), clientHeight: expect.any(Number) })
+    const translationScrollable = await page.locator('.settings-subpage').evaluate((element) => element.scrollHeight > element.clientHeight)
+    expect(translationScrollable).toBe(true)
+    await page.locator('.settings-subpage').evaluate((element) => { element.scrollTop = 200 })
+    await expect.poll(async () => page.locator('.settings-subpage').evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+
+    await page.locator('.settings-nav-button').nth(3).click()
+    const ruleAdd = page.locator('.rule-add-row')
+    await ruleAdd.locator('input').fill('Blocked E2E')
+    await ruleAdd.locator('.mini-action').click()
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getArticleFilters()).rules.some((rule) => rule.keyword === 'Blocked E2E' && rule.feedId === null))).toBe(true)
+
+    await page.locator('.settings-nav-button').nth(4).click()
+    await expect(page.locator('.rule-add-row')).toHaveCount(0)
+
+    await page.locator('.settings-nav-button').nth(5).click()
+    await expect(page.getByText('ithome-home', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('来源级解析规则', { exact: true })).toHaveCount(0)
+
+    await page.locator('.settings-nav-button').nth(6).click()
+    await expect(page.locator('input[type="password"]')).toHaveCount(0)
+    await page.locator('.setting-switch').click()
+    await expect(page.locator('input[type="password"]')).toBeVisible()
+    expect(await page.locator('input[type="password"]').getAttribute('placeholder')).toBeNull()
+
     await page.locator('.settings-close-button').click()
     await expect(page.locator('.settings-page')).toBeHidden()
 
