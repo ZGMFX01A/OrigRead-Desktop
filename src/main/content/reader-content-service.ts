@@ -7,7 +7,7 @@ import { shouldUseEmbeddedRssAsFullContent } from './embedded-rss-content-policy
 export class ReaderContentService {
   constructor(private readonly repository: LibraryRepository) {}
 
-  get(articleId: string): ReaderArticleContent {
+  get(articleId: string, preferFull = true): ReaderArticleContent {
     const article = this.repository.getArticleById(articleId)
     if (!article) throw new Error(`文章不存在：${articleId}`)
     const feed = this.repository.getFeedById(article.feedId)
@@ -21,7 +21,8 @@ export class ReaderContentService {
       article.fullContentHtml,
       article.contentHtml,
       article.description,
-      embeddedRssFullContent
+      embeddedRssFullContent,
+      preferFull
     )
     return {
       articleId,
@@ -36,10 +37,11 @@ function selectStoredContent(
   fullContentHtml: string | null,
   contentHtml: string | null,
   description: string,
-  embeddedRssFullContent = false
+  embeddedRssFullContent = false,
+  preferFull = true
 ): { mode: ReaderContentMode; html: string } {
-  if (fullContentHtml?.trim()) return { mode: 'full', html: fullContentHtml }
-  if (embeddedRssFullContent && contentHtml?.trim()) return { mode: 'full', html: contentHtml }
+  if (preferFull && fullContentHtml?.trim()) return { mode: 'full', html: fullContentHtml }
+  if (preferFull && embeddedRssFullContent && contentHtml?.trim()) return { mode: 'full', html: contentHtml }
   if (contentHtml?.trim()) return { mode: 'content', html: contentHtml }
   return {
     mode: 'description',

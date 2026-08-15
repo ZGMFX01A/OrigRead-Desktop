@@ -1,7 +1,8 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, shell, type IpcMainInvokeEvent } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { readFileSync, writeFileSync } from 'node:fs'
-import { IPC_CHANNELS, type AppInfo } from '../shared/contracts'
+import { IPC_CHANNELS, type AppInfo, type FeedSettingsPatch } from '../shared/contracts'
 import { resolveBrandName } from '../shared/locale'
 import { DesktopDatabase } from './database/database'
 import { LibraryRepository } from './database/library-repository'
@@ -9,6 +10,7 @@ import { SettingsRepository } from './database/settings-repository'
 import { normalizeDesktopSettingsPatch } from '../shared/settings'
 import { RssSubscriptionService } from './sources/rss/rss-subscription-service'
 import { RssDiscoveryService } from './sources/rss/rss-discovery-service'
+import { BestIconFinder, extractIconDomain } from './sources/rss/best-icon-finder'
 import { loadBundledRssHubRoutes } from './sources/rsshub/rsshub-route-catalog'
 import { RssHubRouteMatcher } from './sources/rsshub/rsshub-route-matcher'
 import { RssHubResolver } from './sources/rsshub/rsshub-resolver'
@@ -26,6 +28,7 @@ import { RssHubSubscriptionService } from './sources/rsshub/rsshub-subscription-
 import { SourceDiscoveryService } from './sources/source-discovery-service'
 import { SourceSyncService } from './sources/source-sync-service'
 import { ReaderContentService } from './content/reader-content-service'
+import { ReaderFontRepository } from './fonts/reader-font-repository'
 import { ContentExtractionService } from './content/content-extraction-service'
 import {
   ReadabilityContentExtractor,
@@ -48,9 +51,10 @@ import { TranslationSettingsRepository } from './translation/translation-setting
 import { TranslationService } from './translation/translation-service'
 import { ArticleFilterRepository } from './filter/article-filter-repository'
 import { ConfigurationBackupService } from './backup/configuration-backup-service'
+import { OpmlService } from './import-export/opml-service'
 import { FeedDiscoveryCatalog } from './discovery/feed-discovery-catalog'
 import { AiRuleGenerationService } from './ai/ai-rule-generation-service'
-import type { AiProviderPatch, AiSettingsPatch } from '../shared/ai'
+import type { AiProviderPatch, AiSettingsPatch, AiSummaryLength, AiSummaryRequestOptions } from '../shared/ai'
 import type { AiGeneratedRuleKind } from '../shared/ai-rule'
 import type { TranslationProviderPatch, TranslationProviderType, TranslationSettingsPatch, TranslationTarget } from '../shared/translation'
 import type { ArticleFilterRuleType } from '../shared/filter-rules'
@@ -68,6 +72,7 @@ let mainWindow: BrowserWindow | null = null
 let desktopDatabase: DesktopDatabase | null = null
 let libraryRepository: LibraryRepository | null = null
 let settingsRepository: SettingsRepository | null = null
+let readerFontRepository: ReaderFontRepository | null = null
 let rssSubscriptionService: RssSubscriptionService | null = null
 let rssHubSettingsRepository: RssHubSettingsRepository | null = null
 let rssHubResolver: RssHubResolver | null = null
@@ -91,6 +96,7 @@ let translationSettingsRepository: TranslationSettingsRepository | null = null
 let translationService: TranslationService | null = null
 let articleFilterRepository: ArticleFilterRepository | null = null
 let configurationBackupService: ConfigurationBackupService | null = null
+let opmlService: OpmlService | null = null
 let feedDiscoveryCatalog: FeedDiscoveryCatalog | null = null
 let aiRuleGenerationService: AiRuleGenerationService | null = null
 
@@ -204,6 +210,11 @@ function registerIpcHandlers(): void {
     if (!libraryRepository) throw new Error('OrigRead database is not ready')
     return libraryRepository.listFeeds()
   })
+  ipcMain.handle(IPC_CHANNELS.listGroups, (event) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    return libraryRepository.listGroups()
+  })
   ipcMain.handle(IPC_CHANNELS.listArticles, (event, limit?: unknown) => {
     assertTrustedSender(event)
     if (!libraryRepository) throw new Error('OrigRead database is not ready')
@@ -222,6 +233,68 @@ function registerIpcHandlers(): void {
     if (!libraryRepository) throw new Error('OrigRead database is not ready')
     libraryRepository.setArticleStarred(validateId(articleId, 'articleId'), validateBoolean(starred, 'starred'))
   })
+  ipcMain.handle(IPC_CHANNELS.addGroup, (event, name: unknown) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    const normalizedName = validateText(name, 'groupName', 200).trim()
+    const groups = libraryRepository.listGroups()
+    if (!groups.some((group) => group.name === normalizedName)) {
+      libraryRepository.upsertGroup({
+        id: randomUUID(),
+        name: normalizedName,
+        sortOrder: Math.max(-1, ...groups.map((group) => group.sortOrder)) + 1,
+        isDefault: false
+      })
+    }
+    return libraryRepository.listGroups()
+  })
+  ipcMain.handle(IPC_CHANNELS.updateFeedSettings, (event, feedId: unknown, patch: unknown) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    const id = validateId(feedId, 'feedId')
+    const current = libraryRepository.getFeedById(id)
+    if (!current) throw new Error('来源不存在')
+    const nextPatch = validateFeedSettingsPatch(patch)
+    if (nextPatch.groupId && !libraryRepository.listGroups().some((group) => group.id === nextPatch.groupId)) throw new Error('分组不存在')
+    const next = {
+      ...current,
+      ...nextPatch,
+      isFullContent: nextPatch.isFullContent === true ? true : (nextPatch.isBrowser === true ? false : nextPatch.isFullContent ?? current.isFullContent),
+      isBrowser: nextPatch.isBrowser === true ? true : (nextPatch.isFullContent === true ? false : nextPatch.isBrowser ?? current.isBrowser),
+      updatedAt: Date.now()
+    }
+    libraryRepository.upsertFeed(next)
+    return libraryRepository.getFeedById(id)!
+  })
+  ipcMain.handle(IPC_CHANNELS.clearFeedArticles, (event, feedId: unknown) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    const id = validateId(feedId, 'feedId')
+    if (!libraryRepository.getFeedById(id)) throw new Error('来源不存在')
+    libraryRepository.deleteArticlesByFeed(id, false)
+  })
+  ipcMain.handle(IPC_CHANNELS.deleteFeed, (event, feedId: unknown) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    const id = validateId(feedId, 'feedId')
+    if (!libraryRepository.getFeedById(id)) return
+    articleFilterRepository?.deleteByFeed(id)
+    websitePreferenceRepository?.delete(id)
+    libraryRepository.deleteArticlesByFeed(id, true)
+    libraryRepository.deleteFeed(id)
+  })
+  ipcMain.handle(IPC_CHANNELS.reloadFeedIcon, async (event, feedId: unknown) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    const id = validateId(feedId, 'feedId')
+    const feed = libraryRepository.getFeedById(id)
+    if (!feed) throw new Error('来源不存在')
+    const icon = await new BestIconFinder().findBestIcon(extractIconDomain(feed.url))
+    if (!icon) throw new Error('未找到可用来源图标')
+    const next = { ...feed, icon, updatedAt: Date.now() }
+    libraryRepository.upsertFeed(next)
+    return next
+  })
   ipcMain.handle(IPC_CHANNELS.getSettings, (event) => {
     assertTrustedSender(event)
     if (!settingsRepository) throw new Error('OrigRead settings are not ready')
@@ -233,6 +306,32 @@ function registerIpcHandlers(): void {
     const next = settingsRepository.update(normalizeDesktopSettingsPatch(patch))
     periodicSyncScheduler?.reconfigure()
     return next
+  })
+  ipcMain.handle(IPC_CHANNELS.listReaderFonts, (event) => {
+    assertTrustedSender(event)
+    if (!readerFontRepository) throw new Error('Reader font repository is not ready')
+    return readerFontRepository.list()
+  })
+  ipcMain.handle(IPC_CHANNELS.importReaderFont, async (event) => {
+    assertTrustedSender(event)
+    if (!readerFontRepository) throw new Error('Reader font repository is not ready')
+    try {
+      const selected = await showOpenDialog({
+        title: '导入阅读字体',
+        properties: ['openFile'],
+        filters: [{ name: 'Font', extensions: ['ttf', 'otf', 'woff', 'woff2'] }]
+      })
+      if (selected.canceled || !selected.filePaths[0]) return { ok: false, cancelled: true, font: null, error: null }
+      return { ok: true, cancelled: false, font: readerFontRepository.importFile(selected.filePaths[0]), error: null }
+    } catch (error) {
+      return { ok: false, cancelled: false, font: null, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.deleteReaderFont, (event, id: unknown) => {
+    assertTrustedSender(event)
+    if (!readerFontRepository) throw new Error('Reader font repository is not ready')
+    readerFontRepository.delete(validateId(id, 'fontId'))
+    return readerFontRepository.list()
   })
   ipcMain.handle(IPC_CHANNELS.addRssSource, async (event, inputUrl: unknown) => {
     assertTrustedSender(event)
@@ -448,10 +547,13 @@ function registerIpcHandlers(): void {
     if (!periodicSyncScheduler) throw new Error('Periodic sync scheduler is not ready')
     return periodicSyncScheduler.currentState()
   })
-  ipcMain.handle(IPC_CHANNELS.getReaderContent, (event, articleId: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.getReaderContent, (event, articleId: unknown, preferFull?: unknown) => {
     assertTrustedSender(event)
     if (!readerContentService) throw new Error('Reader content service is not ready')
-    return readerContentService.get(validateId(articleId, 'articleId'))
+    return readerContentService.get(
+      validateId(articleId, 'articleId'),
+      preferFull === undefined ? true : validateBoolean(preferFull, 'preferFull')
+    )
   })
   ipcMain.handle(IPC_CHANNELS.fetchFullContent, async (event, articleId: unknown) => {
     assertTrustedSender(event)
@@ -489,8 +591,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.testAiProvider, async (event, providerId: unknown) => {
     assertTrustedSender(event); if (!aiSummaryService) throw new Error('AI service is not ready'); try { await aiSummaryService.testProvider(validateId(providerId, 'providerId')); return { ok:true,error:null } } catch(error) { return { ok:false,error:error instanceof Error?error.message:String(error) } }
   })
-  ipcMain.handle(IPC_CHANNELS.summarizeArticle, async (event, articleId: unknown, forceRefresh?: unknown) => {
-    assertTrustedSender(event); if (!aiSummaryService) throw new Error('AI service is not ready'); return aiSummaryService.summarize(validateId(articleId, 'articleId'), forceRefresh === undefined ? false : validateBoolean(forceRefresh, 'forceRefresh'))
+  ipcMain.handle(IPC_CHANNELS.summarizeArticle, async (event, articleId: unknown, forceRefresh?: unknown, options?: unknown) => {
+    assertTrustedSender(event); if (!aiSummaryService) throw new Error('AI service is not ready'); return aiSummaryService.summarize(validateId(articleId, 'articleId'), forceRefresh === undefined ? false : validateBoolean(forceRefresh, 'forceRefresh'), options === undefined ? {} : validateAiSummaryRequestOptions(options))
   })
   ipcMain.handle(IPC_CHANNELS.getTranslationSettings, (event) => {
     assertTrustedSender(event); if (!translationSettingsRepository) throw new Error('Translation settings are not ready'); return translationSettingsRepository.current()
@@ -530,11 +632,55 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.getWebsiteSourceRuleSettings, (event, feedId: unknown) => {
     assertTrustedSender(event); return websiteSourceRuleSettings(validateId(feedId,'feedId'))
   })
-  ipcMain.handle(IPC_CHANNELS.setWebsiteSourcePreferredRule, (event, feedId: unknown, ruleId: unknown) => {
-    assertTrustedSender(event);const id=validateId(feedId,'feedId');if(!websitePreferenceRepository||!websiteRuleRepository)throw new Error('Website preferences are not ready');const normalized=ruleId===null?null:validateId(ruleId,'ruleId');const rule=normalized?websiteRuleRepository.listRules().find((item)=>item.id===normalized):null;if(normalized&&!rule)throw new Error('网站规则不存在');websitePreferenceRepository.setPreferredRule(id,normalized,rule?.name??null);return websiteSourceRuleSettings(id)!
+  ipcMain.handle(IPC_CHANNELS.evaluateWebsiteSourceRules, async (event, feedId: unknown) => {
+    assertTrustedSender(event);const id=validateId(feedId,'feedId');if(!websiteSourceService||!libraryRepository)throw new Error('Website source service is not ready');const feed=libraryRepository.getFeedById(id);if(!feed||feed.sourceType!=='website')throw new Error('来源不是网站类型');return websiteSourceService.evaluateCandidates(feed)
+  })
+  ipcMain.handle(IPC_CHANNELS.setWebsiteSourcePreferredRule, async (event, feedId: unknown, ruleId: unknown) => {
+    assertTrustedSender(event);const id=validateId(feedId,'feedId');if(!websitePreferenceRepository||!websiteRuleRepository||!websiteSourceService||!libraryRepository)throw new Error('Website preferences are not ready');const normalized=ruleId===null?null:validateId(ruleId,'ruleId');let rule=normalized?websiteRuleRepository.listRules().find((item)=>item.id===normalized):null;if(normalized&&!rule&&normalized.startsWith('auto-dom:')){const feed=libraryRepository.getFeedById(id);if(!feed)throw new Error('来源不存在');const candidate=(await websiteSourceService.evaluateCandidates(feed)).find((item)=>item.rule.id===normalized);if(candidate){websitePreferenceRepository.saveAutomaticRule(id,candidate.rule);rule=candidate.rule}}if(normalized&&!rule)throw new Error('网站规则不存在');websitePreferenceRepository.setPreferredRule(id,normalized,rule?.name??null);return websiteSourceRuleSettings(id)!
   })
   ipcMain.handle(IPC_CHANNELS.setWebsiteSourceDynamicRendering, (event, feedId: unknown, enabled: unknown) => {
     assertTrustedSender(event);const id=validateId(feedId,'feedId');if(!websitePreferenceRepository)throw new Error('Website preferences are not ready');websitePreferenceRepository.setDynamicRenderingEnabled(id,validateBoolean(enabled,'enabled'));return websiteSourceRuleSettings(id)!
+  })
+  ipcMain.handle(IPC_CHANNELS.importOpml, async (event) => {
+    assertTrustedSender(event)
+    if (!opmlService) throw new Error('OPML service is not ready')
+    try {
+      const selected = await showOpenDialog({
+        title: '导入 OPML',
+        properties: ['openFile'],
+        filters: [{ name: 'OPML', extensions: ['opml', 'xml'] }]
+      })
+      if (selected.canceled || !selected.filePaths[0]) return { ok: false, cancelled: true, path: null, error: null }
+      const path = selected.filePaths[0]
+      const importResult = opmlService.importFromString(readFileSync(path, 'utf8'))
+      try {
+        if (periodicSyncScheduler) await periodicSyncScheduler.runNow('manual')
+        else if (sourceSyncService) await sourceSyncService.refreshAllSources()
+      } catch {
+        // Android 在 OPML 写库后触发一次同步；同步失败不回滚已经成功导入的订阅。
+      }
+      return { ok: true, cancelled: false, path, importResult, error: null }
+    } catch (error) {
+      return { ok: false, cancelled: false, path: null, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.exportOpml, async (event, attachInfo?: unknown) => {
+    assertTrustedSender(event)
+    if (!opmlService) throw new Error('OPML service is not ready')
+    try {
+      const includeInfo = attachInfo === undefined ? true : validateBoolean(attachInfo, 'attachInfo')
+      const content = opmlService.exportToString(includeInfo)
+      const selected = await showSaveDialog({
+        title: '导出 OPML',
+        defaultPath: `OrigRead-Subscriptions-${new Date().toISOString().slice(0,10)}.opml`,
+        filters: [{ name: 'OPML', extensions: ['opml'] }]
+      })
+      if (selected.canceled || !selected.filePath) return { ok: false, cancelled: true, path: null, error: null }
+      writeFileSync(selected.filePath, content, 'utf8')
+      return { ok: true, cancelled: false, path: selected.filePath, error: null }
+    } catch (error) {
+      return { ok: false, cancelled: false, path: null, error: error instanceof Error ? error.message : String(error) }
+    }
   })
   ipcMain.handle(IPC_CHANNELS.exportConfigurationBackup, async (event, password?: unknown) => {
     assertTrustedSender(event);if(!configurationBackupService)throw new Error('Backup service is not ready');try{const content=configurationBackupService.exportBackup(password===undefined?'':validateOptionalText(password,'password',1_024));const selected=await showSaveDialog({title:'导出 OrigRead 配置备份',defaultPath:`OrigRead-Configuration-${new Date().toISOString().slice(0,10)}.json`,filters:[{name:'OrigRead JSON Backup',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};writeFileSync(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
@@ -601,6 +747,36 @@ function validateRecord(value: unknown, field: string): Record<string, unknown> 
   return value as Record<string, unknown>
 }
 
+function validateFeedSettingsPatch(value: unknown): FeedSettingsPatch {
+  const record = validateRecord(value, 'feed settings patch')
+  const allowed = new Set(['name', 'url', 'groupId', 'isNotification', 'isFullContent', 'isBrowser'])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unsupported feed setting: ${key}`)
+  const patch: FeedSettingsPatch = {}
+  if (record.name !== undefined) patch.name = validateText(record.name, 'feedName', 500).trim()
+  if (record.url !== undefined) patch.url = validateExternalHttpUrl(record.url)
+  if (record.groupId !== undefined) patch.groupId = validateId(record.groupId, 'groupId')
+  if (record.isNotification !== undefined) patch.isNotification = validateBoolean(record.isNotification, 'isNotification')
+  if (record.isFullContent !== undefined) patch.isFullContent = validateBoolean(record.isFullContent, 'isFullContent')
+  if (record.isBrowser !== undefined) patch.isBrowser = validateBoolean(record.isBrowser, 'isBrowser')
+  return patch
+}
+
+function validateAiSummaryRequestOptions(value: unknown): AiSummaryRequestOptions {
+  const record = validateRecord(value, 'AI summary options')
+  const allowed = new Set(['providerId', 'model', 'length'])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unsupported AI summary option: ${key}`)
+  const result: AiSummaryRequestOptions = {}
+  if (record.providerId !== undefined) result.providerId = validateId(record.providerId, 'providerId')
+  if (record.model !== undefined) result.model = validateText(record.model, 'model', 500).trim()
+  if (record.length !== undefined) result.length = validateAiSummaryLength(record.length)
+  return result
+}
+
+function validateAiSummaryLength(value: unknown): AiSummaryLength {
+  if (value === 'BRIEF' || value === 'STANDARD' || value === 'DETAILED') return value
+  throw new TypeError('Unknown AI summary length')
+}
+
 function validateTranslationProviderType(value: unknown): TranslationProviderType {
   if (value === 'ML_KIT' || value === 'MICROSOFT' || value === 'DEEPL' || value === 'GOOGLE_CLOUD' || value === 'DLX') return value
   throw new TypeError('Unknown translation provider type')
@@ -659,8 +835,10 @@ app.whenReady().then(() => {
   }
   desktopDatabase = new DesktopDatabase(join(app.getPath('userData'), 'origread.db'))
   libraryRepository = new LibraryRepository(desktopDatabase.connection)
+  opmlService = new OpmlService(libraryRepository)
   readerContentService = new ReaderContentService(libraryRepository)
   settingsRepository = new SettingsRepository(desktopDatabase.connection)
+  readerFontRepository = new ReaderFontRepository(join(app.getPath('userData'), 'reader-fonts'))
   const secretStore = new ElectronSecretStore(join(app.getPath('userData'), 'secrets.json'))
   aiSettingsRepository = new AiSettingsRepository(desktopDatabase.connection, secretStore)
   translationSettingsRepository = new TranslationSettingsRepository(desktopDatabase.connection, secretStore)
@@ -723,7 +901,22 @@ app.whenReady().then(() => {
     libraryRepository,
     rssSubscriptionService,
     jsonSubscriptionService,
-    websiteSubscriptionService
+    websiteSubscriptionService,
+    (feed, articles) => {
+      if (!Notification.isSupported() || articles.length === 0) return
+      const first = articles[0]!
+      const body = articles.length === 1
+        ? first.title
+        : `${first.title}\n${articles.length - 1} 篇新文章`
+      const notification = new Notification({ title: feed.name, body })
+      notification.on('click', () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        if (mainWindow.isMinimized()) mainWindow.restore()
+        mainWindow.show()
+        mainWindow.focus()
+      })
+      notification.show()
+    }
   )
   periodicSyncScheduler = new PeriodicSyncScheduler(
     settingsRepository,
@@ -755,6 +948,7 @@ app.on('before-quit', () => {
   desktopDatabase = null
   libraryRepository = null
   settingsRepository = null
+  readerFontRepository = null
   rssSubscriptionService = null
   rssHubSettingsRepository = null
   rssHubResolver = null
@@ -776,6 +970,7 @@ app.on('before-quit', () => {
   translationService = null
   articleFilterRepository = null
   configurationBackupService = null
+  opmlService = null
   feedDiscoveryCatalog = null
   aiRuleGenerationService = null
 })

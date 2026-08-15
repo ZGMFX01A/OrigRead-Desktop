@@ -19,7 +19,8 @@ test('website subscription remains added when the immediate post-subscribe refre
       await page.locator('.collapse-handle').click()
     }
 
-    await page.locator('.primary-action').click()
+    await page.locator('.subscription-menu-anchor .primary-action').click()
+    await page.getByRole('menuitem', { name: '添加来源' }).click()
     await page.locator('.dialog-field input').fill(sourceUrl)
     await page.locator('.dialog-submit').click()
     const candidate = page.locator('.source-candidate').filter({ hasText: '网站' }).first()
@@ -60,7 +61,8 @@ test('website article full content renders its external HTTP image in the reader
       await page.locator('.collapse-handle').click()
     }
 
-    await page.locator('.primary-action').click()
+    await page.locator('.subscription-menu-anchor .primary-action').click()
+    await page.getByRole('menuitem', { name: '添加来源' }).click()
     await page.locator('.dialog-field input').fill(sourceUrl)
     await page.locator('.dialog-submit').click()
     await expect(page.locator('.source-candidate').filter({ hasText: '网站' }).first()).toBeVisible({ timeout: 20_000 })

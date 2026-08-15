@@ -49,6 +49,10 @@ export class WebsiteParsePreferenceRepository {
     this.save({ ...this.getOrCreate(feedId), dynamicRenderingEnabled: enabled })
   }
 
+  delete(feedId: string): void {
+    this.write(this.load().filter((item) => item.feedId !== feedId))
+  }
+
   saveAutomaticRule(feedId: string, rule: WebsiteRule, updatedAt = Date.now()): void {
     if (!rule.id.startsWith(AUTOMATIC_WEBSITE_RULE_ID_PREFIX)) throw new Error('只能缓存自动 DOM 规则')
     this.save({ ...this.getOrCreate(feedId), cachedAutomaticRule: rule, automaticRuleUpdatedAt: updatedAt })

@@ -29,6 +29,22 @@ describe('ReaderContentService', () => {
     expect(result.html).not.toContain('<script')
   })
 
+  it('can explicitly return feed content after full content has been stored', () => {
+    const repository = createRepository()
+    repository.upsertFeed(createFeed())
+    repository.upsertArticle(createArticle({
+      contentHtml: '<p>Feed content</p>',
+      fullContentHtml: '<article><p>Full body</p></article>'
+    }))
+    const service = new ReaderContentService(repository)
+
+    expect(service.get('article-1', true)).toMatchObject({ mode: 'full' })
+    const feedContent = service.get('article-1', false)
+    expect(feedContent.mode).toBe('content')
+    expect(feedContent.html).toContain('Feed content')
+    expect(feedContent.html).not.toContain('Full body')
+  })
+
   it('uses source content then escaped plain description as fallbacks', () => {
     const repository = createRepository()
     repository.upsertFeed(createFeed())

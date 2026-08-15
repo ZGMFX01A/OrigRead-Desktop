@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import * as cheerio from 'cheerio'
-import type { AiSummaryDocument, AiSummaryLength } from '../../shared/ai'
+import type { AiSummaryDocument, AiSummaryLength, AiSummaryRequestOptions } from '../../shared/ai'
 import type { ReaderArticleContent } from '../../shared/reader'
 import type { LibraryRepository } from '../database/library-repository'
 import type { ReaderContentService } from '../content/reader-content-service'
@@ -19,27 +19,33 @@ export class AiSummaryService {
     private readonly provider = new OpenAiCompatibleProvider()
   ) {}
 
-  async summarize(articleId: string, forceRefresh = false): Promise<AiSummaryDocument> {
+  async summarize(articleId: string, forceRefresh = false, options: AiSummaryRequestOptions = {}): Promise<AiSummaryDocument> {
     const article = this.library.getArticleById(articleId)
     if (!article) throw new Error('文章不存在')
     const config = this.settings.current()
     if (!config.enabled) throw new Error('AI 功能尚未启用')
-    const profile = config.providers.find((item) => item.id === config.defaultProviderId && item.enabled)
+    const requestedProfile = options.providerId
+      ? config.providers.find((item) => item.id === options.providerId && item.enabled)
+      : null
+    if (options.providerId && !requestedProfile) throw new Error('所选 AI Provider 不可用')
+    const profile = requestedProfile ?? config.providers.find((item) => item.id === config.defaultProviderId && item.enabled)
       ?? config.providers.find((item) => item.enabled)
     if (!profile || !profile.endpoint.trim()) throw new Error('AI Provider 尚未完成配置')
-    const model = profile.defaultModel.trim() || profile.models[0]?.trim() || ''
+    const model = options.model?.trim() || profile.defaultModel.trim() || profile.models[0]?.trim() || ''
     if (!model) throw new Error('AI Provider 尚未选择模型')
+    if (options.model && profile.models.length > 0 && !profile.models.includes(model)) throw new Error('所选模型不属于当前 AI Provider')
+    const length = options.length ?? config.summaryLength
     const source = this.reader.get(articleId)
     const content = prepareArticleForSummary(source)
     if (!content) throw new Error('当前文章没有可用于摘要的正文')
-    const cacheFile = this.cacheFile(articleId, article.title, content, profile.id, profile.endpoint, model, config.outputLanguage, config.summaryLength)
+    const cacheFile = this.cacheFile(articleId, article.title, content, profile.id, profile.endpoint, model, config.outputLanguage, length)
     if (!forceRefresh) {
       const cached = readCache(cacheFile)
       if (cached) return cached
     }
     const completed = await this.provider.completeDetailed(
       buildAiSummarySystemPrompt(config.outputLanguage),
-      buildAiSummaryUserPrompt(article.title, content, config.summaryLength),
+      buildAiSummaryUserPrompt(article.title, content, length),
       { endpoint: profile.endpoint, model, apiKey: this.settings.getApiKey(profile.id) }
     )
     const document: AiSummaryDocument = {
@@ -48,7 +54,7 @@ export class AiSummaryService {
       providerName: profile.name,
       model,
       outputLanguage: config.outputLanguage,
-      length: config.summaryLength,
+      length,
       summary: completed.content,
       reasoning: completed.reasoning
     }

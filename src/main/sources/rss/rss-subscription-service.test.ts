@@ -1,3 +1,5 @@
+const noIconFinder: RssIconFinder = { findBestIcon: async () => null }
+
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,6 +9,7 @@ import { DesktopDatabase } from '../../database/database'
 import { LibraryRepository } from '../../database/library-repository'
 import { DEFAULT_GROUP_ID } from '../../database/migrations'
 import { RssDiscoveryService, type RssFetchPayload, type RssFetcher } from './rss-discovery-service'
+import type { RssIconFinder } from './best-icon-finder'
 import { RssSubscriptionService } from './rss-subscription-service'
 import type { RssHubResolver } from '../rsshub/rsshub-resolver'
 import { ArticleFilterRepository } from '../../filter/article-filter-repository'
@@ -39,7 +42,7 @@ describe('RssSubscriptionService', () => {
     const repository = new LibraryRepository(database.connection)
     let xml = RSS_ONE
     const fetcher: RssFetcher = async (url) => rssPayload(url, xml)
-    const service = new RssSubscriptionService(repository, new RssDiscoveryService(fetcher))
+    const service = new RssSubscriptionService(repository, new RssDiscoveryService(fetcher, noIconFinder))
     const added = await service.add('https://example.com/feed.xml')
     const first = repository.listArticles()[0]!
     repository.setArticleUnread(first.id, false)
@@ -123,7 +126,7 @@ describe('RssSubscriptionService', () => {
       const filters = new ArticleFilterRepository(join(dir, 'filters.json'))
       filters.add('Article two', 'KEYWORD')
       const fetcher: RssFetcher = async (url) => rssPayload(url, RSS_TWO)
-      const service = new RssSubscriptionService(repository, new RssDiscoveryService(fetcher), undefined, filters)
+      const service = new RssSubscriptionService(repository, new RssDiscoveryService(fetcher, noIconFinder), undefined, filters)
 
       const added = await service.add('https://example.com/feed.xml')
       expect(added.insertedArticles).toBe(1)
@@ -156,7 +159,7 @@ function createFeed(id: string, url: string, sourcePageUrl: string, now: number)
 
 function createService(repository: LibraryRepository, xml: string): RssSubscriptionService {
   const fetcher: RssFetcher = async (url) => rssPayload(url, xml)
-  return new RssSubscriptionService(repository, new RssDiscoveryService(fetcher))
+  return new RssSubscriptionService(repository, new RssDiscoveryService(fetcher, noIconFinder))
 }
 
 function rssPayload(url: string, xml: string): RssFetchPayload {

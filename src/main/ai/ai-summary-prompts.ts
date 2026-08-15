@@ -18,12 +18,9 @@ export function buildAiSummarySystemPrompt(language: string): string {
 
 export function buildAiSummaryUserPrompt(title: string, content: string, length: AiSummaryLength): string {
   const formats: Record<AiSummaryLength, string> = {
-    BRIEF: `只输出：
-## 摘要
-用一个高密度段落概括核心问题、核心结论和最关键依据。中文建议约 120～220 字；不要列要点。`,
+    BRIEF: `只输出一个高密度自然段，直接概括核心问题、核心结论和最关键依据。中文建议约 120～220 字；不要输出“摘要”标题，不要列要点。`,
     STANDARD: `严格使用以下结构：
-## 摘要
-用 1～2 个自然段说明：核心问题/主题、作者或原文的核心结论、文章整体论证结构。不要只写背景。
+先直接用 1～2 个自然段说明：核心问题/主题、作者或原文的核心结论、文章整体论证结构。不要输出“摘要”标题，不要只写背景。
 
 ## 主要内容
 列出 4～6 个编号要点。每个要点格式为：
@@ -31,8 +28,7 @@ export function buildAiSummaryUserPrompt(title: string, content: string, length:
 
 要点之间应覆盖文章不同层级，避免把同一个观点拆成多条重复表达。`,
     DETAILED: `严格使用以下结构：
-## 摘要
-用 2～3 个自然段说明核心问题、核心结论、文章结构以及最重要的变化/矛盾。
+先直接用 2～3 个自然段说明核心问题、核心结论、文章结构以及最重要的变化/矛盾。不要输出“摘要”标题。
 
 ## 论证结构
 用 3～6 条简洁条目还原作者从问题到结论的推导路径，不逐段复述。

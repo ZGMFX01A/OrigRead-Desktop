@@ -110,14 +110,17 @@ function desktopPreferences(settings:ReturnType<SettingsRepository['current']>):
   'origread.desktop.workspaceWidth':settings.workspaceWidth,
   'origread.desktop.readerFontSize':settings.readerFontSize,
   'origread.desktop.readerLineHeight':settings.readerLineHeight,
-  'origread.desktop.readerContentWidth':settings.readerContentWidth
+  'origread.desktop.readerContentWidth':settings.readerContentWidth,
+  'origread.desktop.aiSummaryPlacement':settings.aiSummaryPlacement,
+  'origread.desktop.aiSummaryPanelSize':settings.aiSummaryPanelSize
 }}
 function readDesktopPreferences(value:Record<string,unknown>|null|undefined):Partial<ReturnType<SettingsRepository['current']>>{
   if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('备份中的 preferences 必须是 JSON 对象')
   const result:Record<string,unknown>={}
   const language=value['origread.desktop.language'];if(language!==undefined){if(language!=='system'&&language!=='zh'&&language!=='en')throw new Error('备份中的 Desktop 语言设置无效');result.language=language}
   const collapsed=value['origread.desktop.workspaceCollapsed'];if(collapsed!==undefined){if(typeof collapsed!=='boolean')throw new Error('备份中的 Desktop 侧栏设置类型无效');result.workspaceCollapsed=collapsed}
-  for(const [key,target] of [['origread.desktop.workspaceWidth','workspaceWidth'],['origread.desktop.readerFontSize','readerFontSize'],['origread.desktop.readerLineHeight','readerLineHeight'],['origread.desktop.readerContentWidth','readerContentWidth']] as const){const candidate=value[key];if(candidate!==undefined){if(typeof candidate!=='number'||!Number.isFinite(candidate))throw new Error(`备份中的 ${key} 类型无效`);result[target]=candidate}}
+  const placement=value['origread.desktop.aiSummaryPlacement'];if(placement!==undefined){if(!['replace','left','right','top','bottom'].includes(String(placement)))throw new Error('备份中的 AI 摘要位置无效');result.aiSummaryPlacement=placement}
+  for(const [key,target] of [['origread.desktop.workspaceWidth','workspaceWidth'],['origread.desktop.readerFontSize','readerFontSize'],['origread.desktop.readerLineHeight','readerLineHeight'],['origread.desktop.readerContentWidth','readerContentWidth'],['origread.desktop.aiSummaryPanelSize','aiSummaryPanelSize']] as const){const candidate=value[key];if(candidate!==undefined){if(typeof candidate!=='number'||!Number.isFinite(candidate))throw new Error(`备份中的 ${key} 类型无效`);result[target]=candidate}}
   return result as Partial<ReturnType<SettingsRepository['current']>>
 }
 function validateRssHubBackup(value:RssHubBackup):void{

@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { FeedRecord, SourceType } from '../../shared/library'
+import type { ArticleRecord, FeedRecord, SourceType } from '../../shared/library'
 import { DesktopDatabase } from '../database/database'
 import { LibraryRepository } from '../database/library-repository'
 import { DEFAULT_GROUP_ID } from '../database/migrations'
 import type { JsonSubscriptionService } from './json/json-subscription-service'
 import type { RssSubscriptionService } from './rss/rss-subscription-service'
-import { SourceSyncService } from './source-sync-service'
+import { SourceSyncService, type SourceNewArticlesListener } from './source-sync-service'
 import type { WebsiteSubscriptionService } from './website/website-subscription-service'
 
 const databases: DesktopDatabase[] = []
@@ -122,6 +122,26 @@ describe('SourceSyncService', () => {
     expect(result.successCount).toBe(24)
     expect(maxActive).toBe(16)
   })
+
+  it('emits newly inserted articles only for sources with notification enabled', async () => {
+    const repository = createRepository()
+    repository.upsertFeed({ ...createFeed('rss-notify', 'rss'), isNotification: true })
+    repository.upsertFeed(createFeed('rss-silent', 'rss'))
+    const listener = vi.fn<SourceNewArticlesListener>()
+    const rssRefresh = vi.fn(async (feedId: string) => {
+      repository.upsertArticle(createArticle(`${feedId}-article`, feedId))
+      return { feedId, fetchedArticles: 1, insertedArticles: 1 }
+    })
+    const service = createService(repository, rssRefresh, vi.fn(), vi.fn(), listener)
+
+    await service.refreshAllSources()
+
+    expect(listener).toHaveBeenCalledOnce()
+    expect(listener).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'rss-notify', isNotification: true }),
+      [expect.objectContaining({ id: 'rss-notify-article', feedId: 'rss-notify' })]
+    )
+  })
 })
 
 function createRepository(): LibraryRepository {
@@ -149,17 +169,39 @@ function createFeed(id: string, sourceType: SourceType): FeedRecord {
   }
 }
 
+function createArticle(id: string, feedId: string): ArticleRecord {
+  const now = 1_786_000_000_000
+  return {
+    id,
+    feedId,
+    title: id,
+    url: `https://example.com/article/${id}`,
+    author: null,
+    publishedAt: now,
+    description: '',
+    contentHtml: null,
+    fullContentHtml: null,
+    imageUrl: null,
+    isUnread: true,
+    isStarred: false,
+    createdAt: now,
+    updatedAt: now
+  }
+}
+
 function createService(
   repository: LibraryRepository,
   rssRefresh: ReturnType<typeof vi.fn>,
   jsonRefresh: ReturnType<typeof vi.fn>,
-  websiteRefresh: ReturnType<typeof vi.fn>
+  websiteRefresh: ReturnType<typeof vi.fn>,
+  listener?: SourceNewArticlesListener
 ): SourceSyncService {
   return new SourceSyncService(
     repository,
     { refresh: rssRefresh } as unknown as RssSubscriptionService,
     { refresh: jsonRefresh } as unknown as JsonSubscriptionService,
-    { refresh: websiteRefresh } as unknown as WebsiteSubscriptionService
+    { refresh: websiteRefresh } as unknown as WebsiteSubscriptionService,
+    listener
   )
 }
 

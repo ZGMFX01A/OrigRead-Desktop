@@ -46,6 +46,12 @@ export interface AiSummaryDocument {
   reasoning: string | null
 }
 
+export interface AiSummaryRequestOptions {
+  providerId?: string
+  model?: string
+  length?: AiSummaryLength
+}
+
 export interface AiProviderTestResult {
   ok: boolean
   error: string | null

@@ -1,4 +1,4 @@
-import type { FeedRecord } from '../../shared/library'
+import type { ArticleRecord, FeedRecord } from '../../shared/library'
 import type { SourceSyncBatchResult, SourceSyncItemResult } from '../../shared/source-sync'
 import { LibraryRepository } from '../database/library-repository'
 import type { JsonSubscriptionService } from './json/json-subscription-service'
@@ -6,6 +6,8 @@ import type { RssSubscriptionService } from './rss/rss-subscription-service'
 import type { WebsiteSubscriptionService } from './website/website-subscription-service'
 
 const MAX_CONCURRENT_SYNCS = 16
+
+export type SourceNewArticlesListener = (feed: FeedRecord, articles: ArticleRecord[]) => void | Promise<void>
 
 interface NormalizedRefreshResult {
   feedId: string
@@ -23,7 +25,8 @@ export class SourceSyncService {
     private readonly repository: LibraryRepository,
     private readonly rssService: RssSubscriptionService,
     private readonly jsonService: JsonSubscriptionService,
-    private readonly websiteService: WebsiteSubscriptionService
+    private readonly websiteService: WebsiteSubscriptionService,
+    private readonly onNewArticles?: SourceNewArticlesListener
   ) {}
 
   async refreshSource(feedId: string, fetchedAt = Date.now()): Promise<SourceSyncItemResult> {
@@ -64,6 +67,9 @@ export class SourceSyncService {
   }
 
   private async refreshFeed(feed: FeedRecord, fetchedAt: number): Promise<SourceSyncItemResult> {
+    const existingArticleIds = feed.isNotification
+      ? new Set(this.repository.listArticlesByFeed(feed.id).map((article) => article.id))
+      : null
     const result: NormalizedRefreshResult = await (async () => {
       switch (feed.sourceType) {
         case 'rss': {
@@ -78,6 +84,13 @@ export class SourceSyncService {
           return this.websiteService.refresh(feed.id, fetchedAt)
       }
     })()
+
+    if (feed.isNotification && result.insertedArticles > 0 && existingArticleIds && this.onNewArticles) {
+      const inserted = this.repository
+        .listArticlesByFeed(feed.id)
+        .filter((article) => !existingArticleIds.has(article.id))
+      if (inserted.length > 0) await this.onNewArticles(feed, inserted)
+    }
 
     return {
       feedId: feed.id,

@@ -234,7 +234,7 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 - [x] Website 来源级解析策略底层：首选规则 / 自动规则缓存 / 动态 Chromium 开关；不擅自暴露到 Android 当前“网站解析规则”设置页
 - [x] Website 规则 UI 与 Android 对齐：内部 `ithome-home` 规则不出现在规则列表
 - [x] RSSHub 设置 UI：总开关、16 个内置/自定义实例列表、单实例启停、连通性测试、测试并添加、删除、恢复默认；复用现有 Resolver / health test
-- [ ] OPML 导入导出
+- [x] OPML 导入导出：对齐 Android `OpmlService`；顶层 Feed 进入默认分组、普通分组按 OPML 创建、`isDefault=true` 映射默认分组、重复 URL 跳过；支持可选导出 OrigRead 的通知/全文/浏览器附加属性；导入完成后触发一次全来源同步
 - [x] Android 配置备份兼容：直接读写 `ConfigurationBackup schemaVersion=1`，订阅按 URL 合并、旧 feedId 重映射规则/偏好/RSSHub source URL
 - [x] Android 加密凭据兼容：PBKDF2-HMAC-SHA256 210000 + AES-256-GCM + 相同 AAD；Android 当前 `ConfigurationBackupCryptoTest` 已实际运行通过
 - [x] Desktop 配置备份：来源 / 分组 / 规则 / RSSHub / AI / 翻译 / 同步 / Desktop 阅读偏好；无密码时不含凭据，填写密码时加密凭据
@@ -276,8 +276,11 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
    - 底层 Repository / Resolver / IPC / health test 已完成，但用户设置页尚未完成。
    - 对齐 Android：总开关、实例列表、实例启停、连通性测试、自定义实例添加、删除、恢复默认。
 
-5. [ ] **OPML 导入导出**
-   - 对齐 Android `OpmlService` 的导入、导出及订阅合并语义。
+5. [x] **OPML 导入导出**
+   - 已对齐 Android `OpmlService` 的导入、导出及重复 URL 跳过语义。
+   - 顶层 Feed 进入默认分组；普通分组按 OPML 创建；`isDefault=true` 映射 Desktop 默认分组。
+   - 默认导出包含 OrigRead 附加信息，也可选择仅导出通用 OPML 字段。
+   - 已有 Core 单测覆盖解析/导出/重复 URL/默认分组/XML 实体；Renderer Smoke 覆盖 preload bridge、菜单入口和导出选项。真实系统文件选择器仍保留为人工验收项。
 
 6. [ ] **软件自动更新**
    - Desktop 自动检查更新、提示更新、下载安装/跳转发布页等完整用户流程尚未实现。
@@ -307,28 +310,30 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
     - 提供直接下载安装包按钮。
     - 提供前往 Git 发布页按钮。
 
-12. [ ] **语言切换**
+12. [x] **语言切换**
     - 默认跟随系统语言。
     - 支持中文与 English 手动切换。
     - 系统语言为中文时使用中文；所有非中文系统语言默认使用 English。
-    - 后续 UI 一致性检查时逐页确认所有新增功能均覆盖中英文文案。
+    - 已有 Locale 单测和 Settings → i18n 切换链；后续 UI 一致性检查仍需逐页确认所有新增功能均覆盖中英文文案。
 
-13. [ ] **阅读页文章内搜索**
+13. [x] **阅读页文章内搜索**
     - 阅读正文时支持 `Ctrl + F` 打开文章内关键词搜索。
     - 高亮全部匹配项，并支持在上一个 / 下一个匹配项之间跳转。
     - 搜索范围以当前阅读内容为准，不与左侧文章列表搜索混用。
 
-14. [ ] **阅读字体与字体导入**
+14. [x] **阅读字体与字体导入**
     - 阅读页支持切换正文使用的字体。
     - 支持导入用户本地字体，并在阅读字体列表中选择。
     - 字体配置仅影响 Reader 正文，不擅自改变应用 UI 字体。
 
-15. [ ] **文章朗读**
-    - 为阅读页引入朗读能力。
+15. [x] **文章朗读**
+    - 朗读明确分为 **正文 / 翻译 / AI 摘要** 三个内容域。
+    - Reader 主朗读入口默认朗读当前正文；当翻译已启用并正在显示译文时，主朗读入口只朗读译文，不再同时朗读原文。
+    - AI 摘要区域内提供独立朗读按钮；摘要朗读不复用或抢占“正文 / 翻译”主入口的内容选择语义。
     - 优先评估并接入 Microsoft Edge / Chromium 可用的朗读语音能力，在 Windows 与 macOS 上提供可落地的桌面实现。
-    - 至少包含开始 / 暂停 / 继续 / 停止，以及可用语音选择；不得把“浏览器能发声”误判为完整朗读功能。
+    - 正文/翻译主朗读和摘要朗读均需纳入统一生命周期控制，至少包含开始 / 暂停 / 继续 / 停止和可用语音选择；文章切换时必须安全停止旧内容。
 
-16. [ ] **AI 摘要阅读布局**
+16. [x] **AI 摘要阅读布局**
     - AI 摘要支持调整显示位置，而不是固定替换正文。
     - 支持左侧栏、右侧栏，以及吸附在阅读区上方 / 下方等布局。
     - 阅读过程中允许调整位置与占用空间；正文与摘要都必须保持可滚动、可阅读。
@@ -342,6 +347,152 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 - [x] DeepL 简体中文目标码使用兼容性更高的 `ZH`，避免部分 DeepL 接口拒绝 `ZH-HANS`。
 - [x] AI 与所有翻译 API Key 使用真实安全存储值作为密码输入内容，黑点数量与 Key 字符数一致，并增加眼睛显隐、显式保存 / 删除、保存状态提示。
 - [x] 修复 AI / 翻译 Provider 修改其他字段时错误清空 Key 草稿的问题；AI Reader E2E 现在要求真实 Bearer Key 鉴权成功才能通过。
+- [x] 左侧文章列表折叠改为当前会话状态：应用启动和配置恢复时始终展开，旧 `workspaceCollapsed=true` 会自动纠正；折叠后保留 34 px 明确侧轨和完整展开按钮，避免出现“文章列表像丢失”的假故障。Renderer E2E 覆盖持久化 true 后 reload 自动恢复。
+
+## 9. 唯一剩余工作基线（2026-08-15）
+
+从本节开始，后续开发、验收和 checkpoint 统一以此清单为准。上面的 Phase 与 16 项清单用于保留开发历史，不再单独推导“还有什么没做”。任何项目只有同时满足“实现完成 + 所需自动测试通过 + 对应平台验证完成”后，才从本节移除。
+
+### A. 尚未开发 / 尚未形成完整用户功能
+
+1. [ ] **软件自动更新**
+   - 自动检查、用户提示、下载安装或安全跳转 Release 的完整流程尚未实现。
+   - 与 Desktop 独立仓库 Release 版本比较、失败降级和更新设置仍待开发。
+
+2. [ ] **Desktop Git Release 页面能力**
+   - 使用 `ZGMFX01A/OrigRead-Desktop` Release 数据。
+   - 展示版本与发布时间、直接下载当前平台安装包、打开完整 Release 页面。
+
+3. [ ] **阅读背景色配置**
+   - 当前 Reader 只有字号、行距、版心宽度；背景色配置模型、持久化与 UI 尚未实现。
+
+4. [ ] **全局深色主题 / 跟随系统主题**
+   - 当前没有 theme 状态和 `prefers-color-scheme` 跟随链。
+   - Reader、设置页、列表、弹窗和 WebContentsView 外层 UI 均需统一适配。
+
+5. [x] **阅读页 Ctrl + F 文章内搜索**
+   - `Ctrl + F` / `Cmd + F` 只搜索当前 Reader 内容，不混入左侧文章列表或应用 UI。
+   - 已实现全部匹配高亮、当前项定位、上一项/下一项、Enter / Shift+Enter 和 Escape 关闭；译文模式搜索当前译文。
+
+6. [x] **阅读字体与本地字体导入**
+   - 内置默认 / 无衬线 / 衬线 / 等宽四档 Reader 字体。
+   - 支持 TTF / OTF / WOFF / WOFF2 本地字体导入、持久化、选择与删除；仅应用 Reader 正文、译文与摘要，不改变 App UI 字体。
+   - 自定义字体文件属于设备本地资源，不写入跨设备配置备份。
+
+7. [x] **文章朗读**
+   - 朗读分为 **正文 / 翻译 / AI 摘要** 三部分。
+   - Reader 主朗读默认读取正文；翻译启用且当前展示译文时，主朗读自动切换为**仅朗读译文**。
+   - AI 摘要窗口内置独立朗读按钮，不把摘要混入主朗读入口。
+   - 已接 Chromium Web Speech / 系统可用语音列表，支持开始、暂停、继续、停止、语音选择和文章/模式切换时停止旧朗读。
+   - Windows 可使用 Chromium 暴露的 Microsoft / 系统语音；代码没有按界面语言过滤语音。Edge Read Aloud 自己显示的完整 `Online (Natural)` 目录并不等同于 Electron `speechSynthesis.getVoices()` 的枚举结果；当前未接入 Edge Online Natural 完整目录。`ttsVoiceURI` 为设备本地设置，不进入跨设备备份。
+
+8. [x] **AI 摘要阅读布局**
+   - 默认继续支持“替换正文”，同时增加左侧栏 / 右侧栏 / 阅读区上方 / 阅读区下方四种停靠模式。
+   - 停靠摘要与正文各自保持独立滚动；面板尺寸 220～640 px 可实时调整并持久化。
+   - 摘要面板内置位置切换、独立朗读、停止、重新生成和关闭入口。
+
+## 9. 2026-08-15 第二轮实机 UX 回归
+
+- [x] AI / 翻译 Provider 的 API Key 保存、模型加载和连接测试结果改为显示在对应 Provider 卡片内部；Website Rule 测试结果也回到网站规则卡片，避免统一堆在设置页末尾。
+- [x] AI 摘要重新建立独立视觉层级：更明显的面板边界、独立 Header / Body / Footer、AI 标识和模式徽标，降低与正文串读的可能。
+- [x] 新 AI Prompt 不再生成重复的 `## 摘要` 标题；Renderer 同时清理旧缓存摘要的开头“摘要”标题。
+- [x] 摘要面板移除 `zh-CN · STANDARD` 技术元信息；BRIEF / STANDARD / DETAILED 改为用户可读的“速览 / 均衡 / 深入”，Reader 临时选项与全局默认设置均使用三段式选择。
+- [x] Reader 翻译目标按“传统翻译 / AI 翻译”分组显示，不再把传统服务和 AI Provider / Model 混成一列。
+- [x] 来源页按订阅分组分区显示并展示每组来源数；分组不再只是数据库属性。
+- [x] 点击来源卡片进入该来源文章筛选，列表顶部显示当前来源并可退出筛选；点击全局全部 / 未读 / 收藏 / 来源 Tab 会清除来源筛选，避免筛选语义冲突。
+- [x] Electron E2E 实际创建来源分组、迁移 Feed、验证分组展示，并确认点击来源后文章列表仅保留该 Feed 的文章。
+
+9. [ ] **GitHub Actions 自动构建**
+    - 当前仓库没有可用的 Windows + macOS CI 打包工作流。
+    - 需要至少生成 NSIS 与 DMG artifact，并保留后续签名接入点。
+
+10. [ ] **正式签名链**
+    - Windows code signing 尚未接入。
+    - macOS signing / notarization 尚未接入；证书条件未具备时允许保持发布阻断状态而不伪造完成。
+
+### B. 已实现或已配置，但尚未完成平台验证
+
+1. [ ] **macOS DMG 实际构建验证**
+   - `electron-builder.yml` 已配置 `dmg` target，但当前开发基线没有可追溯的 macOS 实际构建结果。
+
+2. [ ] **macOS 启动 / Renderer / WebContentsView / safeStorage 实机验证**
+   - Windows 自动化通过不能替代 macOS 平台验证。
+
+3. [ ] **OPML 原生文件选择器人工验收**
+   - Core、IPC bridge 和菜单 UI 已有自动测试；仍需实际选择 `.opml/.xml` 文件导入，以及保存 `.opml` 后用其他阅读器/Android OrigRead 打开验证。
+
+4. [ ] **当前最新源码重新生成 Windows NSIS 并安装验证**
+   - `release/` 中已有安装包，但在本轮新增 OPML 和此前未提交修复后，必须重新 `package:win` 才能称为当前最新安装包。
+
+5. [ ] **系统语言跟随的最终人工检查**
+   - `system / zh / en` 逻辑已实现并有单测；最终发布前需在中文和非中文系统环境各启动一次确认标题、品牌和新增页面文案。
+
+### C. 已实现，但尚缺完整测试 / 验收覆盖
+
+1. [ ] **所有新增收尾功能的中英文覆盖审计**
+   - 语言基础设施已完成，但每个后续新增功能仍必须同时补中文 / English 与对应可见性测试。
+
+2. [ ] **发布级全回归矩阵**
+   - Windows：typecheck + unit + Electron E2E + NSIS 安装/卸载/重启持久化。
+   - macOS：同等主链至少覆盖启动、来源、Reader、WebContentsView、safeStorage、DMG 安装。
+   - Android 基线：Desktop 默认不修改 Android；如后续确实修改 Android/shared，则重新执行相应 Android 回归才允许收口。
+
+### D. 工程收口 / 发布卫生
+
+1. [ ] **整理当前 Desktop 未提交工作区**
+   - 当前功能开发存在大量已修改/新增但尚未提交的文件；在继续叠加大规模 Reader/发布功能前需要形成清晰基线。
+   - 是否 commit / push 由用户决定，助手不得擅自提交或推送。
+
+2. [ ] **确认最终版本号、构建产物命名与 Release 规则**
+   - 当前 `package.json` 仍为 `0.1.0` 开发版本；正式 Desktop 1.0 发布前单独确认，不在普通功能开发中擅自改版本号。
+
+## 10. 后续按大项开发顺序
+
+### 大项 A：产品功能闭环
+
+- [x] A1 OPML 导入导出。
+- [x] A2 Android ↔ Desktop UI / 产品语义一致性审计并修复明确缺口。
+  - 已补 Reader 已读/未读、收藏、下一篇、AI 摘要按次 Provider/模型/长度、翻译目标选择、全文 ↔ Feed 内容双向切换。
+  - 已补单来源设置：重命名、URL、分组/新建分组、全文/浏览器互斥、来源级过滤、Website 候选、动态渲染、清空文章、删除来源、重载图标。
+  - `isBrowser` 已对齐 Android：点击文章直接标记已读并外部打开，不进入 Reader。
+  - `isNotification` 已接真实 Electron Notification，手动和周期同步统一从 `SourceSyncService` 触发，仅通知本轮新增文章。
+  - 软件更新归入 B、背景色/深色归入 D；不为完成 A2 提前混做后续大项。
+- [x] A3 RSS `BestIconFinder` 行为补齐。
+  - 对齐 Android：apple-touch-icon > SVG > PNG > ICO > GIF > JPG，同格式按字节大小；页面失败时回退标准根目录图标。
+  - RSS 发现不再以 Feed 自带 image 作为最终图标；来源列表显示持久化图标并在加载失败时回退 RSS 图标。
+  - A2/A3 验收：`npm run typecheck` / `npm test`（50 files / 155 tests）/ `npm run build` / Electron E2E（6/6）通过。
+
+### 大项 C：阅读效率增强
+
+- [x] C1 Ctrl + F / Cmd + F 文章内搜索：当前 Reader 内容限定、全部高亮、上一项/下一项和快捷键处理完成。
+- [x] C2 Reader 字体切换与本地字体导入：内置字体 + TTF / OTF / WOFF / WOFF2 导入、持久化、删除和 Reader-only 应用完成。
+- [x] C3 文章朗读：正文 / 翻译 / AI 摘要三域完成；主入口默认正文、译文正在显示时仅朗读译文；摘要窗口独立朗读按钮；暂停 / 继续 / 停止 / 系统语音选择完成。
+- [x] C4 AI 摘要布局：替换正文 / 左 / 右 / 上 / 下和 220～640 px 面板尺寸调整完成，正文与摘要独立滚动。
+  - Header 改为按摘要面板自身宽度响应：宽面板保持单行紧凑布局，窄侧栏才自动拆成两行；上下停靠不再被强制撑高。
+  - 常驻“面板尺寸”Footer 已移除，尺寸调节改为 Header 内按钮 + 紧凑浮层滑块；上下停靠不再出现突兀的整条控制栏。
+  - AI 摘要视觉统一为轻科技蓝：蓝白面板层级、浅蓝渐变 AI 图标、轻阴影和蓝色模式徽标；Android 阅读底栏与 Android AI 摘要面板同步使用同一组科技蓝渐变图标语义。
+- 当前回归基线：`npm run typecheck` / `npm test`（53 files / 164 tests）/ `npm run build` / Electron E2E（6/6）通过；Android `:app:compileGithubDebugKotlin` 通过。
+
+### 大项 D：外观系统
+
+- [ ] D1 阅读背景色。
+- [ ] D2 全局浅色/深色/跟随系统主题。
+- [ ] D3 全页面和 WebContentsView 外层视觉回归。
+
+### 大项 B：发布页与自动更新
+
+- [ ] B1 Desktop Git Release 信息与当前平台安装包选择。
+- [ ] B2 手动“检查更新”完整闭环。
+- [ ] B3 启动自动检查开关、版本比较、下载/跳转、错误降级。
+- [ ] B4 对相关网络与版本选择逻辑增加单测/E2E mock。
+
+### 大项 E：跨平台构建与正式发布
+
+- [ ] E1 GitHub Actions Windows / macOS 自动构建。
+- [ ] E2 当前源码 Windows NSIS 重新打包并安装验证。
+- [ ] E3 macOS DMG 构建与实机主链验证。
+- [ ] E4 Windows 签名、macOS signing/notarization（证书具备后）。
+- [ ] E5 最终中英文、安装/卸载、升级、备份恢复、来源/Reader/AI/翻译全回归。
 
 ## 6. 每轮开发验收
 

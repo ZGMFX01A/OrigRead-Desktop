@@ -21,7 +21,8 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
       await expect(page.locator('.workspace-pane')).toBeVisible()
     }
 
-    await page.locator('.primary-action').click()
+    await page.locator('.subscription-menu-anchor .primary-action').click()
+    await page.getByRole('menuitem', { name: '添加来源' }).click()
     await expect(page.locator('.source-dialog')).toBeVisible()
     await page.locator('.dialog-field input').fill(feedUrl)
     await page.locator('.dialog-submit').click()
@@ -68,7 +69,8 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await expect(page.locator('.full-content-button')).toBeEnabled()
     await page.locator('.full-content-button').click()
     await expect(page.locator('.article-body')).toContainText('OrigRead extracted full text article 1', { timeout: 15_000 })
-    await expect(page.locator('.full-content-button')).toBeDisabled()
+    await expect(page.locator('.full-content-button')).toBeEnabled()
+    await expect(page.locator('.full-content-button')).toHaveClass(/active/)
     const readerContent = page.locator('.reader-content')
     const readerMetrics = await readerContent.evaluate((element) => ({
       scrollHeight: element.scrollHeight,
@@ -85,6 +87,20 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
       return image.complete ? image.naturalWidth : 0
     })).toBeGreaterThan(0)
 
+    await page.keyboard.press('Control+f')
+    await expect(page.locator('.reader-search-bar')).toBeVisible()
+    await page.locator('.reader-search-bar input').fill('OrigRead')
+    await expect.poll(() => page.locator('mark.reader-search-match').count()).toBeGreaterThan(0)
+    await expect(page.locator('mark.reader-search-match.current')).toHaveCount(1)
+    await page.locator('.reader-search-bar input').press('Enter')
+    await expect(page.locator('mark.reader-search-match.current')).toHaveCount(1)
+    await page.locator('.reader-search-bar input').press('Escape')
+    await expect(page.locator('.reader-search-bar')).toBeHidden()
+
+    await page.locator('.full-content-button').click()
+    await expect(page.locator('.article-body')).toContainText('Article 1 summary')
+    await expect(page.locator('.full-content-button')).not.toHaveClass(/active/)
+
     const articleRequestsBeforeOriginal = fixture.articleRequests()
     await page.locator('.original-button').click()
     await expect.poll(() => fixture.articleRequests()).toBeGreaterThan(articleRequestsBeforeOriginal)
@@ -92,7 +108,24 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await expect(page.locator('.reader-mode-button')).toBeVisible()
     await page.locator('.reader-mode-button').click()
     await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(false)
-    await expect(page.locator('.article-body')).toContainText('OrigRead extracted full text article 1')
+    await expect(page.locator('.article-body')).toContainText('Article 1 summary')
+    await expect(page.locator('.full-content-button')).not.toHaveClass(/active/)
+
+    await page.evaluate(async (feedId) => {
+      const groups = await window.origread.addGroup('E2E 分组')
+      const group = groups.find((item) => item.name === 'E2E 分组')
+      if (!group) throw new Error('E2E group was not created')
+      await window.origread.updateFeedSettings(feedId, { groupId: group.id })
+    }, currentFixture!.feedId)
+    await page.reload()
+    await expect(page.locator('.app-shell')).toBeVisible()
+    await page.locator('.destination-tabs button').last().click()
+    await expect(page.locator('.source-group-header').filter({ hasText: 'E2E 分组' })).toBeVisible()
+    const sourceItem = page.locator('.source-item').filter({ hasText: feedUrl })
+    await sourceItem.click()
+    await expect(page.locator('.active-source-filter')).toContainText('OrigRead E2E Feed')
+    await expect(page.locator('.article-list')).toBeVisible()
+    await expect.poll(async () => page.locator('.article-item').evaluateAll((items, feedId) => items.length > 0 && items.every((item) => item.getAttribute('data-feed-id') === feedId), currentFixture!.feedId)).toBe(true)
 
     await page.locator('.destination-tabs button').last().click()
     const sourceRefresh = page

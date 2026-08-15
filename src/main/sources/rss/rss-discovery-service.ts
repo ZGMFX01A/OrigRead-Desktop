@@ -1,6 +1,7 @@
 import * as cheerio from 'cheerio'
 import Parser from 'rss-parser'
 import type { DiscoveredRssFeed, RssFeedItem } from '../../../shared/rss'
+import { BestIconFinder, extractIconDomain, type RssIconFinder } from './best-icon-finder'
 
 interface CustomRssItem {
   contentEncoded?: string
@@ -31,7 +32,10 @@ const COMMON_FEED_PATHS = [
 ] as const
 
 export class RssDiscoveryService {
-  constructor(private readonly fetcher: RssFetcher = fetchRssPayload) {}
+  constructor(
+    private readonly fetcher: RssFetcher = fetchRssPayload,
+    private readonly iconFinder: RssIconFinder = new BestIconFinder()
+  ) {}
 
   /**
    * 与 Android RssHelper.discoverFeed 保持同一顺序：
@@ -84,13 +88,15 @@ export class RssDiscoveryService {
       throw new Error(`Feed 内容为空或格式无效：${feedUrl}`)
     }
 
+    const iconUrl = await this.iconFinder.findBestIcon(extractIconDomain(sourcePageUrl)).catch(() => null)
     return {
       feedUrl,
       sourcePageUrl,
       discoveredFromPage,
       title: title || safeHostName(sourcePageUrl),
       siteUrl: parsed.link?.trim() || null,
-      iconUrl: parsed.image?.url?.trim() || null,
+      // Android 在 RssHelper.parseFeedUrl 中始终使用 BestIconFinder 覆盖 Feed 自带 image。
+      iconUrl,
       items: parsed.items.map((item, index) => toRssFeedItem(item, index))
     }
   }

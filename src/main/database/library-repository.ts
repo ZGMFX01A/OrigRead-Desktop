@@ -179,6 +179,16 @@ export class LibraryRepository {
     `).run(group.id, group.name, group.sortOrder, toSqlBoolean(group.isDefault))
   }
 
+  deleteArticlesByFeed(feedId: string, includeStarred = false): void {
+    this.database
+      .prepare(`DELETE FROM articles WHERE feed_id = ?${includeStarred ? '' : ' AND is_starred = 0'}`)
+      .run(feedId)
+  }
+
+  deleteFeed(feedId: string): void {
+    this.database.prepare('DELETE FROM feeds WHERE id = ?').run(feedId)
+  }
+
   listFeeds(): FeedRecord[] {
     return (this.database.prepare(`
       SELECT id, group_id, name, url, source_page_url, source_type, icon,

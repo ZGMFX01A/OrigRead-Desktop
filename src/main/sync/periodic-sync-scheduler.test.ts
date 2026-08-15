@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { DesktopSettings } from '../../shared/settings'
+import { DEFAULT_DESKTOP_SETTINGS, type DesktopSettings } from '../../shared/settings'
 import type { SourceSyncBatchResult } from '../../shared/source-sync'
 import { PeriodicSyncScheduler } from './periodic-sync-scheduler'
 
@@ -78,14 +78,7 @@ describe('PeriodicSyncScheduler', () => {
 
 function createSettings(overrides: Partial<DesktopSettings> = {}): DesktopSettings {
   return {
-    language: 'system',
-    workspaceCollapsed: false,
-    workspaceWidth: 420,
-    readerFontSize: 17,
-    readerLineHeight: 1.85,
-    readerContentWidth: 760,
-    syncIntervalMinutes: 30,
-    syncOnStart: false,
+    ...DEFAULT_DESKTOP_SETTINGS,
     ...overrides
   }
 }

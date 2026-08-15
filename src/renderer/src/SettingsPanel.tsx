@@ -11,6 +11,7 @@ import type { WebsiteRule } from '../../shared/website'
 import type { JsonRule } from '../../shared/json-source'
 import type { RssHubSettings } from '../../shared/rsshub'
 import type { AiGeneratedRuleKind, AiGeneratedRulePreview } from '../../shared/ai-rule'
+import { BUILTIN_READER_FONTS, type ReaderFontEntry } from '../../shared/reader-font'
 
 type SettingsPage = 'general' | 'translation' | 'ai' | 'filters' | 'jsonRules' | 'websiteRules' | 'rsshub' | 'backup'
 const INTERNAL_ITHOME_RULE_ID = 'ithome-home'
@@ -55,12 +56,18 @@ export function SettingsPanel({ settings, appInfo, syncState, onChange, onConfig
 
 function GeneralSettings({settings,syncState,onChange}:{settings:DesktopSettings;syncState:SyncRuntimeState|null;onChange:(patch:DesktopSettingsPatch)=>void}):React.JSX.Element{
   const {t,i18n}=useTranslation();const locale=i18n.resolvedLanguage?.startsWith('zh')?'zh-CN':'en-US'
+  const [customFonts,setCustomFonts]=useState<ReaderFontEntry[]>([])
+  const [fontStatus,setFontStatus]=useState('')
+  useEffect(()=>{let cancelled=false;void window.origread.listReaderFonts().then((fonts)=>{if(!cancelled)setCustomFonts(fonts)}).catch((error)=>{if(!cancelled)setFontStatus(errorText(error))});return()=>{cancelled=true}},[])
+  const importFont=async()=>{setFontStatus('');const result=await window.origread.importReaderFont();if(result.cancelled)return;if(!result.ok||!result.font){setFontStatus(result.error??t('readerFontImportFailed'));return}const fonts=await window.origread.listReaderFonts();setCustomFonts(fonts);onChange({readerFontId:result.font.id});setFontStatus(t('readerFontImported',{name:result.font.name}))}
+  const deleteSelectedFont=async()=>{if(!settings.readerFontId.startsWith('custom:'))return;try{setCustomFonts(await window.origread.deleteReaderFont(settings.readerFontId));onChange({readerFontId:'system'});setFontStatus(t('readerFontDeleted'))}catch(error){setFontStatus(errorText(error))}}
   return <>
     <PageIntro icon={<Settings2 size={22}/>} title={t('settingsGeneral')} description={t('settingsDescription')}/>
     <SettingsSection icon={<Globe2 size={17}/>} title={t('settingsGeneral')}>
       <SettingRow title={t('language')} description={t('languageDescription')}><select className="language-select" value={settings.language} onChange={(e)=>onChange({language:e.target.value as DesktopSettings['language']})}><option value="system">{t('languageSystem')}</option><option value="zh">简体中文</option><option value="en">English</option></select></SettingRow>
     </SettingsSection>
     <SettingsSection icon={<BookOpenText size={17}/>} title={t('settingsReading')}>
+      <SettingRow title={t('readerFont')} description={t('readerFontDescription')}><div className="reader-font-setting"><select className="reader-font-select" value={settings.readerFontId} onChange={(e)=>onChange({readerFontId:e.target.value})}>{BUILTIN_READER_FONTS.map((font)=><option key={font.id} value={font.id}>{t(font.nameKey)}</option>)}{customFonts.map((font)=><option key={font.id} value={font.id}>{font.name}</option>)}</select><button type="button" className="mini-action" onClick={()=>void importFont()}><Upload size={13}/>{t('importFont')}</button>{settings.readerFontId.startsWith('custom:')&&<button type="button" className="mini-action danger" onClick={()=>void deleteSelectedFont()}><Trash2 size={13}/>{t('delete')}</button>}</div>{fontStatus&&<div className="setting-inline-status">{fontStatus}</div>}</SettingRow>
       <SettingRow title={t('readerFontSize')} description={t('readerFontSizeDescription')}><select className="reader-font-size-select" value={settings.readerFontSize} onChange={(e)=>onChange({readerFontSize:Number(e.target.value)})}><option value={15}>{t('readerFontSmall')}</option><option value={17}>{t('readerFontStandard')}</option><option value={19}>{t('readerFontLarge')}</option><option value={21}>{t('readerFontExtraLarge')}</option></select></SettingRow>
       <SettingRow title={t('readerLineHeight')} description={t('readerLineHeightDescription')}><select className="reader-line-height-select" value={settings.readerLineHeight} onChange={(e)=>onChange({readerLineHeight:Number(e.target.value)})}><option value={1.65}>{t('readerCompact')}</option><option value={1.85}>{t('readerStandard')}</option><option value={2.05}>{t('readerRelaxed')}</option></select></SettingRow>
       <SettingRow title={t('readerContentWidth')} description={t('readerContentWidthDescription')}><select className="reader-content-width-select" value={settings.readerContentWidth} onChange={(e)=>onChange({readerContentWidth:Number(e.target.value)})}><option value={680}>{t('readerWidthNarrow')}</option><option value={760}>{t('readerWidthStandard')}</option><option value={900}>{t('readerWidthWide')}</option></select></SettingRow>
@@ -80,6 +87,7 @@ function AiSettingsPage():React.JSX.Element{
   const [savedKeys,setSavedKeys]=useState<Record<string,string>>({})
   const [visibleKeys,setVisibleKeys]=useState<Record<string,boolean>>({})
   const [status,setStatus]=useState('')
+  const [providerStatus,setProviderStatus]=useState<Record<string,string>>({})
 
   useEffect(()=>{
     let cancelled=false
@@ -103,8 +111,8 @@ function AiSettingsPage():React.JSX.Element{
       setSettings(await window.origread.updateAiProvider({id:provider.id,apiKey:draft}))
       const saved=await window.origread.getAiApiKey(provider.id)
       setKeys((value)=>({...value,[provider.id]:saved}));setSavedKeys((value)=>({...value,[provider.id]:saved}))
-      setStatus(saved?t('credentialSaved',{count:saved.length}):t('credentialRemoved'))
-    }catch(error){setStatus(`${t('credentialSaveFailed')}: ${errorText(error)}`)}
+      setProviderStatus((value)=>({...value,[provider.id]:saved?t('credentialSaved',{count:saved.length}):t('credentialRemoved')}))
+    }catch(error){setProviderStatus((value)=>({...value,[provider.id]:`${t('credentialSaveFailed')}: ${errorText(error)}`}))}
   }
   if(!settings)return <LoadingSettings/>
   return <><PageIntro icon={<Bot size={22}/>} title={t('aiSettingsTitle')} description={t('aiSettingsDescription')}/>
@@ -112,7 +120,9 @@ function AiSettingsPage():React.JSX.Element{
       <SettingRow title={t('aiEnabled')} description={t('aiEnabledDescription')}><Toggle checked={settings.enabled} onChange={(v)=>void updateGlobal({enabled:v})}/></SettingRow>
       <SettingRow title={t('aiDefaultProvider')} description={t('aiDefaultProviderDescription')}><select value={settings.defaultProviderId} onChange={(e)=>void updateGlobal({defaultProviderId:e.target.value})}>{settings.providers.map((p)=><option key={p.id} value={p.id}>{p.name}</option>)}</select></SettingRow>
       <SettingRow title={t('aiOutputLanguage')} description={t('aiOutputLanguageDescription')}><input value={settings.outputLanguage} onChange={(e)=>void updateGlobal({outputLanguage:e.target.value})}/></SettingRow>
-      <SettingRow title={t('aiSummaryLength')} description={t(summaryLengthDescriptionKey(settings.summaryLength))}><select value={settings.summaryLength} onChange={(e)=>void updateGlobal({summaryLength:e.target.value as AiSettings['summaryLength']})}><option value="BRIEF">{t('summaryBrief')}</option><option value="STANDARD">{t('summaryStandard')}</option><option value="DETAILED">{t('summaryDetailed')}</option></select></SettingRow>
+      <SettingRow title={t('aiSummaryLength')} description={t(summaryLengthDescriptionKey(settings.summaryLength))}><div className="summary-mode-selector compact">{([
+        ['BRIEF','summaryModeQuick'],['STANDARD','summaryModeBalanced'],['DETAILED','summaryModeDeep']
+      ] as const).map(([value,labelKey])=><button type="button" key={value} className={`summary-mode-option ${settings.summaryLength===value?'selected':''}`} onClick={()=>void updateGlobal({summaryLength:value})}><strong>{t(labelKey)}</strong></button>)}</div></SettingRow>
     </SettingsSection>
     <div className="settings-section-title standalone-settings-section-title"><Bot size={17}/><span>{t('aiProviders')}</span><button className="mini-action" onClick={async()=>{const next=await window.origread.addAiProvider();const added=next.providers.find((item)=>!settings.providers.some((old)=>old.id===item.id));setSettings(next);if(added){setKeys((value)=>({...value,[added.id]:''}));setSavedKeys((value)=>({...value,[added.id]:''}))}}}><Plus size={14}/>{t('add')}</button></div>
     <p className="settings-section-description">{t('aiProvidersDescription')}</p>
@@ -120,7 +130,8 @@ function AiSettingsPage():React.JSX.Element{
       <div className="provider-card-head"><input className="provider-name" value={provider.name} onChange={(e)=>setSettings({...settings,providers:settings.providers.map((p)=>p.id===provider.id?{...p,name:e.target.value}:p)})} onBlur={()=>void updateProvider(provider,{name:settings.providers.find((p)=>p.id===provider.id)!.name})}/><Toggle checked={provider.enabled} onChange={(v)=>void updateProvider(provider,{enabled:v})}/>{settings.providers.length>1&&<button className="icon-button danger" onClick={async()=>{const next=await window.origread.removeAiProvider(provider.id);setSettings(next);setKeys((value)=>withoutKey(value,provider.id));setSavedKeys((value)=>withoutKey(value,provider.id))}}><Trash2 size={15}/></button>}</div>
       <Field label="Endpoint"><input value={provider.endpoint} onChange={(e)=>setSettings({...settings,providers:settings.providers.map((p)=>p.id===provider.id?{...p,endpoint:e.target.value}:p)})} onBlur={()=>void updateProvider(provider,{endpoint:settings.providers.find((p)=>p.id===provider.id)!.endpoint})}/></Field>
       <Field label="API Key"><SecretKeyEditor value={keys[provider.id]??''} savedValue={savedKeys[provider.id]??''} visible={visibleKeys[provider.id]===true} onChange={(value)=>setKeys((current)=>({...current,[provider.id]:value}))} onToggle={()=>setVisibleKeys((current)=>({...current,[provider.id]:!current[provider.id]}))} onSave={()=>void saveKey(provider)}/></Field>
-      <Field label={t('aiModel')}><div className="inline-controls"><select value={provider.defaultModel} onChange={(e)=>void updateProvider(provider,{defaultModel:e.target.value})}><option value="">{t('selectModel')}</option>{provider.models.map((m)=><option key={m} value={m}>{m}</option>)}</select><button className="mini-action" onClick={async()=>{try{const models=await window.origread.refreshAiModels(provider.id,keys[provider.id]);setSettings(await window.origread.getAiSettings());setStatus(t('modelsLoaded',{count:models.length}))}catch(e){setStatus(errorText(e))}}}><RefreshCw size={13}/>{t('loadModels')}</button><button className="mini-action" disabled={dirty} title={dirty?t('saveCredentialFirst'):undefined} onClick={async()=>{const r=await window.origread.testAiProvider(provider.id);setStatus(r.ok?t('connectionOk'):r.error??'Error')}}>{t('testConnection')}</button></div></Field>
+      <Field label={t('aiModel')}><div className="inline-controls"><select value={provider.defaultModel} onChange={(e)=>void updateProvider(provider,{defaultModel:e.target.value})}><option value="">{t('selectModel')}</option>{provider.models.map((m)=><option key={m} value={m}>{m}</option>)}</select><button className="mini-action" onClick={async()=>{try{const models=await window.origread.refreshAiModels(provider.id,keys[provider.id]);setSettings(await window.origread.getAiSettings());setProviderStatus((value)=>({...value,[provider.id]:t('modelsLoaded',{count:models.length})}))}catch(e){setProviderStatus((value)=>({...value,[provider.id]:errorText(e)}))}}}><RefreshCw size={13}/>{t('loadModels')}</button><button className="mini-action" disabled={dirty} title={dirty?t('saveCredentialFirst'):undefined} onClick={async()=>{const r=await window.origread.testAiProvider(provider.id);setProviderStatus((value)=>({...value,[provider.id]:r.ok?t('connectionOk'):r.error??'Error'}))}}>{t('testConnection')}</button></div></Field>
+      {providerStatus[provider.id]&&<StatusText text={providerStatus[provider.id]!}/>}
     </section>})}
     {status&&<StatusText text={status}/>} </>
 }
@@ -133,6 +144,7 @@ function TranslationSettingsPage():React.JSX.Element{
   const [savedKeys,setSavedKeys]=useState<Record<string,string>>({})
   const [visibleKeys,setVisibleKeys]=useState<Record<string,boolean>>({})
   const [status,setStatus]=useState('')
+  const [providerStatus,setProviderStatus]=useState<Record<string,string>>({})
 
   useEffect(()=>{
     let cancelled=false
@@ -159,8 +171,8 @@ function TranslationSettingsPage():React.JSX.Element{
       setSettings(await window.origread.updateTranslationProvider({type:provider.type,apiKey:draft}))
       const saved=await window.origread.getTranslationApiKey(provider.type)
       setKeys((value)=>({...value,[provider.type]:saved}));setSavedKeys((value)=>({...value,[provider.type]:saved}))
-      setStatus(saved?t('credentialSaved',{count:saved.length}):t('credentialRemoved'))
-    }catch(error){setStatus(`${t('credentialSaveFailed')}: ${errorText(error)}`)}
+      setProviderStatus((value)=>({...value,[provider.type]:saved?t('credentialSaved',{count:saved.length}):t('credentialRemoved')}))
+    }catch(error){setProviderStatus((value)=>({...value,[provider.type]:`${t('credentialSaveFailed')}: ${errorText(error)}`}))}
   }
   return <><PageIntro icon={<Languages size={22}/>} title={t('translationSettingsTitle')} description={t('translationSettingsDescription')}/>
     <SettingsSection icon={<Languages size={17}/>} title={t('translationGlobal')}>
@@ -173,7 +185,8 @@ function TranslationSettingsPage():React.JSX.Element{
       <Field label="Endpoint"><input disabled={!provider.enabled} value={provider.endpoint} onChange={(e)=>setSettings({...settings,providers:settings.providers.map((p)=>p.type===provider.type?{...p,endpoint:e.target.value}:p)})} onBlur={()=>void updateProvider(provider,{endpoint:settings.providers.find((p)=>p.type===provider.type)!.endpoint})}/></Field>
       {provider.type==='MICROSOFT'&&<Field label="Region"><input disabled={!provider.enabled} value={provider.region} onChange={(e)=>setSettings({...settings,providers:settings.providers.map((p)=>p.type===provider.type?{...p,region:e.target.value}:p)})} onBlur={()=>void updateProvider(provider,{region:settings.providers.find((p)=>p.type===provider.type)!.region})}/></Field>}
       <Field label="API Key"><SecretKeyEditor disabled={!provider.enabled} value={keys[provider.type]??''} savedValue={savedKeys[provider.type]??''} visible={visibleKeys[provider.type]===true} optional={provider.type==='DLX'} onChange={(value)=>setKeys((current)=>({...current,[provider.type]:value}))} onToggle={()=>setVisibleKeys((current)=>({...current,[provider.type]:!current[provider.type]}))} onSave={()=>void saveKey(provider)}/></Field>
-      <button className="mini-action" disabled={!provider.enabled||dirty} title={dirty?t('saveCredentialFirst'):undefined} onClick={async()=>{const r=await window.origread.testTranslationProvider(provider.type);setStatus(r.ok?`${t('connectionOk')}: ${r.value}`:r.error??'Error')}}>{t('testConnection')}</button>
+      <button className="mini-action" disabled={!provider.enabled||dirty} title={dirty?t('saveCredentialFirst'):undefined} onClick={async()=>{const r=await window.origread.testTranslationProvider(provider.type);setProviderStatus((value)=>({...value,[provider.type]:r.ok?`${t('connectionOk')}: ${r.value}`:r.error??'Error'}))}}>{t('testConnection')}</button>
+      {providerStatus[provider.type]&&<StatusText text={providerStatus[provider.type]!}/>}
     </></section>})}{status&&<StatusText text={status}/>}</>
 }
 
@@ -213,7 +226,8 @@ function WebsiteRulesSettingsPage():React.JSX.Element{
     <SettingsSection icon={<Globe2 size={17}/>} title={t('websiteRules')}>
       <RuleHeaderActions kind="website" onDone={setStatus} onSaved={()=>void reload()}/>
       <RuleRepositoryList rules={rules} describe={(rule)=>`${rule.hosts.join(', ')} · v${rule.version}`} onToggle={async(id,v)=>{await window.origread.setWebsiteRuleEnabled(id,v);await reload()}} onDelete={async(id)=>{await window.origread.deleteWebsiteRule(id);await reload()}}/>
-    </SettingsSection>{status&&<StatusText text={status}/>}</>
+      {status&&<StatusText text={status}/>}
+    </SettingsSection></>
 }
 
 function RuleHeaderActions({kind,onDone,onSaved}:{kind:'json'|'website';onDone:(value:string)=>void;onSaved:()=>void}):React.JSX.Element{

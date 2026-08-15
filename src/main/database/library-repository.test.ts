@@ -78,6 +78,24 @@ describe('LibraryRepository', () => {
     expect(secondRepository.listArticles()[0]?.id).toBe(article.id)
     secondDatabase.close()
   })
+
+  it('clears only non-starred source articles, while deleting the source removes everything', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const feed = createFeed()
+    repository.upsertFeed(feed)
+    repository.upsertArticle(createArticle(feed.id))
+    repository.upsertArticle({ ...createArticle(feed.id), id: 'article-starred', isStarred: true })
+
+    repository.deleteArticlesByFeed(feed.id, false)
+    expect(repository.listArticlesByFeed(feed.id).map((article) => article.id)).toEqual(['article-starred'])
+
+    repository.deleteArticlesByFeed(feed.id, true)
+    repository.deleteFeed(feed.id)
+    expect(repository.getFeedById(feed.id)).toBeNull()
+    expect(repository.listArticlesByFeed(feed.id)).toEqual([])
+    database.close()
+  })
 })
 
 function createFeed(): FeedRecord {

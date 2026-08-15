@@ -12,10 +12,8 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
 
     await expect(page.locator('.app-shell')).toBeVisible()
 
-    if (await page.locator('.app-shell').evaluate((element) => element.classList.contains('workspace-collapsed'))) {
-      await page.locator('.collapse-handle').click()
-      await expect(page.locator('.workspace-pane')).toBeVisible()
-    }
+    await expect(page.locator('.app-shell')).not.toHaveClass(/workspace-collapsed/)
+    await expect(page.locator('.workspace-pane')).toBeVisible()
 
     await expect(page.locator('.brand-name')).toBeVisible()
     await expect(page.locator('.destination-tabs')).toBeVisible()
@@ -32,18 +30,43 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
 
     await page.locator('.collapse-handle').click()
     await expect(page.locator('.app-shell')).toHaveClass(/workspace-collapsed/)
+    await expect(page.locator('.collapse-handle')).toBeVisible()
+    const collapsedHandleBox = await page.locator('.collapse-handle').boundingBox()
+    expect(collapsedHandleBox).not.toBeNull()
+    expect(collapsedHandleBox!.x).toBeGreaterThanOrEqual(0)
+    expect(collapsedHandleBox!.width).toBeGreaterThanOrEqual(28)
 
     const collapsedReaderBox = await page.locator('.reader-pane').boundingBox()
     const viewportWidth = await page.evaluate(() => window.innerWidth)
     expect(collapsedReaderBox).not.toBeNull()
     expect(collapsedReaderBox!.width).toBeGreaterThan(viewportWidth * 0.9)
 
+    // 折叠只影响当前会话，不应持久化为下次启动时隐藏文章列表。
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).workspaceCollapsed)).toBe(false)
+
     await page.locator('.collapse-handle').click()
     await expect(page.locator('.workspace-pane')).toBeVisible()
+
+    await page.evaluate(async () => {
+      await window.origread.updateSettings({ workspaceCollapsed: true })
+      window.location.reload()
+    })
+    await expect(page.locator('.workspace-pane')).toBeVisible()
+    await expect(page.locator('.app-shell')).not.toHaveClass(/workspace-collapsed/)
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).workspaceCollapsed)).toBe(false)
 
     const bridgeReady = await page.evaluate(() => {
       return (
         typeof window.origread?.getAppInfo === 'function' &&
+        typeof window.origread?.listGroups === 'function' &&
+        typeof window.origread?.addGroup === 'function' &&
+        typeof window.origread?.updateFeedSettings === 'function' &&
+        typeof window.origread?.clearFeedArticles === 'function' &&
+        typeof window.origread?.deleteFeed === 'function' &&
+        typeof window.origread?.reloadFeedIcon === 'function' &&
+        typeof window.origread?.listReaderFonts === 'function' &&
+        typeof window.origread?.importReaderFont === 'function' &&
+        typeof window.origread?.deleteReaderFont === 'function' &&
         typeof window.origread?.getRssHubSettings === 'function' &&
         typeof window.origread?.restoreDefaultRssHubSettings === 'function' &&
         typeof window.origread?.getSourceCatalog === 'function' &&
@@ -73,6 +96,9 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
         typeof window.origread?.getTranslationApiKey === 'function' &&
         typeof window.origread?.translateArticle === 'function' &&
         typeof window.origread?.getArticleFilters === 'function' &&
+        typeof window.origread?.evaluateWebsiteSourceRules === 'function' &&
+        typeof window.origread?.importOpml === 'function' &&
+        typeof window.origread?.exportOpml === 'function' &&
         typeof window.origread?.exportConfigurationBackup === 'function' &&
         typeof window.origread?.restoreConfigurationBackup === 'function' &&
         typeof window.origread?.openOriginalArticle === 'function' &&
@@ -82,6 +108,15 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     })
     expect(bridgeReady).toBe(true)
     expect(pageErrors).toEqual([])
+
+    await page.locator('.subscription-menu-anchor .primary-action').click()
+    await expect(page.locator('.subscription-menu')).toBeVisible()
+    await expect(page.getByText('导入 OPML', { exact: true })).toBeVisible()
+    await page.getByText('导出 OPML', { exact: true }).click()
+    await expect(page.locator('.opml-export-dialog')).toBeVisible()
+    await expect(page.locator('.opml-export-options input[type="radio"]').first()).toBeChecked()
+    await page.locator('.opml-export-dialog .dialog-close').click()
+    await expect(page.locator('.opml-export-dialog')).toBeHidden()
 
     await page.locator('.source-discovery-button').click()
     await expect(page.locator('.source-discovery-page')).toBeVisible()
@@ -116,6 +151,7 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await page.locator('.settings-button').click()
     await expect(page.locator('.settings-page')).toBeVisible()
     await expect(page.locator('.sync-interval-select')).toHaveValue('30')
+    await page.locator('.reader-font-select').selectOption('serif')
     await page.locator('.reader-font-size-select').selectOption('19')
     await page.locator('.sync-interval-select').selectOption('0')
     await page.locator('.setting-switch').click()
@@ -125,15 +161,17 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
         const settings = await window.origread.getSettings()
         const syncState = await window.origread.getSyncRuntimeState()
         return {
+          readerFontId: settings.readerFontId,
           fontSize: settings.readerFontSize,
           interval: settings.syncIntervalMinutes,
           syncOnStart: settings.syncOnStart,
           nextRunAt: syncState.nextRunAt
         }
       })
-    }).toEqual({ fontSize: 19, interval: 0, syncOnStart: true, nextRunAt: null })
+    }).toEqual({ readerFontId: 'serif', fontSize: 19, interval: 0, syncOnStart: true, nextRunAt: null })
 
     await expect(page.locator('.app-shell')).toHaveCSS('--reader-font-size', '19px')
+    await expect(page.locator('.app-shell')).toHaveCSS('--reader-font-family', /ui-serif/)
 
     await page.locator('.settings-nav-button').nth(1).click()
     await expect(page.locator('.provider-card')).toHaveCount(1)

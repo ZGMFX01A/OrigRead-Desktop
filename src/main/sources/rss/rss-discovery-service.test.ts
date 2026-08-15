@@ -5,6 +5,9 @@ import {
   type RssFetchPayload,
   type RssFetcher
 } from './rss-discovery-service'
+import type { RssIconFinder } from './best-icon-finder'
+
+const noIconFinder: RssIconFinder = { findBestIcon: async () => null }
 
 const RSS_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
@@ -26,7 +29,7 @@ describe('RssDiscoveryService Android behavior parity', () => {
     const requests: string[] = []
     const service = new RssDiscoveryService(createFetcher({
       'https://example.com/feed.xml': rss(RSS_XML)
-    }, requests))
+    }, requests), noIconFinder)
 
     const result = await service.discover('https://example.com/feed.xml')
 
@@ -49,7 +52,7 @@ describe('RssDiscoveryService Android behavior parity', () => {
     const service = new RssDiscoveryService(createFetcher({
       'https://example.com/news': html(page),
       'https://example.com/news/feed.xml': rss(RSS_XML)
-    }, requests))
+    }, requests), noIconFinder)
 
     const result = await service.discover('https://example.com/news')
 
@@ -67,7 +70,7 @@ describe('RssDiscoveryService Android behavior parity', () => {
     const service = new RssDiscoveryService(createFetcher({
       'https://example.com/section': html('<!doctype html><html><body>No feed link</body></html>'),
       'https://example.com/feed': rss(RSS_XML)
-    }, requests))
+    }, requests), noIconFinder)
 
     const result = await service.discover('https://example.com/section')
 

@@ -1,9 +1,9 @@
-import type { ArticleRecord, FeedRecord, LibrarySnapshot } from './library'
+import type { ArticleRecord, FeedRecord, GroupRecord, LibrarySnapshot } from './library'
 import type { DesktopSettings, DesktopSettingsPatch } from './settings'
 import type { RssSubscriptionResult } from './rss'
 import type { RssHubSettings } from './rsshub'
 import type { JsonRule } from './json-source'
-import type { WebsiteInspectionResult, WebsiteRule } from './website'
+import type { WebsiteInspectionResult, WebsiteParseCandidate, WebsiteRule } from './website'
 import type { SourceDiscoveryResult, SourceSubscriptionResult } from './source-discovery'
 import type { SourceSyncBatchResult, SourceSyncItemResult } from './source-sync'
 import type { FullContentFetchResult, ReaderArticleContent } from './reader'
@@ -13,12 +13,14 @@ import type {
   OriginalNavigationAction,
   OriginalViewBounds
 } from './original-view'
-import type { AiProviderPatch, AiProviderTestResult, AiSettings, AiSettingsPatch, AiSummaryDocument } from './ai'
+import type { AiProviderPatch, AiProviderTestResult, AiSettings, AiSettingsPatch, AiSummaryDocument, AiSummaryRequestOptions } from './ai'
 import type { TranslationDocument, TranslationProviderPatch, TranslationProviderTestResult, TranslationSettings, TranslationSettingsPatch, TranslationTarget } from './translation'
 import type { ArticleFilterRule, ArticleFilterSnapshot, ArticleFilterRuleType } from './filter-rules'
 import type { ConfigurationBackupFileResult } from './configuration-backup'
 import type { FeedCatalogSnapshot } from './source-catalog'
 import type { AiGeneratedRuleKind, AiGeneratedRulePreview } from './ai-rule'
+import type { ReaderFontEntry, ReaderFontFileResult } from './reader-font'
+import type { OpmlExportFileResult, OpmlImportFileResult } from './opml'
 
 export interface WebsiteSourceRuleSettings {
   feedId: string
@@ -35,15 +37,33 @@ export interface AppInfo {
   platform: string
 }
 
+export interface FeedSettingsPatch {
+  name?: string
+  url?: string
+  groupId?: string
+  isNotification?: boolean
+  isFullContent?: boolean
+  isBrowser?: boolean
+}
+
 export interface OrigReadDesktopApi {
   getAppInfo(): Promise<AppInfo>
   getLibrarySnapshot(): Promise<LibrarySnapshot>
   listFeeds(): Promise<FeedRecord[]>
+  listGroups(): Promise<GroupRecord[]>
   listArticles(limit?: number): Promise<ArticleRecord[]>
   setArticleUnread(articleId: string, unread: boolean): Promise<void>
   setArticleStarred(articleId: string, starred: boolean): Promise<void>
+  addGroup(name: string): Promise<GroupRecord[]>
+  updateFeedSettings(feedId: string, patch: FeedSettingsPatch): Promise<FeedRecord>
+  clearFeedArticles(feedId: string): Promise<void>
+  deleteFeed(feedId: string): Promise<void>
+  reloadFeedIcon(feedId: string): Promise<FeedRecord>
   getSettings(): Promise<DesktopSettings>
   updateSettings(patch: DesktopSettingsPatch): Promise<DesktopSettings>
+  listReaderFonts(): Promise<ReaderFontEntry[]>
+  importReaderFont(): Promise<ReaderFontFileResult>
+  deleteReaderFont(id: string): Promise<ReaderFontEntry[]>
   addRssSource(inputUrl: string): Promise<RssSubscriptionResult>
   refreshRssSource(feedId: string): Promise<{ feedId: string; fetchedArticles: number; insertedArticles: number }>
   getRssHubSettings(): Promise<RssHubSettings>
@@ -81,7 +101,7 @@ export interface OrigReadDesktopApi {
   refreshAllSources(): Promise<SourceSyncBatchResult>
   getSyncRuntimeState(): Promise<SyncRuntimeState>
   onSyncRuntimeStateChanged(listener: (state: SyncRuntimeState) => void): () => void
-  getReaderContent(articleId: string): Promise<ReaderArticleContent>
+  getReaderContent(articleId: string, preferFull?: boolean): Promise<ReaderArticleContent>
   fetchFullContent(articleId: string): Promise<FullContentFetchResult>
   getAiSettings(): Promise<AiSettings>
   getAiApiKey(providerId: string): Promise<string>
@@ -91,7 +111,7 @@ export interface OrigReadDesktopApi {
   removeAiProvider(providerId: string): Promise<AiSettings>
   refreshAiModels(providerId: string, draftApiKey?: string): Promise<string[]>
   testAiProvider(providerId: string): Promise<AiProviderTestResult>
-  summarizeArticle(articleId: string, forceRefresh?: boolean): Promise<AiSummaryDocument>
+  summarizeArticle(articleId: string, forceRefresh?: boolean, options?: AiSummaryRequestOptions): Promise<AiSummaryDocument>
   getTranslationSettings(): Promise<TranslationSettings>
   getTranslationApiKey(type: TranslationProviderPatch['type']): Promise<string>
   updateTranslationSettings(patch: TranslationSettingsPatch): Promise<TranslationSettings>
@@ -103,8 +123,11 @@ export interface OrigReadDesktopApi {
   setArticleFilterEnabled(id: string, enabled: boolean): Promise<ArticleFilterSnapshot>
   deleteArticleFilter(id: string): Promise<ArticleFilterSnapshot>
   getWebsiteSourceRuleSettings(feedId: string): Promise<WebsiteSourceRuleSettings | null>
+  evaluateWebsiteSourceRules(feedId: string): Promise<WebsiteParseCandidate[]>
   setWebsiteSourcePreferredRule(feedId: string, ruleId: string | null): Promise<WebsiteSourceRuleSettings>
   setWebsiteSourceDynamicRendering(feedId: string, enabled: boolean): Promise<WebsiteSourceRuleSettings>
+  importOpml(): Promise<OpmlImportFileResult>
+  exportOpml(attachInfo?: boolean): Promise<OpmlExportFileResult>
   exportConfigurationBackup(password?: string): Promise<ConfigurationBackupFileResult>
   restoreConfigurationBackup(password?: string): Promise<ConfigurationBackupFileResult>
   importRuleFile(kind: 'website' | 'json' | 'filter'): Promise<{ ok:boolean;cancelled:boolean;count:number;error:string|null }>
@@ -122,11 +145,20 @@ export const IPC_CHANNELS = {
   getAppInfo: 'app:get-info',
   getLibrarySnapshot: 'library:get-snapshot',
   listFeeds: 'library:list-feeds',
+  listGroups: 'library:list-groups',
   listArticles: 'library:list-articles',
   setArticleUnread: 'library:set-article-unread',
   setArticleStarred: 'library:set-article-starred',
+  addGroup: 'library:add-group',
+  updateFeedSettings: 'library:feed:update-settings',
+  clearFeedArticles: 'library:feed:clear-articles',
+  deleteFeed: 'library:feed:delete',
+  reloadFeedIcon: 'library:feed:reload-icon',
   getSettings: 'settings:get',
   updateSettings: 'settings:update',
+  listReaderFonts: 'reader-font:list',
+  importReaderFont: 'reader-font:import',
+  deleteReaderFont: 'reader-font:delete',
   addRssSource: 'rss:add-source',
   refreshRssSource: 'rss:refresh-source',
   getRssHubSettings: 'rsshub:settings:get',
@@ -186,8 +218,11 @@ export const IPC_CHANNELS = {
   setArticleFilterEnabled: 'rules:filter:set-enabled',
   deleteArticleFilter: 'rules:filter:delete',
   getWebsiteSourceRuleSettings: 'rules:source:get',
+  evaluateWebsiteSourceRules: 'rules:source:evaluate',
   setWebsiteSourcePreferredRule: 'rules:source:set-preferred',
   setWebsiteSourceDynamicRendering: 'rules:source:set-dynamic',
+  importOpml: 'opml:import',
+  exportOpml: 'opml:export',
   exportConfigurationBackup: 'backup:export',
   restoreConfigurationBackup: 'backup:restore',
   importRuleFile: 'rules:file:import',

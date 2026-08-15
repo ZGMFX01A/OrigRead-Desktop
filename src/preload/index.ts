@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type OrigReadDesktopApi } from '../shared/contracts'
+import { IPC_CHANNELS, type FeedSettingsPatch, type OrigReadDesktopApi } from '../shared/contracts'
 import type { DesktopSettingsPatch } from '../shared/settings'
 import type { SyncRuntimeState } from '../shared/sync-runtime'
 import type {
@@ -7,7 +7,7 @@ import type {
   OriginalNavigationAction,
   OriginalViewBounds
 } from '../shared/original-view'
-import type { AiProviderPatch, AiSettingsPatch } from '../shared/ai'
+import type { AiProviderPatch, AiSettingsPatch, AiSummaryRequestOptions } from '../shared/ai'
 import type { TranslationProviderPatch, TranslationProviderType, TranslationSettingsPatch, TranslationTarget } from '../shared/translation'
 import type { ArticleFilterRuleType } from '../shared/filter-rules'
 import type { AiGeneratedRuleKind } from '../shared/ai-rule'
@@ -16,13 +16,22 @@ const api: OrigReadDesktopApi = Object.freeze({
   getAppInfo: () => ipcRenderer.invoke(IPC_CHANNELS.getAppInfo),
   getLibrarySnapshot: () => ipcRenderer.invoke(IPC_CHANNELS.getLibrarySnapshot),
   listFeeds: () => ipcRenderer.invoke(IPC_CHANNELS.listFeeds),
+  listGroups: () => ipcRenderer.invoke(IPC_CHANNELS.listGroups),
   listArticles: (limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.listArticles, limit),
   setArticleUnread: (articleId: string, unread: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.setArticleUnread, articleId, unread),
   setArticleStarred: (articleId: string, starred: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.setArticleStarred, articleId, starred),
+  addGroup: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.addGroup, name),
+  updateFeedSettings: (feedId: string, patch: FeedSettingsPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateFeedSettings, feedId, patch),
+  clearFeedArticles: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.clearFeedArticles, feedId),
+  deleteFeed: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteFeed, feedId),
+  reloadFeedIcon: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.reloadFeedIcon, feedId),
   getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getSettings),
   updateSettings: (patch: DesktopSettingsPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateSettings, patch),
+  listReaderFonts: () => ipcRenderer.invoke(IPC_CHANNELS.listReaderFonts),
+  importReaderFont: () => ipcRenderer.invoke(IPC_CHANNELS.importReaderFont),
+  deleteReaderFont: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteReaderFont, id),
   addRssSource: (inputUrl: string) => ipcRenderer.invoke(IPC_CHANNELS.addRssSource, inputUrl),
   refreshRssSource: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.refreshRssSource, feedId),
   getRssHubSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getRssHubSettings),
@@ -68,7 +77,7 @@ const api: OrigReadDesktopApi = Object.freeze({
     ipcRenderer.on(IPC_CHANNELS.syncRuntimeStateChanged, wrapped)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.syncRuntimeStateChanged, wrapped)
   },
-  getReaderContent: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.getReaderContent, articleId),
+  getReaderContent: (articleId: string, preferFull?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.getReaderContent, articleId, preferFull),
   fetchFullContent: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.fetchFullContent, articleId),
   getAiSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getAiSettings),
   getAiApiKey: (providerId: string) => ipcRenderer.invoke(IPC_CHANNELS.getAiApiKey, providerId),
@@ -78,7 +87,7 @@ const api: OrigReadDesktopApi = Object.freeze({
   removeAiProvider: (providerId: string) => ipcRenderer.invoke(IPC_CHANNELS.removeAiProvider, providerId),
   refreshAiModels: (providerId: string, draftApiKey?: string) => ipcRenderer.invoke(IPC_CHANNELS.refreshAiModels, providerId, draftApiKey),
   testAiProvider: (providerId: string) => ipcRenderer.invoke(IPC_CHANNELS.testAiProvider, providerId),
-  summarizeArticle: (articleId: string, forceRefresh?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.summarizeArticle, articleId, forceRefresh),
+  summarizeArticle: (articleId: string, forceRefresh?: boolean, options?: AiSummaryRequestOptions) => ipcRenderer.invoke(IPC_CHANNELS.summarizeArticle, articleId, forceRefresh, options),
   getTranslationSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getTranslationSettings),
   getTranslationApiKey: (type: TranslationProviderType) => ipcRenderer.invoke(IPC_CHANNELS.getTranslationApiKey, type),
   updateTranslationSettings: (patch: TranslationSettingsPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateTranslationSettings, patch),
@@ -90,8 +99,11 @@ const api: OrigReadDesktopApi = Object.freeze({
   setArticleFilterEnabled: (id: string, enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.setArticleFilterEnabled, id, enabled),
   deleteArticleFilter: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteArticleFilter, id),
   getWebsiteSourceRuleSettings: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.getWebsiteSourceRuleSettings, feedId),
+  evaluateWebsiteSourceRules: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.evaluateWebsiteSourceRules, feedId),
   setWebsiteSourcePreferredRule: (feedId: string, ruleId: string | null) => ipcRenderer.invoke(IPC_CHANNELS.setWebsiteSourcePreferredRule, feedId, ruleId),
   setWebsiteSourceDynamicRendering: (feedId: string, enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.setWebsiteSourceDynamicRendering, feedId, enabled),
+  importOpml: () => ipcRenderer.invoke(IPC_CHANNELS.importOpml),
+  exportOpml: (attachInfo = true) => ipcRenderer.invoke(IPC_CHANNELS.exportOpml, attachInfo),
   exportConfigurationBackup: (password?: string) => ipcRenderer.invoke(IPC_CHANNELS.exportConfigurationBackup, password),
   restoreConfigurationBackup: (password?: string) => ipcRenderer.invoke(IPC_CHANNELS.restoreConfigurationBackup, password),
   importRuleFile: (kind: 'website' | 'json' | 'filter') => ipcRenderer.invoke(IPC_CHANNELS.importRuleFile, kind),
