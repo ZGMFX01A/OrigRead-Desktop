@@ -23,7 +23,7 @@ export class TranslationSettingsRepository {
     const defaultProvider = target.type === 'traditional' ? target.provider : current.defaultProvider
     return this.save({ ...current, defaultTarget: target, defaultProvider })
   }
-  setTargetLanguage(value: string): TranslationSettings { return this.save({ ...this.toStored(this.current()), targetLanguage: value.trim() || 'zh-CN' }) }
+  setTargetLanguage(value: string): TranslationSettings { return this.save({ ...this.toStored(this.current()), targetLanguage: value }) }
   setDisplayMode(value: TranslationSettings['displayMode']): TranslationSettings {
     if (!['TRANSLATED','BILINGUAL'].includes(value)) throw new Error('无效的译文显示方式')
     return this.save({ ...this.toStored(this.current()), displayMode: value })
@@ -82,7 +82,7 @@ function normalizeSettings(value: Partial<StoredSettings>): StoredSettings {
   const providers = TRANSLATION_PROVIDER_TYPES.map((type) => ({ ...defaultProvider(type), ...incoming.get(type), type }))
   const defaultProviderType = TRANSLATION_PROVIDER_TYPES.includes(value.defaultProvider as TranslationProviderType) ? value.defaultProvider as TranslationProviderType : 'ML_KIT'
   const defaultTarget = normalizeTarget(value.defaultTarget, defaultProviderType)
-  return { defaultProvider: defaultProviderType, defaultTarget, targetLanguage: String(value.targetLanguage ?? 'zh-CN').trim() || 'zh-CN', displayMode: value.displayMode === 'BILINGUAL' ? 'BILINGUAL' : 'TRANSLATED', providers }
+  return { defaultProvider: defaultProviderType, defaultTarget, targetLanguage: value.targetLanguage === undefined ? 'zh-CN' : String(value.targetLanguage), displayMode: value.displayMode === 'BILINGUAL' ? 'BILINGUAL' : 'TRANSLATED', providers }
 }
 function normalizeTarget(value: unknown, fallback: TranslationProviderType): TranslationTarget {
   if (value && typeof value === 'object' && !Array.isArray(value)) {

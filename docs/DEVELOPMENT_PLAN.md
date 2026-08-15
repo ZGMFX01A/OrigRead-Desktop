@@ -233,7 +233,7 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 - [x] 过滤规则真正接入 RSS / JSON / Website 入库前处理，不是仅管理 UI
 - [x] Website 来源级解析策略底层：首选规则 / 自动规则缓存 / 动态 Chromium 开关；不擅自暴露到 Android 当前“网站解析规则”设置页
 - [x] Website 规则 UI 与 Android 对齐：内部 `ithome-home` 规则不出现在规则列表
-- [ ] RSSHub 设置 UI（Repository / IPC / health test 已完成）
+- [x] RSSHub 设置 UI：总开关、16 个内置/自定义实例列表、单实例启停、连通性测试、测试并添加、删除、恢复默认；复用现有 Resolver / health test
 - [ ] OPML 导入导出
 - [x] Android 配置备份兼容：直接读写 `ConfigurationBackup schemaVersion=1`，订阅按 URL 合并、旧 feedId 重映射规则/偏好/RSSHub source URL
 - [x] Android 加密凭据兼容：PBKDF2-HMAC-SHA256 210000 + AES-256-GCM + 相同 AAD；Android 当前 `ConfigurationBackupCryptoTest` 已实际运行通过
@@ -241,7 +241,8 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 - [x] 恢复采用“全量静态校验 + 密码解密成功后才开始写入”，不删除 Desktop 现有额外订阅或文章/已读/星标
 - [x] Desktop 独有偏好写入 namespaced `preferences`；Android 对未知 key 验证放行且恢复时忽略，因此保持双向 envelope 兼容
 - [x] Secret 加密：运行时 safeStorage；可移植备份内 AES-256-GCM
-- [ ] AI 生成 Website / JSON 规则、规则在线试跑、模板保存 UI（Android 有此扩展能力，本轮未纳入核心规则管理）
+- [x] JSON / Website 规则页补齐 Android 当前用户功能：本地 Markdown 教程、AI 生成候选、真实本地试跑、失败后最多修复一次、预览确认后保存、模板文件导出；Website 额外支持在线规则测试
+- [x] Android `source_catalog.json` 原样复制为 Desktop 资源：schemaVersion=1 / 752 feeds / 44 categories；发现来源支持本地搜索、分类筛选、数量显示和直接进入统一订阅流程
 
 ### Phase 8：发布
 
@@ -251,6 +252,96 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 - [ ] Windows 签名
 - [ ] macOS 签名 / notarization
 - [ ] 自动更新
+
+## 7. 当前剩余开发清单（以 Android 当前功能为产品基线）
+
+以下 16 项作为 Desktop 收尾范围。已完成项保留在列表中用于最终 UI 一致性复核；后续不再把“底层已存在”误判成“用户功能已完成”。
+
+1. [x] **发现来源**
+   - 对齐 Android `SourceDiscoveryPage`，这是独立的内置来源目录功能，不等同于 URL 自动识别来源类型。
+   - 读取 Android 同源目录数据（`source_catalog.json` 对应能力）。
+   - 支持搜索、分类筛选、分类数量、来源数量、来源信息展示和直接订阅。
+   - Desktop 入口可以按桌面交互优化，但不能丢失 Android 已有能力或改变功能含义。
+
+2. [x] **JSON 规则完整功能**
+   - 当前已有 JsonRule parser / Repository / 导入 / 导出 / 启停 / 删除等底层能力，但整个用户功能仍视为未完成。
+   - 继续补齐 Android 当前页面已有的使用教程、AI 生成 JSON 规则、导出模板，以及对应交互与状态反馈。
+
+3. [x] **网站规则完整功能**
+   - 当前已有 WebsiteRule parser / Repository / 导入 / 导出 / 启停 / 删除等底层能力，但整个用户功能仍视为未完成。
+   - 继续补齐 Android 当前页面已有的使用教程、AI 生成网站解析规则、导出模板、测试网站解析规则。
+   - 内部 `ithome-home` 规则继续按 Android 行为隐藏，不出现在用户规则列表。
+
+4. [x] **RSSHub 设置**
+   - 底层 Repository / Resolver / IPC / health test 已完成，但用户设置页尚未完成。
+   - 对齐 Android：总开关、实例列表、实例启停、连通性测试、自定义实例添加、删除、恢复默认。
+
+5. [ ] **OPML 导入导出**
+   - 对齐 Android `OpmlService` 的导入、导出及订阅合并语义。
+
+6. [ ] **软件自动更新**
+   - Desktop 自动检查更新、提示更新、下载安装/跳转发布页等完整用户流程尚未实现。
+   - 行为与 Android 已有“检查更新”产品语义保持一致，桌面端仅做平台必要适配。
+
+7. [ ] **阅读页面 UI 配置（背景色）**
+   - 在现有字号 / 行距 / 版心设置基础上，补齐阅读背景色等 Android 已有阅读外观配置。
+
+8. [ ] **深色适配**
+   - 完成全局深色主题。
+   - 支持跟随系统变化，不仅是启动时读取一次。
+   - Reader、设置页、文章列表、弹窗、WebContentsView 外层 UI 都要统一适配。
+
+9. [ ] **UI 一致性检查**
+   - 不要求 Desktop 100% 复刻 Android 布局。
+   - 必须逐页核对 Android 当前功能，确保不丢入口、不丢功能、不擅自改变功能描述或业务含义。
+   - 按钮位置、页面排版、桌面交互方式允许优化，但产品语义以 Android 当前实现和资源文案为准。
+
+10. [ ] **自动打包**
+    - GitHub Actions 自动构建至少覆盖 Windows 与 macOS。
+    - 自动生成 Windows 安装包与 macOS DMG 产物。
+    - 后续签名 / notarization 在证书条件具备后接入同一发布流程。
+
+11. [ ] **项目 Git 发布页订阅**
+    - 对齐 Android 已有 Git 发布页订阅功能，但 Desktop 使用独立的 `ZGMFX01A/OrigRead-Desktop` 发布地址。
+    - 展示 Desktop Release 信息。
+    - 提供直接下载安装包按钮。
+    - 提供前往 Git 发布页按钮。
+
+12. [ ] **语言切换**
+    - 默认跟随系统语言。
+    - 支持中文与 English 手动切换。
+    - 系统语言为中文时使用中文；所有非中文系统语言默认使用 English。
+    - 后续 UI 一致性检查时逐页确认所有新增功能均覆盖中英文文案。
+
+13. [ ] **阅读页文章内搜索**
+    - 阅读正文时支持 `Ctrl + F` 打开文章内关键词搜索。
+    - 高亮全部匹配项，并支持在上一个 / 下一个匹配项之间跳转。
+    - 搜索范围以当前阅读内容为准，不与左侧文章列表搜索混用。
+
+14. [ ] **阅读字体与字体导入**
+    - 阅读页支持切换正文使用的字体。
+    - 支持导入用户本地字体，并在阅读字体列表中选择。
+    - 字体配置仅影响 Reader 正文，不擅自改变应用 UI 字体。
+
+15. [ ] **文章朗读**
+    - 为阅读页引入朗读能力。
+    - 优先评估并接入 Microsoft Edge / Chromium 可用的朗读语音能力，在 Windows 与 macOS 上提供可落地的桌面实现。
+    - 至少包含开始 / 暂停 / 继续 / 停止，以及可用语音选择；不得把“浏览器能发声”误判为完整朗读功能。
+
+16. [ ] **AI 摘要阅读布局**
+    - AI 摘要支持调整显示位置，而不是固定替换正文。
+    - 支持左侧栏、右侧栏，以及吸附在阅读区上方 / 下方等布局。
+    - 阅读过程中允许调整位置与占用空间；正文与摘要都必须保持可滚动、可阅读。
+
+## 8. 2026-08-15 实机反馈回归修复
+
+- [x] Website 订阅后第一次同步 HTTP 418 不再制造“已入库但添加弹窗报失败”的半状态；订阅成功与后续同步失败分离，并增加真实 418 Electron E2E。
+- [x] Reader CSP 允许正文加载 HTTP / HTTPS 图片与媒体；增加 Website 来源“列表解析 → 订阅 → 点开文章 → 全文提取 → 图片真实加载”E2E。
+- [x] 左侧文章列表和右侧 Reader 显式限制 Grid 高度链，实际 `scrollTop` 回归验证两边均可滚动。
+- [x] 翻译目标语言改成本地草稿编辑，允许完整删除 `zh-CN` 后重新输入；失焦 / Enter 后再保存。
+- [x] DeepL 简体中文目标码使用兼容性更高的 `ZH`，避免部分 DeepL 接口拒绝 `ZH-HANS`。
+- [x] AI 与所有翻译 API Key 使用真实安全存储值作为密码输入内容，黑点数量与 Key 字符数一致，并增加眼睛显隐、显式保存 / 删除、保存状态提示。
+- [x] 修复 AI / 翻译 Provider 修改其他字段时错误清空 Key 草稿的问题；AI Reader E2E 现在要求真实 Bearer Key 鉴权成功才能通过。
 
 ## 6. 每轮开发验收
 

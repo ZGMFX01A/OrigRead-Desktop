@@ -18,7 +18,7 @@ export class TranslationService{
   async translateArticle(articleId:string,target?:TranslationTarget,forceRefresh=false):Promise<TranslationDocument>{
     const article=this.library.getArticleById(articleId);if(!article)throw new Error('文章不存在')
     const source=this.reader.get(articleId);if(!source.html.trim())throw new Error('当前文章没有可翻译正文')
-    const settings=this.settings.current();const actualTarget=target??settings.defaultTarget;this.validateTarget(actualTarget)
+    const settings=this.settings.current();if(!settings.targetLanguage.trim())throw new Error('目标语言不能为空');const actualTarget=target??settings.defaultTarget;this.validateTarget(actualTarget)
     const cacheFile=this.cacheFile(articleId,article.title,source.html,actualTarget,settings.targetLanguage,settings.displayMode)
     if(!forceRefresh){const cached=readCache(cacheFile);if(cached)return cached}
     const prepared=this.contentProcessor.prepare(source.html);const hasTitle=Boolean(article.title.trim());const texts=[...(hasTitle?[article.title]:[]),...prepared.texts]
@@ -27,7 +27,7 @@ export class TranslationService{
     const document:TranslationDocument={articleId,target:actualTarget,targetLanguage:settings.targetLanguage,sourceLanguage:result.detectedSourceLanguage,displayMode:settings.displayMode,translatedTitle,translatedContent:this.contentProcessor.render(prepared,blocks,settings.displayMode)}
     mkdirSync(this.cacheDir,{recursive:true});writeFileSync(cacheFile,JSON.stringify(document,null,2),'utf8');return document
   }
-  async testProvider(type:TranslationProviderType):Promise<TranslationProviderTestResult>{try{this.validateTarget({type:'traditional',provider:type});const target=this.settings.current().targetLanguage;const input=target.toLowerCase().startsWith('en')?'你好':'Hello';const result=await this.translateTraditional(type,[input],target);return{ok:true,value:result.texts[0]??'',error:null}}catch(error){return{ok:false,value:null,error:error instanceof Error?error.message:String(error)}}}
+  async testProvider(type:TranslationProviderType):Promise<TranslationProviderTestResult>{try{this.validateTarget({type:'traditional',provider:type});const target=this.settings.current().targetLanguage;if(!target.trim())throw new Error('目标语言不能为空');const input=target.toLowerCase().startsWith('en')?'你好':'Hello';const result=await this.translateTraditional(type,[input],target);return{ok:true,value:result.texts[0]??'',error:null}}catch(error){return{ok:false,value:null,error:error instanceof Error?error.message:String(error)}}}
 
   private validateTarget(target:TranslationTarget):void{
     if(target.type==='traditional'){const provider=this.settings.current().providers.find((item)=>item.type===target.provider);if(!provider?.enabled)throw new Error('当前翻译服务已停用');if(!provider.desktopSupported)throw new Error('Google ML Kit 仅支持 Android，请在 Desktop 选择其他翻译服务');if(!provider.endpoint.trim())throw new Error('当前翻译服务尚未填写 Endpoint');if(['MICROSOFT','DEEPL','GOOGLE_CLOUD'].includes(target.provider)&&!provider.hasApiKey)throw new Error('当前翻译服务尚未填写 API Key')}

@@ -10,6 +10,7 @@ import type {
 import type { AiProviderPatch, AiSettingsPatch } from '../shared/ai'
 import type { TranslationProviderPatch, TranslationProviderType, TranslationSettingsPatch, TranslationTarget } from '../shared/translation'
 import type { ArticleFilterRuleType } from '../shared/filter-rules'
+import type { AiGeneratedRuleKind } from '../shared/ai-rule'
 
 const api: OrigReadDesktopApi = Object.freeze({
   getAppInfo: () => ipcRenderer.invoke(IPC_CHANNELS.getAppInfo),
@@ -31,6 +32,8 @@ const api: OrigReadDesktopApi = Object.freeze({
     ipcRenderer.invoke(IPC_CHANNELS.setRssHubInstanceEnabled, id, enabled),
   deleteRssHubInstance: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteRssHubInstance, id),
   testRssHubInstance: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.testRssHubInstance, url),
+  restoreDefaultRssHubSettings: () => ipcRenderer.invoke(IPC_CHANNELS.restoreDefaultRssHubSettings),
+  getSourceCatalog: () => ipcRenderer.invoke(IPC_CHANNELS.getSourceCatalog),
   listJsonRules: () => ipcRenderer.invoke(IPC_CHANNELS.listJsonRules),
   importJsonRules: (content: string) => ipcRenderer.invoke(IPC_CHANNELS.importJsonRules, content),
   exportJsonRules: () => ipcRenderer.invoke(IPC_CHANNELS.exportJsonRules),
@@ -38,6 +41,10 @@ const api: OrigReadDesktopApi = Object.freeze({
   setJsonRuleEnabled: (id: string, enabled: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.setJsonRuleEnabled, id, enabled),
   deleteJsonRule: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteJsonRule, id),
+  getRuleGuide: (kind: 'website' | 'json', language: 'zh' | 'en') => ipcRenderer.invoke(IPC_CHANNELS.getRuleGuide, kind, language),
+  generateAiRule: (kind: AiGeneratedRuleKind, url: string) => ipcRenderer.invoke(IPC_CHANNELS.generateAiRule, kind, url),
+  saveAiGeneratedRule: (previewId: string) => ipcRenderer.invoke(IPC_CHANNELS.saveAiGeneratedRule, previewId),
+  exportRuleTemplateFile: (kind: 'website' | 'json') => ipcRenderer.invoke(IPC_CHANNELS.exportRuleTemplateFile, kind),
   inspectWebsiteStatic: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.inspectWebsiteStatic, url),
   inspectWebsiteDynamic: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.inspectWebsiteDynamic, url),
   refreshWebsiteSource: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.refreshWebsiteSource, feedId),
@@ -48,6 +55,7 @@ const api: OrigReadDesktopApi = Object.freeze({
   setWebsiteRuleEnabled: (id: string, enabled: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.setWebsiteRuleEnabled, id, enabled),
   deleteWebsiteRule: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteWebsiteRule, id),
+  testWebsiteRule: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.testWebsiteRule, url),
   discoverSource: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.discoverSource, url),
   subscribeSource: (discoveryId: string, candidateId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.subscribeSource, discoveryId, candidateId),
@@ -63,6 +71,7 @@ const api: OrigReadDesktopApi = Object.freeze({
   getReaderContent: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.getReaderContent, articleId),
   fetchFullContent: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.fetchFullContent, articleId),
   getAiSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getAiSettings),
+  getAiApiKey: (providerId: string) => ipcRenderer.invoke(IPC_CHANNELS.getAiApiKey, providerId),
   updateAiSettings: (patch: AiSettingsPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateAiSettings, patch),
   addAiProvider: () => ipcRenderer.invoke(IPC_CHANNELS.addAiProvider),
   updateAiProvider: (patch: AiProviderPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateAiProvider, patch),
@@ -71,6 +80,7 @@ const api: OrigReadDesktopApi = Object.freeze({
   testAiProvider: (providerId: string) => ipcRenderer.invoke(IPC_CHANNELS.testAiProvider, providerId),
   summarizeArticle: (articleId: string, forceRefresh?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.summarizeArticle, articleId, forceRefresh),
   getTranslationSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getTranslationSettings),
+  getTranslationApiKey: (type: TranslationProviderType) => ipcRenderer.invoke(IPC_CHANNELS.getTranslationApiKey, type),
   updateTranslationSettings: (patch: TranslationSettingsPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateTranslationSettings, patch),
   updateTranslationProvider: (patch: TranslationProviderPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateTranslationProvider, patch),
   testTranslationProvider: (type: TranslationProviderType) => ipcRenderer.invoke(IPC_CHANNELS.testTranslationProvider, type),

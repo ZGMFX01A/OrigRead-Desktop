@@ -22,7 +22,8 @@ test('reader generates AI summary and full-article translation through main-proc
         enabled: true,
         endpoint: aiEndpoint,
         defaultModel: 'mock-model',
-        models: ['mock-model']
+        models: ['mock-model'],
+        apiKey: 'ai-e2e-secret'
       })
       await window.origread.updateAiSettings({ enabled: true, defaultProviderId: provider.id, outputLanguage: 'zh-CN' })
 
@@ -81,6 +82,11 @@ async function startFixtureServer(): Promise<{ server: Server; aiRequests: () =>
     if (request.url === '/v1/chat/completions' && request.method === 'POST') {
       aiRequests += 1
       await readBody(request)
+      if (request.headers.authorization !== 'Bearer ai-e2e-secret') {
+        response.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({ error: { message: 'missing fixture authorization' } }))
+        return
+      }
       json(response, {
         choices: [{
           message: {

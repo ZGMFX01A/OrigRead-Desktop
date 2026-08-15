@@ -45,11 +45,18 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
       return (
         typeof window.origread?.getAppInfo === 'function' &&
         typeof window.origread?.getRssHubSettings === 'function' &&
+        typeof window.origread?.restoreDefaultRssHubSettings === 'function' &&
+        typeof window.origread?.getSourceCatalog === 'function' &&
         typeof window.origread?.listJsonRules === 'function' &&
         typeof window.origread?.exportJsonRuleTemplate === 'function' &&
+        typeof window.origread?.getRuleGuide === 'function' &&
+        typeof window.origread?.generateAiRule === 'function' &&
+        typeof window.origread?.saveAiGeneratedRule === 'function' &&
+        typeof window.origread?.exportRuleTemplateFile === 'function' &&
         typeof window.origread?.inspectWebsiteStatic === 'function' &&
         typeof window.origread?.inspectWebsiteDynamic === 'function' &&
         typeof window.origread?.listWebsiteRules === 'function' &&
+        typeof window.origread?.testWebsiteRule === 'function' &&
         typeof window.origread?.discoverSource === 'function' &&
         typeof window.origread?.subscribeSource === 'function' &&
         typeof window.origread?.refreshJsonSource === 'function' &&
@@ -60,8 +67,10 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
         typeof window.origread?.getReaderContent === 'function' &&
         typeof window.origread?.fetchFullContent === 'function' &&
         typeof window.origread?.getAiSettings === 'function' &&
+        typeof window.origread?.getAiApiKey === 'function' &&
         typeof window.origread?.summarizeArticle === 'function' &&
         typeof window.origread?.getTranslationSettings === 'function' &&
+        typeof window.origread?.getTranslationApiKey === 'function' &&
         typeof window.origread?.translateArticle === 'function' &&
         typeof window.origread?.getArticleFilters === 'function' &&
         typeof window.origread?.exportConfigurationBackup === 'function' &&
@@ -73,6 +82,36 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     })
     expect(bridgeReady).toBe(true)
     expect(pageErrors).toEqual([])
+
+    await page.locator('.source-discovery-button').click()
+    await expect(page.locator('.source-discovery-page')).toBeVisible()
+    await expect(page.locator('.source-discovery-item')).toHaveCount(752)
+    await page.locator('.source-discovery-search input').fill('Programming')
+    await expect(page.locator('.source-discovery-item').first()).toBeVisible()
+    const filteredSourceCount = await page.locator('.source-discovery-item').count()
+    expect(filteredSourceCount).toBeGreaterThan(0)
+    expect(filteredSourceCount).toBeLessThan(752)
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.source-discovery-page')).toBeHidden()
+
+    await page.evaluate(async () => {
+      const ai = await window.origread.getAiSettings()
+      const provider = ai.providers[0]
+      if (!provider) throw new Error('Missing AI provider')
+      await window.origread.updateAiProvider({
+        id: provider.id,
+        endpoint: 'https://api.example.test/v1',
+        defaultModel: 'e2e-model',
+        models: ['e2e-model'],
+        apiKey: 'ai-secret-123456789'
+      })
+      await window.origread.updateTranslationProvider({
+        type: 'MICROSOFT',
+        enabled: true,
+        endpoint: 'https://api.cognitive.microsofttranslator.com',
+        apiKey: 'ms-secret-123456'
+      })
+    })
 
     await page.locator('.settings-button').click()
     await expect(page.locator('.settings-page')).toBeVisible()
@@ -100,12 +139,46 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await expect(page.locator('.provider-card')).toHaveCount(1)
     await expect(page.getByText('1～2 段摘要 + 4～6 个主要观点，每点补充关键依据、机制或影响', { exact: true })).toBeVisible()
     await expect(page.getByText('高密度单段摘要，中文建议约 120～220 字，不列要点', { exact: true })).toHaveCount(0)
+    const aiProviderCard = page.locator('.provider-card').first()
+    const aiKey = aiProviderCard.locator('.secret-key-input')
+    await expect(aiKey).toHaveValue('ai-secret-123456789')
+    await expect(aiKey).toHaveAttribute('type', 'password')
+    await expect(aiProviderCard.locator('.secret-key-state')).toContainText('19 个字符')
+    await aiProviderCard.locator('.secret-key-eye').click()
+    await expect(aiKey).toHaveAttribute('type', 'text')
+    await aiProviderCard.locator('.secret-key-eye').click()
+    const aiEndpoint = aiProviderCard.locator('.provider-field').filter({ hasText: 'Endpoint' }).locator('input')
+    await aiEndpoint.fill('https://api2.example.test/v1')
+    await aiEndpoint.blur()
+    await expect(aiKey).toHaveValue('ai-secret-123456789')
+    await aiKey.fill('ai-secret-updated-123')
+    await expect(aiProviderCard.locator('.secret-key-state')).toContainText('有未保存的修改')
+    await aiProviderCard.locator('.secret-key-save').click()
+    await expect.poll(async () => page.evaluate(async () => {
+      const ai = await window.origread.getAiSettings()
+      return window.origread.getAiApiKey(ai.providers[0]!.id)
+    })).toBe('ai-secret-updated-123')
 
     await page.locator('.settings-nav-button').nth(2).click()
     await expect(page.locator('.provider-card')).toHaveCount(4)
     await expect(page.getByText('Google ML Kit', { exact: true })).toHaveCount(0)
     await expect(page.getByText('启用服务与默认服务', { exact: true })).toBeVisible()
     await expect(page.locator('input[name="translation-default-provider"]')).toHaveCount(4)
+    const targetLanguage = page.locator('.translation-target-language-input')
+    await expect(targetLanguage).toHaveValue('zh-CN')
+    await targetLanguage.fill('')
+    await expect(targetLanguage).toHaveValue('')
+    await targetLanguage.fill('en-US')
+    await targetLanguage.blur()
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getTranslationSettings()).targetLanguage)).toBe('en-US')
+    const microsoftCard = page.locator('.provider-card').filter({ hasText: 'Microsoft Translator' })
+    const microsoftKey = microsoftCard.locator('.secret-key-input')
+    await expect(microsoftKey).toHaveValue('ms-secret-123456')
+    await expect(microsoftKey).toHaveAttribute('type', 'password')
+    await expect(microsoftCard.locator('.secret-key-state')).toContainText('16 个字符')
+    await microsoftCard.locator('.secret-key-eye').click()
+    await expect(microsoftKey).toHaveAttribute('type', 'text')
+    await microsoftCard.locator('.secret-key-eye').click()
     await expect.poll(async () => page.locator('.settings-subpage').evaluate((element) => ({ scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }))).toMatchObject({ scrollHeight: expect.any(Number), clientHeight: expect.any(Number) })
     const translationScrollable = await page.locator('.settings-subpage').evaluate((element) => element.scrollHeight > element.clientHeight)
     expect(translationScrollable).toBe(true)
@@ -120,12 +193,28 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
 
     await page.locator('.settings-nav-button').nth(4).click()
     await expect(page.locator('.rule-add-row')).toHaveCount(0)
+    await expect(page.locator('button.settings-action-row').filter({ hasText: 'AI 生成 JSON 规则' })).toBeEnabled()
+    await expect(page.locator('button.settings-action-row').filter({ hasText: '导出 JSON 规则模板' })).toBeEnabled()
+    await page.getByText('使用教程', { exact: true }).click()
+    await expect(page.locator('.rule-modal')).toContainText('JSON / API 规则使用说明')
+    await page.locator('.rule-modal header .icon-button').click()
 
     await page.locator('.settings-nav-button').nth(5).click()
     await expect(page.getByText('ithome-home', { exact: true })).toHaveCount(0)
     await expect(page.getByText('来源级解析规则', { exact: true })).toHaveCount(0)
+    await expect(page.locator('button.settings-action-row').filter({ hasText: 'AI 生成网站规则' })).toBeEnabled()
+    await expect(page.locator('button.settings-action-row').filter({ hasText: '导出固定规则模板' })).toBeEnabled()
+    await expect(page.locator('button.settings-action-row').filter({ hasText: '测试网站解析规则' })).toBeEnabled()
+    await page.getByText('网站规则使用教程', { exact: true }).click()
+    await expect(page.locator('.rule-modal')).toBeVisible()
+    await page.locator('.rule-modal header .icon-button').click()
 
     await page.locator('.settings-nav-button').nth(6).click()
+    await expect(page.locator('.rsshub-instance-row')).toHaveCount(16)
+    await expect(page.getByText('实例列表', { exact: true })).toBeVisible()
+    await expect(page.getByText('测试并添加', { exact: true })).toBeVisible()
+
+    await page.locator('.settings-nav-button').nth(7).click()
     await expect(page.locator('input[type="password"]')).toHaveCount(0)
     await page.locator('.setting-switch').click()
     await expect(page.locator('input[type="password"]')).toBeVisible()

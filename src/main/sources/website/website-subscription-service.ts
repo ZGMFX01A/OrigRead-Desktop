@@ -13,7 +13,11 @@ export class WebsiteSubscriptionService {
     private readonly articleFilters?: ArticleFilterRepository
   ) {}
 
-  /** Android subscribeWebsite 后立即 doSyncOneTime：先保存来源，再用同一 WebsiteHelper 同步填充文章。 */
+  /**
+   * Android subscribeWebsite 的订阅提交与后续同步是两件事：
+   * 来源先持久化，doSyncOneTime 即使网络失败也不会把“订阅”本身回滚成失败。
+   * Desktop 也保持这个语义，避免网站第二次请求遇到 418/429 时留下“已入库但 UI 仍报添加失败”的半状态。
+   */
   async add(inspection: WebsiteInspectionResult, dynamicRendering = false): Promise<{ feedId: string; insertedArticles: number }> {
     const existing = this.repository.findFeedByUrl(inspection.sourceUrl)
     if (existing) throw new Error(`来源已存在：${existing.name}`)
@@ -36,8 +40,13 @@ export class WebsiteSubscriptionService {
     }
     this.repository.upsertFeed(feed)
     this.sourceService.setDynamicRenderingEnabled(feedId, dynamicRendering)
-    const refreshed = await this.refresh(feedId)
-    return { feedId, insertedArticles: refreshed.insertedArticles }
+    try {
+      const refreshed = await this.refresh(feedId)
+      return { feedId, insertedArticles: refreshed.insertedArticles }
+    } catch {
+      // 订阅已经成功保存；刷新失败留给后续手动/周期同步重试，不把添加操作伪装成失败。
+      return { feedId, insertedArticles: 0 }
+    }
   }
 
   async refresh(

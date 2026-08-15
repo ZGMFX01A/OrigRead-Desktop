@@ -47,6 +47,38 @@ describe('WebsiteSubscriptionService', () => {
       database.close()
     }
   })
+
+  it('keeps the newly subscribed website when the immediate refresh is rejected', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'origread-website-sub-failure-'))
+    dirs.push(dir)
+    const database = new DesktopDatabase(':memory:')
+    try {
+      const repository = new LibraryRepository(database.connection)
+      const html = fixture('url-clusters.html')
+      let calls = 0
+      const sourceService = new WebsiteSourceService(
+        new WebsiteRuleRepository(join(dir, 'rules.json')),
+        new WebsiteParsePreferenceRepository(join(dir, 'prefs.json')),
+        async () => {
+          calls += 1
+          if (calls === 1) return payload(html)
+          return { status: 418, finalUrl: 'https://news.example.com/', html: 'blocked' }
+        }
+      )
+      const subscription = new WebsiteSubscriptionService(repository, sourceService)
+      const inspected = await sourceService.inspect('https://news.example.com/')
+      const added = await subscription.add(inspected)
+
+      expect(added.insertedArticles).toBe(0)
+      expect(repository.getFeedById(added.feedId)).toMatchObject({
+        url: 'https://news.example.com/',
+        sourceType: 'website'
+      })
+      expect(repository.listFeeds()).toHaveLength(1)
+    } finally {
+      database.close()
+    }
+  })
 })
 
 function fixture(name: string): string {

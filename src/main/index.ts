@@ -48,7 +48,10 @@ import { TranslationSettingsRepository } from './translation/translation-setting
 import { TranslationService } from './translation/translation-service'
 import { ArticleFilterRepository } from './filter/article-filter-repository'
 import { ConfigurationBackupService } from './backup/configuration-backup-service'
+import { FeedDiscoveryCatalog } from './discovery/feed-discovery-catalog'
+import { AiRuleGenerationService } from './ai/ai-rule-generation-service'
 import type { AiProviderPatch, AiSettingsPatch } from '../shared/ai'
+import type { AiGeneratedRuleKind } from '../shared/ai-rule'
 import type { TranslationProviderPatch, TranslationProviderType, TranslationSettingsPatch, TranslationTarget } from '../shared/translation'
 import type { ArticleFilterRuleType } from '../shared/filter-rules'
 
@@ -88,6 +91,8 @@ let translationSettingsRepository: TranslationSettingsRepository | null = null
 let translationService: TranslationService | null = null
 let articleFilterRepository: ArticleFilterRepository | null = null
 let configurationBackupService: ConfigurationBackupService | null = null
+let feedDiscoveryCatalog: FeedDiscoveryCatalog | null = null
+let aiRuleGenerationService: AiRuleGenerationService | null = null
 
 function localizedAppName(): string {
   return resolveBrandName(app.getLocale())
@@ -277,6 +282,16 @@ function registerIpcHandlers(): void {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
+  ipcMain.handle(IPC_CHANNELS.restoreDefaultRssHubSettings, (event) => {
+    assertTrustedSender(event)
+    if (!rssHubSettingsRepository) throw new Error('RSSHub settings are not ready')
+    return rssHubSettingsRepository.restoreDefault()
+  })
+  ipcMain.handle(IPC_CHANNELS.getSourceCatalog, (event) => {
+    assertTrustedSender(event)
+    if (!feedDiscoveryCatalog) throw new Error('Source catalog is not ready')
+    return feedDiscoveryCatalog.data
+  })
   ipcMain.handle(IPC_CHANNELS.listJsonRules, (event) => {
     assertTrustedSender(event)
     if (!jsonRuleRepository) throw new Error('JSON rule repository is not ready')
@@ -306,6 +321,43 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (!jsonRuleRepository) throw new Error('JSON rule repository is not ready')
     jsonRuleRepository.deleteRule(validateId(id, 'ruleId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.getRuleGuide, (event, kind: unknown, language: unknown) => {
+    assertTrustedSender(event)
+    const ruleKind = validateGuideRuleKind(kind)
+    const locale = language === 'zh' ? 'zh-CN' : language === 'en' ? 'en' : null
+    if (!locale) throw new TypeError('Unknown guide language')
+    return readFileSync(join(__dirname, `../../resources/rule-guides/${ruleKind}-rules-${locale}.md`), 'utf8')
+  })
+  ipcMain.handle(IPC_CHANNELS.generateAiRule, async (event, kind: unknown, url: unknown) => {
+    assertTrustedSender(event)
+    if (!aiRuleGenerationService) throw new Error('AI rule generation service is not ready')
+    const sourceUrl = validateUrlInput(url)
+    return validateAiRuleKind(kind) === 'WEBSITE'
+      ? aiRuleGenerationService.generateWebsiteRule(sourceUrl)
+      : aiRuleGenerationService.generateJsonRule(sourceUrl)
+  })
+  ipcMain.handle(IPC_CHANNELS.saveAiGeneratedRule, (event, previewId: unknown) => {
+    assertTrustedSender(event)
+    if (!aiRuleGenerationService) throw new Error('AI rule generation service is not ready')
+    aiRuleGenerationService.save(validateId(previewId, 'previewId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.exportRuleTemplateFile, async (event, kind: unknown) => {
+    assertTrustedSender(event)
+    const ruleKind = validateGuideRuleKind(kind)
+    try {
+      const content = ruleKind === 'website' ? websiteRuleRepository!.exportTemplate() : jsonRuleRepository!.exportTemplate()
+      const selected = await showSaveDialog({
+        title: ruleKind === 'website' ? '导出网站解析规则模板' : '导出 JSON 规则模板',
+        defaultPath: ruleKind === 'website' ? 'website-rule-template.json' : 'json-rule-template.json',
+        filters: [{ name: 'JSON', extensions: ['json'] }]
+      })
+      if (selected.canceled || !selected.filePath) return { ok:false,cancelled:true,path:null,error:null }
+      writeFileSync(selected.filePath, content, 'utf8')
+      return { ok:true,cancelled:false,path:selected.filePath,error:null }
+    } catch (error) {
+      return { ok:false,cancelled:false,path:null,error:error instanceof Error ? error.message : String(error) }
+    }
   })
   ipcMain.handle(IPC_CHANNELS.inspectWebsiteStatic, async (event, url: unknown) => {
     assertTrustedSender(event)
@@ -351,6 +403,16 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (!websiteRuleRepository) throw new Error('Website rule repository is not ready')
     websiteRuleRepository.deleteRule(validateId(id, 'ruleId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.testWebsiteRule, async (event, url: unknown) => {
+    assertTrustedSender(event)
+    if (!websiteSourceService) throw new Error('Website source service is not ready')
+    try {
+      const result = await websiteSourceService.inspect(validateUrlInput(url))
+      return { ok:true,articleCount:result.candidate.articles.length,error:null }
+    } catch (error) {
+      return { ok:false,articleCount:0,error:error instanceof Error ? error.message : String(error) }
+    }
   })
   ipcMain.handle(IPC_CHANNELS.discoverSource, async (event, url: unknown) => {
     assertTrustedSender(event)
@@ -399,6 +461,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.getAiSettings, (event) => {
     assertTrustedSender(event); if (!aiSettingsRepository) throw new Error('AI settings are not ready'); return aiSettingsRepository.current()
   })
+  ipcMain.handle(IPC_CHANNELS.getAiApiKey, (event, providerId: unknown) => {
+    assertTrustedSender(event); if (!aiSettingsRepository) throw new Error('AI settings are not ready'); return aiSettingsRepository.getApiKey(validateId(providerId, 'providerId'))
+  })
   ipcMain.handle(IPC_CHANNELS.updateAiSettings, (event, patch: unknown) => {
     assertTrustedSender(event); if (!aiSettingsRepository) throw new Error('AI settings are not ready')
     const value = validateRecord(patch, 'AI settings patch') as AiSettingsPatch
@@ -429,6 +494,9 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle(IPC_CHANNELS.getTranslationSettings, (event) => {
     assertTrustedSender(event); if (!translationSettingsRepository) throw new Error('Translation settings are not ready'); return translationSettingsRepository.current()
+  })
+  ipcMain.handle(IPC_CHANNELS.getTranslationApiKey, (event, type: unknown) => {
+    assertTrustedSender(event); if (!translationSettingsRepository) throw new Error('Translation settings are not ready'); return translationSettingsRepository.getApiKey(validateTranslationProviderType(type))
   })
   ipcMain.handle(IPC_CHANNELS.updateTranslationSettings, (event, patch: unknown) => {
     assertTrustedSender(event); if (!translationSettingsRepository) throw new Error('Translation settings are not ready')
@@ -548,6 +616,16 @@ function validateRuleKind(value: unknown): 'website' | 'json' | 'filter' {
   throw new TypeError('Unknown rule kind')
 }
 
+function validateGuideRuleKind(value: unknown): 'website' | 'json' {
+  if (value === 'website' || value === 'json') return value
+  throw new TypeError('Unknown guide rule kind')
+}
+
+function validateAiRuleKind(value: unknown): AiGeneratedRuleKind {
+  if (value === 'WEBSITE' || value === 'JSON') return value
+  throw new TypeError('Unknown AI rule kind')
+}
+
 function websiteSourceRuleSettings(feedId: string) {
   if (!libraryRepository || !websitePreferenceRepository) throw new Error('Website preferences are not ready')
   const feed = libraryRepository.getFeedById(feedId)
@@ -587,6 +665,7 @@ app.whenReady().then(() => {
   aiSettingsRepository = new AiSettingsRepository(desktopDatabase.connection, secretStore)
   translationSettingsRepository = new TranslationSettingsRepository(desktopDatabase.connection, secretStore)
   articleFilterRepository = new ArticleFilterRepository(join(app.getPath('userData'), 'article-filter-rules.json'))
+  feedDiscoveryCatalog = new FeedDiscoveryCatalog()
   rssHubSettingsRepository = new RssHubSettingsRepository(desktopDatabase.connection)
   rssHubResolver = new RssHubResolver(
     new RssHubRouteMatcher(loadBundledRssHubRoutes()),
@@ -634,6 +713,7 @@ app.whenReady().then(() => {
     websiteSubscriptionService
   )
   aiSummaryService = new AiSummaryService(libraryRepository, readerContentService, aiSettingsRepository, join(app.getPath('userData'), 'cache', 'ai-summary'))
+  aiRuleGenerationService = new AiRuleGenerationService(aiSettingsRepository, websiteRuleRepository, jsonRuleRepository, new JsonArticleParser())
   translationService = new TranslationService(libraryRepository, readerContentService, translationSettingsRepository, aiSettingsRepository, join(app.getPath('userData'), 'cache', 'translation'))
   configurationBackupService = new ConfigurationBackupService(
     app.getVersion(), libraryRepository, settingsRepository, websiteRuleRepository, jsonRuleRepository,
@@ -696,6 +776,8 @@ app.on('before-quit', () => {
   translationService = null
   articleFilterRepository = null
   configurationBackupService = null
+  feedDiscoveryCatalog = null
+  aiRuleGenerationService = null
 })
 
 app.on('window-all-closed', () => {

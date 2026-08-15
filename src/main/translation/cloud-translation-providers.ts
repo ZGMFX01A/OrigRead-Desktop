@@ -124,7 +124,7 @@ function requireEndpoint(config:TranslationRuntimeConfig):void{if(!config.endpoi
 function requireApiKey(config:TranslationRuntimeConfig):void{if(!config.apiKey.trim())throw new Error('翻译服务 API Key 不能为空')}
 function microsoftLanguage(tag:string):string{const k=tag.toLowerCase();return ['zh-cn','zh-sg','zh-hans'].includes(k)?'zh-Hans':['zh-tw','zh-hk','zh-hant'].includes(k)?'zh-Hant':tag}
 function googleLanguage(tag:string):string{return tag.toLowerCase()==='zh-hans'?'zh-CN':tag.toLowerCase()==='zh-hant'?'zh-TW':tag}
-function deepLLanguage(tag:string,target:boolean):string{const n=tag.replace('_','-').toUpperCase();if(['ZH-CN','ZH-SG','ZH-HANS'].includes(n))return target?'ZH-HANS':'ZH';if(['ZH-TW','ZH-HK','ZH-HANT'].includes(n))return target?'ZH-HANT':'ZH';if(target&&n==='EN')return'EN-US';return n.split('-')[0]!}
+function deepLLanguage(tag:string,target:boolean):string{const n=tag.replace('_','-').toUpperCase();if(['ZH-CN','ZH-SG','ZH-HANS'].includes(n))return'ZH';if(['ZH-TW','ZH-HK','ZH-HANT'].includes(n))return target?'ZH-HANT':'ZH';if(target&&n==='EN')return'EN-US';return n.split('-')[0]!}
 function dlxLanguage(tag:string):string{const k=tag.toLowerCase();return ['zh-cn','zh-sg','zh-hans','zh-tw','zh-hk','zh-hant'].includes(k)?'ZH':tag.split('-')[0]!.toUpperCase()}
 function decodeHtmlEntities(value:string):string{return cheerio.load(`<body>${value}</body>`)('body').text()}
 function asRecord(value:unknown):Record<string,unknown>|null{return typeof value==='object'&&value!==null&&!Array.isArray(value)?value as Record<string,unknown>:null}

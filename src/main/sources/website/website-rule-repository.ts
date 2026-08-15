@@ -60,6 +60,14 @@ export class WebsiteRuleRepository {
     return incoming.rules.length
   }
 
+  validateCandidate(rule: WebsiteRule): void {
+    this.validateRule(rule)
+  }
+
+  saveRule(rule: WebsiteRule): void {
+    this.saveCustomRule(rule)
+  }
+
   saveCustomRule(rule: WebsiteRule): void {
     this.validateRule(rule)
     const merged = new Map(this.loadCustomRules().map((item) => [item.id, item]))

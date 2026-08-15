@@ -7,7 +7,8 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
   const { server } = fixture
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Fixture server did not expose a TCP port')
-  const feedUrl = `http://127.0.0.1:${address.port}/feed.xml`
+  const baseUrl = `http://127.0.0.1:${address.port}`
+  const feedUrl = `${baseUrl}/feed.xml`
   const testApp = await launchIsolatedOrigRead()
   const electronApp = testApp.app
 
@@ -68,6 +69,21 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await page.locator('.full-content-button').click()
     await expect(page.locator('.article-body')).toContainText('OrigRead extracted full text article 1', { timeout: 15_000 })
     await expect(page.locator('.full-content-button')).toBeDisabled()
+    const readerContent = page.locator('.reader-content')
+    const readerMetrics = await readerContent.evaluate((element) => ({
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight
+    }))
+    expect(readerMetrics.scrollHeight).toBeGreaterThan(readerMetrics.clientHeight)
+    await readerContent.evaluate((element) => { element.scrollTop = 300 })
+    await expect.poll(() => readerContent.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+    const articleImage = page.locator('.article-body img').first()
+    await expect(articleImage).toBeVisible()
+    await expect(articleImage).toHaveAttribute('src', `${baseUrl}/image/1.png`)
+    await expect.poll(() => articleImage.evaluate((element) => {
+      const image = element as HTMLImageElement
+      return image.complete ? image.naturalWidth : 0
+    })).toBeGreaterThan(0)
 
     const articleRequestsBeforeOriginal = fixture.articleRequests()
     await page.locator('.original-button').click()
@@ -115,6 +131,12 @@ async function startFeedServer(): Promise<{ server: Server; feedRequests: () => 
       response.end(articleHtml(Number(articleMatch[1])))
       return
     }
+    const imageMatch = request.url?.match(/^\/image\/(\d+)\.png$/)
+    if (imageMatch) {
+      response.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' })
+      response.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'))
+      return
+    }
     response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
     response.end('not found')
   })
@@ -157,8 +179,9 @@ function articleHtml(id: number): string {
         <nav>Home · Archive · Categories</nav>
         <article>
           <h1>OrigRead E2E Article ${id}</h1>
-          <p>OrigRead extracted full text article ${id}. ${'This paragraph contains useful full article text for deterministic Readability extraction and desktop reader validation. '.repeat(8)}</p>
-          <p>${'The second paragraph keeps the fixture article-like, long enough for content scoring, sanitizing, caching, and rendering checks. '.repeat(8)}</p>
+          <img src="/image/${id}.png" alt="OrigRead E2E image ${id}">
+          <p>OrigRead extracted full text article ${id}. ${'This paragraph contains useful full article text for deterministic Readability extraction and desktop reader validation. '.repeat(18)}</p>
+          <p>${'The second paragraph keeps the fixture article-like, long enough for content scoring, sanitizing, caching, rendering, and real reader scrolling checks. '.repeat(18)}</p>
           <a href="/related/${id}">Related reading</a>
         </article>
       </body>

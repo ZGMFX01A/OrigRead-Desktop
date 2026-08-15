@@ -4,6 +4,7 @@ import {
   BookOpenText,
   ChevronLeft,
   ChevronRight,
+  Compass,
   Languages,
   MoreHorizontal,
   Plus,
@@ -30,6 +31,8 @@ import type { OriginalArticleViewState, OriginalViewBounds } from '../../shared/
 import { SettingsPanel } from './SettingsPanel'
 import type { AiSummaryDocument } from '../../shared/ai'
 import type { TranslationDocument, TranslationTarget } from '../../shared/translation'
+import type { FeedCatalogEntry } from '../../shared/source-catalog'
+import { SourceDiscoveryPanel } from './SourceDiscoveryPanel'
 
 type Destination = 'all' | 'unread' | 'starred' | 'sources'
 type ReaderMode = 'article' | 'ai' | 'translation'
@@ -69,6 +72,7 @@ export default function App(): React.JSX.Element {
   const [readerToolLoading, setReaderToolLoading] = useState<ReaderMode | null>(null)
   const [readerToolError, setReaderToolError] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [sourceCatalogOpen, setSourceCatalogOpen] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [syncRuntimeState, setSyncRuntimeState] = useState<SyncRuntimeState | null>(null)
   const [originalViewState, setOriginalViewState] = useState<OriginalArticleViewState>(closedOriginalState())
@@ -275,6 +279,7 @@ export default function App(): React.JSX.Element {
 
   const showSettings = async (): Promise<void> => {
     if (originalViewState.open) await closeOriginalArticle()
+    setSourceCatalogOpen(false)
     setSettingsOpen(true)
     setSettingsError(null)
   }
@@ -356,10 +361,38 @@ export default function App(): React.JSX.Element {
   }
 
   const openAddSource = (): void => {
+    setSourceCatalogOpen(false)
     setSourceError(null)
     setSourceDiscovery(null)
     setSelectedCandidateId(null)
     setAddSourceOpen(true)
+  }
+
+  const showSourceCatalog = async (): Promise<void> => {
+    if (originalViewState.open) await closeOriginalArticle()
+    setSettingsOpen(false)
+    setSourceCatalogOpen(true)
+  }
+
+  const subscribeCatalogFeed = async (feed: FeedCatalogEntry): Promise<void> => {
+    setSourceCatalogOpen(false)
+    setSettingsOpen(false)
+    setSourceUrl(feed.feedUrl)
+    setSourceError(null)
+    setSourceDiscovery(null)
+    setSelectedCandidateId(null)
+    setAddSourceOpen(true)
+    setIsAddingSource(true)
+    try {
+      const discovered = await window.origread.discoverSource(feed.feedUrl)
+      setSourceDiscovery(discovered)
+      setSelectedCandidateId(discovered.selectedCandidateId)
+      if (discovered.candidates.length === 0) setSourceError(discovered.error ?? t('noSourceCandidate'))
+    } catch (error) {
+      setSourceError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsAddingSource(false)
+    }
   }
 
   const closeAddSource = (): void => {
@@ -457,10 +490,15 @@ export default function App(): React.JSX.Element {
                 <div className="brand-tagline">{t('tagline')}</div>
               </div>
             </div>
-            <button className="primary-action" type="button" onClick={openAddSource}>
-              <Plus size={16} strokeWidth={2.2} />
-              {t('addSubscription')}
-            </button>
+            <div className="brand-actions">
+              <button className="icon-button source-discovery-button" type="button" title={t('sourceDiscoveryTitle')} aria-label={t('sourceDiscoveryTitle')} onClick={()=>void showSourceCatalog()}>
+                <Compass size={17}/>
+              </button>
+              <button className="primary-action" type="button" onClick={openAddSource}>
+                <Plus size={16} strokeWidth={2.2} />
+                {t('addSubscription')}
+              </button>
+            </div>
           </header>
 
           <nav className="destination-tabs" aria-label="Article filters">
@@ -605,12 +643,16 @@ export default function App(): React.JSX.Element {
       <section className="reader-pane">
         <header className="reader-toolbar">
           <div className="reader-title">
-            {settingsOpen ? t('settings') : originalViewState.open ? (originalViewState.title || t('original')) : t('reader')}
+            {settingsOpen ? t('settings') : sourceCatalogOpen ? t('sourceDiscoveryTitle') : originalViewState.open ? (originalViewState.title || t('original')) : t('reader')}
           </div>
           <div className="reader-actions">
             {settingsOpen ? (
               <button type="button" className="settings-close-button" onClick={() => setSettingsOpen(false)}>
                 <X size={17} /><span>{t('closeSettings')}</span>
+              </button>
+            ) : sourceCatalogOpen ? (
+              <button type="button" className="settings-close-button" onClick={() => setSourceCatalogOpen(false)}>
+                <X size={17} /><span>{t('back')}</span>
               </button>
             ) : originalViewState.open ? (
               <>
@@ -691,6 +733,8 @@ export default function App(): React.JSX.Element {
               onConfigurationRestored={() => void handleConfigurationRestored()}
             />
           </>
+        ) : sourceCatalogOpen ? (
+          <SourceDiscoveryPanel onSubscribe={(feed)=>void subscribeCatalogFeed(feed)}/>
         ) : selectedArticle ? (
           <div className={`reader-content reader-mode-${readerMode}`}>
             <div className="article-heading">

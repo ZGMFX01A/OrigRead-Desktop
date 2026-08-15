@@ -14,6 +14,7 @@ describe('translation providers Android parity',()=>{
       expect((await new GoogleCloudTranslationProvider().translate(['Hello'],null,'zh-CN',{endpoint:`${base}/google`,apiKey:'key',region:''})).texts).toEqual(['Google & Cloud'])
       expect((await new DlxTranslationProvider().translate(['Hello'],null,'zh-CN',{endpoint:`${base}/dlx`,apiKey:'',region:''})).texts).toEqual(['DLX译文'])
       expect(requests).toHaveLength(4)
+      expect(requests.find((item)=>item.startsWith('/deepl|'))).toContain('"target_lang":"ZH"')
     }finally{await new Promise<void>((resolve)=>server.close(()=>resolve()))}
   })
 })

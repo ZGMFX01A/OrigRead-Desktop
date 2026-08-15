@@ -18,6 +18,12 @@ describe('RssHubSettingsRepository', () => {
 
       const reopened = new RssHubSettingsRepository(database.connection)
       expect(reopened.current().instances.some((item) => item.url === 'https://custom.example.com')).toBe(true)
+
+      reopened.setEnabled(false)
+      const restored = reopened.restoreDefault()
+      expect(restored.enabled).toBe(true)
+      expect(restored.instances).toHaveLength(16)
+      expect(restored.instances.some((item) => item.url === 'https://custom.example.com')).toBe(false)
     } finally {
       database.close()
     }
