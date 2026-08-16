@@ -113,7 +113,7 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 - [x] RSS 添加/刷新 IPC 与 UI 闭环
 - [x] fixture 行为对照测试
 - [x] 真实公网验证：`https://github.blog/feed/` 成功发现 `https://github.blog/feed` 并解析文章
-- [ ] RSS 图标发现完全对齐 Android `BestIconFinder`（当前优先使用 Feed 自带 image）
+- [x] RSS 图标发现完全对齐 Android `BestIconFinder`：apple-touch-icon > SVG > PNG > ICO > GIF > JPG，同格式按字节大小；页面失败时回退标准根目录图标，Feed 自带 image 不再覆盖最终图标选择
 - [x] RSSHub 路由目录：复制 Android 当前 `rsshub_routes.json` 数据资产，schema / routeCount 校验一致
 - [x] RSSHub TypeScript matcher：host/path/query/动态参数/缺参/可选参数/安全约束与 Android 对照
 - [x] RSSHub 16 个默认实例、最近成功优先、网络失败 5 分钟冷却、自定义实例持久化
@@ -246,7 +246,7 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 
 ### Phase 8：发布
 
-- [x] Windows NSIS（当前为开发/未签名构建，安装包可生成）
+- [x] Windows NSIS（当前为开发/未签名构建；2026-08-16 已用当前源码重新生成 `OrigRead-0.1.0-Windows-x64.exe`）
 - [ ] macOS DMG
 - [ ] GitHub Actions
 - [ ] Windows 签名
@@ -264,17 +264,17 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
    - Desktop 入口可以按桌面交互优化，但不能丢失 Android 已有能力或改变功能含义。
 
 2. [x] **JSON 规则完整功能**
-   - 当前已有 JsonRule parser / Repository / 导入 / 导出 / 启停 / 删除等底层能力，但整个用户功能仍视为未完成。
-   - 继续补齐 Android 当前页面已有的使用教程、AI 生成 JSON 规则、导出模板，以及对应交互与状态反馈。
+   - JsonRule parser / Repository / 导入 / 导出 / 启停 / 删除底层与用户入口均已完成。
+   - 已补 Android 当前页面已有的本地使用教程、AI 生成 JSON 规则、预览确认、真实本地试跑 / 最多一次修复、导出模板及状态反馈。
 
 3. [x] **网站规则完整功能**
-   - 当前已有 WebsiteRule parser / Repository / 导入 / 导出 / 启停 / 删除等底层能力，但整个用户功能仍视为未完成。
-   - 继续补齐 Android 当前页面已有的使用教程、AI 生成网站解析规则、导出模板、测试网站解析规则。
+   - WebsiteRule parser / Repository / 导入 / 导出 / 启停 / 删除底层与用户入口均已完成。
+   - 已补 Android 当前页面已有的本地使用教程、AI 生成网站解析规则、预览确认、导出模板、真实本地试跑 / 最多一次修复与在线规则测试。
    - 内部 `ithome-home` 规则继续按 Android 行为隐藏，不出现在用户规则列表。
 
 4. [x] **RSSHub 设置**
-   - 底层 Repository / Resolver / IPC / health test 已完成，但用户设置页尚未完成。
-   - 对齐 Android：总开关、实例列表、实例启停、连通性测试、自定义实例添加、删除、恢复默认。
+   - Repository / Resolver / IPC / health test 与用户设置页均已完成。
+   - 已对齐 Android：总开关、实例列表、实例启停、连通性测试、自定义实例添加、删除、恢复默认。
 
 5. [x] **OPML 导入导出**
    - 已对齐 Android `OpmlService` 的导入、导出及重复 URL 跳过语义。
@@ -286,18 +286,19 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
    - Desktop 自动检查更新、提示更新、下载安装/跳转发布页等完整用户流程尚未实现。
    - 行为与 Android 已有“检查更新”产品语义保持一致，桌面端仅做平台必要适配。
 
-7. [ ] **阅读页面 UI 配置（背景色）**
-   - 在现有字号 / 行距 / 版心设置基础上，补齐阅读背景色等 Android 已有阅读外观配置。
+7. [x] **阅读页面 UI 配置（背景色）**
+   - 已支持跟随主题、纸白、暖白、米黄、淡绿以及任意 HEX 自定义背景色。
+   - 正文、译文与 AI 摘要阅读区域统一应用；自定义明暗背景自动选择可读前景色并持久化。
 
-8. [ ] **深色适配**
-   - 完成全局深色主题。
-   - 支持跟随系统变化，不仅是启动时读取一次。
-   - Reader、设置页、文章列表、弹窗、WebContentsView 外层 UI 都要统一适配。
+8. [x] **深色适配**
+   - 已完成浅色 / 深色 / 跟随系统主题。
+   - `prefers-color-scheme` 运行时变化可即时更新，不仅启动时读取一次。
+   - Reader、设置页、文章列表、来源发现、弹窗、AI 摘要和 WebContentsView 外层 UI 已统一适配。
 
-9. [ ] **UI 一致性检查**
+9. [x] **UI 一致性检查**
    - 不要求 Desktop 100% 复刻 Android 布局。
-   - 必须逐页核对 Android 当前功能，确保不丢入口、不丢功能、不擅自改变功能描述或业务含义。
-   - 按钮位置、页面排版、桌面交互方式允许优化，但产品语义以 Android 当前实现和资源文案为准。
+   - 已按 Android 当前功能逐页补齐主要产品入口与语义缺口，包括 Reader 已读/未读、收藏、下一篇、全文/Feed 内容切换、AI/翻译入口、单来源设置、分组与来源筛选、通知和重载图标等。
+   - 最终发布前仍保留“中英文可见性 + Windows/macOS 实机”发布级审计，不再作为独立功能开发项。
 
 10. [ ] **自动打包**
     - GitHub Actions 自动构建至少覆盖 Windows 与 macOS。
@@ -349,103 +350,89 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 - [x] 修复 AI / 翻译 Provider 修改其他字段时错误清空 Key 草稿的问题；AI Reader E2E 现在要求真实 Bearer Key 鉴权成功才能通过。
 - [x] 左侧文章列表折叠改为当前会话状态：应用启动和配置恢复时始终展开，旧 `workspaceCollapsed=true` 会自动纠正；折叠后保留 34 px 明确侧轨和完整展开按钮，避免出现“文章列表像丢失”的假故障。Renderer E2E 覆盖持久化 true 后 reload 自动恢复。
 
-## 9. 唯一剩余工作基线（2026-08-15）
+## 9. 唯一剩余工作基线（2026-08-16 重新核对）
 
-从本节开始，后续开发、验收和 checkpoint 统一以此清单为准。上面的 Phase 与 16 项清单用于保留开发历史，不再单独推导“还有什么没做”。任何项目只有同时满足“实现完成 + 所需自动测试通过 + 对应平台验证完成”后，才从本节移除。
+从本节开始，后续开发、验收和 checkpoint 统一以此清单为准。前面的 Phase 与 16 项清单用于保留开发历史；“接下来做什么”只看本节和第 10 节。
 
-### A. 尚未开发 / 尚未形成完整用户功能
+### A. 仍未开发的产品功能
 
-1. [ ] **软件自动更新**
-   - 自动检查、用户提示、下载安装或安全跳转 Release 的完整流程尚未实现。
-   - 与 Desktop 独立仓库 Release 版本比较、失败降级和更新设置仍待开发。
+1. [ ] **Desktop Git Release 信息能力**
+   - 使用 `ZGMFX01A/OrigRead-Desktop` 的 GitHub Release 数据。
+   - 展示最新版本、Release Notes、发布时间和当前平台安装包。
+   - `published_at` / `created_at` 面向用户统一格式化为 `yyyy-MM-dd`，不直接显示 ISO 时间戳。
+   - 提供“直接下载当前平台安装包”和“打开完整 Release 页面”两个独立动作。
 
-2. [ ] **Desktop Git Release 页面能力**
-   - 使用 `ZGMFX01A/OrigRead-Desktop` Release 数据。
-   - 展示版本与发布时间、直接下载当前平台安装包、打开完整 Release 页面。
-   - Release `published_at` / `created_at` 面向用户展示时统一格式化为 `yyyy-MM-dd`，不直接显示 ISO 时间戳。
+2. [ ] **手动检查更新完整闭环**
+   - 设置页提供明确的“检查更新”。
+   - 比较当前版本与最新 Release，正确处理“已是最新 / 有新版本 / 查询失败 / Release 没有当前平台资产”。
+   - Windows 可选择下载 NSIS；macOS 后续对应 DMG。下载失败必须保留打开 Release 页的安全降级入口。
 
-3. [ ] **阅读背景色配置**
-   - 当前 Reader 只有字号、行距、版心宽度；背景色配置模型、持久化与 UI 尚未实现。
+3. [ ] **启动自动检查与更新设置**
+   - 增加是否启动时自动检查更新的用户设置，默认行为与 Android 产品语义对齐。
+   - 自动检查不得阻塞应用启动；失败只记录状态，不制造启动错误。
+   - 下载、跳转、版本跳过 / 提醒策略在实现时统一确定，不把 GitHub 网络错误当成“没有更新”。
 
-4. [ ] **全局深色主题 / 跟随系统主题**
-   - 当前没有 theme 状态和 `prefers-color-scheme` 跟随链。
-   - Reader、设置页、列表、弹窗和 WebContentsView 外层 UI 均需统一适配。
+4. [ ] **Release / 更新逻辑自动测试**
+   - 使用本地 HTTP / GitHub API mock 覆盖版本比较、资产选择、日期格式化、无资产、限流/失败降级。
+   - Renderer 至少覆盖“已是最新 / 有更新 / 查询失败”三种可见状态。
 
-5. [x] **阅读页 Ctrl + F 文章内搜索**
-   - `Ctrl + F` / `Cmd + F` 只搜索当前 Reader 内容，不混入左侧文章列表或应用 UI。
-   - 已实现全部匹配高亮、当前项定位、上一项/下一项、Enter / Shift+Enter 和 Escape 关闭；译文模式搜索当前译文。
+### B. 跨平台构建与发布工程
 
-6. [x] **阅读字体与本地字体导入**
-   - 内置默认 / 无衬线 / 衬线 / 等宽四档 Reader 字体。
-   - 支持 TTF / OTF / WOFF / WOFF2 本地字体导入、持久化、选择与删除；仅应用 Reader 正文、译文与摘要，不改变 App UI 字体。
-   - 自定义字体文件属于设备本地资源，不写入跨设备配置备份。
+1. [ ] **GitHub Actions Windows + macOS 自动构建**
+   - 当前仓库仍没有 `.github/workflows`。
+   - 至少生成 Windows NSIS 与 macOS DMG artifact，并为后续签名保留 secrets / signing 接入点。
 
-7. [x] **文章朗读**
-   - 朗读分为 **正文 / 翻译 / AI 摘要** 三部分。
-   - Reader 主朗读默认读取正文；翻译启用且当前展示译文时，主朗读自动切换为**仅朗读译文**。
-   - AI 摘要窗口内置独立朗读按钮，不把摘要混入主朗读入口。
-   - 已接 Chromium Web Speech / 系统可用语音列表，支持开始、暂停、继续、停止、语音选择和文章/模式切换时停止旧朗读。
-   - Windows 可使用 Chromium 暴露的 Microsoft / 系统语音；代码没有按界面语言过滤语音。Edge Read Aloud 自己显示的完整 `Online (Natural)` 目录并不等同于 Electron `speechSynthesis.getVoices()` 的枚举结果；当前未接入 Edge Online Natural 完整目录。`ttsVoiceURI` 为设备本地设置，不进入跨设备备份。
+2. [ ] **macOS DMG 实际构建**
+   - `electron-builder.yml` 已配置 `dmg`，`package:mac` 脚本已存在；配置完成不等于平台验证完成。
+   - 需要在 macOS runner / 实机真正生成 DMG。
 
-8. [x] **AI 摘要阅读布局**
-   - 默认继续支持“替换正文”，同时增加左侧栏 / 右侧栏 / 阅读区上方 / 阅读区下方四种停靠模式。
-   - 停靠摘要与正文各自保持独立滚动；面板尺寸 220～640 px 可实时调整并持久化。
-   - 摘要面板内置位置切换、独立朗读、停止、重新生成和关闭入口。
+3. [ ] **macOS 主链实机验证**
+   - 至少验证启动、Renderer、来源添加/同步、Reader、WebContentsView、safeStorage、字体/文件选择器和 DMG 安装。
 
-## 9. 2026-08-15 第二轮实机 UX 回归
+4. [ ] **正式签名链**
+   - Windows code signing 尚未接入。
+   - macOS signing / notarization 尚未接入；证书未具备前保持未完成，不伪造完成状态。
 
-- [x] AI / 翻译 Provider 的 API Key 保存、模型加载和连接测试结果改为显示在对应 Provider 卡片内部；Website Rule 测试结果也回到网站规则卡片，避免统一堆在设置页末尾。
-- [x] AI 摘要重新建立独立视觉层级：更明显的面板边界、独立 Header / Body / Footer、AI 标识和模式徽标，降低与正文串读的可能。
-- [x] 新 AI Prompt 不再生成重复的 `## 摘要` 标题；Renderer 同时清理旧缓存摘要的开头“摘要”标题。
-- [x] 摘要面板移除 `zh-CN · STANDARD` 技术元信息；BRIEF / STANDARD / DETAILED 改为用户可读的“速览 / 均衡 / 深入”，Reader 临时选项与全局默认设置均使用三段式选择。
-- [x] Reader 翻译目标按“传统翻译 / AI 翻译”分组显示，不再把传统服务和 AI Provider / Model 混成一列。
-- [x] 来源页按订阅分组分区显示并展示每组来源数；分组不再只是数据库属性。
-- [x] 点击来源卡片进入该来源文章筛选，列表顶部显示当前来源并可退出筛选；点击全局全部 / 未读 / 收藏 / 来源 Tab 会清除来源筛选，避免筛选语义冲突。
-- [x] Electron E2E 实际创建来源分组、迁移 Feed、验证分组展示，并确认点击来源后文章列表仅保留该 Feed 的文章。
+### C. 发布前人工验收
 
-9. [ ] **GitHub Actions 自动构建**
-    - 当前仓库没有可用的 Windows + macOS CI 打包工作流。
-    - 需要至少生成 NSIS 与 DMG artifact，并保留后续签名接入点。
+1. [ ] **Windows 当前安装包安装 / 卸载 / 重装 / 升级验证**
+   - 当前源码对应的 `OrigRead-0.1.0-Windows-x64.exe` 已于 2026-08-16 10:53 重新生成。
+   - 仍需实际执行 NSIS 安装、启动、卸载、重装，以及后续有两个版本时的升级路径验证。
 
-10. [ ] **正式签名链**
-    - Windows code signing 尚未接入。
-    - macOS signing / notarization 尚未接入；证书条件未具备时允许保持发布阻断状态而不伪造完成。
+2. [ ] **OPML 原生文件选择器人工验收**
+   - Core、IPC bridge、菜单入口和导出选项已有自动测试。
+   - 仍需真实选择 `.opml/.xml` 导入，并将导出的 `.opml` 给 Android OrigRead / 其他阅读器打开验证互操作。
 
-### B. 已实现或已配置，但尚未完成平台验证
+3. [ ] **系统语言与主题跟随人工检查**
+   - `system / zh / en` 与浅色 / 深色 / 跟随系统代码已完成并有自动验证基础。
+   - 发布前在中文和非中文系统、浅色和深色系统环境各启动一次确认新增页面文案与视觉。
 
-1. [ ] **macOS DMG 实际构建验证**
-   - `electron-builder.yml` 已配置 `dmg` target，但当前开发基线没有可追溯的 macOS 实际构建结果。
+4. [ ] **最终中英文可见性审计**
+   - 语言基础设施已完成；Release / 更新功能新增时必须同步中文和 English 文案。
+   - 最终逐页确认不存在硬编码中文导致 English 模式漏翻。
 
-2. [ ] **macOS 启动 / Renderer / WebContentsView / safeStorage 实机验证**
-   - Windows 自动化通过不能替代 macOS 平台验证。
-
-3. [ ] **OPML 原生文件选择器人工验收**
-   - Core、IPC bridge 和菜单 UI 已有自动测试；仍需实际选择 `.opml/.xml` 文件导入，以及保存 `.opml` 后用其他阅读器/Android OrigRead 打开验证。
-
-4. [ ] **当前最新源码重新生成 Windows NSIS 并安装验证**
-   - `release/` 中已有安装包，但在本轮新增 OPML 和此前未提交修复后，必须重新 `package:win` 才能称为当前最新安装包。
-
-5. [ ] **系统语言跟随的最终人工检查**
-   - `system / zh / en` 逻辑已实现并有单测；最终发布前需在中文和非中文系统环境各启动一次确认标题、品牌和新增页面文案。
-
-### C. 已实现，但尚缺完整测试 / 验收覆盖
-
-1. [ ] **所有新增收尾功能的中英文覆盖审计**
-   - 语言基础设施已完成，但每个后续新增功能仍必须同时补中文 / English 与对应可见性测试。
-
-2. [ ] **发布级全回归矩阵**
+5. [ ] **发布级全回归矩阵**
    - Windows：typecheck + unit + Electron E2E + NSIS 安装/卸载/重启持久化。
    - macOS：同等主链至少覆盖启动、来源、Reader、WebContentsView、safeStorage、DMG 安装。
-   - Android 基线：Desktop 默认不修改 Android；如后续确实修改 Android/shared，则重新执行相应 Android 回归才允许收口。
+   - Android 基线：Desktop 默认不修改 Android；如后续确实修改 Android，则执行对应 Android 回归。
 
 ### D. 工程收口 / 发布卫生
 
-1. [ ] **整理当前 Desktop 未提交工作区**
-   - 当前功能开发存在大量已修改/新增但尚未提交的文件；在继续叠加大规模 Reader/发布功能前需要形成清晰基线。
-   - 是否 commit / push 由用户决定，助手不得擅自提交或推送。
+1. [ ] **处理当前唯一 staged `package-lock.json` 元数据差异**
+   - 功能源码已形成 Git 基线，当前 `main` HEAD 为 `eee8b76`；工作区只剩 `package-lock.json` staged 差异。
+   - 该差异只是 npm 对可选 Linux 包 `libc` 元数据的改写，不应在不确认原因时混入功能提交；是否保留 / 还原由用户决定。
 
-2. [ ] **确认最终版本号、构建产物命名与 Release 规则**
-   - 当前 `package.json` 仍为 `0.1.0` 开发版本；正式 Desktop 1.0 发布前单独确认，不在普通功能开发中擅自改版本号。
+2. [ ] **确认正式版本号、构建产物命名与 Release 规则**
+   - 当前 `package.json` 仍为 `0.1.0` 开发版本。
+   - 正式 Desktop 1.0 发布前单独确认 tag、版本号、NSIS / DMG 命名和 Release 资产规则，不在普通功能开发中擅自改版本号。
+
+### 当前自动回归基线
+
+- `npm run typecheck`：通过。
+- `npm test`：55 files / 169 tests 通过。
+- `npm run build`：通过。
+- Electron E2E：6 / 6 通过。
+- 当前主产品功能（来源、同步、Reader、AI、翻译、规则、OPML、背景/主题）不再列入新增开发范围；后续以防回归为主。
 
 ## 10. 后续按大项开发顺序
 
@@ -507,10 +494,12 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 - [ ] B3 启动自动检查开关、版本比较、下载/跳转、错误降级。
 - [ ] B4 对相关网络与版本选择逻辑增加单测/E2E mock。
 
+**下一步从 B1 开始连续完成 B1 → B4。** 当前不再新增 Reader / 来源类大功能，除非真实回归发现 bug。
+
 ### 大项 E：跨平台构建与正式发布
 
 - [ ] E1 GitHub Actions Windows / macOS 自动构建。
-- [ ] E2 当前源码 Windows NSIS 重新打包并安装验证。
+- [ ] E2 当前 Windows NSIS 安装 / 卸载 / 重装验证；当前源码安装包已经重新生成，不再重复把“生成安装包”列为缺口。
 - [ ] E3 macOS DMG 构建与实机主链验证。
 - [ ] E4 Windows 签名、macOS signing/notarization（证书具备后）。
 - [ ] E5 最终中英文、安装/卸载、升级、备份恢复、来源/Reader/AI/翻译全回归。
