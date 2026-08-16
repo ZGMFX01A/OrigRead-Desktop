@@ -1,7 +1,8 @@
 import { createServer } from 'node:http'
 import { describe,expect,it } from 'vitest'
+import type { TranslationSettingsRepository } from './translation-settings-repository'
 import { MicrosoftTranslationProvider,DeepLTranslationProvider,GoogleCloudTranslationProvider,DlxTranslationProvider,resolveDeepLEndpoint } from './cloud-translation-providers'
-import { parseAiTranslationResponse } from './translation-service'
+import { TranslationService,parseAiTranslationResponse } from './translation-service'
 
 describe('translation providers Android parity',()=>{
   it('maps DeepL free keys to free official endpoint',()=>{expect(resolveDeepLEndpoint('https://api.deepl.com/v2/translate','abc:fx')).toContain('api-free.deepl.com')})
@@ -15,6 +16,36 @@ describe('translation providers Android parity',()=>{
       expect((await new DlxTranslationProvider().translate(['Hello'],null,'zh-CN',{endpoint:`${base}/dlx`,apiKey:'',region:''})).texts).toEqual(['DLX译文'])
       expect(requests).toHaveLength(4)
       expect(requests.find((item)=>item.startsWith('/deepl|'))).toContain('"target_lang":"ZH"')
+    }finally{await new Promise<void>((resolve)=>server.close(()=>resolve()))}
+  })
+
+  it('keeps DeepL connectivity test and quota query as separate requests',async()=>{
+    const requests:string[]=[]
+    const server=createServer(async(req,res)=>{
+      let body='';for await(const chunk of req)body+=chunk
+      requests.push(`${req.method} ${req.url}|${body}`)
+      res.setHeader('content-type','application/json')
+      if(req.url==='/v2/translate')res.end(JSON.stringify({translations:[{text:'测试译文',detected_source_language:'EN'}]}))
+      else if(req.url==='/v2/usage')res.end(JSON.stringify({character_count:1234,character_limit:500000}))
+      else{res.statusCode=404;res.end('{}')}
+    })
+    await new Promise<void>((resolve)=>server.listen(0,'127.0.0.1',resolve))
+    const address=server.address();if(!address||typeof address==='string')throw new Error('no port')
+    const endpoint=`http://127.0.0.1:${address.port}/v2/translate`
+    const settingsRepository={
+      current:()=>({defaultProvider:'DEEPL',defaultTarget:{type:'traditional',provider:'DEEPL'},targetLanguage:'zh-CN',displayMode:'TRANSLATED',providers:[{type:'DEEPL',enabled:true,endpoint,region:'',hasApiKey:true,desktopSupported:true}]}),
+      getApiKey:()=> 'deepl-key'
+    } as unknown as TranslationSettingsRepository
+    const service=new TranslationService({} as never,{} as never,settingsRepository,{} as never,'')
+    try{
+      const testResult=await service.testProvider('DEEPL')
+      expect(testResult.ok).toBe(true)
+      expect(requests).toEqual([expect.stringMatching(/^POST \/v2\/translate\|/)])
+
+      const usage=await service.getDeepLUsage()
+      expect(usage).toMatchObject({characterCount:1234,characterLimit:500000,remainingCharacters:498766})
+      expect(requests).toHaveLength(2)
+      expect(requests[1]).toMatch(/^GET \/v2\/usage\|/)
     }finally{await new Promise<void>((resolve)=>server.close(()=>resolve()))}
   })
 })

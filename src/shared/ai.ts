@@ -52,6 +52,13 @@ export interface AiSummaryRequestOptions {
   length?: AiSummaryLength
 }
 
+export type AiSummaryProgressStage = 'PREPARING' | 'REQUESTING' | 'FINALIZING'
+
+export interface AiSummaryProgress {
+  articleId: string
+  stage: AiSummaryProgressStage
+}
+
 export interface AiProviderTestResult {
   ok: boolean
   error: string | null

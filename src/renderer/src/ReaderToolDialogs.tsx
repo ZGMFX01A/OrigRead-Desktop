@@ -6,14 +6,13 @@ import type { TranslationSettings, TranslationTarget } from '../../shared/transl
 
 export function AiSummaryOptionsDialog({ onClose, onGenerate }: {
   onClose(): void
-  onGenerate(options: AiSummaryRequestOptions): Promise<void>
+  onGenerate(options: AiSummaryRequestOptions): void
 }): React.JSX.Element {
   const { t } = useTranslation()
   const [settings, setSettings] = useState<AiSettings | null>(null)
   const [providerId, setProviderId] = useState('')
   const [model, setModel] = useState('')
   const [length, setLength] = useState<AiSummaryLength>('STANDARD')
-  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -43,7 +42,7 @@ export function AiSummaryOptionsDialog({ onClose, onGenerate }: {
           ] as const).map(([value,labelKey,descriptionKey])=><button type="button" key={value} className={`summary-mode-option ${length===value?'selected':''}`} onClick={()=>setLength(value)}><strong>{t(labelKey)}</strong><span>{t(descriptionKey)}</span></button>)}
         </div></div>
       </div>
-      <footer className="dialog-footer"><span className="dialog-footer-spacer"/><button type="button" className="dialog-cancel" onClick={onClose}>{t('cancel')}</button><button type="button" className="dialog-submit" disabled={busy||!providerId||!model} onClick={async()=>{setBusy(true);setError(null);try{await onGenerate({providerId,model,length});onClose()}catch(reason){setError(reason instanceof Error?reason.message:String(reason))}finally{setBusy(false)}}}>{busy&&<RefreshCw size={14} className="spinning"/>}{t('generate')}</button></footer>
+      <footer className="dialog-footer"><span className="dialog-footer-spacer"/><button type="button" className="dialog-cancel" onClick={onClose}>{t('cancel')}</button><button type="button" className="dialog-submit" disabled={!providerId||!model} onClick={()=>{setError(null);onClose();onGenerate({providerId,model,length})}}>{t('generate')}</button></footer>
     </section>
   </div>
 }

@@ -2,18 +2,23 @@ import type { DesktopLanguage } from './locale'
 
 export type DesktopLanguagePreference = 'system' | DesktopLanguage
 export type AiSummaryPlacement = 'replace' | 'left' | 'right' | 'top' | 'bottom'
+export type ThemePreference = 'system' | 'light' | 'dark'
+export type ReaderBackgroundPreference = 'theme' | 'paper' | 'warm' | 'sepia' | 'mint' | 'custom'
 
 export const SYNC_INTERVAL_OPTIONS = [0, 15, 30, 60, 120, 180, 360, 720, 1440] as const
 export type SyncIntervalMinutes = typeof SYNC_INTERVAL_OPTIONS[number]
 
 export interface DesktopSettings {
   language: DesktopLanguagePreference
+  theme: ThemePreference
   workspaceCollapsed: boolean
   workspaceWidth: number
   readerFontSize: number
   readerFontId: string
   readerLineHeight: number
   readerContentWidth: number
+  readerBackground: ReaderBackgroundPreference
+  readerBackgroundCustom: string
   ttsVoiceURI: string
   aiSummaryPlacement: AiSummaryPlacement
   aiSummaryPanelSize: number
@@ -25,12 +30,15 @@ export type DesktopSettingsPatch = Partial<DesktopSettings>
 
 export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   language: 'system',
+  theme: 'system',
   workspaceCollapsed: false,
   workspaceWidth: 420,
   readerFontSize: 17,
   readerFontId: 'system',
   readerLineHeight: 1.85,
   readerContentWidth: 760,
+  readerBackground: 'theme',
+  readerBackgroundCustom: '#eef7ee',
   ttsVoiceURI: '',
   aiSummaryPlacement: 'replace',
   aiSummaryPanelSize: 360,
@@ -42,12 +50,15 @@ export function normalizeDesktopSettings(value: unknown): DesktopSettings {
   const input = isRecord(value) ? value : {}
   return {
     language: normalizeLanguage(input.language),
+    theme: normalizeTheme(input.theme),
     workspaceCollapsed: input.workspaceCollapsed === true,
     workspaceWidth: normalizeWorkspaceWidth(input.workspaceWidth),
     readerFontSize: normalizeReaderFontSize(input.readerFontSize),
     readerFontId: normalizeStringSetting(input.readerFontId, DEFAULT_DESKTOP_SETTINGS.readerFontId, 500),
     readerLineHeight: normalizeReaderLineHeight(input.readerLineHeight),
     readerContentWidth: normalizeReaderContentWidth(input.readerContentWidth),
+    readerBackground: normalizeReaderBackground(input.readerBackground),
+    readerBackgroundCustom: normalizeHexColor(input.readerBackgroundCustom, DEFAULT_DESKTOP_SETTINGS.readerBackgroundCustom),
     ttsVoiceURI: normalizeStringSetting(input.ttsVoiceURI, '', 2_000),
     aiSummaryPlacement: normalizeAiSummaryPlacement(input.aiSummaryPlacement),
     aiSummaryPanelSize: normalizeAiSummaryPanelSize(input.aiSummaryPanelSize),
@@ -61,6 +72,7 @@ export function normalizeDesktopSettingsPatch(value: unknown): DesktopSettingsPa
 
   const patch: DesktopSettingsPatch = {}
   if ('language' in value) patch.language = normalizeLanguage(value.language)
+  if ('theme' in value) patch.theme = normalizeTheme(value.theme)
   if ('workspaceCollapsed' in value) {
     if (typeof value.workspaceCollapsed !== 'boolean') {
       throw new TypeError('workspaceCollapsed must be a boolean')
@@ -72,6 +84,8 @@ export function normalizeDesktopSettingsPatch(value: unknown): DesktopSettingsPa
   if ('readerFontId' in value) patch.readerFontId = normalizeStringSetting(value.readerFontId, DEFAULT_DESKTOP_SETTINGS.readerFontId, 500)
   if ('readerLineHeight' in value) patch.readerLineHeight = normalizeReaderLineHeight(value.readerLineHeight)
   if ('readerContentWidth' in value) patch.readerContentWidth = normalizeReaderContentWidth(value.readerContentWidth)
+  if ('readerBackground' in value) patch.readerBackground = normalizeReaderBackground(value.readerBackground)
+  if ('readerBackgroundCustom' in value) patch.readerBackgroundCustom = normalizeHexColor(value.readerBackgroundCustom, DEFAULT_DESKTOP_SETTINGS.readerBackgroundCustom)
   if ('ttsVoiceURI' in value) patch.ttsVoiceURI = normalizeStringSetting(value.ttsVoiceURI, '', 2_000)
   if ('aiSummaryPlacement' in value) patch.aiSummaryPlacement = normalizeAiSummaryPlacement(value.aiSummaryPlacement)
   if ('aiSummaryPanelSize' in value) patch.aiSummaryPanelSize = normalizeAiSummaryPanelSize(value.aiSummaryPanelSize)
@@ -90,6 +104,22 @@ export function normalizeDesktopSettingsPatch(value: unknown): DesktopSettingsPa
 
 function normalizeLanguage(value: unknown): DesktopLanguagePreference {
   return value === 'zh' || value === 'en' || value === 'system' ? value : 'system'
+}
+
+function normalizeTheme(value: unknown): ThemePreference {
+  return value === 'light' || value === 'dark' || value === 'system' ? value : DEFAULT_DESKTOP_SETTINGS.theme
+}
+
+function normalizeReaderBackground(value: unknown): ReaderBackgroundPreference {
+  return value === 'paper' || value === 'warm' || value === 'sepia' || value === 'mint' || value === 'custom' || value === 'theme'
+    ? value
+    : DEFAULT_DESKTOP_SETTINGS.readerBackground
+}
+
+function normalizeHexColor(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') return fallback
+  const normalized = value.trim().toLowerCase()
+  return /^#[0-9a-f]{6}$/.test(normalized) ? normalized : fallback
 }
 
 function normalizeWorkspaceWidth(value: unknown): number {

@@ -38,6 +38,7 @@ import {
 } from './content/content-extractors'
 import { DynamicArticleContentService } from './content/dynamic-article-content-service'
 import { ArticleFullContentService } from './content/article-full-content-service'
+import { withReaderImageReferer } from './content/reader-image-request-headers'
 import {
   OriginalArticleViewController,
   validateOriginalViewBounds
@@ -92,6 +93,7 @@ let originalArticleViewController: OriginalArticleViewController | null = null
 let periodicSyncScheduler: PeriodicSyncScheduler | null = null
 let aiSettingsRepository: AiSettingsRepository | null = null
 let aiSummaryService: AiSummaryService | null = null
+let activeAiSummaryRequest: { articleId: string; controller: AbortController } | null = null
 let translationSettingsRepository: TranslationSettingsRepository | null = null
 let translationService: TranslationService | null = null
 let articleFilterRepository: ArticleFilterRepository | null = null
@@ -161,6 +163,18 @@ function createMainWindow(): BrowserWindow {
     }
   })
   mainWindow = window
+  window.webContents.session.webRequest.onBeforeSendHeaders(
+    { urls: ['http://*/*', 'https://*/*'] },
+    (details, callback) => {
+      callback({
+        requestHeaders: withReaderImageReferer({
+          url: details.url,
+          resourceType: details.resourceType,
+          requestHeaders: details.requestHeaders
+        })
+      })
+    }
+  )
   originalArticleViewController?.dispose()
   originalArticleViewController = new OriginalArticleViewController(window, (state) => {
     if (!window.isDestroyed()) {
@@ -592,7 +606,36 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event); if (!aiSummaryService) throw new Error('AI service is not ready'); try { await aiSummaryService.testProvider(validateId(providerId, 'providerId')); return { ok:true,error:null } } catch(error) { return { ok:false,error:error instanceof Error?error.message:String(error) } }
   })
   ipcMain.handle(IPC_CHANNELS.summarizeArticle, async (event, articleId: unknown, forceRefresh?: unknown, options?: unknown) => {
-    assertTrustedSender(event); if (!aiSummaryService) throw new Error('AI service is not ready'); return aiSummaryService.summarize(validateId(articleId, 'articleId'), forceRefresh === undefined ? false : validateBoolean(forceRefresh, 'forceRefresh'), options === undefined ? {} : validateAiSummaryRequestOptions(options))
+    assertTrustedSender(event)
+    if (!aiSummaryService) throw new Error('AI service is not ready')
+    const validatedArticleId = validateId(articleId, 'articleId')
+    activeAiSummaryRequest?.controller.abort()
+    const request = { articleId: validatedArticleId, controller: new AbortController() }
+    activeAiSummaryRequest = request
+    try {
+      return await aiSummaryService.summarize(
+        validatedArticleId,
+        forceRefresh === undefined ? false : validateBoolean(forceRefresh, 'forceRefresh'),
+        options === undefined ? {} : validateAiSummaryRequestOptions(options),
+        (stage) => {
+          if (!event.sender.isDestroyed() && activeAiSummaryRequest === request) {
+            event.sender.send(IPC_CHANNELS.aiSummaryProgress, { articleId: validatedArticleId, stage })
+          }
+        },
+        request.controller.signal
+      )
+    } finally {
+      if (activeAiSummaryRequest === request) activeAiSummaryRequest = null
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.stopAiSummary, (event, articleId: unknown) => {
+    assertTrustedSender(event)
+    const validatedArticleId = validateId(articleId, 'articleId')
+    const active = activeAiSummaryRequest
+    if (!active || active.articleId !== validatedArticleId) return false
+    active.controller.abort()
+    activeAiSummaryRequest = null
+    return true
   })
   ipcMain.handle(IPC_CHANNELS.getTranslationSettings, (event) => {
     assertTrustedSender(event); if (!translationSettingsRepository) throw new Error('Translation settings are not ready'); return translationSettingsRepository.current()
@@ -613,6 +656,9 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle(IPC_CHANNELS.testTranslationProvider, async (event, type: unknown) => {
     assertTrustedSender(event); if(!translationService)throw new Error('Translation service is not ready');return translationService.testProvider(validateTranslationProviderType(type))
+  })
+  ipcMain.handle(IPC_CHANNELS.getDeepLUsage, async (event) => {
+    assertTrustedSender(event); if(!translationService)throw new Error('Translation service is not ready');return translationService.getDeepLUsage()
   })
   ipcMain.handle(IPC_CHANNELS.translateArticle, async (event, articleId: unknown, target?: unknown, forceRefresh?: unknown) => {
     assertTrustedSender(event); if(!translationService)throw new Error('Translation service is not ready');return translationService.translateArticle(validateId(articleId,'articleId'),target===undefined?undefined:validateRecord(target,'translation target') as unknown as TranslationTarget,forceRefresh===undefined?false:validateBoolean(forceRefresh,'forceRefresh'))

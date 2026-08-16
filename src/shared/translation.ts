@@ -52,6 +52,13 @@ export interface TranslationProviderTestResult {
   error: string | null
 }
 
+export interface DeepLUsage {
+  characterCount: number
+  characterLimit: number
+  remainingCharacters: number
+  usagePercent: number
+}
+
 export const TRANSLATION_PROVIDER_TYPES: TranslationProviderType[] = [
   'ML_KIT', 'MICROSOFT', 'DEEPL', 'GOOGLE_CLOUD', 'DLX'
 ]

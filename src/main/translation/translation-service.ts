@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync,mkdirSync,readFileSync,writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { TranslationDocument, TranslationProviderTestResult, TranslationProviderType, TranslationTarget } from '../../shared/translation'
+import type { DeepLUsage, TranslationDocument, TranslationProviderTestResult, TranslationProviderType, TranslationTarget } from '../../shared/translation'
 import type { LibraryRepository } from '../database/library-repository'
 import type { ReaderContentService } from '../content/reader-content-service'
 import type { AiSettingsRepository } from '../ai/ai-settings-repository'
@@ -28,6 +28,17 @@ export class TranslationService{
     mkdirSync(this.cacheDir,{recursive:true});writeFileSync(cacheFile,JSON.stringify(document,null,2),'utf8');return document
   }
   async testProvider(type:TranslationProviderType):Promise<TranslationProviderTestResult>{try{this.validateTarget({type:'traditional',provider:type});const target=this.settings.current().targetLanguage;if(!target.trim())throw new Error('目标语言不能为空');const input=target.toLowerCase().startsWith('en')?'你好':'Hello';const result=await this.translateTraditional(type,[input],target);return{ok:true,value:result.texts[0]??'',error:null}}catch(error){return{ok:false,value:null,error:error instanceof Error?error.message:String(error)}}}
+
+  /** 仅在用户明确点击额度查询时访问 DeepL /usage；测试连接只走翻译接口。 */
+  async getDeepLUsage():Promise<DeepLUsage>{
+    this.validateTarget({type:'traditional',provider:'DEEPL'})
+    const config=this.settings.current().providers.find((item)=>item.type==='DEEPL')
+    if(!config)throw new Error('DeepL 配置不存在')
+    const usage=await (this.providers.DEEPL as DeepLTranslationProvider).usage({endpoint:config.endpoint,region:config.region,apiKey:this.settings.getApiKey('DEEPL')})
+    const remainingCharacters=Math.max(0,usage.characterLimit-usage.characterCount)
+    const usagePercent=usage.characterLimit>0?usage.characterCount/usage.characterLimit*100:0
+    return{...usage,remainingCharacters,usagePercent}
+  }
 
   private validateTarget(target:TranslationTarget):void{
     if(target.type==='traditional'){const provider=this.settings.current().providers.find((item)=>item.type===target.provider);if(!provider?.enabled)throw new Error('当前翻译服务已停用');if(!provider.desktopSupported)throw new Error('Google ML Kit 仅支持 Android，请在 Desktop 选择其他翻译服务');if(!provider.endpoint.trim())throw new Error('当前翻译服务尚未填写 Endpoint');if(['MICROSOFT','DEEPL','GOOGLE_CLOUD'].includes(target.provider)&&!provider.hasApiKey)throw new Error('当前翻译服务尚未填写 API Key')}

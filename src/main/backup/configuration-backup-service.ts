@@ -106,11 +106,14 @@ function toTranslationBackup(value:ReturnType<TranslationSettingsRepository['cur
 function toAiBackup(value:ReturnType<AiSettingsRepository['current']>):AiBackup{return{enabled:value.enabled,defaultProviderId:value.defaultProviderId,outputLanguage:value.outputLanguage,summaryLength:value.summaryLength,providers:value.providers.map(({hasApiKey:_ignored,...provider})=>provider)}}
 function desktopPreferences(settings:ReturnType<SettingsRepository['current']>):Record<string,unknown>{return{
   'origread.desktop.language':settings.language,
+  'origread.desktop.theme':settings.theme,
   'origread.desktop.workspaceCollapsed':settings.workspaceCollapsed,
   'origread.desktop.workspaceWidth':settings.workspaceWidth,
   'origread.desktop.readerFontSize':settings.readerFontSize,
   'origread.desktop.readerLineHeight':settings.readerLineHeight,
   'origread.desktop.readerContentWidth':settings.readerContentWidth,
+  'origread.desktop.readerBackground':settings.readerBackground,
+  'origread.desktop.readerBackgroundCustom':settings.readerBackgroundCustom,
   'origread.desktop.aiSummaryPlacement':settings.aiSummaryPlacement,
   'origread.desktop.aiSummaryPanelSize':settings.aiSummaryPanelSize
 }}
@@ -118,7 +121,10 @@ function readDesktopPreferences(value:Record<string,unknown>|null|undefined):Par
   if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('备份中的 preferences 必须是 JSON 对象')
   const result:Record<string,unknown>={}
   const language=value['origread.desktop.language'];if(language!==undefined){if(language!=='system'&&language!=='zh'&&language!=='en')throw new Error('备份中的 Desktop 语言设置无效');result.language=language}
+  const theme=value['origread.desktop.theme'];if(theme!==undefined){if(!['system','light','dark'].includes(String(theme)))throw new Error('备份中的 Desktop 主题设置无效');result.theme=theme}
   const collapsed=value['origread.desktop.workspaceCollapsed'];if(collapsed!==undefined){if(typeof collapsed!=='boolean')throw new Error('备份中的 Desktop 侧栏设置类型无效');result.workspaceCollapsed=collapsed}
+  const readerBackground=value['origread.desktop.readerBackground'];if(readerBackground!==undefined){if(!['theme','paper','warm','sepia','mint','custom'].includes(String(readerBackground)))throw new Error('备份中的阅读背景设置无效');result.readerBackground=readerBackground}
+  const readerBackgroundCustom=value['origread.desktop.readerBackgroundCustom'];if(readerBackgroundCustom!==undefined){if(typeof readerBackgroundCustom!=='string'||!/^#[0-9a-fA-F]{6}$/.test(readerBackgroundCustom))throw new Error('备份中的自定义阅读背景颜色无效');result.readerBackgroundCustom=readerBackgroundCustom.toLowerCase()}
   const placement=value['origread.desktop.aiSummaryPlacement'];if(placement!==undefined){if(!['replace','left','right','top','bottom'].includes(String(placement)))throw new Error('备份中的 AI 摘要位置无效');result.aiSummaryPlacement=placement}
   for(const [key,target] of [['origread.desktop.workspaceWidth','workspaceWidth'],['origread.desktop.readerFontSize','readerFontSize'],['origread.desktop.readerLineHeight','readerLineHeight'],['origread.desktop.readerContentWidth','readerContentWidth'],['origread.desktop.aiSummaryPanelSize','aiSummaryPanelSize']] as const){const candidate=value[key];if(candidate!==undefined){if(typeof candidate!=='number'||!Number.isFinite(candidate))throw new Error(`备份中的 ${key} 类型无效`);result[target]=candidate}}
   return result as Partial<ReturnType<SettingsRepository['current']>>

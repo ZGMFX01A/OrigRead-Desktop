@@ -13,8 +13,8 @@ import type {
   OriginalNavigationAction,
   OriginalViewBounds
 } from './original-view'
-import type { AiProviderPatch, AiProviderTestResult, AiSettings, AiSettingsPatch, AiSummaryDocument, AiSummaryRequestOptions } from './ai'
-import type { TranslationDocument, TranslationProviderPatch, TranslationProviderTestResult, TranslationSettings, TranslationSettingsPatch, TranslationTarget } from './translation'
+import type { AiProviderPatch, AiProviderTestResult, AiSettings, AiSettingsPatch, AiSummaryDocument, AiSummaryProgress, AiSummaryRequestOptions } from './ai'
+import type { DeepLUsage, TranslationDocument, TranslationProviderPatch, TranslationProviderTestResult, TranslationSettings, TranslationSettingsPatch, TranslationTarget } from './translation'
 import type { ArticleFilterRule, ArticleFilterSnapshot, ArticleFilterRuleType } from './filter-rules'
 import type { ConfigurationBackupFileResult } from './configuration-backup'
 import type { FeedCatalogSnapshot } from './source-catalog'
@@ -112,11 +112,14 @@ export interface OrigReadDesktopApi {
   refreshAiModels(providerId: string, draftApiKey?: string): Promise<string[]>
   testAiProvider(providerId: string): Promise<AiProviderTestResult>
   summarizeArticle(articleId: string, forceRefresh?: boolean, options?: AiSummaryRequestOptions): Promise<AiSummaryDocument>
+  stopAiSummary(articleId: string): Promise<boolean>
+  onAiSummaryProgress(listener: (progress: AiSummaryProgress) => void): () => void
   getTranslationSettings(): Promise<TranslationSettings>
   getTranslationApiKey(type: TranslationProviderPatch['type']): Promise<string>
   updateTranslationSettings(patch: TranslationSettingsPatch): Promise<TranslationSettings>
   updateTranslationProvider(patch: TranslationProviderPatch): Promise<TranslationSettings>
   testTranslationProvider(type: TranslationProviderPatch['type']): Promise<TranslationProviderTestResult>
+  getDeepLUsage(): Promise<DeepLUsage>
   translateArticle(articleId: string, target?: TranslationTarget, forceRefresh?: boolean): Promise<TranslationDocument>
   getArticleFilters(): Promise<ArticleFilterSnapshot>
   addArticleFilter(keyword: string, type: ArticleFilterRuleType, feedId?: string | null): Promise<ArticleFilterSnapshot>
@@ -207,11 +210,14 @@ export const IPC_CHANNELS = {
   refreshAiModels: 'ai:provider:models',
   testAiProvider: 'ai:provider:test',
   summarizeArticle: 'ai:summary:generate',
+  stopAiSummary: 'ai:summary:stop',
+  aiSummaryProgress: 'ai:summary:progress',
   getTranslationSettings: 'translation:settings:get',
   getTranslationApiKey: 'translation:provider:get-api-key',
   updateTranslationSettings: 'translation:settings:update',
   updateTranslationProvider: 'translation:provider:update',
   testTranslationProvider: 'translation:provider:test',
+  getDeepLUsage: 'translation:deepl:usage',
   translateArticle: 'translation:article:translate',
   getArticleFilters: 'rules:filter:list',
   addArticleFilter: 'rules:filter:add',

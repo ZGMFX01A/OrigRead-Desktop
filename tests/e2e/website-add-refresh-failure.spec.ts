@@ -35,8 +35,13 @@ test('website subscription remains added when the immediate post-subscribe refre
       return (await window.origread.listFeeds()).filter((feed) => feed.url === url).length
     }, sourceUrl)).toBe(1)
 
-    await page.locator('.destination-tabs button').last().click()
-    const sourceItem = page.locator('.source-item').filter({ hasText: sourceUrl })
+    const websiteFeedName = await page.evaluate(async (url) => {
+      const feed = (await window.origread.listFeeds()).find((item) => item.url === url)
+      return feed?.name ?? ''
+    }, sourceUrl)
+    expect(websiteFeedName).not.toBe('')
+    await page.locator('.scope-picker-button').click()
+    const sourceItem = page.locator('.source-item').filter({ hasText: websiteFeedName })
     await expect(sourceItem).toBeVisible()
     await expect(sourceItem).toContainText('WEBSITE')
   } finally {
@@ -71,6 +76,7 @@ test('website article full content renders its external HTTP image in the reader
 
     const article = page.locator('.article-item').filter({ hasText: '原读完成正文提取能力升级' })
     await expect(article).toBeVisible({ timeout: 10_000 })
+    await expect(article).toContainText('来源未提供文章简介')
     await article.click()
     await expect(page.locator('.article-body')).toContainText('Website full content fixture', { timeout: 15_000 })
 
@@ -80,15 +86,17 @@ test('website article full content renders its external HTTP image in the reader
       const target = element as HTMLImageElement
       return target.complete ? target.naturalWidth : 0
     })).toBeGreaterThan(0)
+    expect(fixture.imageReferers()).toContain(`${baseUrl}/`)
   } finally {
     await testApp.close()
     await closeServer(server)
   }
 })
 
-async function startWebsiteFixtureServer(): Promise<{ server: Server; setRejectRefresh(value: boolean): void; rejectedRequests(): number }> {
+async function startWebsiteFixtureServer(): Promise<{ server: Server; setRejectRefresh(value: boolean): void; rejectedRequests(): number; imageReferers(): string[] }> {
   let rejectRefresh = false
   let rejectedRequests = 0
+  const imageReferers: string[] = []
   const html = readFileSync(join(process.cwd(), 'tests/fixtures/website-samples/url-clusters.html'), 'utf8')
   const server = createServer((request, response) => {
     if (request.url === '/news') {
@@ -108,6 +116,14 @@ async function startWebsiteFixtureServer(): Promise<{ server: Server; setRejectR
       return
     }
     if (request.url === '/asset/site.png') {
+      const referer = request.headers.referer ?? ''
+      imageReferers.push(referer)
+      const expectedReferer = `http://${request.headers.host}/`
+      if (referer !== expectedReferer) {
+        response.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
+        response.end('hotlink protection fixture')
+        return
+      }
       response.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' })
       response.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'))
       return
@@ -119,7 +135,8 @@ async function startWebsiteFixtureServer(): Promise<{ server: Server; setRejectR
   return {
     server,
     setRejectRefresh(value: boolean) { rejectRefresh = value },
-    rejectedRequests: () => rejectedRequests
+    rejectedRequests: () => rejectedRequests,
+    imageReferers: () => [...imageReferers]
   }
 }
 

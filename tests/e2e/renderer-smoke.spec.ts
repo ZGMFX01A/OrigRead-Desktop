@@ -19,6 +19,11 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await expect(page.locator('.destination-tabs')).toBeVisible()
     await expect(page.locator('.reader-pane')).toBeVisible()
 
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
+    await page.emulateMedia({ colorScheme: 'light' })
+    await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('light')
+
     const logoLoaded = await page.locator('.brand-logo').evaluate((element) => {
       const image = element as HTMLImageElement
       return image.complete && image.naturalWidth > 0
@@ -153,6 +158,8 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await expect(page.locator('.sync-interval-select')).toHaveValue('30')
     await page.locator('.reader-font-select').selectOption('serif')
     await page.locator('.reader-font-size-select').selectOption('19')
+    await page.locator('.theme-select').selectOption('dark')
+    await page.locator('.reader-color-picker input[type="color"]').fill('#dff4e3')
     await page.locator('.sync-interval-select').selectOption('0')
     await page.locator('.setting-switch').click()
 
@@ -163,15 +170,20 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
         return {
           readerFontId: settings.readerFontId,
           fontSize: settings.readerFontSize,
+          theme: settings.theme,
+          readerBackground: settings.readerBackground,
+          readerBackgroundCustom: settings.readerBackgroundCustom,
           interval: settings.syncIntervalMinutes,
           syncOnStart: settings.syncOnStart,
           nextRunAt: syncState.nextRunAt
         }
       })
-    }).toEqual({ readerFontId: 'serif', fontSize: 19, interval: 0, syncOnStart: true, nextRunAt: null })
+    }).toEqual({ readerFontId: 'serif', fontSize: 19, theme: 'dark', readerBackground: 'custom', readerBackgroundCustom: '#dff4e3', interval: 0, syncOnStart: true, nextRunAt: null })
 
     await expect(page.locator('.app-shell')).toHaveCSS('--reader-font-size', '19px')
     await expect(page.locator('.app-shell')).toHaveCSS('--reader-font-family', /ui-serif/)
+    await expect(page.locator('.app-shell')).toHaveCSS('--reader-background', '#dff4e3')
+    await expect(page.locator('.app-shell')).toHaveCSS('--reader-text-color', '#35373e')
 
     await page.locator('.settings-nav-button').nth(1).click()
     await expect(page.locator('.provider-card')).toHaveCount(1)

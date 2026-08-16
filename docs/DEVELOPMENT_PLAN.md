@@ -362,6 +362,7 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 2. [ ] **Desktop Git Release 页面能力**
    - 使用 `ZGMFX01A/OrigRead-Desktop` Release 数据。
    - 展示版本与发布时间、直接下载当前平台安装包、打开完整 Release 页面。
+   - Release `published_at` / `created_at` 面向用户展示时统一格式化为 `yyyy-MM-dd`，不直接显示 ISO 时间戳。
 
 3. [ ] **阅读背景色配置**
    - 当前 Reader 只有字号、行距、版心宽度；背景色配置模型、持久化与 UI 尚未实现。
@@ -471,13 +472,33 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
   - Header 改为按摘要面板自身宽度响应：宽面板保持单行紧凑布局，窄侧栏才自动拆成两行；上下停靠不再被强制撑高。
   - 常驻“面板尺寸”Footer 已移除，尺寸调节改为 Header 内按钮 + 紧凑浮层滑块；上下停靠不再出现突兀的整条控制栏。
   - AI 摘要视觉统一为轻科技蓝：蓝白面板层级、浅蓝渐变 AI 图标、轻阴影和蓝色模式徽标；Android 阅读底栏与 Android AI 摘要面板同步使用同一组科技蓝渐变图标语义。
-- 当前回归基线：`npm run typecheck` / `npm test`（53 files / 164 tests）/ `npm run build` / Electron E2E（6/6）通过；Android `:app:compileGithubDebugKotlin` 通过。
+  - AI 摘要任务支持显式停止：Renderer 立即恢复可操作状态，Main 通过 `AbortController` 真正中止模型 HTTP 请求，并使用任务序列避免已取消请求的迟到结果覆盖当前摘要；重新生成时停止会保留上一份成功摘要。
+- DeepL 服务测试与额度查询已彻底拆分：测试连接只发送翻译请求，只有显式点击“查询额度”才访问 `/usage`；Desktop 使用独立 Main IPC / preload API，Android 不再在进入页面或保存 Key 时自动查询额度。
+- 当前回归基线：`npm run typecheck` / `npm test`（55 files / 169 tests）/ `npm run build` / Electron E2E（6/6）通过；Android `:app:compileGithubDebugKotlin` 通过，DeepL Provider 与更新日志日期/过滤定向单测通过（JDK 17）。
 
 ### 大项 D：外观系统
 
-- [ ] D1 阅读背景色。
-- [ ] D2 全局浅色/深色/跟随系统主题。
-- [ ] D3 全页面和 WebContentsView 外层视觉回归。
+- [x] D1 阅读背景色：支持跟随主题 / 纸白 / 暖白 / 米黄 / 淡绿预设，以及任意 HEX 自定义颜色；正文、译文和 AI 摘要阅读区域统一应用并持久化，自定义亮/暗背景自动选择可读前景色。
+- [x] D2 全局浅色 / 深色 / 跟随系统主题：支持运行时系统明暗变化监听，设置即时生效并纳入 Desktop 配置备份。
+- [x] D3 全页面和 WebContentsView 外层视觉回归：Workspace、文章列表、Reader、设置、来源发现、规则/Provider/工具弹窗和 AI 摘要补齐深色视觉；进入原文 WebContentsView 后应用外层主题保持不变。
+
+### 2026-08-16 导航与 Android AI 设置收口
+
+- [x] Desktop 文章导航不再把“来源”作为与“全部 / 未读 / 星标”互斥的第四个 Tab；重构为“阅读范围 × 文章状态”两个正交维度。
+  - 阅读范围支持：全部来源 / 分组 / 单来源。
+  - 文章状态支持：全部 / 未读 / 星标，并始终在当前范围内生效。
+  - 来源选择器展示分组、来源文章数和未读数；选择来源或分组后回到文章列表，不重置文章状态。
+  - 已读文章在“全部”列表中降权显示，未读文章继续保持标题强调。
+  - 删除旧 `active-source-filter` 展示链和死 CSS，避免继续在旧四 Tab 结构上叠补丁。
+- [x] Android AI 设置在配置两个及以上 Provider 时显示轻量提示：已配置服务数量、当前正在编辑的服务，以及通过上方选择器切换；单 Provider 时保持原有简洁布局。
+
+### 2026-08-16 Reader 图片与 AI 摘要真实机器反馈收口
+
+- [x] Desktop Reader 远程图片请求与 Android 行为对齐：本地 `file://` Reader 缺少 HTTP Referer 时，为图片请求补目标图片 origin；原文 WebContentsView 已有真实 HTTP(S) Referer 时保持原样，不关闭 `webSecurity`。E2E 使用“无正确 Referer 即 403”的图片 fixture 验证通过。
+- [x] 文章列表中的 `description` 明确为“来源提供的文章简介/预览”，不再使用容易与 AI 摘要混淆的“正文摘要”空态文案；AI 摘要保持独立数据语义。
+- [x] AI 摘要缓存增加“当前文章最近一次成功摘要”索引：临时切换 Provider / Model / 摘要档位生成成功后，普通 AI 入口可跨页面重载直接复用；文章标题或正文变化时旧索引自动失效，显式重新生成仍按本次选定参数请求。
+- [x] AI 摘要参数弹窗改为非阻塞提交：点击生成后立即关闭弹窗，后台生成期间正文继续可读。
+- [x] AI 摘要增加真实阶段可观察性：准备文章内容 → 等待 AI 服务 → 整理并保存，并显示已等待秒数；不展示无法从非流式 Provider 获得的虚假百分比。已有摘要重新生成时旧摘要继续可见并显示进度条。
 
 ### 大项 B：发布页与自动更新
 

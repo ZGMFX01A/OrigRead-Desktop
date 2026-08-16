@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import * as cheerio from 'cheerio'
-import type { AiSummaryDocument, AiSummaryLength, AiSummaryRequestOptions } from '../../shared/ai'
+import type { AiSummaryDocument, AiSummaryLength, AiSummaryProgressStage, AiSummaryRequestOptions } from '../../shared/ai'
 import type { ReaderArticleContent } from '../../shared/reader'
 import type { LibraryRepository } from '../database/library-repository'
 import type { ReaderContentService } from '../content/reader-content-service'
@@ -19,7 +19,13 @@ export class AiSummaryService {
     private readonly provider = new OpenAiCompatibleProvider()
   ) {}
 
-  async summarize(articleId: string, forceRefresh = false, options: AiSummaryRequestOptions = {}): Promise<AiSummaryDocument> {
+  async summarize(
+    articleId: string,
+    forceRefresh = false,
+    options: AiSummaryRequestOptions = {},
+    onProgress: (stage: AiSummaryProgressStage) => void = () => undefined,
+    signal?: AbortSignal
+  ): Promise<AiSummaryDocument> {
     const article = this.library.getArticleById(articleId)
     if (!article) throw new Error('文章不存在')
     const config = this.settings.current()
@@ -35,18 +41,25 @@ export class AiSummaryService {
     if (!model) throw new Error('AI Provider 尚未选择模型')
     if (options.model && profile.models.length > 0 && !profile.models.includes(model)) throw new Error('所选模型不属于当前 AI Provider')
     const length = options.length ?? config.summaryLength
+    onProgress('PREPARING')
     const source = this.reader.get(articleId)
     const content = prepareArticleForSummary(source)
     if (!content) throw new Error('当前文章没有可用于摘要的正文')
     const cacheFile = this.cacheFile(articleId, article.title, content, profile.id, profile.endpoint, model, config.outputLanguage, length)
     if (!forceRefresh) {
+      if (!options.providerId && !options.model && !options.length) {
+        const latest = readLatestCache(this.latestCacheFile(articleId), article.title, content)
+        if (latest) return latest
+      }
       const cached = readCache(cacheFile)
       if (cached) return cached
     }
+    onProgress('REQUESTING')
     const completed = await this.provider.completeDetailed(
       buildAiSummarySystemPrompt(config.outputLanguage),
       buildAiSummaryUserPrompt(article.title, content, length),
-      { endpoint: profile.endpoint, model, apiKey: this.settings.getApiKey(profile.id) }
+      { endpoint: profile.endpoint, model, apiKey: this.settings.getApiKey(profile.id) },
+      signal
     )
     const document: AiSummaryDocument = {
       articleId,
@@ -58,8 +71,15 @@ export class AiSummaryService {
       summary: completed.content,
       reasoning: completed.reasoning
     }
+    onProgress('FINALIZING')
     mkdirSync(this.cacheDir, { recursive: true })
     writeFileSync(cacheFile, JSON.stringify(document, null, 2), 'utf8')
+    writeFileSync(this.latestCacheFile(articleId), JSON.stringify({
+      version: 1,
+      titleHash: hashText(article.title),
+      contentHash: hashText(content),
+      document
+    }, null, 2), 'utf8')
     return document
   }
 
@@ -87,6 +107,32 @@ export class AiSummaryService {
     const key = createHash('sha256').update(JSON.stringify({ v: 1, articleId, title, content, providerId, endpoint, model, language, length })).digest('hex')
     return join(this.cacheDir, `${key}.json`)
   }
+
+  private latestCacheFile(articleId: string): string {
+    return join(this.cacheDir, `latest-${hashText(articleId)}.json`)
+  }
+}
+
+interface LatestAiSummaryCache {
+  version: 1
+  titleHash: string
+  contentHash: string
+  document: AiSummaryDocument
+}
+
+function readLatestCache(path: string, title: string, content: string): AiSummaryDocument | null {
+  if (!existsSync(path)) return null
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as LatestAiSummaryCache
+    if (parsed.version !== 1 || parsed.titleHash !== hashText(title) || parsed.contentHash !== hashText(content)) return null
+    return parsed.document?.articleId ? parsed.document : null
+  } catch {
+    return null
+  }
+}
+
+function hashText(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
 }
 
 export function prepareArticleForSummary(source: ReaderArticleContent): string {

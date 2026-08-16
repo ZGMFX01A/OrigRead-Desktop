@@ -37,7 +37,7 @@ import type { ReaderArticleContent } from '../../shared/reader'
 import type { SyncRuntimeState } from '../../shared/sync-runtime'
 import type { OriginalArticleViewState, OriginalViewBounds } from '../../shared/original-view'
 import { SettingsPanel } from './SettingsPanel'
-import type { AiSummaryDocument } from '../../shared/ai'
+import type { AiSummaryDocument, AiSummaryProgress, AiSummaryProgressStage } from '../../shared/ai'
 import type { TranslationDocument, TranslationTarget } from '../../shared/translation'
 import type { FeedCatalogEntry } from '../../shared/source-catalog'
 import { SourceDiscoveryPanel } from './SourceDiscoveryPanel'
@@ -48,14 +48,17 @@ import { ReaderSearchBar, SearchableHtml, nextSearchIndex } from './ReaderSearch
 import { BUILTIN_READER_FONTS, type ReaderFontEntry } from '../../shared/reader-font'
 import { selectMainSpeechSource, speechTextFromHtml, speechTextFromMarkdown, useReaderSpeech } from './useReaderSpeech'
 
-type Destination = 'all' | 'unread' | 'starred' | 'sources'
+type Destination = 'all' | 'unread' | 'starred'
 type ReaderMode = 'article' | 'ai' | 'translation'
+type ArticleScope =
+  | { kind: 'all' }
+  | { kind: 'group'; id: string }
+  | { kind: 'feed'; id: string }
 
 const destinations: Array<{ id: Destination; icon: typeof Inbox; labelKey: string }> = [
   { id: 'all', icon: Inbox, labelKey: 'allArticles' },
   { id: 'unread', icon: BookOpenText, labelKey: 'unread' },
-  { id: 'starred', icon: Star, labelKey: 'starred' },
-  { id: 'sources', icon: Rss, labelKey: 'sources' }
+  { id: 'starred', icon: Star, labelKey: 'starred' }
 ]
 
 export default function App(): React.JSX.Element {
@@ -68,8 +71,10 @@ export default function App(): React.JSX.Element {
   const [groups, setGroups] = useState<GroupRecord[]>([])
   const [articles, setArticles] = useState<ArticleRecord[]>([])
   const [settings, setSettings] = useState<DesktopSettings | null>(null)
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)
   const [query, setQuery] = useState('')
-  const [activeFeedFilterId, setActiveFeedFilterId] = useState<string | null>(null)
+  const [articleScope, setArticleScope] = useState<ArticleScope>({ kind: 'all' })
+  const [sourcePickerOpen, setSourcePickerOpen] = useState(false)
   const [selectedArticleId, setSelectedArticleId] = useState<string | null>(null)
   const [addSourceOpen, setAddSourceOpen] = useState(false)
   const [sourceUrl, setSourceUrl] = useState('')
@@ -85,6 +90,9 @@ export default function App(): React.JSX.Element {
   const [readerMode, setReaderMode] = useState<ReaderMode>('article')
   const [aiSummary, setAiSummary] = useState<AiSummaryDocument | null>(null)
   const [aiSummaryVisible, setAiSummaryVisible] = useState(false)
+  const [aiSummaryProgress, setAiSummaryProgress] = useState<AiSummaryProgress | null>(null)
+  const [aiSummaryStartedAt, setAiSummaryStartedAt] = useState<number | null>(null)
+  const [aiSummaryElapsedSeconds, setAiSummaryElapsedSeconds] = useState(0)
   const [translationDocument, setTranslationDocument] = useState<TranslationDocument | null>(null)
   const [readerToolLoading, setReaderToolLoading] = useState<ReaderMode | null>(null)
   const [readerToolError, setReaderToolError] = useState<string | null>(null)
@@ -108,6 +116,8 @@ export default function App(): React.JSX.Element {
   const [originalViewState, setOriginalViewState] = useState<OriginalArticleViewState>(closedOriginalState())
   const readerStageRef = useRef<HTMLDivElement>(null)
   const readerSearchInputRef = useRef<HTMLInputElement>(null)
+  const selectedArticleIdRef = useRef<string | null>(null)
+  const aiSummaryRunRef = useRef(0)
   const lastObservedSyncFinish = useRef<number | null>(null)
   const speech = useReaderSpeech(settings?.ttsVoiceURI ?? '')
 
@@ -150,6 +160,24 @@ export default function App(): React.JSX.Element {
   }, [i18n, reloadLibrary])
 
   useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const update = (): void => setSystemDark(media.matches)
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+
+  const resolvedTheme = settings?.theme === 'dark' ? 'dark' : settings?.theme === 'light' ? 'light' : systemDark ? 'dark' : 'light'
+  useEffect(() => {
+    document.documentElement.dataset.theme = resolvedTheme
+    document.documentElement.style.colorScheme = resolvedTheme
+  }, [resolvedTheme])
+
+  useEffect(() => {
+    selectedArticleIdRef.current = selectedArticleId
+  }, [selectedArticleId])
+
+  useEffect(() => {
     const unsubscribeSync = window.origread.onSyncRuntimeStateChanged((state) => {
       setSyncRuntimeState(state)
       if (state.lastFinishedAt && state.lastFinishedAt !== lastObservedSyncFinish.current) {
@@ -158,11 +186,26 @@ export default function App(): React.JSX.Element {
       }
     })
     const unsubscribeOriginal = window.origread.onOriginalArticleStateChanged(setOriginalViewState)
+    const unsubscribeAiProgress = window.origread.onAiSummaryProgress((progress) => {
+      if (progress.articleId === selectedArticleIdRef.current) setAiSummaryProgress(progress)
+    })
     return () => {
       unsubscribeSync()
       unsubscribeOriginal()
+      unsubscribeAiProgress()
     }
   }, [reloadLibrary])
+
+  useEffect(() => {
+    if (readerToolLoading !== 'ai' || aiSummaryStartedAt === null) {
+      setAiSummaryElapsedSeconds(0)
+      return
+    }
+    const update = (): void => setAiSummaryElapsedSeconds(Math.max(0, Math.floor((Date.now() - aiSummaryStartedAt) / 1000)))
+    update()
+    const timer = window.setInterval(update, 1_000)
+    return () => window.clearInterval(timer)
+  }, [aiSummaryStartedAt, readerToolLoading])
 
   useEffect(() => {
     let cancelled = false
@@ -217,6 +260,8 @@ export default function App(): React.JSX.Element {
     setReaderMode('article')
     setAiSummary(null)
     setAiSummaryVisible(false)
+    setAiSummaryProgress(null)
+    setAiSummaryStartedAt(null)
     setTranslationDocument(null)
     setReaderToolError(null)
     setReaderContentLoading(true)
@@ -293,21 +338,28 @@ export default function App(): React.JSX.Element {
   )
 
   const normalizedQuery = query.trim().toLocaleLowerCase()
+  const scopeFeedIds = useMemo(() => {
+    if (articleScope.kind === 'all') return null
+    if (articleScope.kind === 'feed') return new Set([articleScope.id])
+    return new Set(feeds.filter((feed) => feed.groupId === articleScope.id).map((feed) => feed.id))
+  }, [articleScope, feeds])
+  const scopedArticles = useMemo(
+    () => scopeFeedIds ? articles.filter((article) => scopeFeedIds.has(article.feedId)) : articles,
+    [articles, scopeFeedIds]
+  )
   const visibleArticles = useMemo(() => {
-    return articles.filter((article) => {
+    return scopedArticles.filter((article) => {
       if (destination === 'unread' && !article.isUnread) return false
       if (destination === 'starred' && !article.isStarred) return false
-      if (destination === 'sources') return false
-      if (activeFeedFilterId && article.feedId !== activeFeedFilterId) return false
       if (!normalizedQuery) return true
       return `${article.title} ${article.author ?? ''}`.toLocaleLowerCase().includes(normalizedQuery)
     })
-  }, [activeFeedFilterId, articles, destination, normalizedQuery])
+  }, [destination, normalizedQuery, scopedArticles])
   const visibleFeeds = useMemo(() => {
-    if (destination !== 'sources') return []
+    if (!sourcePickerOpen) return feeds
     if (!normalizedQuery) return feeds
     return feeds.filter((feed) => `${feed.name} ${feed.url}`.toLocaleLowerCase().includes(normalizedQuery))
-  }, [destination, feeds, normalizedQuery])
+  }, [feeds, normalizedQuery, sourcePickerOpen])
   const groupedVisibleFeeds = useMemo(() => {
     const sortedGroups = groups.slice().sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
     const knownIds = new Set(sortedGroups.map((group) => group.id))
@@ -320,7 +372,11 @@ export default function App(): React.JSX.Element {
   }, [groups, t, visibleFeeds])
   const selectedArticle = articles.find((article) => article.id === selectedArticleId) ?? null
   const selectedFeed = selectedArticle ? feeds.find((feed) => feed.id === selectedArticle.feedId) ?? null : null
-  const activeFeedFilter = activeFeedFilterId ? feeds.find((feed) => feed.id === activeFeedFilterId) ?? null : null
+  const activeScopeFeed = articleScope.kind === 'feed' ? feeds.find((feed) => feed.id === articleScope.id) ?? null : null
+  const activeScopeGroup = articleScope.kind === 'group' ? groups.find((group) => group.id === articleScope.id) ?? null : null
+  const scopeLabel = activeScopeFeed?.name ?? activeScopeGroup?.name ?? t('allSources')
+  const scopedUnreadCount = scopedArticles.filter((article) => article.isUnread).length
+  const scopedStarredCount = scopedArticles.filter((article) => article.isStarred).length
   const originalUrl = normalizeHttpUrl(selectedArticle?.url)
 
   const mainSpeechText = useMemo(() => {
@@ -354,7 +410,8 @@ export default function App(): React.JSX.Element {
   }
 
   const aiSummaryPlacement = settings?.aiSummaryPlacement ?? 'replace'
-  const aiSummaryDocked = Boolean(aiSummary && aiSummaryVisible && aiSummaryPlacement !== 'replace')
+  const aiLoading = readerToolLoading === 'ai'
+  const aiSummaryDocked = Boolean((aiSummary || aiLoading) && aiSummaryVisible && aiSummaryPlacement !== 'replace')
 
   const toggleAiSummaryDisplay = (): void => {
     if (!aiSummary) { void generateAiSummary(); return }
@@ -383,19 +440,48 @@ export default function App(): React.JSX.Element {
 
   const generateAiSummary = async (forceRefresh = false, options?: AiSummaryRequestOptions): Promise<void> => {
     if (!selectedArticleId || readerToolLoading) return
+    const requestArticleId = selectedArticleId
+    const runId = ++aiSummaryRunRef.current
     if (originalViewState.open) await closeOriginalArticle()
     setSettingsOpen(false)
     setReaderToolLoading('ai')
     setReaderToolError(null)
+    setAiSummaryProgress({ articleId: requestArticleId, stage: 'PREPARING' })
+    setAiSummaryStartedAt(Date.now())
+    setAiSummaryVisible(true)
+    if (aiSummaryPlacement !== 'replace') setReaderMode('article')
     try {
-      const result = await window.origread.summarizeArticle(selectedArticleId, forceRefresh, options)
+      const result = await window.origread.summarizeArticle(requestArticleId, forceRefresh, options)
+      if (runId !== aiSummaryRunRef.current || selectedArticleIdRef.current !== requestArticleId) return
       setAiSummary(result)
       setAiSummaryVisible(true)
       setReaderMode((settings?.aiSummaryPlacement ?? 'replace') === 'replace' ? 'ai' : 'article')
     } catch (error) {
-      setReaderToolError(error instanceof Error ? error.message : String(error))
+      if (runId === aiSummaryRunRef.current && selectedArticleIdRef.current === requestArticleId) {
+        setReaderToolError(error instanceof Error ? error.message : String(error))
+        if (!aiSummary) setAiSummaryVisible(false)
+      }
     } finally {
-      setReaderToolLoading(null)
+      if (runId === aiSummaryRunRef.current) {
+        setReaderToolLoading(null)
+        setAiSummaryProgress(null)
+        setAiSummaryStartedAt(null)
+      }
+    }
+  }
+
+  const stopAiSummary = (): void => {
+    const articleId = selectedArticleIdRef.current
+    if (!articleId || readerToolLoading !== 'ai') return
+    aiSummaryRunRef.current += 1
+    void window.origread.stopAiSummary(articleId).catch(() => undefined)
+    setReaderToolLoading(null)
+    setAiSummaryProgress(null)
+    setAiSummaryStartedAt(null)
+    setReaderToolError(null)
+    if (!aiSummary) {
+      setAiSummaryVisible(false)
+      if (readerMode === 'ai') setReaderMode('article')
     }
   }
 
@@ -738,17 +824,33 @@ export default function App(): React.JSX.Element {
     }
   }
 
+  const readerBackground = resolveReaderBackground(
+    settings?.readerBackground ?? 'theme',
+    resolvedTheme,
+    settings?.readerBackgroundCustom ?? '#eef7ee'
+  )
+  const readerColors = resolveReaderColors(readerBackground)
   const readerStyle = {
     '--reader-font-size': `${settings?.readerFontSize ?? 17}px`,
     '--reader-line-height': String(settings?.readerLineHeight ?? 1.85),
     '--reader-content-width': `${settings?.readerContentWidth ?? 760}px`,
     '--reader-font-family': resolveReaderFontFamily(settings?.readerFontId ?? 'system', readerFonts),
+    '--reader-background': readerBackground,
+    '--reader-text-color': readerColors.text,
+    '--reader-heading-color': readerColors.heading,
+    '--reader-muted-color': readerColors.muted,
+    '--reader-soft-background': readerColors.softBackground,
+    '--reader-border-color': readerColors.border,
+    '--reader-link-color': readerColors.link,
     '--ai-summary-panel-size': `${settings?.aiSummaryPanelSize ?? 360}px`
   } as CSSProperties
 
-  const renderAiSummaryPanel = (replaceMode = false): React.JSX.Element | null => aiSummary ? (
+  const renderAiSummaryPanel = (replaceMode = false): React.JSX.Element | null => aiSummary || aiLoading ? (
     <AiSummaryPanel
       summary={aiSummary}
+      loading={aiLoading}
+      progressStage={aiSummaryProgress?.stage ?? null}
+      elapsedSeconds={aiSummaryElapsedSeconds}
       placement={aiSummaryPlacement}
       panelSize={settings?.aiSummaryPanelSize ?? 360}
       speechActive={speech.state.domain==='summary'}
@@ -757,7 +859,8 @@ export default function App(): React.JSX.Element {
       onStopSpeech={speech.stop}
       onPlacementChange={(placement)=>void changeAiSummaryPlacement(placement)}
       onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
-      onRegenerate={()=>setAiOptionsOpen(true)}
+      onRegenerate={()=>{if(!aiLoading)setAiOptionsOpen(true)}}
+      onStop={stopAiSummary}
       onClose={()=>{if(speech.state.domain==='summary')speech.stop();setAiSummaryVisible(false);if(readerMode==='ai')setReaderMode('article')}}
       replaceMode={replaceMode}
     />
@@ -806,19 +909,37 @@ export default function App(): React.JSX.Element {
                 type="button"
                 className={`destination-tab ${destination === id ? 'active' : ''}`}
                 onClick={() => {
-                  setActiveFeedFilterId(null)
                   setSelectedArticleId(null)
                   setQuery('')
                   setDestination(id)
+                  setSourcePickerOpen(false)
                 }}
               >
                 <Icon size={16} />
                 <span>{t(labelKey)}</span>
-                {id === 'unread' && <span className="count-badge">{librarySnapshot?.unread ?? 0}</span>}
-                {id === 'sources' && <span className="count-badge">{librarySnapshot?.feeds ?? 0}</span>}
+                {id === 'unread' && <span className="count-badge">{scopedUnreadCount}</span>}
+                {id === 'starred' && scopedStarredCount > 0 && <span className="count-badge">{scopedStarredCount}</span>}
               </button>
             ))}
           </nav>
+
+          <div className="article-scope-bar">
+            <div className="article-scope-current">
+              {activeScopeFeed ? <FeedIcon feed={activeScopeFeed} /> : <div className="scope-icon"><Rss size={15}/></div>}
+              <div>
+                <span>{t('readingScope')}</span>
+                <strong>{scopeLabel}</strong>
+              </div>
+            </div>
+            <div className="article-scope-actions">
+              {articleScope.kind !== 'all' && (
+                <button type="button" className="icon-button" title={t('clearSourceFilter')} aria-label={t('clearSourceFilter')} onClick={()=>{setArticleScope({kind:'all'});setSelectedArticleId(null)}}><X size={14}/></button>
+              )}
+              <button type="button" className={`scope-picker-button ${sourcePickerOpen?'active':''}`} aria-expanded={sourcePickerOpen} onClick={()=>{setSourcePickerOpen((open)=>!open);setSelectedArticleId(null);setQuery('')}}>
+                <Rss size={14}/><span>{sourcePickerOpen?t('backToArticles'):t('chooseSourceScope')}</span><ChevronDown size={13}/>
+              </button>
+            </div>
+          </div>
 
           <div className="list-toolbar">
             <div className="search-field">
@@ -826,14 +947,14 @@ export default function App(): React.JSX.Element {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                aria-label={destination === 'sources' ? t('searchSources') : t('searchArticles')}
-                placeholder={destination === 'sources' ? t('searchSources') : t('searchArticles')}
+                aria-label={sourcePickerOpen ? t('searchSources') : t('searchArticles')}
+                placeholder={sourcePickerOpen ? t('searchSources') : t('searchArticles')}
               />
               <kbd>Ctrl K</kbd>
             </div>
             <div className="list-meta">
               <span>
-                {destination === 'sources'
+                {sourcePickerOpen
                   ? t('sourceCount', { count: visibleFeeds.length })
                   : t('articleCount', { count: visibleArticles.length })}
               </span>
@@ -854,15 +975,6 @@ export default function App(): React.JSX.Element {
           </div>
 
           <div className="workspace-list-stage">
-            {destination !== 'sources' && activeFeedFilter && (
-              <div className="active-source-filter">
-                <div className="active-source-filter-copy">
-                  <FeedIcon feed={activeFeedFilter} />
-                  <div><span>{t('viewingSourceArticles')}</span><strong>{activeFeedFilter.name}</strong></div>
-                </div>
-                <button type="button" className="icon-button" title={t('clearSourceFilter')} aria-label={t('clearSourceFilter')} onClick={()=>{setActiveFeedFilterId(null);setSelectedArticleId(null)}}><X size={15}/></button>
-              </div>
-            )}
             {opmlStatus && !addSourceOpen && (
               <div className="workspace-notice">{opmlStatus}</div>
             )}
@@ -870,16 +982,24 @@ export default function App(): React.JSX.Element {
               <div className="workspace-error">{sourceError}</div>
             )}
 
-            {destination === 'sources' && visibleFeeds.length > 0 ? (
-              <div className="list-content source-list">
+            {sourcePickerOpen ? (
+              <div className="list-content source-list source-scope-picker">
+                <button className={`source-scope-all ${articleScope.kind==='all'?'selected':''}`} type="button" onClick={()=>{setArticleScope({kind:'all'});setSourcePickerOpen(false);setSelectedArticleId(null);setQuery('')}}>
+                  <div className="scope-icon"><Inbox size={15}/></div>
+                  <div><strong>{t('allSources')}</strong><span>{t('articleCount',{count:articles.length})}</span></div>
+                  <span className="scope-unread-count">{t('unreadCountShort',{count:articles.filter((article)=>article.isUnread).length})}</span>
+                </button>
                 {groupedVisibleFeeds.map(({group,feeds:groupFeeds})=><section className="source-group-section" key={group.id}>
-                  <header className="source-group-header"><strong>{group.name}</strong><span>{t('sourceCount',{count:groupFeeds.length})}</span></header>
+                  <button className={`source-group-header source-group-scope ${articleScope.kind==='group'&&articleScope.id===group.id?'selected':''}`} type="button" onClick={()=>{setArticleScope({kind:'group',id:group.id});setSourcePickerOpen(false);setSelectedArticleId(null);setQuery('')}}>
+                    <span className="source-group-name"><strong>{group.name}</strong><small>{t('sourceCount',{count:groupFeeds.length})}</small></span>
+                    <span>{t('unreadCountShort',{count:articles.filter((article)=>groupFeeds.some((feed)=>feed.id===article.feedId)&&article.isUnread).length})}</span>
+                  </button>
                   <div className="source-group-items">{groupFeeds.map((feed) => (
-                    <article className="source-item" key={feed.id} tabIndex={0} role="button" onClick={()=>{setActiveFeedFilterId(feed.id);setDestination('all');setSelectedArticleId(null);setQuery('')}} onKeyDown={(event)=>{if(event.target!==event.currentTarget)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();setActiveFeedFilterId(feed.id);setDestination('all');setSelectedArticleId(null);setQuery('')}}}>
+                    <article className={`source-item ${articleScope.kind==='feed'&&articleScope.id===feed.id?'selected':''}`} key={feed.id} tabIndex={0} role="button" onClick={()=>{setArticleScope({kind:'feed',id:feed.id});setSourcePickerOpen(false);setSelectedArticleId(null);setQuery('')}} onKeyDown={(event)=>{if(event.target!==event.currentTarget)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();setArticleScope({kind:'feed',id:feed.id});setSourcePickerOpen(false);setSelectedArticleId(null);setQuery('')}}}>
                       <FeedIcon feed={feed} />
                       <div className="source-copy">
                         <strong>{feed.name}</strong>
-                        <span>{feed.url}</span>
+                        <span>{t('sourceArticleStats',{total:articles.filter((article)=>article.feedId===feed.id).length,unread:articles.filter((article)=>article.feedId===feed.id&&article.isUnread).length})}</span>
                       </div>
                       <div className="source-actions">
                         <span className="source-type">{feed.sourceType.toUpperCase()}</span>
@@ -907,11 +1027,11 @@ export default function App(): React.JSX.Element {
                   ))}</div>
                 </section>)}
               </div>
-            ) : destination !== 'sources' && visibleArticles.length > 0 ? (
+            ) : visibleArticles.length > 0 ? (
               <div className="list-content article-list">
                 {visibleArticles.map((article) => (
                   <article
-                    className={`article-item ${selectedArticleId === article.id ? 'selected' : ''}`}
+                    className={`article-item ${article.isUnread?'unread':'read'} ${selectedArticleId === article.id ? 'selected' : ''}`}
                     key={article.id}
                     data-article-id={article.id}
                     data-feed-id={article.feedId}
@@ -932,7 +1052,7 @@ export default function App(): React.JSX.Element {
                         <Star size={15} fill={article.isStarred ? 'currentColor' : 'none'} />
                       </button>
                     </div>
-                    <p>{article.description || t('noSummary')}</p>
+                    <p>{article.description || t('sourcePreviewUnavailable')}</p>
                     <div className="article-meta">
                       <span>{feeds.find((feed) => feed.id === article.feedId)?.name ?? ''}</span>
                       <span>{article.isUnread ? t('unreadStatus') : t('readStatus')}</span>
@@ -1097,6 +1217,9 @@ export default function App(): React.JSX.Element {
               <div>{selectedArticle.author ?? ''}</div>
             </div>
             {readerToolError && <div className="reader-tool-error">{readerToolError}</div>}
+            {aiLoading && aiSummaryPlacement === 'replace' && !aiSummary && (
+              <AiSummaryProgressBanner stage={aiSummaryProgress?.stage ?? null} elapsedSeconds={aiSummaryElapsedSeconds} onStop={stopAiSummary}/>
+            )}
             {readerMode === 'ai' && aiSummary && aiSummaryVisible ? (
               renderAiSummaryPanel(true)
             ) : readerMode === 'translation' && translationDocument ? (
@@ -1126,7 +1249,7 @@ export default function App(): React.JSX.Element {
                 onClick={handleReaderHtmlClick}
               />
             ) : (
-              <div className="article-body-status">{selectedArticle.description || t('noSummary')}</div>
+              <div className="article-body-status">{selectedArticle.description || t('readerTextUnavailable')}</div>
             )}
           </div>
           {aiSummaryDocked && (aiSummaryPlacement==='right'||aiSummaryPlacement==='bottom') && renderAiSummaryPanel()}
@@ -1307,7 +1430,7 @@ export default function App(): React.JSX.Element {
       {aiOptionsOpen && selectedArticle && (
         <AiSummaryOptionsDialog
           onClose={()=>setAiOptionsOpen(false)}
-          onGenerate={async(options)=>{await generateAiSummary(true,options)}}
+          onGenerate={(options)=>{void generateAiSummary(true,options)}}
         />
       )}
       {translationTargetOpen && selectedArticle && (
@@ -1349,6 +1472,9 @@ function AiSummaryAccentIcon({
 
 function AiSummaryPanel({
   summary,
+  loading,
+  progressStage,
+  elapsedSeconds,
   placement,
   panelSize,
   speechActive,
@@ -1358,10 +1484,14 @@ function AiSummaryPanel({
   onPlacementChange,
   onPanelSizeChange,
   onRegenerate,
+  onStop,
   onClose,
   replaceMode = false
 }: {
-  summary: AiSummaryDocument
+  summary: AiSummaryDocument | null
+  loading: boolean
+  progressStage: AiSummaryProgressStage | null
+  elapsedSeconds: number
   placement: AiSummaryPlacement
   panelSize: number
   speechActive: boolean
@@ -1371,16 +1501,17 @@ function AiSummaryPanel({
   onPlacementChange(placement:AiSummaryPlacement):void
   onPanelSizeChange(size:number):void
   onRegenerate():void
+  onStop():void
   onClose():void
   replaceMode?:boolean
 }):React.JSX.Element{
   const {t}=useTranslation()
   const [sizeEditorOpen,setSizeEditorOpen]=useState(false)
-  const summaryMarkdown=stripRedundantSummaryHeading(summary.summary)
+  const summaryMarkdown=summary ? stripRedundantSummaryHeading(summary.summary) : ''
   const sizeLabel=placement==='top'||placement==='bottom'?t('summaryPanelHeight'):t('summaryPanelWidth')
   return <aside className={`ai-summary-panel ${replaceMode?'replace':'docked'} placement-${placement}`}>
     <header className="ai-summary-panel-header">
-      <div className="ai-summary-panel-identity"><AiSummaryAccentIcon variant="panel"/><div><strong>{t('aiSummary')}</strong><span>{summary.providerName} · {summary.model}</span></div><span className="ai-summary-mode-badge">{t(summaryLengthLabelKey(summary.length))}</span></div>
+      <div className="ai-summary-panel-identity"><AiSummaryAccentIcon variant="panel" loading={loading}/><div><strong>{t('aiSummary')}</strong><span>{summary ? `${summary.providerName} · ${summary.model}` : t('aiSummaryWorking')}</span></div>{summary&&<span className="ai-summary-mode-badge">{t(summaryLengthLabelKey(summary.length))}</span>}</div>
       <div className="ai-summary-panel-actions">
         <select value={placement} aria-label={t('summaryPlacement')} title={t('summaryPlacement')} onChange={(event)=>{setSizeEditorOpen(false);onPlacementChange(event.target.value as AiSummaryPlacement)}}>
           <option value="replace">{t('summaryPlacementReplace')}</option>
@@ -1396,17 +1527,38 @@ function AiSummaryPanel({
             <input aria-label={sizeLabel} type="range" min="220" max="640" step="10" value={panelSize} onChange={(event)=>onPanelSizeChange(Number(event.target.value))}/>
           </div>}
         </div>}
-        <button type="button" className={`icon-button ${speechActive?'active':''}`} title={speechActive&&speechStatus==='speaking'?t('pauseReading'):speechActive&&speechStatus==='paused'?t('resumeReading'):t('readSummary')} aria-label={t('readSummary')} onClick={onToggleSpeech}>{speechActive&&speechStatus==='speaking'?<Pause size={15}/>:speechActive&&speechStatus==='paused'?<Play size={15}/>:<Headphones size={15}/>}</button>
+        {summary&&<button type="button" className={`icon-button ${speechActive?'active':''}`} title={speechActive&&speechStatus==='speaking'?t('pauseReading'):speechActive&&speechStatus==='paused'?t('resumeReading'):t('readSummary')} aria-label={t('readSummary')} onClick={onToggleSpeech}>{speechActive&&speechStatus==='speaking'?<Pause size={15}/>:speechActive&&speechStatus==='paused'?<Play size={15}/>:<Headphones size={15}/>}</button>}
         {speechActive&&speechStatus!=='idle'&&<button type="button" className="icon-button" title={t('stopReading')} aria-label={t('stopReading')} onClick={onStopSpeech}><Square size={13}/></button>}
         <button type="button" className="icon-button" title={t('close')} aria-label={t('close')} onClick={onClose}><X size={15}/></button>
       </div>
     </header>
     <div className="ai-summary-panel-body">
-      <SimpleMarkdown text={summaryMarkdown}/>
-      {summary.reasoning&&<details className="ai-reasoning"><summary>{t('aiReasoning')}</summary><pre>{summary.reasoning}</pre></details>}
-      <button className="mini-action regenerate-button" type="button" onClick={onRegenerate}><RefreshCw size={13}/>{t('regenerateWithOptions')}</button>
+      {loading&&<AiSummaryProgressStatus stage={progressStage} elapsedSeconds={elapsedSeconds}/>}
+      {summary ? <>
+        <SimpleMarkdown text={summaryMarkdown}/>
+        {summary.reasoning&&<details className="ai-reasoning"><summary>{t('aiReasoning')}</summary><pre>{summary.reasoning}</pre></details>}
+        {loading
+          ? <button className="mini-action ai-summary-stop-action" type="button" onClick={onStop}><Square size={12}/>{t('stopAiSummary')}</button>
+          : <button className="mini-action regenerate-button" type="button" onClick={onRegenerate}><RefreshCw size={13}/>{t('regenerateWithOptions')}</button>}
+      </> : <div className="ai-summary-progress-empty"><AiSummaryAccentIcon variant="panel" loading/><strong>{t(aiSummaryProgressLabelKey(progressStage))}</strong><span>{t('aiSummaryElapsed',{count:elapsedSeconds})}</span><button className="mini-action ai-summary-stop-action" type="button" onClick={onStop}><Square size={12}/>{t('stopAiSummary')}</button></div>}
     </div>
   </aside>
+}
+
+function AiSummaryProgressBanner({stage,elapsedSeconds,onStop}:{stage:AiSummaryProgressStage|null;elapsedSeconds:number;onStop():void}):React.JSX.Element{
+  const {t}=useTranslation()
+  return <div className="ai-summary-progress-banner" role="status"><AiSummaryAccentIcon variant="toolbar" loading/><div><strong>{t(aiSummaryProgressLabelKey(stage))}</strong><span>{t('aiSummaryElapsed',{count:elapsedSeconds})} · {t('aiSummaryContinueReading')}</span></div><button className="mini-action ai-summary-stop-action" type="button" onClick={onStop}><Square size={12}/>{t('stopAiSummary')}</button></div>
+}
+
+function AiSummaryProgressStatus({stage,elapsedSeconds}:{stage:AiSummaryProgressStage|null;elapsedSeconds:number}):React.JSX.Element{
+  const {t}=useTranslation()
+  return <div className="ai-summary-progress-status" role="status"><span className="ai-summary-progress-track"><span/></span><div><strong>{t(aiSummaryProgressLabelKey(stage))}</strong><span>{t('aiSummaryElapsed',{count:elapsedSeconds})}</span></div></div>
+}
+
+function aiSummaryProgressLabelKey(stage:AiSummaryProgressStage|null):string{
+  if(stage==='PREPARING')return'aiSummaryPreparing'
+  if(stage==='FINALIZING')return'aiSummaryFinalizing'
+  return'aiSummaryRequesting'
 }
 
 function stripRedundantSummaryHeading(text:string):string{
@@ -1421,6 +1573,32 @@ function resolveReaderFontFamily(id:string,customFonts:ReaderFontEntry[]):string
   const custom=customFonts.find((font)=>font.id===id)
   if(custom)return `"${custom.cssFamily}"`
   return BUILTIN_READER_FONTS.find((font)=>font.id===id)?.cssFamily ?? 'inherit'
+}
+
+function resolveReaderBackground(background:DesktopSettings['readerBackground'],theme:'light'|'dark',custom:string):string{
+  if(background==='custom')return custom
+  const palette = theme === 'dark'
+    ? { theme:'#1b1d22',paper:'#1d1f24',warm:'#25221d',sepia:'#2a241b',mint:'#1d2921' }
+    : { theme:'#fbfbfc',paper:'#fffefb',warm:'#fbf6eb',sepia:'#f4ecd8',mint:'#eef7ee' }
+  return palette[background]
+}
+
+function resolveReaderColors(background:string):{text:string;heading:string;muted:string;softBackground:string;border:string;link:string}{
+  const rgb=parseHexColor(background)
+  const dark=rgb ? relativeLuminance(rgb)<0.42 : false
+  return dark
+    ? {text:'#d9dce4',heading:'#eceef4',muted:'#9ca1ad',softBackground:'rgba(255,255,255,.055)',border:'rgba(255,255,255,.14)',link:'#80b8ef'}
+    : {text:'#35373e',heading:'#24262c',muted:'#858791',softBackground:'rgba(67,65,85,.045)',border:'rgba(58,60,70,.14)',link:'#584bc0'}
+}
+
+function parseHexColor(value:string):[number,number,number]|null{
+  const match=/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value.trim())
+  return match ? [Number.parseInt(match[1]!,16),Number.parseInt(match[2]!,16),Number.parseInt(match[3]!,16)] : null
+}
+
+function relativeLuminance([r,g,b]:[number,number,number]):number{
+  const channel=(value:number):number=>{const normalized=value/255;return normalized<=0.04045?normalized/12.92:Math.pow((normalized+0.055)/1.055,2.4)}
+  return 0.2126*channel(r)+0.7152*channel(g)+0.0722*channel(b)
 }
 
 function normalizeHttpUrl(value: string | null | undefined): string | null {

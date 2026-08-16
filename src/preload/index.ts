@@ -7,7 +7,7 @@ import type {
   OriginalNavigationAction,
   OriginalViewBounds
 } from '../shared/original-view'
-import type { AiProviderPatch, AiSettingsPatch, AiSummaryRequestOptions } from '../shared/ai'
+import type { AiProviderPatch, AiSettingsPatch, AiSummaryProgress, AiSummaryRequestOptions } from '../shared/ai'
 import type { TranslationProviderPatch, TranslationProviderType, TranslationSettingsPatch, TranslationTarget } from '../shared/translation'
 import type { ArticleFilterRuleType } from '../shared/filter-rules'
 import type { AiGeneratedRuleKind } from '../shared/ai-rule'
@@ -88,11 +88,18 @@ const api: OrigReadDesktopApi = Object.freeze({
   refreshAiModels: (providerId: string, draftApiKey?: string) => ipcRenderer.invoke(IPC_CHANNELS.refreshAiModels, providerId, draftApiKey),
   testAiProvider: (providerId: string) => ipcRenderer.invoke(IPC_CHANNELS.testAiProvider, providerId),
   summarizeArticle: (articleId: string, forceRefresh?: boolean, options?: AiSummaryRequestOptions) => ipcRenderer.invoke(IPC_CHANNELS.summarizeArticle, articleId, forceRefresh, options),
+  stopAiSummary: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.stopAiSummary, articleId),
+  onAiSummaryProgress: (listener: (progress: AiSummaryProgress) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, progress: AiSummaryProgress): void => listener(progress)
+    ipcRenderer.on(IPC_CHANNELS.aiSummaryProgress, wrapped)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.aiSummaryProgress, wrapped)
+  },
   getTranslationSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getTranslationSettings),
   getTranslationApiKey: (type: TranslationProviderType) => ipcRenderer.invoke(IPC_CHANNELS.getTranslationApiKey, type),
   updateTranslationSettings: (patch: TranslationSettingsPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateTranslationSettings, patch),
   updateTranslationProvider: (patch: TranslationProviderPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateTranslationProvider, patch),
   testTranslationProvider: (type: TranslationProviderType) => ipcRenderer.invoke(IPC_CHANNELS.testTranslationProvider, type),
+  getDeepLUsage: () => ipcRenderer.invoke(IPC_CHANNELS.getDeepLUsage),
   translateArticle: (articleId: string, target?: TranslationTarget, forceRefresh?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.translateArticle, articleId, target, forceRefresh),
   getArticleFilters: () => ipcRenderer.invoke(IPC_CHANNELS.getArticleFilters),
   addArticleFilter: (keyword: string, type: ArticleFilterRuleType, feedId?: string | null) => ipcRenderer.invoke(IPC_CHANNELS.addArticleFilter, keyword, type, feedId),

@@ -54,6 +54,9 @@ test('reader generates AI summary and full-article translation through main-proc
     await expect(page.locator('.article-body')).toContainText('Original full article body one')
 
     await page.locator('.ai-summary-button').click()
+    await expect(page.locator('.ai-summary-progress-banner')).toBeVisible()
+    await expect(page.locator('.ai-summary-progress-banner')).toContainText(/正在准备文章内容|正在等待 AI 服务返回/)
+    await expect(page.locator('.article-body')).toContainText('Original full article body one')
     await expect(page.locator('.ai-summary-panel.replace')).toBeVisible({ timeout: 15_000 })
     await expect(page.locator('.ai-summary-markdown')).toContainText('核心结论')
     await expect(page.locator('.ai-summary-markdown')).toContainText('第一项关键事实')
@@ -70,10 +73,35 @@ test('reader generates AI summary and full-article translation through main-proc
     await expect(page.locator('.reader-tool-dialog')).toBeVisible()
     await page.locator('.summary-mode-option').filter({hasText:'深入'}).click()
     await page.locator('.reader-tool-dialog .dialog-submit').click()
-    await expect(page.locator('.reader-tool-dialog')).toBeHidden({ timeout: 15_000 })
+    await expect(page.locator('.reader-tool-dialog')).toBeHidden({ timeout: 1_000 })
+    await expect(page.locator('.ai-summary-progress-status')).toBeVisible()
+    await expect(page.locator('.ai-summary-progress-status')).toContainText(/正在准备文章内容|正在等待 AI 服务返回/)
     await expect(page.locator('.ai-summary-panel.replace')).toBeVisible()
     await expect(page.locator('.ai-summary-mode-badge')).toHaveText('深入')
     expect(fixture.aiRequests()).toBeGreaterThan(1)
+
+    const requestsAfterDetailedSummary = fixture.aiRequests()
+    await page.reload()
+    await expect(page.locator('.app-shell')).toBeVisible()
+    const reloadedArticle = page.locator(`.article-item[data-article-id="${articleId}"]`)
+    await reloadedArticle.click()
+    await expect(page.locator('.article-body')).toContainText('Original full article body one')
+    await page.locator('.ai-summary-button').click()
+    await expect(page.locator('.ai-summary-panel.replace')).toBeVisible({ timeout: 3_000 })
+    await expect(page.locator('.ai-summary-mode-badge')).toHaveText('深入')
+    expect(fixture.aiRequests()).toBe(requestsAfterDetailedSummary)
+
+    await page.locator('.regenerate-button').click()
+    await expect(page.locator('.reader-tool-dialog')).toBeVisible()
+    await page.locator('.reader-tool-dialog .dialog-submit').click()
+    await expect(page.locator('.reader-tool-dialog')).toBeHidden({ timeout: 1_000 })
+    await expect(page.locator('.ai-summary-progress-status')).toBeVisible()
+    const stopSummary = page.getByRole('button', { name: '停止生成' }).first()
+    await expect(stopSummary).toBeVisible()
+    await stopSummary.click()
+    await expect(page.locator('.ai-summary-progress-status')).toBeHidden({ timeout: 1_000 })
+    await expect(page.locator('.ai-summary-mode-badge')).toHaveText('深入')
+    await expect.poll(() => fixture.aiAbortedRequests()).toBeGreaterThan(0)
 
     await page.locator('.ai-summary-panel-actions select').selectOption('top')
     await expect(page.locator('.reader-composite')).toHaveClass(/summary-top/)
@@ -106,8 +134,9 @@ test('reader generates AI summary and full-article translation through main-proc
   }
 })
 
-async function startFixtureServer(): Promise<{ server: Server; aiRequests: () => number; translationRequests: () => number }> {
+async function startFixtureServer(): Promise<{ server: Server; aiRequests: () => number; aiAbortedRequests: () => number; translationRequests: () => number }> {
   let aiRequests = 0
+  let aiAbortedRequests = 0
   let translationRequests = 0
   const server = createServer(async (request, response) => {
     if (request.url === '/feed.xml') {
@@ -117,12 +146,20 @@ async function startFixtureServer(): Promise<{ server: Server; aiRequests: () =>
     }
     if (request.url === '/v1/chat/completions' && request.method === 'POST') {
       aiRequests += 1
+      const requestNumber = aiRequests
       await readBody(request)
       if (request.headers.authorization !== 'Bearer ai-e2e-secret') {
         response.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
         response.end(JSON.stringify({ error: { message: 'missing fixture authorization' } }))
         return
       }
+      let completed = false
+      response.once('close', () => {
+        if (!completed) aiAbortedRequests += 1
+      })
+      await new Promise((resolve) => setTimeout(resolve, requestNumber === 3 ? 5_000 : 550))
+      if (response.destroyed) return
+      completed = true
       json(response, {
         choices: [{
           message: {
@@ -154,7 +191,12 @@ async function startFixtureServer(): Promise<{ server: Server; aiRequests: () =>
     server.once('error', reject)
     server.listen(0, '127.0.0.1', resolve)
   })
-  return { server, aiRequests: () => aiRequests, translationRequests: () => translationRequests }
+  return {
+    server,
+    aiRequests: () => aiRequests,
+    aiAbortedRequests: () => aiAbortedRequests,
+    translationRequests: () => translationRequests
+  }
 }
 
 function rssXml(base: string): string {

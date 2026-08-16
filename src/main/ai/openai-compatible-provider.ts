@@ -10,7 +10,7 @@ export interface AiCompletionResult {
 }
 
 export class OpenAiCompatibleProvider {
-  async completeDetailed(systemPrompt: string, userPrompt: string, config: AiRuntimeConfig): Promise<AiCompletionResult> {
+  async completeDetailed(systemPrompt: string, userPrompt: string, config: AiRuntimeConfig, signal?: AbortSignal): Promise<AiCompletionResult> {
     if (!config.endpoint.trim() || !config.model.trim()) throw new Error('AI 服务地址和模型不能为空')
     const response = await fetch(chatEndpoint(config.endpoint), {
       method: 'POST',
@@ -24,7 +24,7 @@ export class OpenAiCompatibleProvider {
           { role: 'user', content: userPrompt }
         ]
       }),
-      signal: AbortSignal.timeout(60_000)
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000)
     })
     const text = await response.text()
     ensureAiResponse(response.status, text)

@@ -12,12 +12,15 @@ describe('SettingsRepository', () => {
 
     expect(repository.update({
       language: 'zh',
+      theme: 'dark',
       workspaceCollapsed: true,
       workspaceWidth: 999,
       readerFontSize: 25,
       readerFontId: 'serif',
       readerLineHeight: 1.72,
       readerContentWidth: 880,
+      readerBackground: 'custom',
+      readerBackgroundCustom: '#E4F6EA',
       ttsVoiceURI: 'voice://reader-e2e',
       aiSummaryPlacement: 'right',
       aiSummaryPanelSize: 999,
@@ -26,12 +29,15 @@ describe('SettingsRepository', () => {
     })).toEqual({
       ...DEFAULT_DESKTOP_SETTINGS,
       language: 'zh',
+      theme: 'dark',
       workspaceCollapsed: true,
       workspaceWidth: 560,
       readerFontSize: 22,
       readerFontId: 'serif',
       readerLineHeight: 1.72,
       readerContentWidth: 880,
+      readerBackground: 'custom',
+      readerBackgroundCustom: '#e4f6ea',
       ttsVoiceURI: 'voice://reader-e2e',
       aiSummaryPlacement: 'right',
       aiSummaryPanelSize: 640,
@@ -39,6 +45,9 @@ describe('SettingsRepository', () => {
       syncOnStart: true
     })
     expect(repository.current().workspaceCollapsed).toBe(true)
+    expect(repository.current().theme).toBe('dark')
+    expect(repository.current().readerBackground).toBe('custom')
+    expect(repository.current().readerBackgroundCustom).toBe('#e4f6ea')
     database.close()
   })
 
