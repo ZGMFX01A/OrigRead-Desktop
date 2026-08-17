@@ -125,9 +125,27 @@ test('reader generates AI summary and full-article translation through main-proc
     await page.locator('.translation-target-dialog .dialog-submit').click()
     await expect(page.locator('.translated-article-body')).toBeVisible({ timeout: 15_000 })
     await expect(page.locator('.translated-article-body')).toContainText('译文：')
+    await expect(page.locator('.article-heading h1')).toContainText('译文：OrigRead AI E2E Article 1')
+    await expect(page.locator('.article-original-title')).toContainText('OrigRead AI E2E Article 1')
     await expect(page.getByRole('button', { name: '朗读正文' })).toBeVisible()
     await expect(page.getByRole('button', { name: '朗读摘要' })).toBeVisible()
     expect(fixture.translationRequests()).toBeGreaterThan(0)
+
+    const conciseArticleId = await page.evaluate(async () => {
+      const article = (await window.origread.listArticles(100)).find((item) => item.title === 'OrigRead Concise Flash')
+      if (!article) throw new Error('Concise fixture article was not saved')
+      return article.id
+    })
+    const conciseArticle = page.locator(`.article-item[data-article-id="${conciseArticleId}"]`)
+    await conciseArticle.click()
+    await expect(page.locator('.article-body')).toContainText('英伟达盘中涨超 10%')
+    const requestsBeforeConcise = fixture.aiRequests()
+    await page.locator('.ai-summary-button').click()
+    await expect(page.locator('.ai-summary-panel')).toBeVisible()
+    await expect(page.locator('.ai-summary-not-needed')).toContainText('这篇文章无需再摘要')
+    await expect(page.locator('.ai-summary-not-needed')).toContainText('本次没有发送 AI 请求')
+    await expect(page.getByRole('button', { name: '朗读摘要' })).toHaveCount(0)
+    expect(fixture.aiRequests()).toBe(requestsBeforeConcise)
   } finally {
     await testApp.close()
     await closeServer(fixture.server)
@@ -208,16 +226,27 @@ function rssXml(base: string): string {
       <pubDate>${new Date(Date.UTC(2026, 7, 14, 10, index)).toUTCString()}</pubDate>
       <description>AI translation fixture summary ${index + 1}</description>
       <content:encoded><![CDATA[
-        <p>Original full article body one ${index + 1}. This paragraph is intentionally substantial enough for AI summary and translation validation.</p>
-        <p>Original full article body two ${index + 1}. It carries a second block so the translation content processor must preserve block structure.</p>
+        <p>Original full article body one ${index + 1}. This fixture describes a desktop reader feature rollout in enough detail to require real compression rather than a trivial restatement. The first section explains the motivation, the previous behavior, the user-visible problem, and the expected result after the change. It also records several concrete facts so the summary provider has meaningful information to select and prioritize.</p>
+        <p>Original full article body two ${index + 1}. The second section adds implementation constraints, compatibility considerations, test observations, and a limitation that should remain visible in a balanced or detailed summary. It deliberately creates an independent content block so the translation processor must preserve structure while the summary path still has enough source material to exercise the remote AI provider.</p>
+        <p>Original full article body three ${index + 1}. The final section states the rollout outcome, notes that existing reader behavior outside this feature remains unchanged, and provides additional context about regression coverage. These details make the fixture representative of a normal article instead of a short bulletin that the local NOT_NEEDED policy should skip.</p>
       ]]></content:encoded>
     </item>`).join('')
+  const concise = `
+    <item>
+      <guid>ai-e2e-concise</guid>
+      <title>OrigRead Concise Flash</title>
+      <link>${base}/article/concise</link>
+      <pubDate>${new Date(Date.UTC(2026, 7, 14, 9, 0)).toUTCString()}</pubDate>
+      <description>英伟达盘中涨超 10%，受财报超预期影响。</description>
+      <content:encoded><![CDATA[<p>英伟达盘中涨超 10%，受财报超预期影响。</p>]]></content:encoded>
+    </item>`
   return `<?xml version="1.0" encoding="UTF-8"?>
     <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
       <channel>
         <title>OrigRead AI E2E Feed</title>
         <link>${base}</link>
         <description>AI and translation fixture</description>
+        ${concise}
         ${items}
       </channel>
     </rss>`

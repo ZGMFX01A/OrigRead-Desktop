@@ -21,6 +21,7 @@ import type { FeedCatalogSnapshot } from './source-catalog'
 import type { AiGeneratedRuleKind, AiGeneratedRulePreview } from './ai-rule'
 import type { ReaderFontEntry, ReaderFontFileResult } from './reader-font'
 import type { OpmlExportFileResult, OpmlImportFileResult } from './opml'
+import type { UpdateCheckResult, UpdateDownloadResult } from './update'
 
 export interface WebsiteSourceRuleSettings {
   feedId: string
@@ -61,6 +62,10 @@ export interface OrigReadDesktopApi {
   reloadFeedIcon(feedId: string): Promise<FeedRecord>
   getSettings(): Promise<DesktopSettings>
   updateSettings(patch: DesktopSettingsPatch): Promise<DesktopSettings>
+  getUpdateState(): Promise<UpdateCheckResult | null>
+  checkForUpdates(language: 'zh' | 'en'): Promise<UpdateCheckResult>
+  downloadUpdateAsset(assetId: number): Promise<UpdateDownloadResult>
+  launchDownloadedUpdate(): Promise<void>
   listReaderFonts(): Promise<ReaderFontEntry[]>
   importReaderFont(): Promise<ReaderFontFileResult>
   deleteReaderFont(id: string): Promise<ReaderFontEntry[]>
@@ -159,6 +164,10 @@ export const IPC_CHANNELS = {
   reloadFeedIcon: 'library:feed:reload-icon',
   getSettings: 'settings:get',
   updateSettings: 'settings:update',
+  getUpdateState: 'update:get-state',
+  checkForUpdates: 'update:check',
+  downloadUpdateAsset: 'update:download-asset',
+  launchDownloadedUpdate: 'update:launch-downloaded',
   listReaderFonts: 'reader-font:list',
   importReaderFont: 'reader-font:import',
   deleteReaderFont: 'reader-font:delete',

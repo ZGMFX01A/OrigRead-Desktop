@@ -37,6 +37,7 @@ import type { ReaderArticleContent } from '../../shared/reader'
 import type { SyncRuntimeState } from '../../shared/sync-runtime'
 import type { OriginalArticleViewState, OriginalViewBounds } from '../../shared/original-view'
 import { SettingsPanel } from './SettingsPanel'
+import { UpdateAvailableDialog } from './UpdateAvailableDialog'
 import type { AiSummaryDocument, AiSummaryProgress, AiSummaryProgressStage } from '../../shared/ai'
 import type { TranslationDocument, TranslationTarget } from '../../shared/translation'
 import type { FeedCatalogEntry } from '../../shared/source-catalog'
@@ -46,6 +47,7 @@ import { AiSummaryOptionsDialog, TranslationTargetDialog } from './ReaderToolDia
 import type { AiSummaryRequestOptions } from '../../shared/ai'
 import { ReaderSearchBar, SearchableHtml, nextSearchIndex } from './ReaderSearch'
 import { BUILTIN_READER_FONTS, type ReaderFontEntry } from '../../shared/reader-font'
+import type { UpdateCheckResult } from '../../shared/update'
 import { selectMainSpeechSource, speechTextFromHtml, speechTextFromMarkdown, useReaderSpeech } from './useReaderSpeech'
 
 type Destination = 'all' | 'unread' | 'starred'
@@ -97,6 +99,7 @@ export default function App(): React.JSX.Element {
   const [readerToolLoading, setReaderToolLoading] = useState<ReaderMode | null>(null)
   const [readerToolError, setReaderToolError] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [startupUpdate, setStartupUpdate] = useState<UpdateCheckResult | null>(null)
   const [sourceCatalogOpen, setSourceCatalogOpen] = useState(false)
   const [subscriptionMenuOpen, setSubscriptionMenuOpen] = useState(false)
   const [opmlExportOpen, setOpmlExportOpen] = useState(false)
@@ -119,6 +122,7 @@ export default function App(): React.JSX.Element {
   const selectedArticleIdRef = useRef<string | null>(null)
   const aiSummaryRunRef = useRef(0)
   const lastObservedSyncFinish = useRef<number | null>(null)
+  const autoUpdateCheckedRef = useRef(false)
   const speech = useReaderSpeech(settings?.ttsVoiceURI ?? '')
 
   const reloadLibrary = useCallback(async (): Promise<void> => {
@@ -158,6 +162,15 @@ export default function App(): React.JSX.Element {
     })
     void reloadLibrary()
   }, [i18n, reloadLibrary])
+
+  useEffect(() => {
+    if (!settings || !appInfo || !settings.autoCheckUpdates || autoUpdateCheckedRef.current) return
+    autoUpdateCheckedRef.current = true
+    const language = settings.language === 'system' ? resolveDesktopLanguage(appInfo.locale) : settings.language
+    void window.origread.checkForUpdates(language).then((result) => {
+      if (result.status === 'available' && result.release) setStartupUpdate(result)
+    }).catch(() => undefined)
+  }, [appInfo, settings])
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
@@ -391,7 +404,7 @@ export default function App(): React.JSX.Element {
     return speechTextFromHtml(source.title, source.html)
   }, [readerContent?.html, readerMode, selectedArticle, translationDocument])
 
-  const summarySpeechText = useMemo(() => aiSummary ? speechTextFromMarkdown(stripRedundantSummaryHeading(aiSummary.summary)) : '', [aiSummary])
+  const summarySpeechText = useMemo(() => aiSummary?.status === 'GENERATED' ? speechTextFromMarkdown(stripRedundantSummaryHeading(aiSummary.summary)) : '', [aiSummary])
 
   useEffect(() => {
     speech.stop()
@@ -1214,6 +1227,9 @@ export default function App(): React.JSX.Element {
             <div className="article-heading">
               <span>{selectedFeed?.name ?? ''}</span>
               <h1>{readerMode === 'translation' && translationDocument ? translationDocument.translatedTitle : selectedArticle.title}</h1>
+              {readerMode === 'translation' && translationDocument && translationDocument.translatedTitle.trim() !== selectedArticle.title.trim() && (
+                <div className="article-original-title"><strong>{t('originalTitle')}：</strong>{selectedArticle.title}</div>
+              )}
               <div>{selectedArticle.author ?? ''}</div>
             </div>
             {readerToolError && <div className="reader-tool-error">{readerToolError}</div>}
@@ -1427,6 +1443,9 @@ export default function App(): React.JSX.Element {
           }}
         />
       )}
+      {startupUpdate?.status==='available'&&startupUpdate.release&&(
+        <UpdateAvailableDialog result={startupUpdate} onClose={()=>setStartupUpdate(null)}/>
+      )}
       {aiOptionsOpen && selectedArticle && (
         <AiSummaryOptionsDialog
           onClose={()=>setAiOptionsOpen(false)}
@@ -1527,7 +1546,7 @@ function AiSummaryPanel({
             <input aria-label={sizeLabel} type="range" min="220" max="640" step="10" value={panelSize} onChange={(event)=>onPanelSizeChange(Number(event.target.value))}/>
           </div>}
         </div>}
-        {summary&&<button type="button" className={`icon-button ${speechActive?'active':''}`} title={speechActive&&speechStatus==='speaking'?t('pauseReading'):speechActive&&speechStatus==='paused'?t('resumeReading'):t('readSummary')} aria-label={t('readSummary')} onClick={onToggleSpeech}>{speechActive&&speechStatus==='speaking'?<Pause size={15}/>:speechActive&&speechStatus==='paused'?<Play size={15}/>:<Headphones size={15}/>}</button>}
+        {summary?.status==='GENERATED'&&<button type="button" className={`icon-button ${speechActive?'active':''}`} title={speechActive&&speechStatus==='speaking'?t('pauseReading'):speechActive&&speechStatus==='paused'?t('resumeReading'):t('readSummary')} aria-label={t('readSummary')} onClick={onToggleSpeech}>{speechActive&&speechStatus==='speaking'?<Pause size={15}/>:speechActive&&speechStatus==='paused'?<Play size={15}/>:<Headphones size={15}/>}</button>}
         {speechActive&&speechStatus!=='idle'&&<button type="button" className="icon-button" title={t('stopReading')} aria-label={t('stopReading')} onClick={onStopSpeech}><Square size={13}/></button>}
         <button type="button" className="icon-button" title={t('close')} aria-label={t('close')} onClick={onClose}><X size={15}/></button>
       </div>
@@ -1535,7 +1554,9 @@ function AiSummaryPanel({
     <div className="ai-summary-panel-body">
       {loading&&<AiSummaryProgressStatus stage={progressStage} elapsedSeconds={elapsedSeconds}/>}
       {summary ? <>
-        <SimpleMarkdown text={summaryMarkdown}/>
+        {summary.status==='NOT_NEEDED'
+          ? <div className="ai-summary-not-needed"><strong>{t('aiSummaryNotNeeded')}</strong><span>{t(summary.skipReason==='local_source_already_concise'?'aiSummaryNotNeededLocal':'aiSummaryNotNeededModel')}</span></div>
+          : <SimpleMarkdown text={summaryMarkdown}/>}
         {summary.reasoning&&<details className="ai-reasoning"><summary>{t('aiReasoning')}</summary><pre>{summary.reasoning}</pre></details>}
         {loading
           ? <button className="mini-action ai-summary-stop-action" type="button" onClick={onStop}><Square size={12}/>{t('stopAiSummary')}</button>

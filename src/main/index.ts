@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, shell, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, shell, type IpcMainInvokeEvent } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -59,6 +59,8 @@ import type { AiProviderPatch, AiSettingsPatch, AiSummaryLength, AiSummaryReques
 import type { AiGeneratedRuleKind } from '../shared/ai-rule'
 import type { TranslationProviderPatch, TranslationProviderType, TranslationSettingsPatch, TranslationTarget } from '../shared/translation'
 import type { ArticleFilterRuleType } from '../shared/filter-rules'
+import type { UpdateCheckResult } from '../shared/update'
+import { ReleaseUpdateService } from './update/release-update-service'
 
 const isDevelopment = Boolean(process.env.ELECTRON_RENDERER_URL)
 if (process.env.ORIGREAD_E2E_USER_DATA_DIR) {
@@ -73,6 +75,9 @@ let mainWindow: BrowserWindow | null = null
 let desktopDatabase: DesktopDatabase | null = null
 let libraryRepository: LibraryRepository | null = null
 let settingsRepository: SettingsRepository | null = null
+let releaseUpdateService: ReleaseUpdateService | null = null
+let lastUpdateCheck: UpdateCheckResult | null = null
+let lastDownloadedUpdatePath: string | null = null
 let readerFontRepository: ReaderFontRepository | null = null
 let rssSubscriptionService: RssSubscriptionService | null = null
 let rssHubSettingsRepository: RssHubSettingsRepository | null = null
@@ -159,7 +164,8 @@ function createMainWindow(): BrowserWindow {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
-      webSecurity: true
+      webSecurity: true,
+      devTools: isDevelopment
     }
   })
   mainWindow = window
@@ -183,6 +189,12 @@ function createMainWindow(): BrowserWindow {
   })
 
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  window.webContents.on('before-input-event', (event, input) => {
+    const key = input.key.toLowerCase()
+    if (key === 'f12' || ((input.control || input.meta) && input.shift && key === 'i')) {
+      event.preventDefault()
+    }
+  })
   window.webContents.on('will-navigate', (event, url) => {
     if (!isTrustedRendererUrl(url)) {
       event.preventDefault()
@@ -320,6 +332,57 @@ function registerIpcHandlers(): void {
     const next = settingsRepository.update(normalizeDesktopSettingsPatch(patch))
     periodicSyncScheduler?.reconfigure()
     return next
+  })
+  ipcMain.handle(IPC_CHANNELS.getUpdateState, (event) => {
+    assertTrustedSender(event)
+    return lastUpdateCheck
+  })
+  ipcMain.handle(IPC_CHANNELS.checkForUpdates, async (event, language: unknown) => {
+    assertTrustedSender(event)
+    if (!releaseUpdateService) throw new Error('更新服务尚未初始化')
+    if (language !== 'zh' && language !== 'en') throw new TypeError('language must be zh or en')
+    if (process.env.ORIGREAD_DISABLE_AUTO_UPDATE_CHECK === '1') {
+      lastUpdateCheck = {
+        status: 'unavailable',
+        currentVersion: app.getVersion(),
+        checkedAt: Date.now(),
+        release: null,
+        errorCode: 'DISABLED',
+        errorMessage: '当前测试环境已关闭真实更新检查。'
+      }
+      return lastUpdateCheck
+    }
+    lastUpdateCheck = await releaseUpdateService.check(app.getVersion(), process.platform, process.arch, language)
+    return lastUpdateCheck
+  })
+  ipcMain.handle(IPC_CHANNELS.downloadUpdateAsset, async (event, assetId: unknown) => {
+    assertTrustedSender(event)
+    if (!releaseUpdateService) throw new Error('更新服务尚未初始化')
+    if (typeof assetId !== 'number' || !Number.isSafeInteger(assetId)) throw new TypeError('assetId must be an integer')
+    const asset = lastUpdateCheck?.release?.asset
+    if (!asset || asset.id !== assetId) throw new Error('当前没有可下载的安装包，请重新检查更新')
+    const safeName = asset.name.replace(/[<>:"/\\|?*]/g, '_')
+    const selected = process.env.ORIGREAD_E2E_DOWNLOAD_DIR
+      ? { canceled: false, filePath: join(process.env.ORIGREAD_E2E_DOWNLOAD_DIR, safeName) }
+      : await showSaveDialog({
+          title: '下载 OrigRead Desktop 更新',
+          defaultPath: join(app.getPath('downloads'), safeName),
+          filters: [{ name: 'Installer', extensions: [safeName.split('.').pop() || 'bin'] }]
+        })
+    if (selected.canceled || !selected.filePath) return { cancelled: true, path: null, error: null }
+    try {
+      await releaseUpdateService.downloadAsset(asset, selected.filePath, app.getLocale())
+      lastDownloadedUpdatePath = selected.filePath
+      return { cancelled: false, path: selected.filePath, error: null }
+    } catch (error) {
+      return { cancelled: false, path: null, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.launchDownloadedUpdate, async (event) => {
+    assertTrustedSender(event)
+    if (!lastDownloadedUpdatePath) throw new Error('当前没有已下载的安装包')
+    const error = await shell.openPath(lastDownloadedUpdatePath)
+    if (error) throw new Error(error)
   })
   ipcMain.handle(IPC_CHANNELS.listReaderFonts, (event) => {
     assertTrustedSender(event)
@@ -884,10 +947,15 @@ app.whenReady().then(() => {
   opmlService = new OpmlService(libraryRepository)
   readerContentService = new ReaderContentService(libraryRepository)
   settingsRepository = new SettingsRepository(desktopDatabase.connection)
+  releaseUpdateService = new ReleaseUpdateService(
+    (input, init) => net.fetch(input, init),
+    process.env.ORIGREAD_UPDATE_API_BASE || 'https://api.github.com'
+  )
   readerFontRepository = new ReaderFontRepository(join(app.getPath('userData'), 'reader-fonts'))
   const secretStore = new ElectronSecretStore(join(app.getPath('userData'), 'secrets.json'))
-  aiSettingsRepository = new AiSettingsRepository(desktopDatabase.connection, secretStore)
-  translationSettingsRepository = new TranslationSettingsRepository(desktopDatabase.connection, secretStore)
+  const systemLanguage = app.getLocale()
+  aiSettingsRepository = new AiSettingsRepository(desktopDatabase.connection, secretStore, systemLanguage)
+  translationSettingsRepository = new TranslationSettingsRepository(desktopDatabase.connection, secretStore, systemLanguage)
   articleFilterRepository = new ArticleFilterRepository(join(app.getPath('userData'), 'article-filter-rules.json'))
   feedDiscoveryCatalog = new FeedDiscoveryCatalog()
   rssHubSettingsRepository = new RssHubSettingsRepository(desktopDatabase.connection)

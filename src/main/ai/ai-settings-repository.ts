@@ -9,11 +9,15 @@ interface StoredAiProvider extends Omit<AiProviderProfile, 'hasApiKey'> {}
 interface StoredAiSettings extends Omit<AiSettings, 'providers'> { providers: StoredAiProvider[] }
 
 export class AiSettingsRepository {
-  constructor(private readonly database: DatabaseSync, private readonly secrets: SecretStore) {}
+  constructor(
+    private readonly database: DatabaseSync,
+    private readonly secrets: SecretStore,
+    private readonly defaultOutputLanguage = 'zh-CN'
+  ) {}
 
   current(): AiSettings {
-    const stored = this.read() ?? defaultStoredAiSettings()
-    const normalized = normalizeSettings(stored)
+    const stored = this.read() ?? defaultStoredAiSettings(this.defaultOutputLanguage)
+    const normalized = normalizeSettings(stored, this.defaultOutputLanguage)
     return { ...normalized, providers: normalized.providers.map((provider) => ({
       ...provider,
       hasApiKey: this.secrets.contains(secretKey(provider.id))
@@ -70,7 +74,7 @@ export class AiSettingsRepository {
   }
 
   restore(settings: Omit<AiSettings, 'providers'> & { providers: Array<Omit<AiProviderProfile, 'hasApiKey'>> }, apiKeys?: Record<string, string>): AiSettings {
-    const restored = this.save(normalizeSettings(settings))
+    const restored = this.save(normalizeSettings(settings, this.defaultOutputLanguage))
     if (apiKeys) this.replaceApiKeys(apiKeys)
     return this.current()
   }
@@ -79,7 +83,7 @@ export class AiSettingsRepository {
     return { ...settings, providers: settings.providers.map(({ hasApiKey: _ignored, ...provider }) => provider) }
   }
   private save(value: StoredAiSettings): AiSettings {
-    const normalized = normalizeSettings(value)
+    const normalized = normalizeSettings(value, this.defaultOutputLanguage)
     this.database.prepare(`INSERT INTO app_settings (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`)
       .run(SETTINGS_KEY, JSON.stringify(normalized), Date.now())
     return this.current()
@@ -94,14 +98,14 @@ function secretKey(id: string): string { return `ai:${id}:api-key` }
 function defaultProvider(id = DEFAULT_AI_PROVIDER_ID, name = '默认服务'): StoredAiProvider {
   return { id, name, enabled: true, endpoint: 'https://api.openai.com/v1', defaultModel: '', models: [] }
 }
-function defaultStoredAiSettings(): StoredAiSettings {
-  return { enabled: false, providers: [defaultProvider()], defaultProviderId: DEFAULT_AI_PROVIDER_ID, outputLanguage: 'zh-CN', summaryLength: 'STANDARD' }
+function defaultStoredAiSettings(defaultOutputLanguage = 'zh-CN'): StoredAiSettings {
+  return { enabled: false, providers: [defaultProvider()], defaultProviderId: DEFAULT_AI_PROVIDER_ID, outputLanguage: defaultOutputLanguage, summaryLength: 'STANDARD' }
 }
-function normalizeSettings(value: Partial<StoredAiSettings>): StoredAiSettings {
+function normalizeSettings(value: Partial<StoredAiSettings>, defaultOutputLanguage = 'zh-CN'): StoredAiSettings {
   const providers = Array.isArray(value.providers) && value.providers.length ? value.providers.map(normalizeProvider) : [defaultProvider()]
   const defaultProviderId = providers.some((item) => item.id === value.defaultProviderId) ? value.defaultProviderId! : providers[0]!.id
   const summaryLength: AiSummaryLength = ['BRIEF','STANDARD','DETAILED'].includes(String(value.summaryLength)) ? value.summaryLength as AiSummaryLength : 'STANDARD'
-  return { enabled: value.enabled === true, providers, defaultProviderId, outputLanguage: String(value.outputLanguage ?? 'zh-CN').trim() || 'zh-CN', summaryLength }
+  return { enabled: value.enabled === true, providers, defaultProviderId, outputLanguage: String(value.outputLanguage ?? defaultOutputLanguage).trim() || defaultOutputLanguage, summaryLength }
 }
 function normalizeProvider(value: Partial<StoredAiProvider>): StoredAiProvider {
   const models = Array.isArray(value.models) ? [...new Set(value.models.map(String).map((item) => item.trim()).filter(Boolean))].sort() : []

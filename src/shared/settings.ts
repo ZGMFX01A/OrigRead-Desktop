@@ -24,6 +24,7 @@ export interface DesktopSettings {
   aiSummaryPanelSize: number
   syncIntervalMinutes: SyncIntervalMinutes
   syncOnStart: boolean
+  autoCheckUpdates: boolean
 }
 
 export type DesktopSettingsPatch = Partial<DesktopSettings>
@@ -43,7 +44,8 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   aiSummaryPlacement: 'replace',
   aiSummaryPanelSize: 360,
   syncIntervalMinutes: 30,
-  syncOnStart: false
+  syncOnStart: false,
+  autoCheckUpdates: true
 }
 
 export function normalizeDesktopSettings(value: unknown): DesktopSettings {
@@ -63,7 +65,8 @@ export function normalizeDesktopSettings(value: unknown): DesktopSettings {
     aiSummaryPlacement: normalizeAiSummaryPlacement(input.aiSummaryPlacement),
     aiSummaryPanelSize: normalizeAiSummaryPanelSize(input.aiSummaryPanelSize),
     syncIntervalMinutes: normalizeSyncInterval(input.syncIntervalMinutes),
-    syncOnStart: input.syncOnStart === true
+    syncOnStart: input.syncOnStart === true,
+    autoCheckUpdates: input.autoCheckUpdates === undefined ? true : input.autoCheckUpdates === true
   }
 }
 
@@ -98,6 +101,10 @@ export function normalizeDesktopSettingsPatch(value: unknown): DesktopSettingsPa
   if ('syncOnStart' in value) {
     if (typeof value.syncOnStart !== 'boolean') throw new TypeError('syncOnStart must be a boolean')
     patch.syncOnStart = value.syncOnStart
+  }
+  if ('autoCheckUpdates' in value) {
+    if (typeof value.autoCheckUpdates !== 'boolean') throw new TypeError('autoCheckUpdates must be a boolean')
+    patch.autoCheckUpdates = value.autoCheckUpdates
   }
   return patch
 }

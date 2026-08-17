@@ -32,7 +32,7 @@ Electron 侧可以使用不同库，但不得擅自调整以上优先级、回�
 - Vitest
 - SQLite（Phase 2 引入）
 
-Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用 Electron 自带 Chromium，不再额外引入 JCEF/KCEF。
+Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少提供 AppImage，并评估 DEB。动态网页与原文阅读直接使用 Electron 自带 Chromium，不再额外引入 JCEF/KCEF。
 
 ## 3. 安全边界
 
@@ -248,6 +248,7 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 
 - [x] Windows NSIS（当前为开发/未签名构建；2026-08-16 已用当前源码重新生成 `OrigRead-0.1.0-Windows-x64.exe`）
 - [ ] macOS DMG
+- [ ] Linux AppImage / DEB
 - [ ] GitHub Actions
 - [ ] Windows 签名
 - [ ] macOS 签名 / notarization
@@ -298,11 +299,11 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 9. [x] **UI 一致性检查**
    - 不要求 Desktop 100% 复刻 Android 布局。
    - 已按 Android 当前功能逐页补齐主要产品入口与语义缺口，包括 Reader 已读/未读、收藏、下一篇、全文/Feed 内容切换、AI/翻译入口、单来源设置、分组与来源筛选、通知和重载图标等。
-   - 最终发布前仍保留“中英文可见性 + Windows/macOS 实机”发布级审计，不再作为独立功能开发项。
+   - 最终发布前仍保留“中英文可见性 + Windows/macOS/Linux 实机”发布级审计，不再作为独立功能开发项。
 
 10. [ ] **自动打包**
-    - GitHub Actions 自动构建至少覆盖 Windows 与 macOS。
-    - 自动生成 Windows 安装包与 macOS DMG 产物。
+    - GitHub Actions 自动构建覆盖 Windows、macOS 与 Linux。
+    - 自动生成 Windows NSIS、macOS DMG 与 Linux AppImage；评估同时提供 DEB。
     - 后续签名 / notarization 在证书条件具备后接入同一发布流程。
 
 11. [ ] **项目 Git 发布页订阅**
@@ -356,31 +357,34 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 
 ### A. 仍未开发的产品功能
 
-1. [ ] **Desktop Git Release 信息能力**
+1. [x] **Desktop Git Release 信息能力**
    - 使用 `ZGMFX01A/OrigRead-Desktop` 的 GitHub Release 数据。
-   - 展示最新版本、Release Notes、发布时间和当前平台安装包。
+   - 展示最新版本、Release Notes、发布时间和当前平台安装包；Release Notes 推荐用 GitHub 页面不可见的 `<!-- lang:zh -->` / `<!-- lang:en -->` 分段，客户端按当前软件语言选择；旧的可见语言标题和旧单语 Release 保持兼容。
    - `published_at` / `created_at` 面向用户统一格式化为 `yyyy-MM-dd`，不直接显示 ISO 时间戳。
    - 提供“直接下载当前平台安装包”和“打开完整 Release 页面”两个独立动作。
+   - 当前仓库仍为私有库时，不在客户端内置 GitHub Token；匿名 GitHub API 返回 401/404 时明确归类为“仓库不可访问 / 可能仍为私有”，绝不误报“已是最新”。仓库公开后同一实现无需改架构即可直接工作。
 
-2. [ ] **手动检查更新完整闭环**
+2. [x] **手动检查更新完整闭环**
    - 设置页提供明确的“检查更新”。
    - 比较当前版本与最新 Release，正确处理“已是最新 / 有新版本 / 查询失败 / Release 没有当前平台资产”。
-   - Windows 可选择下载 NSIS；macOS 后续对应 DMG。下载失败必须保留打开 Release 页的安全降级入口。
+   - Windows 选择 NSIS、macOS 选择 DMG、Linux 优先选择 AppImage（可同时提供 DEB）。下载失败必须保留打开 Release 页的安全降级入口。
 
-3. [ ] **启动自动检查与更新设置**
+3. [x] **启动自动检查与更新设置**
    - 增加是否启动时自动检查更新的用户设置，默认行为与 Android 产品语义对齐。
    - 自动检查不得阻塞应用启动；失败只记录状态，不制造启动错误。
    - 下载、跳转、版本跳过 / 提醒策略在实现时统一确定，不把 GitHub 网络错误当成“没有更新”。
+   - 中国大陆下载 GitHub Release 资产时优先使用可配置加速候选，失败自动回退 GitHub 官方地址；非大陆环境官方地址优先。加速只作用于 Release 二进制资产，不代理 GitHub API 或普通网页。
 
-4. [ ] **Release / 更新逻辑自动测试**
+4. [x] **Release / 更新逻辑自动测试**
    - 使用本地 HTTP / GitHub API mock 覆盖版本比较、资产选择、日期格式化、无资产、限流/失败降级。
    - Renderer 至少覆盖“已是最新 / 有更新 / 查询失败”三种可见状态。
+   - 当前私有仓库阶段以本地 GitHub API mock 完成自动验收；真实公开 GitHub Release 的最后一次网络 smoke 留到仓库公开 / 正式发版时执行，不属于 B 功能缺口。
 
 ### B. 跨平台构建与发布工程
 
-1. [ ] **GitHub Actions Windows + macOS 自动构建**
+1. [ ] **GitHub Actions Windows + macOS + Linux 自动构建**
    - 当前仓库仍没有 `.github/workflows`。
-   - 至少生成 Windows NSIS 与 macOS DMG artifact，并为后续签名保留 secrets / signing 接入点。
+   - 至少生成 Windows NSIS、macOS DMG、Linux AppImage artifact，并评估同时提供 DEB；为后续签名保留 secrets / signing 接入点。
 
 2. [ ] **macOS DMG 实际构建**
    - `electron-builder.yml` 已配置 `dmg`，`package:mac` 脚本已存在；配置完成不等于平台验证完成。
@@ -389,9 +393,15 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 3. [ ] **macOS 主链实机验证**
    - 至少验证启动、Renderer、来源添加/同步、Reader、WebContentsView、safeStorage、字体/文件选择器和 DMG 安装。
 
-4. [ ] **正式签名链**
+4. [ ] **Linux 构建与主链验证**
+   - 增加 `electron-builder` Linux target 和 `package:linux`；至少产出 AppImage，并评估 DEB。
+   - 在 Ubuntu runner / 实机验证启动、来源添加/同步、Reader、WebContentsView、字体/文件选择器、系统浏览器、通知和凭据安全存储。
+   - 检查 Wayland / X11、HiDPI 缩放和系统主题跟随。
+
+5. [ ] **正式签名链**
    - Windows code signing 尚未接入。
    - macOS signing / notarization 尚未接入；证书未具备前保持未完成，不伪造完成状态。
+   - Linux 发布保留校验和 / 包签名接入位。
 
 ### C. 发布前人工验收
 
@@ -414,13 +424,14 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 5. [ ] **发布级全回归矩阵**
    - Windows：typecheck + unit + Electron E2E + NSIS 安装/卸载/重启持久化。
    - macOS：同等主链至少覆盖启动、来源、Reader、WebContentsView、safeStorage、DMG 安装。
+   - Linux：至少覆盖启动、来源、Reader、WebContentsView、安全存储、AppImage（及 DEB 如提供）启动/安装。
    - Android 基线：Desktop 默认不修改 Android；如后续确实修改 Android，则执行对应 Android 回归。
 
 ### D. 工程收口 / 发布卫生
 
-1. [ ] **处理当前唯一 staged `package-lock.json` 元数据差异**
-   - 功能源码已形成 Git 基线，当前 `main` HEAD 为 `eee8b76`；工作区只剩 `package-lock.json` staged 差异。
-   - 该差异只是 npm 对可选 Linux 包 `libc` 元数据的改写，不应在不确认原因时混入功能提交；是否保留 / 还原由用户决定。
+1. [ ] **形成下一次正式发布前 Git 基线**
+   - 2026-08-17 本轮开始前 Desktop `main` 工作区已干净，Android 与 Desktop 为独立 Git root；当前工作区包含本轮功能修改，助手不得擅自 commit / push。
+   - 发布前应确认工作区、tag 与 Release 源码完全对应，避免安装包与源码版本错位。
 
 2. [ ] **确认正式版本号、构建产物命名与 Release 规则**
    - 当前 `package.json` 仍为 `0.1.0` 开发版本。
@@ -429,9 +440,9 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 ### 当前自动回归基线
 
 - `npm run typecheck`：通过。
-- `npm test`：55 files / 169 tests 通过。
+- `npm test`：58 files / 191 tests 通过。
 - `npm run build`：通过。
-- Electron E2E：6 / 6 通过。
+- Electron E2E：7 / 7 通过。
 - 当前主产品功能（来源、同步、Reader、AI、翻译、规则、OPML、背景/主题）不再列入新增开发范围；后续以防回归为主。
 
 ## 10. 后续按大项开发顺序
@@ -461,7 +472,30 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
   - AI 摘要视觉统一为轻科技蓝：蓝白面板层级、浅蓝渐变 AI 图标、轻阴影和蓝色模式徽标；Android 阅读底栏与 Android AI 摘要面板同步使用同一组科技蓝渐变图标语义。
   - AI 摘要任务支持显式停止：Renderer 立即恢复可操作状态，Main 通过 `AbortController` 真正中止模型 HTTP 请求，并使用任务序列避免已取消请求的迟到结果覆盖当前摘要；重新生成时停止会保留上一份成功摘要。
 - DeepL 服务测试与额度查询已彻底拆分：测试连接只发送翻译请求，只有显式点击“查询额度”才访问 `/usage`；Desktop 使用独立 Main IPC / preload API，Android 不再在进入页面或保存 Key 时自动查询额度。
-- 当前回归基线：`npm run typecheck` / `npm test`（55 files / 169 tests）/ `npm run build` / Electron E2E（6/6）通过；Android `:app:compileGithubDebugKotlin` 通过，DeepL Provider 与更新日志日期/过滤定向单测通过（JDK 17）。
+- 当前回归基线：`npm run typecheck` / `npm test`（56 files / 172 tests）/ `npm run build` / Electron E2E（6/6）通过；Android `:app:compileGithubDebugKotlin` 通过，摘要 Prompt、更新日志本地化、GitHub Release 下载候选等定向单测通过（JDK 17）。
+
+### 2026-08-17 摘要 / 翻译 / 更新与平台范围收口
+
+- [x] Android 与 Desktop AI 摘要不再用同一份“技术报告式”长模板覆盖所有文章：同一次请求先在内部判断产品发布、普通新闻、评测、教程、科研/行业报告、深度分析等主类型，再按类型选择信息骨架与压缩强度；标准档加入按正文长度计算的绝对输出上限，产品/快讯要求进一步短于该上限。
+- [x] AI 摘要缓存版本升级，旧版偏长缓存安全失效，避免 Prompt 已更新但用户仍继续命中旧摘要。
+- [x] AI 摘要在上述分类基础上进一步改为“摘要价值判断 → 文章形态 × 内容领域 → 对应压缩策略”，而不是继续平铺金融快讯、影视快讯、汽车快讯等无限类型。文章形态固定为 flash / release / news / review / guide / research / report / analysis / opinion / interview / other；领域只调整需要优先抓取的事实槽位，不改变文章形态本身的摘要结构。
+- [x] Android / Desktop 都增加保守的本地摘要价值判断：只对明显已经高度浓缩、且没有标题层级 / 列表 / 引用 / 代码等结构的极短正文直接返回 `NOT_NEEDED`，不会调用 AI；短但结构化的教程、研究、报告、更新说明仍继续进入原有复杂文章摘要链，避免单纯按字数误杀。
+- [x] 边界文章不额外增加一次分类请求，而是在原摘要请求第一行返回不可见元数据，携带 `shouldSummarize + form + domain + reason`；协议已版本化为 `origread-summary-v1` + `"v":1`，解析端继续兼容旧 `origread-summary`，OpenAI Compatible 模型不遵循或元数据损坏时仍 fail-open 为普通 Markdown 摘要，不为结构化输出牺牲第三方 Provider 兼容性。`NOT_NEEDED` 作为成功结果缓存并在 UI 明确显示，不当成错误。
+- [x] 摘要长度不再由“正文比例 + 会强行把短文抬长的固定最小值”决定：BRIEF / STANDARD / DETAILED 仍保持约 25% / 30% / 45% 的模式语义，但最终硬上限同时受模式绝对上限、原文有效正文约 48% 压缩上限和文章形态上限约束。200～300 字正文不会再因为 180 / 300 字旧下限被硬写成长摘要。
+- [x] **速览 / 均衡 / 深入三档继续是独立的用户摘要模式，而不是被文章形态分类替代**：BRIEF 保持单段高密度、复杂文只抓结论与最关键依据；STANDARD 保留主要事实和复杂文必要的方法/限制；DETAILED 继续允许评测测试条件、教程步骤、科研方法/样本/数据/限制、深度分析论证链等多层结构。文章形态 × 领域只决定“抓什么和怎样组织”，三档决定“压缩到什么程度”，并且档位仍参与缓存键，互不串缓存。
+- [x] **原有复杂文章摘要能力明确保留并加强**：科研 / 行业报告继续保留研究问题、方法或样本、关键数据、结论与限制；深度分析 / 观点保留核心主张、证据、论证链与边界；教程保留前提、关键步骤与风险；评测保留测试条件、实测数据、优缺点和结论。STANDARD 不再因为追求短而削掉必要方法/限制，DETAILED 仍允许结构化多层摘要。
+- [x] 摘要与扩展分析彻底分离：Prompt 明确禁止使用原文外知识补背景、历史、行业影响、未来走势、因果解释或作者未写出的结论，并把正文内要求模型改变任务的文字视为不可信内容；摘要只负责压缩原文。
+- [x] 摘要正文预处理补齐并约束 HTML 表格：Android / Desktop 都保留表格真实行结构；小表完整进入摘要，大表单表最多约 6000 字符并从整张表范围等距抽取代表行，而不是永远只取前若干行；列数、单元格和单行也有独立预算，并明确标记未展示数据，防止巨型表格挤掉正文。上一轮表格转 `pre` 后被通用空白归一化压平换行的问题也已修复。
+- [x] `NOT_NEEDED` 缓存正文绑定经过代码审计和回归确认，无需新增一套 fingerprint 持久化结构：Android 缓存键已有正文 SHA-256，Desktop 缓存键及 latest 索引校验实际参与摘要的预处理正文 hash；同一 articleId 从短 Feed Content 切换到长 Full Content 后旧 `NOT_NEEDED` 自动失效。Desktop 已增加“短 Feed → NOT_NEEDED → Full Content → 正常调用 Provider”真实服务级测试。
+- [x] 摘要短文判断和比例预算从简单字符数改为 Android / Desktop 同定义的跨语言 `effectiveLength`：CJK 字符约 1 单位，其他 Unicode 字母/数字词约 2 单位，标点/空白不计。这只是稳定启发式而非 tokenizer，用于避免英文单词平均字符更长导致的系统性高估；原 140 / 280 / 420 阈值和 25% / 30% / 45% / 48% 业务关系保持不变。
+- [x] AI 层 `shouldSummarize=false` 明确改为高置信度动作：只有高度确定摘要只能同义复述时才允许 false；任何疑问必须 true，且不得因为文章是 flash、篇幅较短或接近阈值就直接 false。没有增加第二次 AI 判断请求，也没有引入不可靠且当前 UI 不消费的数值 confidence。
+- [x] 本轮摘要第三轮审计验收：Desktop `npm run typecheck` 通过、`npm test` 58 files / 191 tests 通过、production build 通过、Electron E2E 7 / 7 通过；服务级测试覆盖正文 fingerprint 失效与 120×12 巨表预算，E2E 同时覆盖正常长文 AI 请求和极短快讯零 Provider 请求。Android `AiSummaryPromptTest` + `AiSummaryPolicyTest` 定向回归通过（JDK 17，`BUILD SUCCESSFUL`）。
+- [x] Android / Desktop 更新日志推荐使用 GitHub 页面不可见的 `<!-- lang:zh -->` / `<!-- lang:en -->` 双语分段，并按当前 App 界面语言选择；旧的 `## 中文` / `## English` 可见标题和旧单语 Release 继续兼容。
+- [x] Android 中国大陆 GitHub Release 下载增加受限加速候选：只改写 `/releases/download/` 二进制资产，镜像失败自动回退 GitHub 官方地址；非大陆环境保持官方直连。OrigRead 内置 Release 文章的 APK 下载入口复用同一规则。
+- [x] Desktop 禁用 F12 / Ctrl+Shift+I；正式构建同时关闭 `webPreferences.devTools`，开发态仅保留程序化调试能力。
+- [x] Android 与 Desktop 译文标题下保留弱化的原标题，不再让译题完全覆盖来源标题。
+- [x] Android 与 Desktop 在用户尚未保存目标语言时，AI 摘要输出语言和翻译目标语言默认跟随操作系统语言；已有用户设置不被系统语言变化覆盖。
+- [x] Linux 已进入 Desktop 正式支持计划：至少 AppImage，评估 DEB，并纳入 GitHub Actions、Wayland/X11、HiDPI、WebContentsView、安全存储及发布级回归范围。
 
 ### 大项 D：外观系统
 
@@ -489,20 +523,21 @@ Windows 使用 NSIS，macOS 使用 DMG。动态网页与原文阅读直接使用
 
 ### 大项 B：发布页与自动更新
 
-- [ ] B1 Desktop Git Release 信息与当前平台安装包选择。
-- [ ] B2 手动“检查更新”完整闭环。
-- [ ] B3 启动自动检查开关、版本比较、下载/跳转、错误降级。
-- [ ] B4 对相关网络与版本选择逻辑增加单测/E2E mock。
+- [x] B1 Desktop Git Release 信息与当前平台安装包选择；Release Notes 使用隐藏语言标记按当前软件语言选择，旧单语 / 旧标题格式兼容。
+- [x] B2 手动“检查更新”完整闭环：已是最新 / 有更新 / 私有仓库或无公开 Release / API 限流 / 网络失败 / 当前平台无资产均有独立状态。
+- [x] B3 启动自动检查开关、版本比较、下载/跳转、错误降级；默认与 Android 一致为开启，后台检查不阻塞启动；中国大陆优先 GitHub Release 加速候选并始终保留 GitHub 官方地址回退，不代理 GitHub API 或普通网页。
+- [x] B4 相关网络与版本逻辑单测 + Electron E2E mock 完成；覆盖隐藏双语日志、SemVer、平台资产、国内代理失败回退官方、有更新、已最新和私有仓库 404。
 
-**下一步从 B1 开始连续完成 B1 → B4。** 当前不再新增 Reader / 来源类大功能，除非真实回归发现 bug。
+**B1 → B4 已完成。下一步进入大项 E 跨平台构建与正式发布。** 当前私有仓库不阻塞 B 的开发完成；公开仓库后的真实 Release 网络 smoke 留到正式发布验收。
 
 ### 大项 E：跨平台构建与正式发布
 
-- [ ] E1 GitHub Actions Windows / macOS 自动构建。
+- [ ] E1 GitHub Actions Windows / macOS / Linux 自动构建：Windows 产出 NSIS，macOS 产出 DMG，Linux 至少产出 AppImage，并评估同时提供 DEB。
 - [ ] E2 当前 Windows NSIS 安装 / 卸载 / 重装验证；当前源码安装包已经重新生成，不再重复把“生成安装包”列为缺口。
 - [ ] E3 macOS DMG 构建与实机主链验证。
-- [ ] E4 Windows 签名、macOS signing/notarization（证书具备后）。
-- [ ] E5 最终中英文、安装/卸载、升级、备份恢复、来源/Reader/AI/翻译全回归。
+- [ ] E4 Linux 适配与实机主链验证：启动、来源发现/同步、Reader、WebContentsView、字体/文件选择器、系统浏览器、通知与凭据安全存储，并确认 Wayland/X11 下窗口和缩放行为。
+- [ ] E5 Windows 签名、macOS signing/notarization（证书具备后）；Linux 保留包校验/签名发布位。
+- [ ] E6 最终中英文、Windows/macOS/Linux 安装与启动、升级、备份恢复、来源/Reader/AI/翻译全回归。
 
 ## 6. 每轮开发验收
 

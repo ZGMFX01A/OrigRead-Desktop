@@ -8,10 +8,14 @@ type StoredProvider = Omit<TranslationProviderSettings, 'hasApiKey' | 'desktopSu
 interface StoredSettings extends Omit<TranslationSettings, 'providers'> { providers: StoredProvider[] }
 
 export class TranslationSettingsRepository {
-  constructor(private readonly database: DatabaseSync, private readonly secrets: SecretStore) {}
+  constructor(
+    private readonly database: DatabaseSync,
+    private readonly secrets: SecretStore,
+    private readonly defaultTargetLanguage = 'zh-CN'
+  ) {}
 
   current(): TranslationSettings {
-    const stored = normalizeSettings(this.read() ?? defaults())
+    const stored = normalizeSettings(this.read() ?? defaults(this.defaultTargetLanguage), this.defaultTargetLanguage)
     return { ...stored, providers: stored.providers.map((provider) => ({
       ...provider,
       hasApiKey: this.secrets.contains(secretKey(provider.type)),
@@ -53,7 +57,7 @@ export class TranslationSettingsRepository {
     return { ...settings, providers: settings.providers.map(({ hasApiKey: _a, desktopSupported: _b, ...provider }) => provider) }
   }
   private save(value: StoredSettings): TranslationSettings {
-    const normalized = normalizeSettings(value)
+    const normalized = normalizeSettings(value, this.defaultTargetLanguage)
     this.database.prepare(`INSERT INTO app_settings (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`)
       .run(SETTINGS_KEY, JSON.stringify(normalized), Date.now())
     return this.current()
@@ -74,15 +78,15 @@ function defaultProvider(type: TranslationProviderType): StoredProvider {
     case 'DLX': return { type, enabled: false, endpoint: '', region: '' }
   }
 }
-function defaults(): StoredSettings {
-  return { defaultProvider: 'ML_KIT', defaultTarget: { type: 'traditional', provider: 'ML_KIT' }, targetLanguage: 'zh-CN', displayMode: 'TRANSLATED', providers: TRANSLATION_PROVIDER_TYPES.map(defaultProvider) }
+function defaults(defaultTargetLanguage = 'zh-CN'): StoredSettings {
+  return { defaultProvider: 'ML_KIT', defaultTarget: { type: 'traditional', provider: 'ML_KIT' }, targetLanguage: defaultTargetLanguage, displayMode: 'TRANSLATED', providers: TRANSLATION_PROVIDER_TYPES.map(defaultProvider) }
 }
-function normalizeSettings(value: Partial<StoredSettings>): StoredSettings {
+function normalizeSettings(value: Partial<StoredSettings>, defaultTargetLanguage = 'zh-CN'): StoredSettings {
   const incoming = new Map((Array.isArray(value.providers) ? value.providers : []).map((item) => [item.type, item]))
   const providers = TRANSLATION_PROVIDER_TYPES.map((type) => ({ ...defaultProvider(type), ...incoming.get(type), type }))
   const defaultProviderType = TRANSLATION_PROVIDER_TYPES.includes(value.defaultProvider as TranslationProviderType) ? value.defaultProvider as TranslationProviderType : 'ML_KIT'
   const defaultTarget = normalizeTarget(value.defaultTarget, defaultProviderType)
-  return { defaultProvider: defaultProviderType, defaultTarget, targetLanguage: value.targetLanguage === undefined ? 'zh-CN' : String(value.targetLanguage), displayMode: value.displayMode === 'BILINGUAL' ? 'BILINGUAL' : 'TRANSLATED', providers }
+  return { defaultProvider: defaultProviderType, defaultTarget, targetLanguage: value.targetLanguage === undefined ? defaultTargetLanguage : String(value.targetLanguage), displayMode: value.displayMode === 'BILINGUAL' ? 'BILINGUAL' : 'TRANSLATED', providers }
 }
 function normalizeTarget(value: unknown, fallback: TranslationProviderType): TranslationTarget {
   if (value && typeof value === 'object' && !Array.isArray(value)) {

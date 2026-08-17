@@ -8,7 +8,7 @@ export interface IsolatedElectronApp {
 }
 
 /** 每个 E2E 使用独立 userData，避免测试订阅/设置污染开发机数据库。 */
-export async function launchIsolatedOrigRead(): Promise<IsolatedElectronApp> {
+export async function launchIsolatedOrigRead(envOverrides: Record<string, string> = {}): Promise<IsolatedElectronApp> {
   const root = join(process.cwd(), 'test-results')
   await mkdir(root, { recursive: true })
   const userDataDir = await mkdtemp(join(root, 'user-data-'))
@@ -16,6 +16,8 @@ export async function launchIsolatedOrigRead(): Promise<IsolatedElectronApp> {
     Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
   )
   env.ORIGREAD_E2E_USER_DATA_DIR = userDataDir
+  env.ORIGREAD_DISABLE_AUTO_UPDATE_CHECK = '1'
+  Object.assign(env, envOverrides)
   const app = await electron.launch({ args: ['.'], cwd: process.cwd(), env })
   return {
     app,

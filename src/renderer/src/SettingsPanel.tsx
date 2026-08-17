@@ -12,8 +12,9 @@ import type { JsonRule } from '../../shared/json-source'
 import type { RssHubSettings } from '../../shared/rsshub'
 import type { AiGeneratedRuleKind, AiGeneratedRulePreview } from '../../shared/ai-rule'
 import { BUILTIN_READER_FONTS, type ReaderFontEntry } from '../../shared/reader-font'
+import type { UpdateCheckResult } from '../../shared/update'
 
-type SettingsPage = 'general' | 'translation' | 'ai' | 'filters' | 'jsonRules' | 'websiteRules' | 'rsshub' | 'backup'
+type SettingsPage = 'general' | 'update' | 'translation' | 'ai' | 'filters' | 'jsonRules' | 'websiteRules' | 'rsshub' | 'backup'
 const INTERNAL_ITHOME_RULE_ID = 'ithome-home'
 
 interface SettingsPanelProps {
@@ -31,6 +32,7 @@ export function SettingsPanel({ settings, appInfo, syncState, onChange, onConfig
     <aside className="settings-nav">
       <div className="settings-nav-title"><Settings2 size={18}/><span>{t('settings')}</span></div>
       <SettingsNavButton active={page==='general'} icon={<Globe2 size={16}/>} label={t('settingsGeneral')} onClick={()=>setPage('general')}/>
+      <SettingsNavButton active={page==='update'} icon={<RefreshCw size={16}/>} label={t('softwareUpdate')} onClick={()=>setPage('update')}/>
       <SettingsNavButton active={page==='ai'} icon={<Bot size={16}/>} label={t('aiSettingsTitle')} onClick={()=>setPage('ai')}/>
       <SettingsNavButton active={page==='translation'} icon={<Languages size={16}/>} label={t('translationSettingsTitle')} onClick={()=>setPage('translation')}/>
       <SettingsNavButton active={page==='filters'} icon={<Filter size={16}/>} label={t('articleFilters')} onClick={()=>setPage('filters')}/>
@@ -43,6 +45,7 @@ export function SettingsPanel({ settings, appInfo, syncState, onChange, onConfig
     </aside>
     <div className="settings-page settings-subpage">
       {page==='general' && <GeneralSettings settings={settings} syncState={syncState} onChange={onChange}/>}
+      {page==='update' && <UpdateSettingsPage settings={settings} appInfo={appInfo} onChange={onChange}/>}
       {page==='translation' && <TranslationSettingsPage/>}
       {page==='ai' && <AiSettingsPage/>}
       {page==='filters' && <ArticleFilterSettingsPage/>}
@@ -84,6 +87,50 @@ function GeneralSettings({settings,syncState,onChange}:{settings:DesktopSettings
     </SettingsSection>
   </>
 }
+
+function UpdateSettingsPage({settings,appInfo,onChange}:{settings:DesktopSettings;appInfo:AppInfo|null;onChange:(patch:DesktopSettingsPatch)=>void}):React.JSX.Element{
+  const {t,i18n}=useTranslation()
+  const [result,setResult]=useState<UpdateCheckResult|null>(null)
+  const [checking,setChecking]=useState(false)
+  const [downloading,setDownloading]=useState(false)
+  const [downloadPath,setDownloadPath]=useState<string|null>(null)
+  const [status,setStatus]=useState('')
+  const language:i18nLanguage=i18n.resolvedLanguage?.startsWith('zh')?'zh':'en'
+  useEffect(()=>{let cancelled=false;void window.origread.getUpdateState().then((value)=>{if(!cancelled)setResult(value)}).catch((error)=>{if(!cancelled)setStatus(errorText(error))});return()=>{cancelled=true}},[])
+  const check=async()=>{setChecking(true);setStatus('');try{setResult(await window.origread.checkForUpdates(language))}catch(error){setStatus(errorText(error))}finally{setChecking(false)}}
+  const download=async()=>{const asset=result?.release?.asset;if(!asset)return;setDownloading(true);setStatus('');try{const value=await window.origread.downloadUpdateAsset(asset.id);if(value.error){setStatus(`${t('updateDownloadFailed')}: ${value.error}`);return}if(value.path){setDownloadPath(value.path);setStatus(`${t('downloadUpdateSuccess')}: ${value.path}`)}}catch(error){setStatus(`${t('updateDownloadFailed')}: ${errorText(error)}`)}finally{setDownloading(false)}}
+  const install=async()=>{setStatus('');try{await window.origread.launchDownloadedUpdate()}catch(error){setStatus(errorText(error))}}
+  const release=result?.release
+  return <>
+    <PageIntro icon={<RefreshCw size={22}/>} title={t('softwareUpdate')} description={t('softwareUpdateDescription')}/>
+    <SettingsSection icon={<RefreshCw size={17}/>} title={t('softwareUpdate')}>
+      <SettingRow title={t('autoCheckUpdates')} description={t('autoCheckUpdatesDescription')}><Toggle checked={settings.autoCheckUpdates} onChange={(value)=>onChange({autoCheckUpdates:value})}/></SettingRow>
+      <SettingRow title={t('checkUpdatesNow')} description={`${t('currentVersion')}: v${appInfo?.version??'—'}`}><button type="button" className="mini-action update-check-button" disabled={checking} onClick={()=>void check()}>{checking&&<RefreshCw size={13} className="spinning"/>}{checking?t('checkingUpdates'):t('checkUpdatesNow')}</button></SettingRow>
+    </SettingsSection>
+    {(result||status)&&<SettingsSection icon={<FileText size={17}/>} title={t('softwareUpdate')}>
+      {result&&<div className={`update-status-card status-${result.status}`}>
+        <div className="update-status-heading"><strong>{updateStatusTitle(result,t)}</strong><span>{result.checkedAt?new Date(result.checkedAt).toLocaleString():''}</span></div>
+        {result.errorCode&&<p>{updateErrorDescription(result,t)}</p>}
+        {release&&<>
+          <div className="update-release-meta"><span><b>v{release.version}</b>{release.title&&release.title!==release.tagName?` · ${release.title}`:''}</span><span>{t('releaseDate')}: {release.publishedDate||'—'}</span></div>
+          {release.notes&&<div className="update-release-notes"><strong>{t('releaseNotes')}</strong><pre>{release.notes}</pre></div>}
+          <div className="update-release-asset"><strong>{t('releaseAsset')}</strong>{release.asset?<span>{release.asset.name} · {formatBytes(release.asset.size)}</span>:<span>{t('noPlatformAsset')}</span>}</div>
+          <div className="update-release-actions">
+            {release.asset&&result.status==='available'&&<button type="button" className="dialog-submit" disabled={downloading} onClick={()=>void download()}>{downloading&&<RefreshCw size={14} className="spinning"/>}{downloading?t('downloadingUpdate'):t('downloadUpdate')}</button>}
+            {downloadPath&&<button type="button" className="mini-action" onClick={()=>void install()}>{t('installUpdate')}</button>}
+            <button type="button" className="mini-action" onClick={()=>void window.origread.openExternalUrl(release.releasePageUrl)}>{t('openReleasePage')}</button>
+          </div>
+        </>}
+      </div>}
+      {status&&<StatusText text={status}/>}
+    </SettingsSection>}
+  </>
+}
+
+type i18nLanguage='zh'|'en'
+function updateStatusTitle(result:UpdateCheckResult,t:(key:string)=>string):string{return result.status==='available'?t('updateAvailable'):result.status==='latest'?t('latestVersion'):result.status==='unavailable'?t('updateUnavailable'):t('updateNetworkError')}
+function updateErrorDescription(result:UpdateCheckResult,t:(key:string)=>string):string{switch(result.errorCode){case'REPOSITORY_UNAVAILABLE':return t('updateRepositoryPrivate');case'RATE_LIMITED':return t('updateRateLimited');case'INVALID_RESPONSE':return t('updateInvalidResponse');case'DISABLED':return t('updateDisabledForTest');default:return t('updateNetworkError')}}
+function formatBytes(value:number):string{if(value<1024)return`${value} B`;if(value<1024*1024)return`${(value/1024).toFixed(1)} KB`;return`${(value/1024/1024).toFixed(1)} MB`}
 
 function AiSettingsPage():React.JSX.Element{
   const {t}=useTranslation()

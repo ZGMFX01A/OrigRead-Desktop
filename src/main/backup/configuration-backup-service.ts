@@ -115,7 +115,8 @@ function desktopPreferences(settings:ReturnType<SettingsRepository['current']>):
   'origread.desktop.readerBackground':settings.readerBackground,
   'origread.desktop.readerBackgroundCustom':settings.readerBackgroundCustom,
   'origread.desktop.aiSummaryPlacement':settings.aiSummaryPlacement,
-  'origread.desktop.aiSummaryPanelSize':settings.aiSummaryPanelSize
+  'origread.desktop.aiSummaryPanelSize':settings.aiSummaryPanelSize,
+  'origread.desktop.autoCheckUpdates':settings.autoCheckUpdates
 }}
 function readDesktopPreferences(value:Record<string,unknown>|null|undefined):Partial<ReturnType<SettingsRepository['current']>>{
   if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('备份中的 preferences 必须是 JSON 对象')
@@ -126,6 +127,7 @@ function readDesktopPreferences(value:Record<string,unknown>|null|undefined):Par
   const readerBackground=value['origread.desktop.readerBackground'];if(readerBackground!==undefined){if(!['theme','paper','warm','sepia','mint','custom'].includes(String(readerBackground)))throw new Error('备份中的阅读背景设置无效');result.readerBackground=readerBackground}
   const readerBackgroundCustom=value['origread.desktop.readerBackgroundCustom'];if(readerBackgroundCustom!==undefined){if(typeof readerBackgroundCustom!=='string'||!/^#[0-9a-fA-F]{6}$/.test(readerBackgroundCustom))throw new Error('备份中的自定义阅读背景颜色无效');result.readerBackgroundCustom=readerBackgroundCustom.toLowerCase()}
   const placement=value['origread.desktop.aiSummaryPlacement'];if(placement!==undefined){if(!['replace','left','right','top','bottom'].includes(String(placement)))throw new Error('备份中的 AI 摘要位置无效');result.aiSummaryPlacement=placement}
+  const autoCheckUpdates=value['origread.desktop.autoCheckUpdates'];if(autoCheckUpdates!==undefined){if(typeof autoCheckUpdates!=='boolean')throw new Error('备份中的自动检查更新设置类型无效');result.autoCheckUpdates=autoCheckUpdates}
   for(const [key,target] of [['origread.desktop.workspaceWidth','workspaceWidth'],['origread.desktop.readerFontSize','readerFontSize'],['origread.desktop.readerLineHeight','readerLineHeight'],['origread.desktop.readerContentWidth','readerContentWidth'],['origread.desktop.aiSummaryPanelSize','aiSummaryPanelSize']] as const){const candidate=value[key];if(candidate!==undefined){if(typeof candidate!=='number'||!Number.isFinite(candidate))throw new Error(`备份中的 ${key} 类型无效`);result[target]=candidate}}
   return result as Partial<ReturnType<SettingsRepository['current']>>
 }

@@ -25,7 +25,8 @@ describe('SettingsRepository', () => {
       aiSummaryPlacement: 'right',
       aiSummaryPanelSize: 999,
       syncIntervalMinutes: 60,
-      syncOnStart: true
+      syncOnStart: true,
+      autoCheckUpdates: false
     })).toEqual({
       ...DEFAULT_DESKTOP_SETTINGS,
       language: 'zh',
@@ -42,12 +43,14 @@ describe('SettingsRepository', () => {
       aiSummaryPlacement: 'right',
       aiSummaryPanelSize: 640,
       syncIntervalMinutes: 60,
-      syncOnStart: true
+      syncOnStart: true,
+      autoCheckUpdates: false
     })
     expect(repository.current().workspaceCollapsed).toBe(true)
     expect(repository.current().theme).toBe('dark')
     expect(repository.current().readerBackground).toBe('custom')
     expect(repository.current().readerBackgroundCustom).toBe('#e4f6ea')
+    expect(repository.current().autoCheckUpdates).toBe(false)
     database.close()
   })
 
@@ -57,6 +60,7 @@ describe('SettingsRepository', () => {
 
     expect(() => repository.update({ workspaceCollapsed: 'yes' } as never)).toThrow(TypeError)
     expect(() => repository.update({ syncIntervalMinutes: 10 } as never)).toThrow(TypeError)
+    expect(() => repository.update({ autoCheckUpdates: 'yes' } as never)).toThrow(TypeError)
     database.close()
   })
 })

@@ -19,6 +19,15 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await expect(page.locator('.destination-tabs')).toBeVisible()
     await expect(page.locator('.reader-pane')).toBeVisible()
 
+    await page.keyboard.press('F12')
+    await page.keyboard.press('Control+Shift+I')
+    await page.waitForTimeout(100)
+    expect(
+      await electronApp.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().some((window) => window.webContents.isDevToolsOpened())
+      )
+    ).toBe(false)
+
     await page.emulateMedia({ colorScheme: 'dark' })
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
     await page.emulateMedia({ colorScheme: 'light' })
@@ -63,6 +72,10 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     const bridgeReady = await page.evaluate(() => {
       return (
         typeof window.origread?.getAppInfo === 'function' &&
+        typeof window.origread?.getUpdateState === 'function' &&
+        typeof window.origread?.checkForUpdates === 'function' &&
+        typeof window.origread?.downloadUpdateAsset === 'function' &&
+        typeof window.origread?.launchDownloadedUpdate === 'function' &&
         typeof window.origread?.listGroups === 'function' &&
         typeof window.origread?.addGroup === 'function' &&
         typeof window.origread?.updateFeedSettings === 'function' &&
@@ -185,7 +198,7 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await expect(page.locator('.app-shell')).toHaveCSS('--reader-background', '#dff4e3')
     await expect(page.locator('.app-shell')).toHaveCSS('--reader-text-color', '#35373e')
 
-    await page.locator('.settings-nav-button').nth(1).click()
+    await page.getByRole('button', { name: 'AI 阅读' }).click()
     await expect(page.locator('.provider-card')).toHaveCount(1)
     await expect(page.getByText('1～2 段摘要 + 4～6 个主要观点，每点补充关键依据、机制或影响', { exact: true })).toBeVisible()
     await expect(page.getByText('高密度单段摘要，中文建议约 120～220 字，不列要点', { exact: true })).toHaveCount(0)
@@ -209,7 +222,7 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
       return window.origread.getAiApiKey(ai.providers[0]!.id)
     })).toBe('ai-secret-updated-123')
 
-    await page.locator('.settings-nav-button').nth(2).click()
+    await page.getByRole('button', { name: '翻译设置' }).click()
     await expect(page.locator('.provider-card')).toHaveCount(4)
     await expect(page.getByText('Google ML Kit', { exact: true })).toHaveCount(0)
     await expect(page.getByText('启用服务与默认服务', { exact: true })).toBeVisible()
@@ -235,13 +248,13 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await page.locator('.settings-subpage').evaluate((element) => { element.scrollTop = 200 })
     await expect.poll(async () => page.locator('.settings-subpage').evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
 
-    await page.locator('.settings-nav-button').nth(3).click()
+    await page.getByRole('button', { name: '文章过滤' }).click()
     const ruleAdd = page.locator('.rule-add-row')
     await ruleAdd.locator('input').fill('Blocked E2E')
     await ruleAdd.locator('.mini-action').click()
     await expect.poll(async () => page.evaluate(async () => (await window.origread.getArticleFilters()).rules.some((rule) => rule.keyword === 'Blocked E2E' && rule.feedId === null))).toBe(true)
 
-    await page.locator('.settings-nav-button').nth(4).click()
+    await page.getByRole('button', { name: 'JSON 规则' }).click()
     await expect(page.locator('.rule-add-row')).toHaveCount(0)
     await expect(page.locator('button.settings-action-row').filter({ hasText: 'AI 生成 JSON 规则' })).toBeEnabled()
     await expect(page.locator('button.settings-action-row').filter({ hasText: '导出 JSON 规则模板' })).toBeEnabled()
@@ -249,7 +262,7 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await expect(page.locator('.rule-modal')).toContainText('JSON / API 规则使用说明')
     await page.locator('.rule-modal header .icon-button').click()
 
-    await page.locator('.settings-nav-button').nth(5).click()
+    await page.getByRole('button', { name: '网站解析规则' }).click()
     await expect(page.getByText('ithome-home', { exact: true })).toHaveCount(0)
     await expect(page.getByText('来源级解析规则', { exact: true })).toHaveCount(0)
     await expect(page.locator('button.settings-action-row').filter({ hasText: 'AI 生成网站规则' })).toBeEnabled()
@@ -259,12 +272,12 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await expect(page.locator('.rule-modal')).toBeVisible()
     await page.locator('.rule-modal header .icon-button').click()
 
-    await page.locator('.settings-nav-button').nth(6).click()
+    await page.getByRole('button', { name: 'RSSHub' }).click()
     await expect(page.locator('.rsshub-instance-row')).toHaveCount(16)
     await expect(page.getByText('实例列表', { exact: true })).toBeVisible()
     await expect(page.getByText('测试并添加', { exact: true })).toBeVisible()
 
-    await page.locator('.settings-nav-button').nth(7).click()
+    await page.getByRole('button', { name: '备份与恢复' }).click()
     await expect(page.locator('input[type="password"]')).toHaveCount(0)
     await page.locator('.setting-switch').click()
     await expect(page.locator('input[type="password"]')).toBeVisible()
