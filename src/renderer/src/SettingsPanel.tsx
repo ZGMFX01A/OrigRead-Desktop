@@ -1,4 +1,4 @@
-import { BookOpenText, Bot, Clock3, DatabaseBackup, FileJson2, Filter, Globe2, Languages, Plus, RefreshCw, Settings2, Trash2, Upload, Download, CircleHelp, Sparkles, FileText, Search, RadioTower, RotateCcw, X, Eye, EyeOff, Save } from 'lucide-react'
+import { BookOpenText, Bot, Clock3, DatabaseBackup, FileJson2, Filter, Globe2, Languages, Plus, RefreshCw, Settings2, Trash2, Upload, Download, CircleHelp, Sparkles, FileText, Search, RadioTower, RotateCcw, X, Eye, EyeOff, Save, ExternalLink, Monitor, Smartphone, Keyboard, MessageSquareWarning } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AiProviderProfile, AiSettings } from '../../shared/ai'
@@ -14,8 +14,12 @@ import type { AiGeneratedRuleKind, AiGeneratedRulePreview } from '../../shared/a
 import { BUILTIN_READER_FONTS, type ReaderFontEntry } from '../../shared/reader-font'
 import type { UpdateCheckResult } from '../../shared/update'
 
-type SettingsPage = 'general' | 'update' | 'translation' | 'ai' | 'filters' | 'jsonRules' | 'websiteRules' | 'rsshub' | 'backup'
+type SettingsPage = 'general' | 'translation' | 'ai' | 'filters' | 'jsonRules' | 'websiteRules' | 'rsshub' | 'backup' | 'about' | 'update'
 const INTERNAL_ITHOME_RULE_ID = 'ithome-home'
+const DESKTOP_REPOSITORY_URL = 'https://github.com/ZGMFX01A/OrigRead-Desktop'
+const ANDROID_REPOSITORY_URL = 'https://github.com/ZGMFX01A/OrigRead'
+const DESKTOP_RELEASES_URL = `${DESKTOP_REPOSITORY_URL}/releases`
+const DESKTOP_ISSUES_URL = `${DESKTOP_REPOSITORY_URL}/issues`
 
 interface SettingsPanelProps {
   settings: DesktopSettings
@@ -32,7 +36,6 @@ export function SettingsPanel({ settings, appInfo, syncState, onChange, onConfig
     <aside className="settings-nav">
       <div className="settings-nav-title"><Settings2 size={18}/><span>{t('settings')}</span></div>
       <SettingsNavButton active={page==='general'} icon={<Globe2 size={16}/>} label={t('settingsGeneral')} onClick={()=>setPage('general')}/>
-      <SettingsNavButton active={page==='update'} icon={<RefreshCw size={16}/>} label={t('softwareUpdate')} onClick={()=>setPage('update')}/>
       <SettingsNavButton active={page==='ai'} icon={<Bot size={16}/>} label={t('aiSettingsTitle')} onClick={()=>setPage('ai')}/>
       <SettingsNavButton active={page==='translation'} icon={<Languages size={16}/>} label={t('translationSettingsTitle')} onClick={()=>setPage('translation')}/>
       <SettingsNavButton active={page==='filters'} icon={<Filter size={16}/>} label={t('articleFilters')} onClick={()=>setPage('filters')}/>
@@ -40,6 +43,8 @@ export function SettingsPanel({ settings, appInfo, syncState, onChange, onConfig
       <SettingsNavButton active={page==='websiteRules'} icon={<Globe2 size={16}/>} label={t('websiteRules')} onClick={()=>setPage('websiteRules')}/>
       <SettingsNavButton active={page==='rsshub'} icon={<RadioTower size={16}/>} label={t('rssHubSettings')} onClick={()=>setPage('rsshub')}/>
       <SettingsNavButton active={page==='backup'} icon={<DatabaseBackup size={16}/>} label={t('backupRestore')} onClick={()=>setPage('backup')}/>
+      <SettingsNavButton active={page==='about'} icon={<CircleHelp size={16}/>} label={t('aboutAndSupport')} onClick={()=>setPage('about')}/>
+      <SettingsNavButton active={page==='update'} icon={<RefreshCw size={16}/>} label={t('softwareUpdate')} onClick={()=>setPage('update')}/>
       <div className="settings-nav-spacer" />
       <small>{appInfo ? `v${appInfo.version} · ${appInfo.platform}` : '—'}</small>
     </aside>
@@ -53,6 +58,7 @@ export function SettingsPanel({ settings, appInfo, syncState, onChange, onConfig
       {page==='websiteRules' && <WebsiteRulesSettingsPage/>}
       {page==='rsshub' && <RssHubSettingsPage/>}
       {page==='backup' && <BackupSettingsPage onRestored={onConfigurationRestored}/>}
+      {page==='about' && <AboutAndSupportPage appInfo={appInfo} onOpenUpdate={()=>setPage('update')}/>}
     </div>
   </div>
 }
@@ -106,6 +112,7 @@ function UpdateSettingsPage({settings,appInfo,onChange}:{settings:DesktopSetting
     <SettingsSection icon={<RefreshCw size={17}/>} title={t('softwareUpdate')}>
       <SettingRow title={t('autoCheckUpdates')} description={t('autoCheckUpdatesDescription')}><Toggle checked={settings.autoCheckUpdates} onChange={(value)=>onChange({autoCheckUpdates:value})}/></SettingRow>
       <SettingRow title={t('checkUpdatesNow')} description={`${t('currentVersion')}: v${appInfo?.version??'—'}`}><button type="button" className="mini-action update-check-button" disabled={checking} onClick={()=>void check()}>{checking&&<RefreshCw size={13} className="spinning"/>}{checking?t('checkingUpdates'):t('checkUpdatesNow')}</button></SettingRow>
+      <SettingRow title={t('mainlandUpdateOptimization')} description={t('mainlandUpdateOptimizationDescription')}><span className="setting-value">{t('automatic')}</span></SettingRow>
     </SettingsSection>
     {(result||status)&&<SettingsSection icon={<FileText size={17}/>} title={t('softwareUpdate')}>
       {result&&<div className={`update-status-card status-${result.status}`}>
@@ -125,6 +132,61 @@ function UpdateSettingsPage({settings,appInfo,onChange}:{settings:DesktopSetting
       {status&&<StatusText text={status}/>}
     </SettingsSection>}
   </>
+}
+
+function AboutAndSupportPage({appInfo,onOpenUpdate}:{appInfo:AppInfo|null;onOpenUpdate:()=>void}):React.JSX.Element{
+  const {t}=useTranslation()
+  const shortcuts=[
+    ['J',t('shortcutNextArticle')],
+    ['K',t('shortcutPreviousArticle')],
+    ['M',t('shortcutToggleRead')],
+    ['S',t('shortcutToggleStar')],
+    ['U',t('shortcutOriginal')],
+    ['[',t('shortcutSidebar')],
+    ['Ctrl / Cmd + F',t('findInArticle')]
+  ] as const
+  return <div className="about-page">
+    <PageIntro icon={<img className="about-brand-logo" src="./logo.png" alt=""/>} title={t('aboutPageTitle')} description={t('aboutPageDescription')}/>
+
+    <section className="about-client-card" aria-label={t('currentDesktopClient')}>
+      <div className="about-client-main">
+        <img className="about-client-logo" src="./logo.png" alt=""/>
+        <div>
+          <strong>OrigRead Desktop</strong>
+          <span>{t('desktopClientDescription')}</span>
+        </div>
+      </div>
+      <div className="about-client-meta">
+        <span className="about-badge">v{appInfo?.version??'—'}</span>
+        <span className="about-badge subtle">{appInfo?.platform??'—'}</span>
+      </div>
+      <div className="about-client-actions">
+        <button type="button" className="mini-action" onClick={onOpenUpdate}><RefreshCw size={13}/>{t('checkUpdatesNow')}</button>
+        <button type="button" className="mini-action secondary" onClick={()=>void window.origread.openExternalUrl(DESKTOP_RELEASES_URL)}><ExternalLink size={13}/>{t('viewReleases')}</button>
+      </div>
+    </section>
+
+    <SettingsSection icon={<Globe2 size={17}/>} title={t('projectRepositories')}>
+      <AboutLinkRow icon={<Monitor size={16}/>} title={t('desktopProject')} description={t('desktopProjectDescription')} actionLabel={t('visitRepository')} onClick={()=>void window.origread.openExternalUrl(DESKTOP_REPOSITORY_URL)}/>
+      <AboutLinkRow icon={<Smartphone size={16}/>} title={t('androidProject')} description={t('androidProjectDescription')} actionLabel={t('visitRepository')} onClick={()=>void window.origread.openExternalUrl(ANDROID_REPOSITORY_URL)}/>
+    </SettingsSection>
+
+    <SettingsSection icon={<CircleHelp size={17}/>} title={t('supportAndHelp')}>
+      <div className="about-shortcuts">
+        <div className="about-shortcuts-heading"><div className="settings-action-icon"><Keyboard size={16}/></div><div><strong>{t('keyboardShortcuts')}</strong><span>{t('keyboardShortcutsDescription')}</span></div></div>
+        <div className="about-shortcut-grid">{shortcuts.map(([key,label])=><div className="about-shortcut" key={key}><kbd>{key}</kbd><span>{label}</span></div>)}</div>
+      </div>
+      <AboutLinkRow icon={<MessageSquareWarning size={16}/>} title={t('feedbackAndIssues')} description={t('feedbackAndIssuesDescription')} actionLabel={t('submitIssue')} onClick={()=>void window.origread.openExternalUrl(DESKTOP_ISSUES_URL)}/>
+    </SettingsSection>
+  </div>
+}
+
+function AboutLinkRow({icon,title,description,actionLabel,onClick}:{icon:React.ReactNode;title:string;description:string;actionLabel:string;onClick:()=>void}):React.JSX.Element{
+  return <div className="about-link-row">
+    <div className="settings-action-icon">{icon}</div>
+    <div className="about-link-copy"><strong>{title}</strong><span>{description}</span></div>
+    <button type="button" className="mini-action about-link-action" onClick={onClick}><ExternalLink size={13}/>{actionLabel}</button>
+  </div>
 }
 
 type i18nLanguage='zh'|'en'

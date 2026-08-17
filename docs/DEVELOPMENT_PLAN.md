@@ -246,13 +246,13 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
 
 ### Phase 8：发布
 
-- [x] Windows NSIS（当前为开发/未签名构建；2026-08-16 已用当前源码重新生成 `OrigRead-0.1.0-Windows-x64.exe`）
+- [x] Windows NSIS（当前为开发/未签名构建；2026-08-17 13:24 已重新生成 `OrigRead-0.1.0-Windows-x64.exe`）
 - [ ] macOS DMG
 - [ ] Linux AppImage / DEB
 - [ ] GitHub Actions
 - [ ] Windows 签名
 - [ ] macOS 签名 / notarization
-- [ ] 自动更新
+- [x] 自动更新（Release 信息、手动/启动检查、当前平台资产选择、下载、安装启动与 Release 页面降级均已完成；真实公开 Release 网络 smoke 留到正式发布验收）
 
 ## 7. 当前剩余开发清单（以 Android 当前功能为产品基线）
 
@@ -283,9 +283,9 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
    - 默认导出包含 OrigRead 附加信息，也可选择仅导出通用 OPML 字段。
    - 已有 Core 单测覆盖解析/导出/重复 URL/默认分组/XML 实体；Renderer Smoke 覆盖 preload bridge、菜单入口和导出选项。真实系统文件选择器仍保留为人工验收项。
 
-6. [ ] **软件自动更新**
-   - Desktop 自动检查更新、提示更新、下载安装/跳转发布页等完整用户流程尚未实现。
-   - 行为与 Android 已有“检查更新”产品语义保持一致，桌面端仅做平台必要适配。
+6. [x] **软件自动更新**
+   - 已完成 Desktop GitHub Release 信息、手动检查、启动自动检查、版本比较、当前平台资产选择、下载安装/启动安装程序和 Release 页面降级。
+   - 行为与 Android “检查更新”产品语义保持一致；私有仓库/无公开 Release、限流、网络失败和当前平台无资产不会误报“已是最新”。中国大陆 Release 二进制资产支持受限加速候选并始终回退 GitHub 官方地址。
 
 7. [x] **阅读页面 UI 配置（背景色）**
    - 已支持跟随主题、纸白、暖白、米黄、淡绿以及任意 HEX 自定义背景色。
@@ -306,11 +306,10 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
     - 自动生成 Windows NSIS、macOS DMG 与 Linux AppImage；评估同时提供 DEB。
     - 后续签名 / notarization 在证书条件具备后接入同一发布流程。
 
-11. [ ] **项目 Git 发布页订阅**
-    - 对齐 Android 已有 Git 发布页订阅功能，但 Desktop 使用独立的 `ZGMFX01A/OrigRead-Desktop` 发布地址。
-    - 展示 Desktop Release 信息。
-    - 提供直接下载安装包按钮。
-    - 提供前往 Git 发布页按钮。
+11. [x] **项目 Git 发布页订阅**
+    - Desktop 使用独立的 `ZGMFX01A/OrigRead-Desktop` Release 数据源。
+    - 已展示版本、发布日期、Release Notes 和当前平台资产，并提供下载/安装与前往 Release 页面动作。
+    - 仓库仍不可匿名访问或尚无公开 Release 时会明确降级，不在客户端内置 GitHub Token。
 
 12. [x] **语言切换**
     - 默认跟随系统语言。
@@ -380,6 +379,11 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
    - Renderer 至少覆盖“已是最新 / 有更新 / 查询失败”三种可见状态。
    - 当前私有仓库阶段以本地 GitHub API mock 完成自动验收；真实公开 GitHub Release 的最后一次网络 smoke 留到仓库公开 / 正式发版时执行，不属于 B 功能缺口。
 
+5. [ ] **Desktop 账户与自托管同步**
+   - Android 的 Local / FreshRSS / Google Reader / Fever 是真实账户与同步能力；Desktop 当前固定 `sourceAccountId: 1` 只是备份兼容字段，不是账户实现。
+   - 在进入跨平台发布工程前完成当前本地资料库到默认 Local Account 的无损迁移，以及远端账户凭据校验、同步、切换、隔离、删除保护和 `safeStorage` 凭据保存。
+   - 详细实现与验收边界见第 10 节 A4。
+
 ### B. 跨平台构建与发布工程
 
 1. [ ] **GitHub Actions Windows + macOS + Linux 自动构建**
@@ -406,7 +410,7 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
 ### C. 发布前人工验收
 
 1. [ ] **Windows 当前安装包安装 / 卸载 / 重装 / 升级验证**
-   - 当前源码对应的 `OrigRead-0.1.0-Windows-x64.exe` 已于 2026-08-16 10:53 重新生成。
+   - `release/OrigRead-0.1.0-Windows-x64.exe` 已于 2026-08-17 13:24 重新生成；当前缺口不再是“能否产出 NSIS”，而是安装、卸载、重装以及后续两个版本之间的升级路径人工验收。
    - 仍需实际执行 NSIS 安装、启动、卸载、重装，以及后续有两个版本时的升级路径验证。
 
 2. [ ] **OPML 原生文件选择器人工验收**
@@ -443,7 +447,7 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
 - `npm test`：58 files / 191 tests 通过。
 - `npm run build`：通过。
 - Electron E2E：7 / 7 通过。
-- 当前主产品功能（来源、同步、Reader、AI、翻译、规则、OPML、背景/主题）不再列入新增开发范围；后续以防回归为主。
+- 除 A4 账户与自托管同步外，当前已落地的来源、单本地库同步、Reader、AI、翻译、规则、OPML、背景/主题等主产品功能后续以防回归为主。
 
 ## 10. 后续按大项开发顺序
 
@@ -460,6 +464,12 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
   - 对齐 Android：apple-touch-icon > SVG > PNG > ICO > GIF > JPG，同格式按字节大小；页面失败时回退标准根目录图标。
   - RSS 发现不再以 Feed 自带 image 作为最终图标；来源列表显示持久化图标并在加载失败时回退 RSS 图标。
   - A2/A3 验收：`npm run typecheck` / `npm test`（50 files / 155 tests）/ `npm run build` / Electron E2E（6/6）通过。
+- [ ] A4 **账户与自托管同步**（E 发布工程前置项）。
+  - Android 的“账户”不是展示页：Local / FreshRSS / Google Reader / Fever 均连接真实 `AccountService + RssService`，包含凭据校验、同步、切换、删除和账户级数据隔离。
+  - Desktop 当前没有 Account domain；配置备份中的固定 `sourceAccountId: 1` 仅用于 Android schema 兼容，不能视为账户功能，更不能先补一个不可工作的假 UI。
+  - 实现时先把当前单本地资料库无损迁移为默认 Local Account，再增加 FreshRSS / Google Reader / Fever；Fever 在 UI 中继续明确“旧协议 / 不推荐”，但若保留入口就必须真实可用。
+  - 账户凭据必须进入 `safeStorage`，不得写入普通 SQLite/JSON；Feed / Group / Article 查询、同步任务、通知、备份恢复均必须绑定当前账户，并覆盖切换账户后 Reader/来源列表不会串数据。
+  - A4 完成验收至少包含：旧库迁移、Local 默认账户、三类远端凭据校验、一次真实/Mock 同步、账户切换隔离、删除保护、备份兼容和 Electron E2E。
 
 ### 大项 C：阅读效率增强
 
@@ -528,12 +538,23 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
 - [x] B3 启动自动检查开关、版本比较、下载/跳转、错误降级；默认与 Android 一致为开启，后台检查不阻塞启动；中国大陆优先 GitHub Release 加速候选并始终保留 GitHub 官方地址回退，不代理 GitHub API 或普通网页。
 - [x] B4 相关网络与版本逻辑单测 + Electron E2E mock 完成；覆盖隐藏双语日志、SemVer、平台资产、国内代理失败回退官方、有更新、已最新和私有仓库 404。
 
-**B1 → B4 已完成。下一步进入大项 E 跨平台构建与正式发布。** 当前私有仓库不阻塞 B 的开发完成；公开仓库后的真实 Release 网络 smoke 留到正式发布验收。
+**B1 → B4 已完成。下一步先完成 A4 账户与自托管同步，再进入大项 E 跨平台构建与正式发布。** 当前私有仓库不阻塞 B 的开发完成；公开仓库后的真实 Release 网络 smoke 留到正式发布验收。
+
+### 2026-08-17 E 前产品收口
+
+- [x] 设置导航重新排序：软件更新固定为最后一项；新增“关于与支持”，展示当前 Desktop 版本以及 Android / Desktop 两个独立项目入口。
+- [x] “关于与支持”第二轮视觉/信息架构收口：Desktop 使用 OrigRead Logo 替换通用问号，标题明确为“关于 OrigRead / 原读”，内容最大宽度收至约 760px；“当前客户端”独立成卡片，用版本/平台 Badge 展示状态，并提供“检查更新 / 查看 Release”；Android / Desktop 仓库使用显示器/手机平台图标区分；新增真实快捷键速查与 Desktop GitHub Issues 反馈入口，兼容深色主题与窄窗口。Desktop 仓库当前没有 `LICENSE` 文件，因此不创建指向不存在资源的“开源协议”按钮；正式发布前确定 Desktop License 后再补。
+- [x] Desktop 更新链补强大陆网络识别：不再只匹配精确 `zh-CN`，而是按系统 locale 的 `CN` 地区判断，因此 `en-CN`、`zh-Hans-CN` 等也会优先尝试 Release 二进制加速；加速失败自动回退 GitHub 官方地址。GitHub Release 元数据仍使用官方 API，不把版本判断交给第三方代理。
+- [x] Android“提示和支持”页增加 OrigRead 多平台说明，并分别提供 Android / Desktop GitHub 项目入口；两个客户端继续独立发布，不制造“一个安装包覆盖所有平台”的误导。
+- [x] Android“提示和支持”第二轮视觉收口：去掉标题右上角错位版本角标，Hero Logo 从 240dp 收至 204dp，并统一“原读 / OrigRead / 来源优先的阅读器 / v版本”中心轴；多平台介绍增加水平内边距和居中排版，Android / Desktop 两个入口改为带手机/电脑平台图标的等宽轻量卡片，GitHub 图标仅作为仓库语义提示；删除上下 `SpaceAround` 造成的断层式大留白，并增加轻量开源页脚。
+- [x] Desktop 无文章阅读区删除“Electron 重构进行中 / DB ready”等开发态占位信息，改为正式产品空态：资料库为空时引导添加/发现来源；当前筛选无结果时提示调整范围；有文章未选择时保持极简留白并显示真实阅读快捷键。
+- [x] Desktop 真实接入 `J/K` 上下篇、`M` 已读/未读、`S` 收藏、`U` 原文、`[` 折叠/展开工作区；输入框、弹窗、设置页等交互环境会屏蔽快捷键，`Ctrl/Cmd+F` 继续只搜索当前 Reader 正文。
+- [ ] **在进入 E1 前先完成 A4 账户与自托管同步。** 这是本轮重新对照 Android 后发现的真实产品能力缺口，优先级高于打包流水线。
 
 ### 大项 E：跨平台构建与正式发布
 
 - [ ] E1 GitHub Actions Windows / macOS / Linux 自动构建：Windows 产出 NSIS，macOS 产出 DMG，Linux 至少产出 AppImage，并评估同时提供 DEB。
-- [ ] E2 当前 Windows NSIS 安装 / 卸载 / 重装验证；当前源码安装包已经重新生成，不再重复把“生成安装包”列为缺口。
+- [ ] E2 当前 Windows NSIS 安装 / 卸载 / 重装验证；`release/OrigRead-0.1.0-Windows-x64.exe` 已于 2026-08-17 13:24 重新生成，不再重复把“生成安装包”列为缺口。
 - [ ] E3 macOS DMG 构建与实机主链验证。
 - [ ] E4 Linux 适配与实机主链验证：启动、来源发现/同步、Reader、WebContentsView、字体/文件选择器、系统浏览器、通知与凭据安全存储，并确认 Wayland/X11 下窗口和缩放行为。
 - [ ] E5 Windows 签名、macOS signing/notarization（证书具备后）；Linux 保留包校验/签名发布位。

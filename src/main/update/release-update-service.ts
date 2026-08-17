@@ -222,8 +222,12 @@ export function selectReleaseAsset(assets: GitHubReleaseAssetPayload[], platform
 
 export function releaseDownloadCandidates(url: string, locale: string): string[] {
   if (!isTrustedReleaseDownloadUrl(url)) return [url]
-  const isMainland = locale.trim().toLowerCase() === 'zh-cn'
-  return isMainland ? [`${MAINLAND_RELEASE_PROXY}${url}`, url] : [url]
+  return shouldPreferMainlandReleaseMirror(locale) ? [`${MAINLAND_RELEASE_PROXY}${url}`, url] : [url]
+}
+
+export function shouldPreferMainlandReleaseMirror(locale: string): boolean {
+  const normalized = locale.trim().replaceAll('_', '-').toLowerCase()
+  return /(?:^|-)cn(?:-|$)/.test(normalized)
 }
 
 export function isTrustedReleaseDownloadUrl(value: string): boolean {

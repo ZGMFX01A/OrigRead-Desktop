@@ -7,7 +7,8 @@ import {
   localizedReleaseNotes,
   releaseDownloadCandidates,
   ReleaseUpdateService,
-  selectReleaseAsset
+  selectReleaseAsset,
+  shouldPreferMainlandReleaseMirror
 } from './release-update-service'
 
 describe('release update service', () => {
@@ -39,8 +40,12 @@ describe('release update service', () => {
   it('only prepends mainland proxy for trusted release assets', () => {
     const url = 'https://github.com/ZGMFX01A/OrigRead-Desktop/releases/download/v1.0.0/OrigRead.exe'
     expect(releaseDownloadCandidates(url, 'zh-CN')).toEqual([`https://gh-proxy.com/${url}`, url])
+    expect(releaseDownloadCandidates(url, 'en-CN')).toEqual([`https://gh-proxy.com/${url}`, url])
+    expect(releaseDownloadCandidates(url, 'zh-Hans-CN')).toEqual([`https://gh-proxy.com/${url}`, url])
     expect(releaseDownloadCandidates(url, 'en-US')).toEqual([url])
     expect(releaseDownloadCandidates('https://api.github.com/repos/x/y', 'zh-CN')).toEqual(['https://api.github.com/repos/x/y'])
+    expect(shouldPreferMainlandReleaseMirror('zh_CN')).toBe(true)
+    expect(shouldPreferMainlandReleaseMirror('zh-SG')).toBe(false)
   })
 
   it('falls back to official GitHub asset when mainland proxy download fails', async () => {

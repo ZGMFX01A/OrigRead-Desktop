@@ -313,26 +313,6 @@ export default function App(): React.JSX.Element {
     setReaderSearchIndex(0)
   }, [selectedArticleId])
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f' && selectedArticleId && !settingsOpen && !sourceCatalogOpen && !originalViewState.open) {
-        event.preventDefault()
-        if (readerMode === 'ai') setReaderMode('article')
-        setReaderSearchOpen(true)
-        window.setTimeout(() => readerSearchInputRef.current?.focus(), 0)
-        return
-      }
-      if (event.key === 'Escape' && readerSearchOpen) {
-        setReaderSearchOpen(false)
-        setReaderSearchQuery('')
-        setReaderSearchCount(0)
-        setReaderSearchIndex(0)
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [originalViewState.open, readerMode, readerSearchOpen, selectedArticleId, settingsOpen, sourceCatalogOpen])
-
   const handleReaderSearchCount = useCallback((count: number): void => {
     setReaderSearchCount(count)
     setReaderSearchIndex((current) => count <= 0 ? 0 : Math.min(current, count - 1))
@@ -657,6 +637,9 @@ export default function App(): React.JSX.Element {
   const nextArticle = selectedArticle
     ? visibleArticles[visibleArticles.findIndex((item) => item.id === selectedArticle.id) + 1] ?? null
     : null
+  const previousArticle = selectedArticle
+    ? visibleArticles[visibleArticles.findIndex((item) => item.id === selectedArticle.id) - 1] ?? null
+    : null
 
   const toggleFullContent = async (): Promise<void> => {
     if (!selectedArticleId || readerContentLoading) return
@@ -675,6 +658,73 @@ export default function App(): React.JSX.Element {
       setReaderContentLoading(false)
     }
   }
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      const key = event.key.toLowerCase()
+      const target = event.target instanceof HTMLElement ? event.target : null
+      const interactiveTarget = Boolean(target?.closest('input, textarea, select, button, a, [contenteditable="true"]'))
+
+      if ((event.ctrlKey || event.metaKey) && key === 'f' && selectedArticleId && !settingsOpen && !sourceCatalogOpen && !originalViewState.open) {
+        if (interactiveTarget && !readerSearchOpen) return
+        event.preventDefault()
+        if (readerMode === 'ai') setReaderMode('article')
+        setReaderSearchOpen(true)
+        window.setTimeout(() => readerSearchInputRef.current?.focus(), 0)
+        return
+      }
+      if (event.key === 'Escape' && readerSearchOpen) {
+        setReaderSearchOpen(false)
+        setReaderSearchQuery('')
+        setReaderSearchCount(0)
+        setReaderSearchIndex(0)
+        return
+      }
+      if (interactiveTarget || event.ctrlKey || event.metaKey || event.altKey || settingsOpen || sourceCatalogOpen || sourcePickerOpen || subscriptionMenuOpen || document.querySelector('[role="dialog"]')) return
+
+      if (key === '[') {
+        event.preventDefault()
+        toggleWorkspace()
+        return
+      }
+      if (originalViewState.open) {
+        if (key === 'u' && selectedArticle) {
+          event.preventDefault()
+          void closeOriginalArticle()
+        }
+        return
+      }
+      if (key === 'j') {
+        const targetArticle = selectedArticle ? nextArticle : visibleArticles[0] ?? null
+        if (targetArticle) {
+          event.preventDefault()
+          selectArticle(targetArticle)
+        }
+        return
+      }
+      if (key === 'k') {
+        const targetArticle = selectedArticle ? previousArticle : visibleArticles.at(-1) ?? null
+        if (targetArticle) {
+          event.preventDefault()
+          selectArticle(targetArticle)
+        }
+        return
+      }
+      if (!selectedArticle || event.repeat) return
+      if (key === 'm') {
+        event.preventDefault()
+        toggleUnread(selectedArticle)
+      } else if (key === 's') {
+        event.preventDefault()
+        toggleStarred(selectedArticle)
+      } else if (key === 'u' && originalUrl) {
+        event.preventDefault()
+        void showOriginalArticle()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [nextArticle, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settingsOpen, sourceCatalogOpen, sourcePickerOpen, subscriptionMenuOpen, visibleArticles, workspaceCollapsed])
 
   const openAddSource = (): void => {
     setSubscriptionMenuOpen(false)
@@ -1272,26 +1322,36 @@ export default function App(): React.JSX.Element {
           </div>
         ) : (
           <div className="reader-empty-state">
-            <div className="reader-card">
-              <div className="reader-card-icon"><BookOpenText size={26} /></div>
-              <h2>{t('readerEmpty')}</h2>
-              <p>{t('readerEmptyDesc')}</p>
-              <div className="capability-row">
-                <span>{t('original')}</span>
-                <span>{t('aiSummary')}</span>
-                <span>{t('translation')}</span>
-              </div>
-            </div>
-
-            <div className="phase-card">
-              <span className="phase-badge">{t('developmentBadge')}</span>
-              <p>{t('developmentHint')}</p>
-              {appInfo && (
-                <small>
-                  v{appInfo.version} · {appInfo.platform} · DB {librarySnapshot ? 'ready' : 'loading'} · settings {settings ? 'ready' : 'loading'}
-                </small>
-              )}
-            </div>
+            <div className="reader-empty-mark"><BookOpenText size={30}/></div>
+            {articles.length === 0 ? (
+              <>
+                <h2>{t('readerLibraryEmpty')}</h2>
+                <p>{t('readerLibraryEmptyDesc')}</p>
+                <div className="reader-empty-actions">
+                  <button type="button" className="secondary-action" onClick={openAddSource}><Plus size={15}/>{t('addSourceTitle')}</button>
+                  <button type="button" className="mini-action" onClick={()=>void showSourceCatalog()}><Compass size={15}/>{t('sourceDiscoveryTitle')}</button>
+                </div>
+              </>
+            ) : visibleArticles.length === 0 ? (
+              <>
+                <h2>{t('readerScopeEmpty')}</h2>
+                <p>{t('readerScopeEmptyDesc')}</p>
+              </>
+            ) : (
+              <>
+                <h2>{t('readerEmpty')}</h2>
+                <p>{t('readerEmptyDesc')}</p>
+                <div className="reader-shortcuts" aria-label={t('keyboardShortcuts')}>
+                  <span><kbd>J</kbd>{t('shortcutNextArticle')}</span>
+                  <span><kbd>K</kbd>{t('shortcutPreviousArticle')}</span>
+                  <span><kbd>M</kbd>{t('shortcutToggleRead')}</span>
+                  <span><kbd>S</kbd>{t('shortcutToggleStar')}</span>
+                  <span><kbd>U</kbd>{t('shortcutOriginal')}</span>
+                  <span><kbd>[</kbd>{t('shortcutSidebar')}</span>
+                </div>
+                <small>{t('shortcutSearchHint')}</small>
+              </>
+            )}
           </div>
         )}
         </div>
