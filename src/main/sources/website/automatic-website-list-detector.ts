@@ -73,7 +73,8 @@ export function detectAutomaticWebsiteLists(
   baseUrl: string,
   sourceUrl: string,
   fetchedAt: number,
-  historyScoreProvider: (ruleId: string) => number = () => 0
+  historyScoreProvider: (ruleId: string) => number = () => 0,
+  includeRejected = false
 ): WebsiteParseCandidate[] {
   let host = ''
   try { host = new URL(sourceUrl).hostname } catch { return [] }
@@ -108,7 +109,7 @@ export function detectAutomaticWebsiteLists(
         diagnostics.linkQualityScore = cluster.linkQualityScore
         diagnostics.regionScore = region.adjustment
         diagnostics.historyScore = historyScoreProvider(ruleId)
-        if (!diagnostics.state.startsWith('AVAILABLE')) continue
+        if (!includeRejected && !diagnostics.state.startsWith('AVAILABLE')) continue
         results.push({ rule, articles: cluster.articles, diagnostics })
       }
     }

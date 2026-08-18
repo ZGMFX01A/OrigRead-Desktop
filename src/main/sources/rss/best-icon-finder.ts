@@ -1,4 +1,5 @@
 import * as cheerio from 'cheerio'
+import { DESKTOP_BROWSER_USER_AGENT } from '../../network/user-agent-policy'
 
 export interface IconFetchPayload {
   finalUrl: string
@@ -143,7 +144,10 @@ async function fetchIconPayload(url: string): Promise<IconFetchPayload> {
   const response = await fetch(url, {
     redirect: 'follow',
     signal: AbortSignal.timeout(20_000),
-    headers: { Accept: 'text/html,image/avif,image/webp,image/svg+xml,image/png,image/*,*/*;q=0.8' }
+    headers: {
+      'user-agent': DESKTOP_BROWSER_USER_AGENT,
+      Accept: 'text/html,image/avif,image/webp,image/svg+xml,image/png,image/*,*/*;q=0.8'
+    }
   })
   if (!response.ok) throw new Error(`请求失败：HTTP ${response.status}`)
   return {

@@ -13,7 +13,9 @@ describe('RssHubSettingsRepository', () => {
       expect(repository.candidateInstances()[0]).toBe('https://custom.example.com')
 
       repository.recordFailure('https://custom.example.com', 1_000)
-      expect(repository.candidateInstances(1_001)).not.toContain('https://custom.example.com')
+      const coolingCandidates = repository.candidateInstances(1_001)
+      expect(coolingCandidates).toContain('https://custom.example.com')
+      expect(coolingCandidates.at(-1)).toBe('https://custom.example.com')
       expect(repository.candidateInstances(1_000 + 5 * 60 * 1_000 + 1)).toContain('https://custom.example.com')
 
       const reopened = new RssHubSettingsRepository(database.connection)

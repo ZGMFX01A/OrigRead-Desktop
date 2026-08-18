@@ -32,7 +32,7 @@ import type { AppInfo } from '../../shared/contracts'
 import { resolveDesktopLanguage } from '../../shared/locale'
 import type { ArticleRecord, FeedRecord, GroupRecord, LibrarySnapshot } from '../../shared/library'
 import type { AiSummaryPlacement, DesktopSettings } from '../../shared/settings'
-import type { SourceDiscoveryResult } from '../../shared/source-discovery'
+import type { SourceDiscoveryProgress, SourceDiscoveryResult, SourceDiscoveryStage } from '../../shared/source-discovery'
 import type { ReaderArticleContent } from '../../shared/reader'
 import type { SyncRuntimeState } from '../../shared/sync-runtime'
 import type { OriginalArticleViewState, OriginalViewBounds } from '../../shared/original-view'
@@ -63,6 +63,12 @@ const destinations: Array<{ id: Destination; icon: typeof Inbox; labelKey: strin
   { id: 'starred', icon: Star, labelKey: 'starred' }
 ]
 
+const sourceDiscoveryStageOrder: SourceDiscoveryStage[] = ['rss', 'rsshub', 'json', 'website', 'dynamic_website', 'ranking']
+const aiSummaryPlacementOrder: AiSummaryPlacement[] = ['replace', 'left', 'right', 'top', 'bottom']
+const AI_SUMMARY_PANEL_MIN = 220
+const AI_SUMMARY_PANEL_MAX = 640
+const AI_SUMMARY_PANEL_KEYBOARD_STEP = 20
+
 export default function App(): React.JSX.Element {
   const { t, i18n } = useTranslation()
   const [destination, setDestination] = useState<Destination>('all')
@@ -84,6 +90,11 @@ export default function App(): React.JSX.Element {
   const [isAddingSource, setIsAddingSource] = useState(false)
   const [sourceDiscovery, setSourceDiscovery] = useState<SourceDiscoveryResult | null>(null)
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null)
+  const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([])
+  const [sourceDiscoveryRequestId, setSourceDiscoveryRequestId] = useState<string | null>(null)
+  const [sourceDiscoveryStages, setSourceDiscoveryStages] = useState<Partial<Record<SourceDiscoveryStage, SourceDiscoveryProgress['state']>>>({})
+  const [sourceDiscoveryStartedAt, setSourceDiscoveryStartedAt] = useState<number | null>(null)
+  const [sourceDiscoveryElapsedSeconds, setSourceDiscoveryElapsedSeconds] = useState(0)
   const [refreshingFeedId, setRefreshingFeedId] = useState<string | null>(null)
   const [isRefreshingAll, setIsRefreshingAll] = useState(false)
   const [readerContent, setReaderContent] = useState<ReaderArticleContent | null>(null)
@@ -118,8 +129,10 @@ export default function App(): React.JSX.Element {
   const [syncRuntimeState, setSyncRuntimeState] = useState<SyncRuntimeState | null>(null)
   const [originalViewState, setOriginalViewState] = useState<OriginalArticleViewState>(closedOriginalState())
   const readerStageRef = useRef<HTMLDivElement>(null)
+  const readerContentRef = useRef<HTMLDivElement>(null)
   const readerSearchInputRef = useRef<HTMLInputElement>(null)
   const selectedArticleIdRef = useRef<string | null>(null)
+  const sourceDiscoveryRequestIdRef = useRef<string | null>(null)
   const aiSummaryRunRef = useRef(0)
   const lastObservedSyncFinish = useRef<number | null>(null)
   const autoUpdateCheckedRef = useRef(false)
@@ -202,12 +215,30 @@ export default function App(): React.JSX.Element {
     const unsubscribeAiProgress = window.origread.onAiSummaryProgress((progress) => {
       if (progress.articleId === selectedArticleIdRef.current) setAiSummaryProgress(progress)
     })
+    const unsubscribeSourceDiscoveryProgress = window.origread.onSourceDiscoveryProgress((progress) => {
+      if (progress.requestId !== sourceDiscoveryRequestIdRef.current) return
+      setSourceDiscoveryStages((current) => ({ ...current, [progress.stage]: progress.state }))
+    })
     return () => {
       unsubscribeSync()
       unsubscribeOriginal()
       unsubscribeAiProgress()
+      unsubscribeSourceDiscoveryProgress()
     }
   }, [reloadLibrary])
+
+  useEffect(() => {
+    if (!sourceDiscoveryRequestId || sourceDiscoveryStartedAt === null) {
+      setSourceDiscoveryElapsedSeconds(0)
+      return
+    }
+    const update = (): void => setSourceDiscoveryElapsedSeconds(
+      Math.max(0, Math.floor((Date.now() - sourceDiscoveryStartedAt) / 1000))
+    )
+    update()
+    const timer = window.setInterval(update, 1_000)
+    return () => window.clearInterval(timer)
+  }, [sourceDiscoveryRequestId, sourceDiscoveryStartedAt])
 
   useEffect(() => {
     if (readerToolLoading !== 'ai' || aiSummaryStartedAt === null) {
@@ -423,6 +454,22 @@ export default function App(): React.JSX.Element {
     if (!aiSummary) return
     setAiSummaryVisible(true)
     setReaderMode(placement === 'replace' ? 'ai' : 'article')
+  }
+
+  const cycleAiSummaryPlacement = (direction: -1 | 1): void => {
+    const currentIndex = aiSummaryPlacementOrder.indexOf(aiSummaryPlacement)
+    const nextIndex = (currentIndex + direction + aiSummaryPlacementOrder.length) % aiSummaryPlacementOrder.length
+    void changeAiSummaryPlacement(aiSummaryPlacementOrder[nextIndex]!)
+  }
+
+  const resizeAiSummaryPanel = (direction: -1 | 1): void => {
+    if (aiSummaryPlacement === 'replace') return
+    const current = settings?.aiSummaryPanelSize ?? 360
+    const next = Math.max(
+      AI_SUMMARY_PANEL_MIN,
+      Math.min(AI_SUMMARY_PANEL_MAX, current + direction * AI_SUMMARY_PANEL_KEYBOARD_STEP)
+    )
+    if (next !== current) void updateDesktopSettings({ aiSummaryPanelSize: next })
   }
 
   const toggleWorkspace = (): void => {
@@ -694,6 +741,26 @@ export default function App(): React.JSX.Element {
         }
         return
       }
+      if (key === 'arrowup' || key === 'arrowdown') {
+        const content = readerContentRef.current
+        if (content) {
+          event.preventDefault()
+          const distance = Math.max(120, Math.round(content.clientHeight * 0.18))
+          content.scrollBy({ top: key === 'arrowup' ? -distance : distance, behavior: 'smooth' })
+        }
+        return
+      }
+      if (key === 'arrowleft' || key === 'arrowright') {
+        if (event.repeat) return
+        const targetArticle = key === 'arrowright'
+          ? (selectedArticle ? nextArticle : visibleArticles[0] ?? null)
+          : (selectedArticle ? previousArticle : visibleArticles.at(-1) ?? null)
+        if (targetArticle) {
+          event.preventDefault()
+          selectArticle(targetArticle)
+        }
+        return
+      }
       if (key === 'j') {
         const targetArticle = selectedArticle ? nextArticle : visibleArticles[0] ?? null
         if (targetArticle) {
@@ -720,11 +787,17 @@ export default function App(): React.JSX.Element {
       } else if (key === 'u' && originalUrl) {
         event.preventDefault()
         void showOriginalArticle()
+      } else if ((key === ',' || key === '.') && aiSummaryVisible && (aiSummary || aiLoading)) {
+        event.preventDefault()
+        cycleAiSummaryPlacement(key === ',' ? -1 : 1)
+      } else if ((key === '-' || key === '=' || key === '+') && aiSummaryVisible && (aiSummary || aiLoading)) {
+        event.preventDefault()
+        resizeAiSummaryPanel(key === '-' ? -1 : 1)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [nextArticle, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settingsOpen, sourceCatalogOpen, sourcePickerOpen, subscriptionMenuOpen, visibleArticles, workspaceCollapsed])
+  }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, nextArticle, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settingsOpen, sourceCatalogOpen, sourcePickerOpen, subscriptionMenuOpen, visibleArticles, workspaceCollapsed])
 
   const openAddSource = (): void => {
     setSubscriptionMenuOpen(false)
@@ -732,6 +805,7 @@ export default function App(): React.JSX.Element {
     setSourceError(null)
     setSourceDiscovery(null)
     setSelectedCandidateId(null)
+    setSelectedCandidateIds([])
     setAddSourceOpen(true)
   }
 
@@ -789,6 +863,21 @@ export default function App(): React.JSX.Element {
     setSourceCatalogOpen(true)
   }
 
+  const discoverSourceWithProgress = async (url: string): Promise<SourceDiscoveryResult> => {
+    const requestId = crypto.randomUUID()
+    sourceDiscoveryRequestIdRef.current = requestId
+    setSourceDiscoveryRequestId(requestId)
+    setSourceDiscoveryStages({})
+    setSourceDiscoveryStartedAt(Date.now())
+    try {
+      return await window.origread.discoverSource(url, requestId)
+    } finally {
+      if (sourceDiscoveryRequestIdRef.current === requestId) sourceDiscoveryRequestIdRef.current = null
+      setSourceDiscoveryRequestId((current) => current === requestId ? null : current)
+      setSourceDiscoveryStartedAt(null)
+    }
+  }
+
   const subscribeCatalogFeed = async (feed: FeedCatalogEntry): Promise<void> => {
     setSourceCatalogOpen(false)
     setSettingsOpen(false)
@@ -796,12 +885,14 @@ export default function App(): React.JSX.Element {
     setSourceError(null)
     setSourceDiscovery(null)
     setSelectedCandidateId(null)
+    setSelectedCandidateIds([])
     setAddSourceOpen(true)
     setIsAddingSource(true)
     try {
-      const discovered = await window.origread.discoverSource(feed.feedUrl)
+      const discovered = await discoverSourceWithProgress(feed.feedUrl)
       setSourceDiscovery(discovered)
       setSelectedCandidateId(discovered.selectedCandidateId)
+      setSelectedCandidateIds(discovered.selectedCandidateId ? [discovered.selectedCandidateId] : [])
       if (discovered.candidates.length === 0) setSourceError(discovered.error ?? t('noSourceCandidate'))
     } catch (error) {
       setSourceError(error instanceof Error ? error.message : String(error))
@@ -816,6 +907,7 @@ export default function App(): React.JSX.Element {
     setSourceError(null)
     setSourceDiscovery(null)
     setSelectedCandidateId(null)
+    setSelectedCandidateIds([])
   }
 
   const submitSource = async (): Promise<void> => {
@@ -824,24 +916,29 @@ export default function App(): React.JSX.Element {
     setSourceError(null)
     try {
       if (!sourceDiscovery) {
-        const discovered = await window.origread.discoverSource(sourceUrl)
+        const discovered = await discoverSourceWithProgress(sourceUrl)
         setSourceDiscovery(discovered)
         setSelectedCandidateId(discovered.selectedCandidateId)
+        setSelectedCandidateIds(discovered.selectedCandidateId ? [discovered.selectedCandidateId] : [])
         if (discovered.candidates.length === 0) {
           setSourceError(discovered.error ?? t('noSourceCandidate'))
         }
         return
       }
-      const candidateId = selectedCandidateId ?? sourceDiscovery.selectedCandidateId
-      if (!candidateId) {
+      const fallbackCandidateId = selectedCandidateId ?? sourceDiscovery.selectedCandidateId
+      const candidateIds = selectedCandidateIds.length > 0
+        ? selectedCandidateIds
+        : fallbackCandidateId ? [fallbackCandidateId] : []
+      if (candidateIds.length === 0) {
         setSourceError(t('selectSourceCandidate'))
         return
       }
-      await window.origread.subscribeSource(sourceDiscovery.discoveryId, candidateId)
+      await window.origread.subscribeSource(sourceDiscovery.discoveryId, candidateIds)
       await reloadLibrary()
       setSourceUrl('')
       setSourceDiscovery(null)
       setSelectedCandidateId(null)
+      setSelectedCandidateIds([])
       setAddSourceOpen(false)
       setDestination('all')
     } catch (error) {
@@ -1261,7 +1358,7 @@ export default function App(): React.JSX.Element {
         ) : selectedArticle ? (
           <div className={`reader-composite ${aiSummaryDocked ? `summary-docked summary-${aiSummaryPlacement}` : ''}`}>
           {aiSummaryDocked && (aiSummaryPlacement==='left'||aiSummaryPlacement==='top') && renderAiSummaryPanel()}
-          <div className={`reader-content reader-mode-${readerMode}`}>
+          <div ref={readerContentRef} className={`reader-content reader-mode-${readerMode}`}>
             {readerSearchOpen && readerMode !== 'ai' && (
               <ReaderSearchBar
                 query={readerSearchQuery}
@@ -1342,12 +1439,18 @@ export default function App(): React.JSX.Element {
                 <h2>{t('readerEmpty')}</h2>
                 <p>{t('readerEmptyDesc')}</p>
                 <div className="reader-shortcuts" aria-label={t('keyboardShortcuts')}>
-                  <span><kbd>J</kbd>{t('shortcutNextArticle')}</span>
-                  <span><kbd>K</kbd>{t('shortcutPreviousArticle')}</span>
+                  <span><kbd>← / K</kbd>{t('shortcutPreviousArticle')}</span>
+                  <span><kbd>→ / J</kbd>{t('shortcutNextArticle')}</span>
+                  <span><kbd>↑</kbd>{t('shortcutScrollUp')}</span>
+                  <span><kbd>↓</kbd>{t('shortcutScrollDown')}</span>
                   <span><kbd>M</kbd>{t('shortcutToggleRead')}</span>
                   <span><kbd>S</kbd>{t('shortcutToggleStar')}</span>
                   <span><kbd>U</kbd>{t('shortcutOriginal')}</span>
                   <span><kbd>[</kbd>{t('shortcutSidebar')}</span>
+                  <span><kbd>,</kbd>{t('shortcutSummaryPlacementPrevious')}</span>
+                  <span><kbd>.</kbd>{t('shortcutSummaryPlacementNext')}</span>
+                  <span><kbd>-</kbd>{t('shortcutSummarySizeDecrease')}</span>
+                  <span><kbd>+</kbd>{t('shortcutSummarySizeIncrease')}</span>
                 </div>
                 <small>{t('shortcutSearchHint')}</small>
               </>
@@ -1392,6 +1495,7 @@ export default function App(): React.JSX.Element {
                   setSourceUrl(event.target.value)
                   setSourceDiscovery(null)
                   setSelectedCandidateId(null)
+                  setSelectedCandidateIds([])
                   setSourceError(null)
                 }}
                 onKeyDown={(event) => {
@@ -1400,15 +1504,107 @@ export default function App(): React.JSX.Element {
                 }}
               />
             </label>
-            {sourceDiscovery && sourceDiscovery.candidates.length > 0 && (
+            {isAddingSource && !sourceDiscovery && sourceDiscoveryRequestId && (
+              <div className="source-discovery-progress" role="status" aria-live="polite">
+                <div className="source-discovery-progress-head">
+                  <div>
+                    <strong>{t('sourceDiscoveryWorking')}</strong>
+                    <span>{t('sourceDiscoveryElapsed', { count: sourceDiscoveryElapsedSeconds })}</span>
+                  </div>
+                  <RefreshCw size={16} className="spinning" aria-hidden="true" />
+                </div>
+                <div className="source-discovery-progress-bar" aria-hidden="true"><span /></div>
+                <div className="source-discovery-stage-list">
+                  {sourceDiscoveryStageOrder
+                    .filter((stage) => ['rss', 'rsshub', 'json', 'website'].includes(stage) || sourceDiscoveryStages[stage] !== undefined)
+                    .map((stage) => {
+                      const state = sourceDiscoveryStages[stage] ?? 'running'
+                      return (
+                        <div key={stage} className={`source-discovery-stage ${state}`}>
+                          <span className="source-discovery-stage-dot" aria-hidden="true" />
+                          <span>{t(`sourceDiscoveryStage.${stage}`)}</span>
+                          <small>{t(`sourceDiscoveryStageState.${state}`)}</small>
+                        </div>
+                      )
+                    })}
+                </div>
+              </div>
+            )}
+            {sourceDiscovery && sourceDiscovery.rssHubRoutes.length > 0 && (
+              <div className="source-candidate-section rsshub-route-section">
+                <div className="source-candidate-heading">
+                  <span>{t('rssHubRoutes')}</span>
+                  <span>{t('rssHubMatchedCount', { count: sourceDiscovery.rssHubRoutes.length })}</span>
+                </div>
+                {sourceDiscovery.rssHubRoutes.filter((route) => route.candidateId).length > 1 && (
+                  <p className="source-candidate-hint">{t('rssHubMultiSelectHint')}</p>
+                )}
+                <div className="source-candidate-list" aria-label={t('rssHubRoutes')}>
+                  {sourceDiscovery.rssHubRoutes.map((route) => {
+                    const candidate = route.candidateId
+                      ? sourceDiscovery.candidates.find((item) => item.id === route.candidateId && item.kind === 'RSSHUB')
+                      : undefined
+                    const selected = candidate ? selectedCandidateIds.includes(candidate.id) : false
+                    const content = (
+                      <>
+                        <span className={`candidate-radio multi ${candidate ? '' : 'unavailable'}`} aria-hidden="true"><span /></span>
+                        <span className="candidate-main">
+                          <strong>{route.name}</strong>
+                          <span className="candidate-notice">
+                            {t(`rssHubRouteState.${route.state}`, { count: route.articleCount })}
+                          </span>
+                        </span>
+                        <span className="candidate-stats">
+                          <span className="candidate-kind kind-rsshub">RSSHub</span>
+                        </span>
+                      </>
+                    )
+                    if (!candidate) {
+                      return (
+                        <div key={`${route.routeId}:${route.feedUrl ?? route.state}`} className="source-candidate rsshub-route-status unavailable">
+                          {content}
+                        </div>
+                      )
+                    }
+                    const chooseCandidate = (): void => {
+                      const selectedCandidates = sourceDiscovery.candidates.filter((item) => selectedCandidateIds.includes(item.id))
+                      const currentRssHubOnly = selectedCandidates.length > 0 && selectedCandidates.every((item) => item.kind === 'RSSHUB')
+                      const base = currentRssHubOnly ? selectedCandidateIds : []
+                      const next = base.includes(candidate.id)
+                        ? (base.length > 1 ? base.filter((id) => id !== candidate.id) : base)
+                        : [...base, candidate.id]
+                      setSelectedCandidateIds(next)
+                      setSelectedCandidateId(next.includes(candidate.id) ? candidate.id : (next[0] ?? null))
+                    }
+                    return (
+                      <button
+                        key={`${route.routeId}:${route.feedUrl ?? route.state}`}
+                        type="button"
+                        role="checkbox"
+                        aria-checked={selected}
+                        className={`source-candidate rsshub-route-status ${selected ? 'selected' : ''}`}
+                        onClick={chooseCandidate}
+                      >
+                        {content}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+            {sourceDiscovery && sourceDiscovery.candidates.some((candidate) => candidate.kind !== 'RSSHUB') && (
               <div className="source-candidate-section">
                 <div className="source-candidate-heading">
                   <span>{t('sourceCandidates')}</span>
-                  <span>{t('sourceCandidateCount', { count: sourceDiscovery.candidates.length })}</span>
+                  <span>{t('sourceCandidateCount', { count: sourceDiscovery.candidates.filter((candidate) => candidate.kind !== 'RSSHUB').length })}</span>
                 </div>
-                <div className="source-candidate-list" role="radiogroup" aria-label={t('sourceCandidates')}>
-                  {sourceDiscovery.candidates.map((candidate) => {
-                    const selected = (selectedCandidateId ?? sourceDiscovery.selectedCandidateId) === candidate.id
+                <div className="source-candidate-list" aria-label={t('sourceCandidates')}>
+                  {sourceDiscovery.candidates.filter((candidate) => candidate.kind !== 'RSSHUB').map((candidate) => {
+                    const selected = selectedCandidateIds.includes(candidate.id)
+                    const chooseCandidate = (): void => {
+                      setSelectedCandidateId(candidate.id)
+                      setSelectedCandidateIds([candidate.id])
+                    }
                     return (
                       <button
                         key={candidate.id}
@@ -1416,17 +1612,15 @@ export default function App(): React.JSX.Element {
                         role="radio"
                         aria-checked={selected}
                         className={`source-candidate ${selected ? 'selected' : ''}`}
-                        onClick={() => setSelectedCandidateId(candidate.id)}
+                        onClick={chooseCandidate}
                       >
                         <span className="candidate-radio" aria-hidden="true"><span /></span>
                         <span className="candidate-main">
                           <strong>{candidate.title}</strong>
-                          <span className="candidate-url">{candidate.feedLink}</span>
                           {candidate.sourceNotice && <span className="candidate-notice">{candidate.sourceNotice}</span>}
                         </span>
                         <span className="candidate-stats">
                           <span className={`candidate-kind kind-${candidate.kind.toLowerCase()}`}>{t(`sourceKind.${candidate.kind}`)}</span>
-                          <span>{t('candidateScore', { score: candidate.diagnostics.score })}</span>
                           <span>{t('candidateArticles', { count: candidate.diagnostics.articleCount })}</span>
                         </span>
                       </button>
@@ -1445,6 +1639,7 @@ export default function App(): React.JSX.Element {
                   onClick={() => {
                     setSourceDiscovery(null)
                     setSelectedCandidateId(null)
+                    setSelectedCandidateIds([])
                     setSourceError(null)
                   }}
                 >
@@ -1458,7 +1653,7 @@ export default function App(): React.JSX.Element {
               <button
                 type="button"
                 className="dialog-submit"
-                disabled={isAddingSource || !sourceUrl.trim() || (sourceDiscovery !== null && !selectedCandidateId && !sourceDiscovery.selectedCandidateId)}
+                disabled={isAddingSource || !sourceUrl.trim() || (sourceDiscovery !== null && selectedCandidateIds.length === 0 && !selectedCandidateId && !sourceDiscovery.selectedCandidateId)}
                 onClick={() => void submitSource()}
               >
                 {isAddingSource && <RefreshCw size={14} className="spinning" />}

@@ -72,8 +72,10 @@ export class RssHubSettingsRepository {
     const settings = this.current()
     if (!settings.enabled) return []
     const runtime = this.runtime()
-    return orderRssHubInstances(runtime.lastSuccessInstance, ...settings.instances.filter((instance) => instance.enabled).map((instance) => instance.url))
-      .filter((instance) => (runtime.cooldownUntil[instance] ?? 0) <= now)
+    const ordered = orderRssHubInstances(runtime.lastSuccessInstance, ...settings.instances.filter((instance) => instance.enabled).map((instance) => instance.url))
+    const ready = ordered.filter((instance) => (runtime.cooldownUntil[instance] ?? 0) <= now)
+    const cooling = ordered.filter((instance) => (runtime.cooldownUntil[instance] ?? 0) > now)
+    return [...ready, ...cooling]
   }
 
   recordSuccess(instanceBaseUrl: string): void {

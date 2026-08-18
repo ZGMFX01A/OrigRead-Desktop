@@ -11,6 +11,7 @@ import type { AiProviderPatch, AiSettingsPatch, AiSummaryProgress, AiSummaryRequ
 import type { TranslationProviderPatch, TranslationProviderType, TranslationSettingsPatch, TranslationTarget } from '../shared/translation'
 import type { ArticleFilterRuleType } from '../shared/filter-rules'
 import type { AiGeneratedRuleKind } from '../shared/ai-rule'
+import type { SourceDiscoveryProgress } from '../shared/source-discovery'
 
 const api: OrigReadDesktopApi = Object.freeze({
   getAppInfo: () => ipcRenderer.invoke(IPC_CHANNELS.getAppInfo),
@@ -69,9 +70,14 @@ const api: OrigReadDesktopApi = Object.freeze({
     ipcRenderer.invoke(IPC_CHANNELS.setWebsiteRuleEnabled, id, enabled),
   deleteWebsiteRule: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteWebsiteRule, id),
   testWebsiteRule: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.testWebsiteRule, url),
-  discoverSource: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.discoverSource, url),
-  subscribeSource: (discoveryId: string, candidateId: string) =>
-    ipcRenderer.invoke(IPC_CHANNELS.subscribeSource, discoveryId, candidateId),
+  discoverSource: (url: string, requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.discoverSource, url, requestId),
+  onSourceDiscoveryProgress: (listener: (progress: SourceDiscoveryProgress) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, progress: SourceDiscoveryProgress): void => listener(progress)
+    ipcRenderer.on(IPC_CHANNELS.sourceDiscoveryProgress, wrapped)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.sourceDiscoveryProgress, wrapped)
+  },
+  subscribeSource: (discoveryId: string, candidateIds: string[]) =>
+    ipcRenderer.invoke(IPC_CHANNELS.subscribeSource, discoveryId, candidateIds),
   refreshJsonSource: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.refreshJsonSource, feedId),
   refreshSource: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.refreshSource, feedId),
   refreshAllSources: () => ipcRenderer.invoke(IPC_CHANNELS.refreshAllSources),

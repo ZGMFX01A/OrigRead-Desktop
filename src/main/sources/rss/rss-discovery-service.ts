@@ -2,6 +2,7 @@ import * as cheerio from 'cheerio'
 import Parser from 'rss-parser'
 import type { DiscoveredRssFeed, RssFeedItem } from '../../../shared/rss'
 import { BestIconFinder, extractIconDomain, type RssIconFinder } from './best-icon-finder'
+import { DESKTOP_BROWSER_USER_AGENT } from '../../network/user-agent-policy'
 
 interface CustomRssItem {
   contentEncoded?: string
@@ -107,6 +108,7 @@ export async function fetchRssPayload(url: string): Promise<RssFetchPayload> {
     redirect: 'follow',
     signal: AbortSignal.timeout(20_000),
     headers: {
+      'user-agent': DESKTOP_BROWSER_USER_AGENT,
       Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.9, */*;q=0.8'
     }
   })

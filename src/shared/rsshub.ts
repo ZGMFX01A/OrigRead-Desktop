@@ -33,6 +33,7 @@ export type RssHubCandidateState =
   | 'timeout'
   | 'network_unavailable'
   | 'invalid_content'
+  | 'unsupported'
 
 export interface RssHubProbeResult {
   match: RssHubRouteMatch

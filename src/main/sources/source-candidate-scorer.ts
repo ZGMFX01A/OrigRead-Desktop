@@ -35,9 +35,17 @@ export function scoreSourceCandidate(entries: SourceCandidateEntry[], kind: Sour
   const uniqueLinkRate = rate(new Set(entries.map((entry) => entry.link.trim()).filter(Boolean)).size, count)
   const parsedDateRate = rate(entries.filter((entry) => entry.publishedAt !== null).length, count)
   const reasons: string[] = []
-  if (validTitleRate < 0.6) reasons.push('有效标题比例过低')
-  if (validLinkRate < 0.6) reasons.push('有效链接比例过低')
-  if (uniqueLinkRate < 0.5) reasons.push('重复链接比例过高')
+  const dynamicFallback = kind === 'WEBSITE_DYNAMIC'
+  if (dynamicFallback) {
+    // Chromium 已经是所有静态方案失败后的最终兜底。此处只确认它确实提取到了可继续同步的
+    // HTTP(S) 链接列表；标题、日期、数量等质量指标仍参与分数，但不能再次成为硬否决门槛。
+    if (validLinkRate <= 0) reasons.push('未解析出有效文章链接')
+    if (uniqueLinkRate <= 0) reasons.push('未解析出唯一文章链接')
+  } else {
+    if (validTitleRate < 0.6) reasons.push('有效标题比例过低')
+    if (validLinkRate < 0.6) reasons.push('有效链接比例过低')
+    if (uniqueLinkRate < 0.5) reasons.push('重复链接比例过高')
+  }
   if (reasons.length > 0) {
     return { score: 0, accepted: false, articleCount: count, validTitleRate, validLinkRate, uniqueLinkRate, parsedDateRate, reasons }
   }

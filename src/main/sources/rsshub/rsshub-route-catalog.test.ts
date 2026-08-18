@@ -14,10 +14,10 @@ describe('RSSHub bundled route catalog', () => {
       'https://www.cls.cn/',
       routes,
       'https://rsshub.example.com',
-      3
+      8
     )
-    expect(clsMatches.length).toBeGreaterThan(0)
-    expect(clsMatches.some((match) => match.route.host === 'cls.cn' && match.resolved)).toBe(true)
+    expect(clsMatches.some((match) => match.route.target === '/cls/hot' && match.resolved)).toBe(true)
+    expect(clsMatches.some((match) => match.route.target === '/cls/telegraph' && match.resolved)).toBe(true)
     expect(clsMatches.filter((match) => match.resolved).every((match) => match.feedUrl?.startsWith('https://rsshub.example.com/cls/'))).toBe(true)
   })
 })

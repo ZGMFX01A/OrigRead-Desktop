@@ -4,7 +4,7 @@ import type { RssSubscriptionResult } from './rss'
 import type { RssHubSettings } from './rsshub'
 import type { JsonRule } from './json-source'
 import type { WebsiteInspectionResult, WebsiteParseCandidate, WebsiteRule } from './website'
-import type { SourceDiscoveryResult, SourceSubscriptionResult } from './source-discovery'
+import type { SourceDiscoveryProgress, SourceDiscoveryResult, SourceSubscriptionResult } from './source-discovery'
 import type { SourceSyncBatchResult, SourceSyncItemResult } from './source-sync'
 import type { FullContentFetchResult, ReaderArticleContent } from './reader'
 import type { SyncRuntimeState } from './sync-runtime'
@@ -99,8 +99,9 @@ export interface OrigReadDesktopApi {
   setWebsiteRuleEnabled(id: string, enabled: boolean): Promise<void>
   deleteWebsiteRule(id: string): Promise<void>
   testWebsiteRule(url: string): Promise<{ ok:boolean;articleCount:number;error:string|null }>
-  discoverSource(url: string): Promise<SourceDiscoveryResult>
-  subscribeSource(discoveryId: string, candidateId: string): Promise<SourceSubscriptionResult>
+  discoverSource(url: string, requestId: string): Promise<SourceDiscoveryResult>
+  onSourceDiscoveryProgress(listener: (progress: SourceDiscoveryProgress) => void): () => void
+  subscribeSource(discoveryId: string, candidateIds: string[]): Promise<SourceSubscriptionResult[]>
   refreshJsonSource(feedId: string): Promise<{ feedId: string; fetchedArticles: number; insertedArticles: number }>
   refreshSource(feedId: string): Promise<SourceSyncItemResult>
   refreshAllSources(): Promise<SourceSyncBatchResult>
@@ -202,6 +203,7 @@ export const IPC_CHANNELS = {
   deleteWebsiteRule: 'website:rules:delete',
   testWebsiteRule: 'website:rules:test',
   discoverSource: 'source:discover',
+  sourceDiscoveryProgress: 'source:discover-progress',
   subscribeSource: 'source:subscribe',
   refreshJsonSource: 'json:refresh-source',
   refreshSource: 'source:refresh',

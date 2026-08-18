@@ -1,4 +1,5 @@
 import { shell, WebContentsView, type BrowserWindow } from 'electron'
+import { DESKTOP_BROWSER_USER_AGENT } from '../network/user-agent-policy'
 import type {
   OriginalArticleViewState,
   OriginalNavigationAction,
@@ -100,6 +101,8 @@ export class OriginalArticleViewController {
 
   private configureRemoteView(view: WebContentsView): void {
     const contents = view.webContents
+    // 原文页是桌面浏览器视图，统一隐藏 Electron/App UA 特征，避免站点按嵌入式客户端返回降级页。
+    contents.setUserAgent(DESKTOP_BROWSER_USER_AGENT)
     contents.setAudioMuted(true)
     contents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
     contents.setWindowOpenHandler(({ url }) => {

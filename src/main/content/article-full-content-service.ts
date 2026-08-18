@@ -1,3 +1,4 @@
+import { DESKTOP_BROWSER_USER_AGENT } from '../network/user-agent-policy'
 import type { FullContentFetchResult, FullContentFailureReason } from '../../shared/reader'
 import { LibraryRepository } from '../database/library-repository'
 import { ContentExtractionService } from './content-extraction-service'
@@ -89,7 +90,7 @@ export async function defaultArticlePageFetcher(url: string): Promise<ArticlePag
     redirect: 'follow',
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: {
-      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36',
+      'user-agent': DESKTOP_BROWSER_USER_AGENT,
       accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8'
     }
   })

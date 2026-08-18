@@ -5,6 +5,7 @@ import {
   type DynamicWebsiteRenderer,
   type DynamicWebsiteRenderResult
 } from './dynamic-website-render-policy'
+import { DESKTOP_BROWSER_USER_AGENT } from '../../network/user-agent-policy'
 
 const DOM_SETTLE_DELAY_MS = 1_200
 const RENDER_TIMEOUT_MS = 15_000
@@ -120,9 +121,7 @@ export class ElectronDynamicWebsiteRenderer implements DynamicWebsiteRenderer {
         settleTimer = setTimeout(() => void finish(finalUrl), DOM_SETTLE_DELAY_MS)
       })
 
-      void window.loadURL(url, {
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
-      }).catch((error) => {
+      void window.loadURL(url, { userAgent: DESKTOP_BROWSER_USER_AGENT }).catch((error) => {
         if (!completed) fail(`动态页面加载失败：${error instanceof Error ? error.message : String(error)}`)
       })
     })

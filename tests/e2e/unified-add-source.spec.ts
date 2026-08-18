@@ -3,6 +3,7 @@ import { test, expect } from '@playwright/test'
 import { launchIsolatedOrigRead } from './electron-test-app'
 
 test('add-source dialog discovers, ranks, subscribes and refreshes through the unified source flow', async () => {
+  test.setTimeout(45_000)
   const fixture = await startFeedServer()
   const { server } = fixture
   const address = server.address()
@@ -61,6 +62,28 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
       return article ? { feedId: feed.id, articleId: article.id } : null
     }, feedUrl)
     expect(currentFixture).not.toBeNull()
+
+    await page.locator('.scope-picker-button').click()
+    await expect(page.locator('.source-scope-picker')).toBeVisible()
+    await page.locator('.source-settings-button').first().click()
+    const sourceSettings = page.locator('.source-settings-dialog')
+    await expect(sourceSettings).toBeVisible()
+    await expect(sourceSettings.locator('.source-type-badge')).toHaveText('RSS / Atom')
+    await expect(sourceSettings.locator('.source-settings-tabs button')).toHaveCount(3)
+    await expect(sourceSettings.getByRole('button', { name: '阅读' })).toHaveCount(0)
+    await expect(sourceSettings.getByPlaceholder('新分组名称')).toHaveCount(0)
+    await sourceSettings.getByRole('button', { name: '新建分组' }).click()
+    await expect(sourceSettings.getByPlaceholder('新分组名称')).toBeVisible()
+    await expect(sourceSettings.getByText('尝试抓取原网页全文', { exact: true })).toHaveCount(0)
+    await sourceSettings.getByRole('button', { name: '过滤' }).click()
+    await expect(sourceSettings).toContainText('在文章保存前按标题关键词或正则过滤当前来源。')
+    await sourceSettings.getByRole('button', { name: '维护' }).click()
+    await expect(sourceSettings).toContainText('重新获取图标')
+    await sourceSettings.locator('.dialog-close').click()
+    await expect(sourceSettings).toBeHidden()
+    await page.locator('.scope-picker-button').click()
+    await expect(page.locator('.article-list')).toBeVisible()
+
     const article = page.locator(`.article-item[data-article-id="${currentFixture!.articleId}"]`)
     await expect(article).toBeVisible()
     await article.click()
@@ -79,6 +102,12 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     expect(readerMetrics.scrollHeight).toBeGreaterThan(readerMetrics.clientHeight)
     await readerContent.evaluate((element) => { element.scrollTop = 300 })
     await expect.poll(() => readerContent.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+    await readerContent.evaluate((element) => { element.scrollTop = 0 })
+    await page.keyboard.press('ArrowDown')
+    await expect.poll(() => readerContent.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+    const arrowDownScrollTop = await readerContent.evaluate((element) => element.scrollTop)
+    await page.keyboard.press('ArrowUp')
+    await expect.poll(() => readerContent.evaluate((element) => element.scrollTop)).toBeLessThan(arrowDownScrollTop)
     const articleImage = page.locator('.article-body img').first()
     await expect(articleImage).toBeVisible()
     await expect(articleImage).toHaveAttribute('src', `${baseUrl}/image/1.png`)
@@ -104,6 +133,10 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await page.keyboard.press('j')
     await expect.poll(() => page.locator('.article-item.selected').getAttribute('data-article-id')).not.toBe(shortcutArticleId)
     await page.keyboard.press('k')
+    await expect.poll(() => page.locator('.article-item.selected').getAttribute('data-article-id')).toBe(shortcutArticleId)
+    await page.keyboard.press('ArrowRight')
+    await expect.poll(() => page.locator('.article-item.selected').getAttribute('data-article-id')).not.toBe(shortcutArticleId)
+    await page.keyboard.press('ArrowLeft')
     await expect.poll(() => page.locator('.article-item.selected').getAttribute('data-article-id')).toBe(shortcutArticleId)
 
     await expect(page.locator('.article-item.selected')).not.toHaveClass(/unread/)

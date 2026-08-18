@@ -12,11 +12,12 @@ import {
   isReusableAutomaticWebsiteRule
 } from './automatic-website-list-detector'
 import { ConfigurableWebsiteParser } from './configurable-website-parser'
-import { rankingScore, rejectedWebsiteCandidate, scoreWebsiteCandidate } from './website-candidate-scorer'
+import { isSafeDynamicFallback, rankingScore, rejectedWebsiteCandidate, scoreWebsiteCandidate } from './website-candidate-scorer'
 import { javaStringHash, resolveHttpUrl, unsignedHex } from './website-dom'
 import { WebsiteParsePreferenceRepository, type WebsiteParsePreference } from './website-parse-preference-repository'
 import { WebsiteRuleRepository } from './website-rule-repository'
 import type { DynamicWebsiteRenderer } from './dynamic-website-render-policy'
+import { DESKTOP_BROWSER_USER_AGENT } from '../../network/user-agent-policy'
 
 const MAX_AUTOMATIC_HTML_CHARS = 750_000
 
@@ -63,7 +64,7 @@ export class WebsiteSourceService {
   async inspectDynamic(url: string, fetchedAt = Date.now()): Promise<WebsiteInspectionResult> {
     if (!this.dynamicRenderer) throw new Error('动态 Chromium 渲染器不可用')
     const rendered = await this.dynamicRenderer.render(url)
-    return this.buildInspection(url, rendered.finalUrl, rendered.html, fetchedAt)
+    return this.buildInspection(url, rendered.finalUrl, rendered.html, fetchedAt, true)
   }
 
   async evaluateCandidates(feed: FeedRecord, fetchedAt = Date.now()): Promise<WebsiteParseCandidate[]> {
@@ -79,7 +80,7 @@ export class WebsiteSourceService {
       if (!this.dynamicRenderer) throw new Error('动态 Chromium 渲染器不可用')
       const rendered = await this.dynamicRenderer.render(feed.url)
       const $ = cheerio.load(rendered.html)
-      return this.parseAndRecordSelection(feed, $, rendered.finalUrl, fetchedAt)
+      return this.parseAndRecordSelection(feed, $, rendered.finalUrl, fetchedAt, true)
     }
     const payload = await this.request(feed.url)
     this.ensureAutomaticParsingAllowed(feed, payload.html)
@@ -127,11 +128,17 @@ export class WebsiteSourceService {
     return payload
   }
 
-  private buildInspection(sourceUrl: string, baseUrl: string, html: string, fetchedAt: number): WebsiteInspectionResult {
+  private buildInspection(
+    sourceUrl: string,
+    baseUrl: string,
+    html: string,
+    fetchedAt: number,
+    allowLowConfidenceFallback = false
+  ): WebsiteInspectionResult {
     const probeFeed = probeFeedRecord(sourceUrl, fetchedAt)
     this.ensureAutomaticParsingAllowed(probeFeed, html)
     const $ = cheerio.load(html)
-    const selection = this.selectBestCandidate(probeFeed, $, baseUrl, fetchedAt, true)
+    const selection = this.selectBestCandidate(probeFeed, $, baseUrl, fetchedAt, true, allowLowConfidenceFallback)
     const title = $('title').first().text().trim() || safeHost(sourceUrl) || baseUrl
     const description = $('meta[name="description"]').first().attr('content') ?? ''
     const iconUrl = findIconUrl($, baseUrl)
@@ -157,9 +164,10 @@ export class WebsiteSourceService {
     feed: FeedRecord,
     $: cheerio.CheerioAPI,
     baseUrl: string,
-    fetchedAt: number
+    fetchedAt: number,
+    allowLowConfidenceFallback = false
   ): WebsiteParsedArticle[] {
-    const selection = this.selectBestCandidate(feed, $, baseUrl, fetchedAt)
+    const selection = this.selectBestCandidate(feed, $, baseUrl, fetchedAt, false, allowLowConfidenceFallback)
     const candidate = selection.candidate
     this.selectedRuleIds.set(feed.id, candidate.rule.id)
     if (isReusableAutomaticWebsiteRule(candidate.rule)) {
@@ -182,13 +190,18 @@ export class WebsiteSourceService {
     $: cheerio.CheerioAPI,
     baseUrl: string,
     fetchedAt: number,
-    forceAutomaticFullScan = false
+    forceAutomaticFullScan = false,
+    allowLowConfidenceFallback = false
   ): CandidateSelection {
-    const batch = this.buildCandidateBatch(feed, $, baseUrl, fetchedAt, forceAutomaticFullScan)
+    const batch = this.buildCandidateBatch(feed, $, baseUrl, fetchedAt, forceAutomaticFullScan, allowLowConfidenceFallback)
     const accepted = batch.candidates.filter((candidate) => candidate.diagnostics.state === 'AVAILABLE')
     const preferredRuleId = this.preferenceRepository.get(feed.id)?.preferredRuleId
     const selected = accepted.find((candidate) => candidate.rule.id === preferredRuleId)
       ?? accepted.reduce<WebsiteParseCandidate | null>((best, candidate) => !best || rankingScore(candidate.diagnostics) > rankingScore(best.diagnostics) ? candidate : best, null)
+      ?? (allowLowConfidenceFallback
+        ? batch.candidates.filter((candidate) => isSafeDynamicFallback(candidate.diagnostics))
+          .reduce<WebsiteParseCandidate | null>((best, candidate) => !best || rankingScore(candidate.diagnostics) > rankingScore(best.diagnostics) ? candidate : best, null)
+        : null)
     if (!selected) throw new Error(`当前网站的解析规则均未通过健康检查：${feed.url}`)
     return { candidate: selected, batch }
   }
@@ -198,7 +211,8 @@ export class WebsiteSourceService {
     $: cheerio.CheerioAPI,
     baseUrl: string,
     fetchedAt: number,
-    forceAutomaticFullScan: boolean
+    forceAutomaticFullScan: boolean,
+    includeRejectedAutomatic = false
   ): CandidateBatch {
     const rules = this.ruleRepository.findRules(feed.url)
     if (rules.length > 0) {
@@ -214,7 +228,7 @@ export class WebsiteSourceService {
           return { candidates: [cachedCandidate], automaticFullScan: false }
         }
         if (cachedCandidate.diagnostics.state === 'AVAILABLE') {
-          const detected = this.detectAutomaticCandidates($, baseUrl, feed, fetchedAt, preference)
+          const detected = this.detectAutomaticCandidates($, baseUrl, feed, fetchedAt, preference, includeRejectedAutomatic)
           const merged = new Map<string, WebsiteParseCandidate>()
           for (const candidate of [...detected, cachedCandidate]) if (!merged.has(candidate.rule.id)) merged.set(candidate.rule.id, candidate)
           return { candidates: [...merged.values()], automaticFullScan: true }
@@ -222,7 +236,7 @@ export class WebsiteSourceService {
       }
       this.preferenceRepository.clearAutomaticRule(feed.id)
     }
-    return { candidates: this.detectAutomaticCandidates($, baseUrl, feed, fetchedAt, preference), automaticFullScan: true }
+    return { candidates: this.detectAutomaticCandidates($, baseUrl, feed, fetchedAt, preference, includeRejectedAutomatic), automaticFullScan: true }
   }
 
   private detectAutomaticCandidates(
@@ -230,9 +244,17 @@ export class WebsiteSourceService {
     baseUrl: string,
     feed: FeedRecord,
     fetchedAt: number,
-    preference: WebsiteParsePreference | null
+    preference: WebsiteParsePreference | null,
+    includeRejected = false
   ): WebsiteParseCandidate[] {
-    return detectAutomaticWebsiteLists($, baseUrl, feed.url, fetchedAt, (ruleId) => automaticRuleHistoryScore(preference, ruleId))
+    return detectAutomaticWebsiteLists(
+      $,
+      baseUrl,
+      feed.url,
+      fetchedAt,
+      (ruleId) => automaticRuleHistoryScore(preference, ruleId),
+      includeRejected
+    )
   }
 
   private parseRuleCandidate(
@@ -259,7 +281,10 @@ async function defaultWebsiteFetcher(url: string): Promise<WebsiteFetchPayload> 
   const response = await fetch(url, {
     redirect: 'follow',
     signal: AbortSignal.timeout(8_000),
-    headers: { 'user-agent': 'OrigRead/0.1 (+https://github.com/ZGMFX01A/OrigRead-Desktop)' }
+    headers: {
+      'user-agent': DESKTOP_BROWSER_USER_AGENT,
+      accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+    }
   })
   return { status: response.status, finalUrl: response.url || url, html: await response.text() }
 }

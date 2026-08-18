@@ -116,8 +116,9 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
 - [x] RSS 图标发现完全对齐 Android `BestIconFinder`：apple-touch-icon > SVG > PNG > ICO > GIF > JPG，同格式按字节大小；页面失败时回退标准根目录图标，Feed 自带 image 不再覆盖最终图标选择
 - [x] RSSHub 路由目录：复制 Android 当前 `rsshub_routes.json` 数据资产，schema / routeCount 校验一致
 - [x] RSSHub TypeScript matcher：host/path/query/动态参数/缺参/可选参数/安全约束与 Android 对照
-- [x] RSSHub 16 个默认实例、最近成功优先、网络失败 5 分钟冷却、自定义实例持久化
-- [x] RSSHub Resolver：单实例有限候选并发、实例间顺序 fallback、5s 单请求 / 9s 总预算
+- [x] RSSHub 16 个默认实例、最近成功优先、网络失败冷却降级、自定义实例持久化；冷却实例移到候选末尾而不是完全排除，避免短时网络抖动后数分钟内来源突然无法匹配
+- [x] RSSHub Resolver：与 Android 当前实现统一为最多 5 个匹配路由、5s 单请求 / 12s 总预算；实例按最近成功/配置优先级**串行 fallback**，单实例内部才并发路由；不同实例的成功结果按 route key 合并，不再因某实例只成功一条路由就提前停止
+- [x] RSSHub 本地路由发现与实例网络可用性解耦：总开关关闭、无启用实例、实例超时/失败时仍保留本地命中并返回 `unsupported / timeout / network_unavailable` 状态；添加来源 UI 单独展示 RSSHub 本地匹配，不再把网络失败表现成“没有路由”
 - [x] RSSHub settings / instance health IPC 已接入 main / preload
 - [x] RSSHub 订阅持久化语义：最终 Feed URL + 原始页面 URL mapping 原子保存
 - [x] RSSHub 固定地址失效恢复：重新匹配实例/路由，只更新 Feed URL，不删除历史文章
@@ -148,14 +149,43 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
 - [x] 动态 Chromium 只负责渲染 DOM，渲染后仍复用同一 WebsiteRule / 自动 DOM / 健康评分，不另写动态 parser
 - [x] 真实 Electron E2E：页面初始无文章，JavaScript 延迟生成 5 条后由隐藏 Chromium 捕获并成功进入自动 DOM
 - [x] 统一健康评分：RSS direct +20、页面发现 RSS +17、JSON +14、RSSHub +10、Website +6、Dynamic +4；内容无效候选不能靠类型 bonus 通过
-- [x] Android 同序统一发现：显式 JSON 短路；否则 RSS → RSSHub → JSON → 静态 Website；仅所有静态候选均未通过评分时启动动态 Chromium
-- [x] 添加来源 UI 两阶段闭环：检测 → 展示排序后的候选/评分/文章数 → 用户可手选 → 使用同一次主进程探测结果保存
+- [x] Android 同序统一发现：显式 JSON 短路；否则 RSS → RSSHub → JSON → 静态 Website；仅所有静态候选均未通过评分时启动动态 Chromium。动态 Chromium 是最终兜底：空列表仍拒绝，但只要实际提取到有效且非全重复的 HTTP(S) 文章链接，标题率/日期率/数量等健康指标仅继续参与诊断与排序，不再二次硬否决
+- [x] 添加来源 UI 两阶段闭环：检测 → 展示排序后的候选 → 用户选择 → 使用同一次主进程探测结果保存；RSSHub 多频道使用多选并支持一次全部订阅，普通 RSS/JSON/Website 仍互斥单选；用户界面不再展示技术评分和长 Feed URL，只保留频道名、类型、文章数和必要说明
 - [x] 本地 Electron E2E：从添加来源 UI 输入 RSS → 统一检测 → 候选选择 → SQLite 订阅落库
 - [x] `https://www.cls.cn/` 统一总入口真实公网验证：最终选中 RSSHub 热门榜，评分 90 / 13 篇，动态 Chromium 调用次数 0
 - [x] RSS/Atom Android 行为对照测试
 - [x] RSSHub Android 行为对照测试
 - [x] JSON Android 行为对照测试
 - [x] Website 行为对照测试
+
+#### 2026-08-17 来源发现 UA 强制策略（由 Android 财联社事故同步）
+
+Desktop **不能使用 Android Mobile UA，也不能把 `OrigRead/...`、Node/undici 默认 UA 或 Electron 默认 UA 用在普通网站 HTML 解析上**。桌面端本身就是桌面 Chromium 应用，所有“模拟普通浏览器打开网页”的链路统一使用当前 Electron 内置 Chromium 版本生成的标准 Desktop Chrome UA。
+
+当前统一入口：`src/main/network/user-agent-policy.ts`，版本来自 `process.versions.chrome`，不再在各模块硬编码 `Chrome/151...`。
+
+| Desktop 场景 | UA 规则 |
+|---|---|
+| RSS 来源发现中请求输入 HTML 页面 | Desktop Chrome UA |
+| RSS 图标发现读取站点 HTML / 图标资源 | Desktop Chrome UA |
+| Website 静态 HTML / 自动 DOM | Desktop Chrome UA |
+| 隐藏 BrowserWindow 动态网页兜底 | Desktop Chrome UA |
+| 全文提取的文章 HTML 请求 | Desktop Chrome UA |
+| Reader 原文 `WebContentsView` | Desktop Chrome UA，并隐藏 Electron/App UA 特征 |
+| Reader 本地页面加载的远程图片/媒体 | Desktop Chrome UA |
+| AI 规则生成读取目标网页 | Desktop Chrome UA |
+| RSSHub Feed/health、JSON API、AI Provider、翻译 Provider、GitHub 更新 | 按协议本身处理；**禁止为了“防 418”全局强塞浏览器 UA** |
+
+财联社是固定回归样本：曾出现 App/Bot UA 返回 418、Android Mobile UA 虽返回 200 却被导向 `s.cls.cn/openapp/open.html`、Desktop Chrome UA 才得到真实 `www.cls.cn` 首页的情况。因此以后网络验收必须同时看 **status + final URL + 实际解析文章**，不能把 `HTTP 200` 当成“拿到了正确页面”。
+
+UA 回归测试必须保证网页链路 UA 不含 `Electron`、`OrigRead`、`Mobile`、`wv` 标记，并跟随 Electron 实际 Chromium 版本。Windows 使用 Windows Desktop token；macOS/Linux 使用各自 Desktop token，不伪装成 Android。
+
+2026-08-17 同步后的实测基线：
+
+- 直接使用统一 Desktop UA 请求 `https://www.cls.cn/`：HTTP 200，final URL 仍为 `https://www.cls.cn/`，HTML 约 158 KB，并包含 `/detail/` 文章链接；不再进入 open-app 落地页。
+- 真实构建后的 Electron 主进程通过 preload `discoverSource()` 请求财联社：本地匹配 RSSHub“电报”和“热门文章排行榜”两个频道；热门榜通过统一评分，13 篇、90 分并成为最高候选；电报虽然实例返回 20 条，但统一来源评分不合格，因此被归一为 `invalid_content` 而不是可订阅候选；同时 Website 静态解析 30 篇、86 分。
+- 真实 Electron 添加来源 UI：显示“RSSHub 频道 / 已在本地匹配到 2 个频道”；热门榜显示“可订阅 · 13 篇文章”，电报显示“已匹配 · Feed 内容未通过质量检查”，普通候选区只显示 Website 30 篇，不再重复显示 RSSHub 候选。
+- Vitest 全量：59 个 test files / 203 tests 全通过；`npm run build` 通过；`unified-add-source.spec.ts` Electron E2E 通过。
 
 ### Phase 4：同步与文章列表
 
@@ -241,7 +271,8 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
 - [x] 恢复采用“全量静态校验 + 密码解密成功后才开始写入”，不删除 Desktop 现有额外订阅或文章/已读/星标
 - [x] Desktop 独有偏好写入 namespaced `preferences`；Android 对未知 key 验证放行且恢复时忽略，因此保持双向 envelope 兼容
 - [x] Secret 加密：运行时 safeStorage；可移植备份内 AES-256-GCM
-- [x] JSON / Website 规则页补齐 Android 当前用户功能：本地 Markdown 教程、AI 生成候选、真实本地试跑、失败后最多修复一次、预览确认后保存、模板文件导出；Website 额外支持在线规则测试
+- [x] JSON / Website 规则页的本地 Markdown 教程、模板文件导入/导出、规则管理与 Website 在线规则测试已完成
+- [ ] **AI 生成 JSON 规则 / AI 生成网站解析规则尚未完成。** 底层实验代码保留，但当前 Android 与 Desktop 用户入口统一置灰；点击仅提示“功能尚未完成”，在重新完成真实端到端稳定性与跨端验收前不得标记为可用
 - [x] Android `source_catalog.json` 原样复制为 Desktop 资源：schemaVersion=1 / 752 feeds / 44 categories；发现来源支持本地搜索、分类筛选、数量显示和直接进入统一订阅流程
 
 ### Phase 8：发布
@@ -266,11 +297,13 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
 
 2. [x] **JSON 规则完整功能**
    - JsonRule parser / Repository / 导入 / 导出 / 启停 / 删除底层与用户入口均已完成。
-   - 已补 Android 当前页面已有的本地使用教程、AI 生成 JSON 规则、预览确认、真实本地试跑 / 最多一次修复、导出模板及状态反馈。
+   - 本地使用教程、导出模板及状态反馈已完成。
+   - [ ] AI 生成 JSON 规则仍属于未完成功能；入口保留但置灰，点击显示未完成提示。
 
 3. [x] **网站规则完整功能**
    - WebsiteRule parser / Repository / 导入 / 导出 / 启停 / 删除底层与用户入口均已完成。
-   - 已补 Android 当前页面已有的本地使用教程、AI 生成网站解析规则、预览确认、导出模板、真实本地试跑 / 最多一次修复与在线规则测试。
+   - 本地使用教程、导出模板与在线规则测试已完成。
+   - [ ] AI 生成网站解析规则仍属于未完成功能；入口保留但置灰，点击显示未完成提示。
    - 内部 `ithome-home` 规则继续按 Android 行为隐藏，不出现在用户规则列表。
 
 4. [x] **RSSHub 设置**
@@ -350,9 +383,11 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
 - [x] 修复 AI / 翻译 Provider 修改其他字段时错误清空 Key 草稿的问题；AI Reader E2E 现在要求真实 Bearer Key 鉴权成功才能通过。
 - [x] 左侧文章列表折叠改为当前会话状态：应用启动和配置恢复时始终展开，旧 `workspaceCollapsed=true` 会自动纠正；折叠后保留 34 px 明确侧轨和完整展开按钮，避免出现“文章列表像丢失”的假故障。Renderer E2E 覆盖持久化 true 后 reload 自动恢复。
 
-## 9. 唯一剩余工作基线（2026-08-16 重新核对）
+## 9. 唯一剩余工作基线（2026-08-17 代码重新核对）
 
 从本节开始，后续开发、验收和 checkpoint 统一以此清单为准。前面的 Phase 与 16 项清单用于保留开发历史；“接下来做什么”只看本节和第 10 节。
+
+2026-08-17 本轮再次直接对照 `src/main`、`src/preload`、`src/renderer`、`src/shared`、Vitest、Playwright Electron E2E 与 `electron-builder` 配置核对，而不是根据旧勾选推断。确认来源发现/RSSHub/JSON/Website/动态 Chromium、单本地库同步、Reader/WebContentsView、AI/翻译、规则、OPML/配置备份、文章内搜索、字体导入、三域朗读、AI 摘要停靠、背景色/深色、Release/自动更新均已存在真实实现和自动测试。当前唯一未完成的产品功能仍是 A4 账户与自托管同步；其余未完成项属于跨平台构建、签名和发布级人工验收。
 
 ### A. 仍未开发的产品功能
 
@@ -444,10 +479,12 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
 ### 当前自动回归基线
 
 - `npm run typecheck`：通过。
-- `npm test`：58 files / 191 tests 通过。
+- `npm test`：58 files / 195 tests 通过。
 - `npm run build`：通过。
 - Electron E2E：7 / 7 通过。
 - 除 A4 账户与自托管同步外，当前已落地的来源、单本地库同步、Reader、AI、翻译、规则、OPML、背景/主题等主产品功能后续以防回归为主。
+
+以上数字已于 2026-08-17 本轮重新执行确认：`npm run typecheck`、`npm test -- --run`、`npm run build`、`npm run test:e2e` 均成功，不沿用旧会话中的测试数量。
 
 ## 10. 后续按大项开发顺序
 
@@ -457,6 +494,9 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
 - [x] A2 Android ↔ Desktop UI / 产品语义一致性审计并修复明确缺口。
   - 已补 Reader 已读/未读、收藏、下一篇、AI 摘要按次 Provider/模型/长度、翻译目标选择、全文 ↔ Feed 内容双向切换。
   - 已补单来源设置：重命名、URL、分组/新建分组、全文/浏览器互斥、来源级过滤、Website 候选、动态渲染、清空文章、删除来源、重载图标。
+  - 来源设置按来源类型收敛：已确认 RSS/Atom 不再显示“阅读”页签及全文抓取/浏览器预设等冗余选项；Website/JSON 继续保留各自需要的读取配置。
+  - RSSHub 多实例回退与 Android 对齐为“按优先级排序、实例串行 fallback、单实例内部有限路由并发、最多 5 个路由、12 秒总预算”；不同实例可以分别补齐不同路由，最终按 route key 取并集；冷却实例仅降级到末尾而非完全排除。公共实例对同一路由存在明显实时波动，因此来源发现不再依赖单一实例或单一成功时序。
+  - 2026-08-17 再次收敛来源设置的信息架构：RSS/Atom 完全不显示“阅读”页签；Website/JSON 的阅读配置改成用户可理解的“在原读内阅读 / 浏览器打开”二选一，只有 Website 且选择原读内阅读时才显示次级“抓取完整正文”开关。底层 `isFullContent / isBrowser / dynamicRendering` 语义与互斥规则保持不变。
   - `isBrowser` 已对齐 Android：点击文章直接标记已读并外部打开，不进入 Reader。
   - `isNotification` 已接真实 Electron Notification，手动和周期同步统一从 `SourceSyncService` 触发，仅通知本轮新增文章。
   - 软件更新归入 B、背景色/深色归入 D；不为完成 A2 提前混做后续大项。
@@ -548,8 +588,18 @@ Windows 使用 NSIS，macOS 使用 DMG；Linux 纳入正式支持计划，至少
 - [x] Android“提示和支持”页增加 OrigRead 多平台说明，并分别提供 Android / Desktop GitHub 项目入口；两个客户端继续独立发布，不制造“一个安装包覆盖所有平台”的误导。
 - [x] Android“提示和支持”第二轮视觉收口：去掉标题右上角错位版本角标，Hero Logo 从 240dp 收至 204dp，并统一“原读 / OrigRead / 来源优先的阅读器 / v版本”中心轴；多平台介绍增加水平内边距和居中排版，Android / Desktop 两个入口改为带手机/电脑平台图标的等宽轻量卡片，GitHub 图标仅作为仓库语义提示；删除上下 `SpaceAround` 造成的断层式大留白，并增加轻量开源页脚。
 - [x] Desktop 无文章阅读区删除“Electron 重构进行中 / DB ready”等开发态占位信息，改为正式产品空态：资料库为空时引导添加/发现来源；当前筛选无结果时提示调整范围；有文章未选择时保持极简留白并显示真实阅读快捷键。
-- [x] Desktop 真实接入 `J/K` 上下篇、`M` 已读/未读、`S` 收藏、`U` 原文、`[` 折叠/展开工作区；输入框、弹窗、设置页等交互环境会屏蔽快捷键，`Ctrl/Cmd+F` 继续只搜索当前 Reader 正文。
+- [x] Desktop 阅读快捷键二次收口：`← / →` 控制上一篇/下一篇（`K / J` 继续作为兼容快捷键），`↑ / ↓` 控制正文上下滚动；`,` / `.` 循环切换 AI 摘要位置，`- / +` 缩小/放大停靠摘要面板；`M` 已读/未读、`S` 收藏、`U` 原文、`[` 折叠/展开工作区保持不变，`Ctrl/Cmd+F` 继续只搜索当前 Reader 正文。无文章 Reader 空态与“关于与支持”均同步展示这组真实快捷键。
 - [ ] **在进入 E1 前先完成 A4 账户与自托管同步。** 这是本轮重新对照 Android 后发现的真实产品能力缺口，优先级高于打包流水线。
+
+### 2026-08-18 添加来源进度、性能与未完成功能收口
+
+- [x] **添加来源增加真实阶段进度。** main `SourceDiscoveryService` 向 Renderer 上报 `RSS / RSSHub / JSON / 静态 Website / 动态 Chromium / 候选评分` 的 running/completed 状态，preload 只桥接带 `requestId` 的窄事件；弹窗显示正在执行的阶段与已用秒数，不伪造百分比。请求 ID 使用同步 ref 过滤，避免 React 状态更新前丢掉最早的阶段事件。
+- [x] **Desktop 添加来源确实存在额外等待，不只是 UI 看起来像卡死。** 旧实现将 RSS → RSSHub → JSON → Website 串行执行；改造后四条互不依赖的静态探测并行启动，候选仍按 Android 固定来源顺序装配，动态 Chromium 仍只在全部静态候选失败后启动，因此仅优化等待时间，不改变业务优先级。
+- [x] **RSSHub 性能参数重新以 Android 当前代码为准。** Desktop 从“最多 8 路由 / 15s 总预算”纠正为“最多 5 路由 / 12s 总预算”，实例仍按优先级串行 fallback，单实例内部才并发有限路由。财联社真实 Electron 主链在同一轮调试环境中，优化前一次耗时 `15018ms`，其中 Website `326ms`、JSON `194ms`、RSS `893ms`，RSSHub 占满约 `15017ms`；对齐后一次完整发现为 `6320ms`，后续真实 UI 一次从点击到 RSSHub 结果出现约 `5593ms`。公共实例有实时波动，所以这些数字只作为本轮性能证据，不作为固定 SLA。
+- [x] 财联社优化后仍保持正确业务结果：本轮样本中“热门文章排行榜”可订阅 13 篇；“电报”实例返回 20 条但统一来源评分不合格，因此显示“已匹配 · Feed 内容未通过质量检查”；Website 同时可解析 30 篇。性能优化没有绕过统一评分，也没有牺牲 RSSHub 本地路由展示。
+- [x] **阅读快捷键改为桌面阅读器语义。** `↑/↓` 滚动正文，`←/→` 上一篇/下一篇；J/K 继续保留兼容。`,` / `.` 向前/向后循环 `replace → left → right → top → bottom` 摘要位置，`- / +` 以 20px 调整停靠摘要面板并保持 220～640px 边界。快捷键已经同步到无文章 Reader 空态和“关于与支持”。
+- [ ] **AI 生成 JSON 规则 / AI 生成网站解析规则未完成。** Android 与 Desktop 的菜单入口现在统一视觉置灰，但仍允许点击以立即显示“功能尚未完成”的说明；底层早期实验 Service/预览代码保留，不能因为代码存在就继续计入产品完成度。重新开放前必须补足真实来源、真实 Provider、失败恢复、保存后同步和双端一致性验收。
+- [x] 本轮新增并行探测/进度单测通过；Desktop 全量 Vitest **59 files / 204 tests**、`npm run typecheck`、`npm run build`、统一添加来源 Electron E2E（含方向键正文滚动与左右切篇）均通过。Android `:app:assembleGithubDebug` 使用 JDK 17 构建通过。
 
 ### 大项 E：跨平台构建与正式发布
 

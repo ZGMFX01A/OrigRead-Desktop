@@ -27,6 +27,27 @@ describe('SourceCandidateScorer parity', () => {
     ])
     expect(ranked.map((item) => item.kind)).toEqual(['RSS_DIRECT', 'JSON', 'WEBSITE'])
   })
+
+  it('accepts safe low-title-quality lists only for dynamic website fallback', () => {
+    const fallbackEntries: SourceCandidateEntry[] = [
+      { title: 'A', link: 'https://example.com/article/1', publishedAt: null },
+      { title: 'B', link: 'https://example.com/article/2', publishedAt: null },
+      { title: 'Long article title 1', link: 'https://example.com/article/3', publishedAt: null },
+      { title: 'Long article title 2', link: 'https://example.com/article/4', publishedAt: null }
+    ]
+
+    expect(scoreSourceCandidate(fallbackEntries, 'WEBSITE').accepted).toBe(false)
+    expect(scoreSourceCandidate(fallbackEntries, 'WEBSITE_DYNAMIC').accepted).toBe(true)
+  })
+
+  it('dynamic fallback only requires a real unique article link after static candidates fail', () => {
+    const oneUsableLink: SourceCandidateEntry[] = [
+      { title: '', link: 'https://example.com/article/1', publishedAt: null }
+    ]
+    expect(scoreSourceCandidate(oneUsableLink, 'WEBSITE').accepted).toBe(false)
+    expect(scoreSourceCandidate(oneUsableLink, 'WEBSITE_DYNAMIC').accepted).toBe(true)
+    expect(scoreSourceCandidate([], 'WEBSITE_DYNAMIC').accepted).toBe(false)
+  })
 })
 
 function probe(kind: UnscoredSourceCandidate['kind'], sourceType: UnscoredSourceCandidate['sourceType'], feedLink: string, entries: SourceCandidateEntry[]): UnscoredSourceCandidate {

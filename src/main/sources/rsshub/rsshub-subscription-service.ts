@@ -24,7 +24,16 @@ export class RssHubSubscriptionService {
       throw new Error('RSSHub 候选不可用，不能保存订阅')
     }
     const existing = this.repository.findFeedByUrl(result.match.feedUrl)
-    if (existing) throw new Error(`来源已存在：${existing.name}`)
+    if (existing) {
+      return {
+        feedId: existing.id,
+        feedUrl: result.match.feedUrl,
+        sourcePageUrl,
+        routeId: result.match.route.id,
+        routeName: result.match.route.name,
+        insertedArticles: 0
+      }
+    }
 
     const now = Date.now()
     const feedId = randomUUID()

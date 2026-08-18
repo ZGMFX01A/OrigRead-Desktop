@@ -62,6 +62,12 @@ export function rankingScore(diagnostics: WebsiteParseDiagnostics): number {
   return diagnostics.score + diagnostics.linkQualityScore + diagnostics.regionScore + diagnostics.historyScore
 }
 
+export function isSafeDynamicFallback(diagnostics: WebsiteParseDiagnostics): boolean {
+  return diagnostics.articleCount > 0
+    && diagnostics.validLinkRate > 0
+    && diagnostics.uniqueLinkRate > 0
+}
+
 function hasValidTitle(article: WebsiteParsedArticle): boolean {
   const title = article.title.trim()
   return title.length >= 4 && title.length <= 200 && !NAVIGATION_TITLES.has(title.toLowerCase())

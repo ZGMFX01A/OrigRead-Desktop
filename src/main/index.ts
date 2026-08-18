@@ -61,6 +61,7 @@ import type { TranslationProviderPatch, TranslationProviderType, TranslationSett
 import type { ArticleFilterRuleType } from '../shared/filter-rules'
 import type { UpdateCheckResult } from '../shared/update'
 import { ReleaseUpdateService } from './update/release-update-service'
+import { DESKTOP_BROWSER_USER_AGENT } from './network/user-agent-policy'
 
 const isDevelopment = Boolean(process.env.ELECTRON_RENDERER_URL)
 if (process.env.ORIGREAD_E2E_USER_DATA_DIR) {
@@ -169,6 +170,9 @@ function createMainWindow(): BrowserWindow {
     }
   })
   mainWindow = window
+  // Renderer 本身加载本地 UI，但正文中的远程图片/媒体仍属于普通网页资源请求。
+  // 统一使用 Desktop Chrome UA，避免这些子资源继续暴露 Electron 默认 UA。
+  window.webContents.setUserAgent(DESKTOP_BROWSER_USER_AGENT)
   window.webContents.session.webRequest.onBeforeSendHeaders(
     { urls: ['http://*/*', 'https://*/*'] },
     (details, callback) => {
@@ -590,17 +594,30 @@ function registerIpcHandlers(): void {
       return { ok:false,articleCount:0,error:error instanceof Error ? error.message : String(error) }
     }
   })
-  ipcMain.handle(IPC_CHANNELS.discoverSource, async (event, url: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.discoverSource, async (event, url: unknown, requestId: unknown) => {
     assertTrustedSender(event)
     if (!sourceDiscoveryService) throw new Error('Source discovery service is not ready')
-    return sourceDiscoveryService.discover(validateUrlInput(url))
+    const validatedRequestId = validateText(requestId, 'requestId', 128)
+    return sourceDiscoveryService.discover(validateUrlInput(url), (stage, state) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(IPC_CHANNELS.sourceDiscoveryProgress, {
+          requestId: validatedRequestId,
+          stage,
+          state,
+          at: Date.now()
+        })
+      }
+    })
   })
-  ipcMain.handle(IPC_CHANNELS.subscribeSource, async (event, discoveryId: unknown, candidateId: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.subscribeSource, async (event, discoveryId: unknown, candidateIds: unknown) => {
     assertTrustedSender(event)
     if (!sourceDiscoveryService) throw new Error('Source discovery service is not ready')
-    return sourceDiscoveryService.subscribe(
+    if (!Array.isArray(candidateIds) || candidateIds.length === 0 || candidateIds.length > 8) {
+      throw new TypeError('candidateIds 必须包含 1 到 8 个来源候选')
+    }
+    return sourceDiscoveryService.subscribeMany(
       validateId(discoveryId, 'discoveryId'),
-      validateText(candidateId, 'candidateId', 4_096)
+      [...new Set(candidateIds.map((candidateId) => validateText(candidateId, 'candidateId', 4_096)))]
     )
   })
   ipcMain.handle(IPC_CHANNELS.refreshJsonSource, async (event, feedId: unknown) => {

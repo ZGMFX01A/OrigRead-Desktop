@@ -1,3 +1,4 @@
+import { DESKTOP_BROWSER_USER_AGENT } from '../network/user-agent-policy'
 import { randomUUID } from 'node:crypto'
 import * as cheerio from 'cheerio'
 import type { AiGeneratedRuleKind, AiGeneratedRulePreview } from '../../shared/ai-rule'
@@ -138,7 +139,14 @@ export class AiRuleGenerationService {
 }
 
 async function fetchPage(url: string): Promise<FetchedPage> {
-  const response = await fetch(url, { headers: { Accept: 'text/html,application/json;q=0.9,*/*;q=0.8' }, redirect: 'follow', signal: AbortSignal.timeout(15_000) })
+  const response = await fetch(url, {
+    headers: {
+      'user-agent': DESKTOP_BROWSER_USER_AGENT,
+      Accept: 'text/html,application/json;q=0.9,*/*;q=0.8'
+    },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(15_000)
+  })
   if (!response.ok) throw new Error(`目标地址请求失败：HTTP ${response.status}`)
   return { finalUrl: response.url || url, content: await response.text() }
 }
