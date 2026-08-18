@@ -25,7 +25,8 @@ const NAVIGATION_TITLES = new Set(['首页', '登录', '注册', '更多', '下�
 
 /** Android SourceCandidateScorer 的确定性移植。 */
 export function scoreSourceCandidate(entries: SourceCandidateEntry[], kind: SourceCandidateKind): SourceCandidateDiagnostics {
-  if (entries.length === 0) return rejected('未获取到文章')
+  const structuredSource = isStructuredSource(kind)
+  if (entries.length === 0 && !structuredSource) return rejected('未获取到文章')
   const count = entries.length
   const validTitleRate = rate(entries.filter((entry) => {
     const title = entry.title.trim()
@@ -36,7 +37,10 @@ export function scoreSourceCandidate(entries: SourceCandidateEntry[], kind: Sour
   const parsedDateRate = rate(entries.filter((entry) => entry.publishedAt !== null).length, count)
   const reasons: string[] = []
   const dynamicFallback = kind === 'WEBSITE_DYNAMIC'
-  if (dynamicFallback) {
+  if (structuredSource) {
+    // RSS / Atom / RSSHub / JSON 都已经由各自的结构化解析器确认有效。
+    // 当前 0 篇或缺少标准 HTTP link 只能降低排序分，不能套网页 DOM 门槛二次否决。
+  } else if (dynamicFallback) {
     // Chromium 已经是所有静态方案失败后的最终兜底。此处只确认它确实提取到了可继续同步的
     // HTTP(S) 链接列表；标题、日期、数量等质量指标仍参与分数，但不能再次成为硬否决门槛。
     if (validLinkRate <= 0) reasons.push('未解析出有效文章链接')
@@ -49,7 +53,7 @@ export function scoreSourceCandidate(entries: SourceCandidateEntry[], kind: Sour
   if (reasons.length > 0) {
     return { score: 0, accepted: false, articleCount: count, validTitleRate, validLinkRate, uniqueLinkRate, parsedDateRate, reasons }
   }
-  const countScore = count >= 10 && count <= 100 ? 20 : count >= 3 && count <= 200 ? 14 : 8
+  const countScore = count === 0 ? 0 : count >= 10 && count <= 100 ? 20 : count >= 3 && count <= 200 ? 14 : 8
   const contentScore = Math.max(0, Math.min(80, Math.trunc(
     countScore + validTitleRate * 20 + validLinkRate * 18 + uniqueLinkRate * 17 + parsedDateRate * 5
   )))
@@ -69,7 +73,9 @@ export function scoreSourceCandidate(entries: SourceCandidateEntry[], kind: Sour
 export function rankSourceCandidates(candidates: UnscoredSourceCandidate[]): SourceCandidateSummary[] {
   const scored = candidates
     .map((candidate) => ({ candidate, diagnostics: scoreSourceCandidate(candidate.entries, candidate.kind) }))
-    .filter(({ diagnostics }) => diagnostics.accepted)
+    // Chromium 已经是最终兜底。即使没有解析出健康列表，也允许把“渲染成功但低可信”的
+    // WEBSITE_DYNAMIC 结果交给用户手动尝试；其他来源仍必须通过健康检查。
+    .filter(({ candidate, diagnostics }) => diagnostics.accepted || candidate.kind === 'WEBSITE_DYNAMIC')
     .map(({ candidate, diagnostics }): SourceCandidateSummary => ({
       id: `${candidate.sourceType.toUpperCase()}:${candidate.feedLink.trim()}`,
       title: candidate.title,
@@ -81,7 +87,9 @@ export function rankSourceCandidates(candidates: UnscoredSourceCandidate[]): Sou
       browser: candidate.browser ?? false,
       dynamicRendering: candidate.dynamicRendering ?? false
     }))
-    .sort((left, right) => right.diagnostics.score - left.diagnostics.score || right.diagnostics.articleCount - left.diagnostics.articleCount)
+    .sort((left, right) => Number(right.diagnostics.accepted) - Number(left.diagnostics.accepted)
+      || right.diagnostics.score - left.diagnostics.score
+      || right.diagnostics.articleCount - left.diagnostics.articleCount)
   const distinct = new Map<string, SourceCandidateSummary>()
   for (const candidate of scored) if (!distinct.has(candidate.id)) distinct.set(candidate.id, candidate)
   return [...distinct.values()]
@@ -96,6 +104,13 @@ function sourceBonus(kind: SourceCandidateKind): number {
     case 'WEBSITE': return 6
     case 'WEBSITE_DYNAMIC': return 4
   }
+}
+
+function isStructuredSource(kind: SourceCandidateKind): boolean {
+  return kind === 'RSS_DIRECT'
+    || kind === 'RSS_DISCOVERED'
+    || kind === 'RSSHUB'
+    || kind === 'JSON'
 }
 
 function rejected(reason: string): SourceCandidateDiagnostics {

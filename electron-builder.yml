@@ -22,4 +22,11 @@ mac:
     - dmg
   category: public.app-category.news
   artifactName: OrigRead-${version}-macOS-${arch}.${ext}
-
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Network
+  executableName: origread
+  syncDesktopName: true
+  artifactName: OrigRead-${version}-Linux-${arch}.${ext}

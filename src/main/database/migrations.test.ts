@@ -1,8 +1,8 @@
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
-import { applyMigrations, CURRENT_ACCOUNT_SETTING_KEY } from './migrations'
+import { applyMigrations, CURRENT_ACCOUNT_SETTING_KEY, CURRENT_SCHEMA_VERSION } from './migrations'
 
-describe('database migration v2 -> v4 accounts', () => {
+describe('database migration v2 -> current schema', () => {
   it('moves existing library rows into Local account 1 without losing read/starred state', () => {
     const db=new DatabaseSync(':memory:')
     db.exec(`
@@ -20,7 +20,7 @@ describe('database migration v2 -> v4 accounts', () => {
       INSERT INTO rsshub_source_urls VALUES('feed-1','https://example.com/');
     `)
 
-    expect(applyMigrations(db)).toBe(4)
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
     expect(db.prepare('SELECT id,type FROM accounts').get()).toEqual({id:1,type:'local'})
     expect(db.prepare('SELECT account_id,url FROM feeds WHERE id=?').get('feed-1')).toEqual({account_id:1,url:'https://example.com/rss'})
     expect(db.prepare('SELECT account_id,is_unread,is_starred,image_url FROM articles WHERE id=?').get('article-1'))
@@ -28,6 +28,7 @@ describe('database migration v2 -> v4 accounts', () => {
     expect(db.prepare('SELECT source_url FROM rsshub_source_urls WHERE feed_id=?').get('feed-1')).toEqual({source_url:'https://example.com/'})
     expect(db.prepare('SELECT value FROM app_settings WHERE key=?').get(CURRENT_ACCOUNT_SETTING_KEY)).toEqual({value:'1'})
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='archived_articles'").get()).toEqual({name:'archived_articles'})
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='rss_http_cache'").get()).toEqual({name:'rss_http_cache'})
     db.close()
   })
 })

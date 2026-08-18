@@ -101,6 +101,30 @@ describe('WebsiteSourceService parity', () => {
     expect(await service.fetchArticles(feed, FETCHED_AT)).toHaveLength(5)
     expect(requests).toBe(0)
   })
+
+  it('keeps a metadata-only dynamic fallback when Chromium renders but no article list is healthy', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'origread-website-dynamic-fallback-'))
+    dirs.push(dir)
+    const preferenceRepository = new WebsiteParsePreferenceRepository(join(dir, 'prefs.json'))
+    const ruleRepository = new WebsiteRuleRepository(join(dir, 'rules.json'))
+    const service = new WebsiteSourceService(
+      ruleRepository,
+      preferenceRepository,
+      async () => { throw new Error('static fetch should not run') },
+      {
+        render: async () => ({
+          finalUrl: 'https://app.example.com/',
+          html: '<html><head><title>Rendered App</title></head><body><div id="root">Loaded</div></body></html>'
+        })
+      }
+    )
+
+    const inspected = await service.inspectDynamic('https://app.example.com/', FETCHED_AT)
+
+    expect(inspected.title).toBe('Rendered App')
+    expect(inspected.candidate.articles).toHaveLength(0)
+    expect(inspected.candidate.diagnostics.state).toBe('INVALID_CONTENT')
+  })
 })
 
 function createService(queue: WebsiteFetchPayload[], customFetcher?: (url: string) => Promise<WebsiteFetchPayload>) {

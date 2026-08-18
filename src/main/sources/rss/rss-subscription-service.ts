@@ -37,7 +37,19 @@ export class RssSubscriptionService {
     const feed = toFeedRecord(feedId, discovered, now, this.repository.getCurrentDefaultGroup().id, accountId)
     const candidateArticles = discovered.items.map((item) => toArticleRecord(feedId, item, now, accountId))
     const articles = this.articleFilters?.filterArticles(feedId, candidateArticles).kept ?? candidateArticles
-    this.repository.upsertFeedWithArticles(feed, articles)
+    this.repository.upsertFeedWithArticles(
+      feed,
+      articles,
+      discovered.etag || discovered.lastModified
+        ? {
+            feedId,
+            feedUrl: feed.url,
+            etag: discovered.etag ?? null,
+            lastModified: discovered.lastModified ?? null,
+            updatedAt: now
+          }
+        : undefined
+    )
 
     return {
       feedId,
@@ -52,24 +64,43 @@ export class RssSubscriptionService {
     if (existing.sourceType !== 'rss') throw new Error(`来源不是 RSS/Atom：${existing.name}`)
 
     let discovered: DiscoveredRssFeed
+    let responseValidators: { etag: string | null; lastModified: string | null } | null = null
     try {
-      discovered = await this.discovery.parseDirect(existing.url, existing.sourcePageUrl ?? existing.url)
+      const cache = this.repository.getRssHttpCache(feedId)
+      const validCache = cache?.feedUrl === existing.url ? cache : null
+      const direct = await this.discovery.parseDirectConditional(
+        existing.url,
+        existing.sourcePageUrl ?? existing.url,
+        {
+          etag: validCache?.etag,
+          lastModified: validCache?.lastModified
+        }
+      )
+      if (direct.notModified) {
+        // 304 是最便宜的成功路径：不解析 XML、不查 archived/articles、不跑过滤器、
+        // 不更新 Feed/Article/cache，避免无意义的 SQLite/renderer invalidation。
+        return { feedId, fetchedArticles: 0, insertedArticles: 0 }
+      }
+      discovered = direct.feed!
+      responseValidators = { etag: direct.etag, lastModified: direct.lastModified }
       if (discovered.items.length === 0) {
+        const beforeRecoveryUrl = discovered.feedUrl
         discovered = await this.recoverRssHubFeed(existing, discovered)
+        if (discovered.feedUrl !== beforeRecoveryUrl) responseValidators = null
       }
     } catch (error) {
       const recovered = await this.tryRecoverRssHubFeed(existing)
       if (!recovered) throw error
       discovered = recovered
+      responseValidators = null
     }
-    const candidateArticles = discovered.items
+    const candidates = discovered.items
       .map((item) => toArticleRecord(existing.id, item, now, existing.accountId))
-      .filter((article) => !this.repository.isArchivedLink(existing.id, article.url))
+    const archivedLinks = this.repository.archivedLinks(existing.id, candidates.map((article) => article.url))
+    const candidateArticles = candidates.filter((article) => !article.url || !archivedLinks.has(article.url))
     const articles = this.articleFilters?.filterArticles(existing.id, candidateArticles).kept ?? candidateArticles
-    const insertedArticles = articles.reduce(
-      (count, article) => count + (this.repository.hasArticle(article.id) ? 0 : 1),
-      0
-    )
+    const existingIds = this.repository.existingArticleIds(articles.map((article) => article.id), existing.accountId)
+    const insertedArticles = articles.length - existingIds.size
     const refreshedFeed: FeedRecord = {
       ...existing,
       url: discovered.feedUrl,
@@ -78,7 +109,17 @@ export class RssSubscriptionService {
       icon: discovered.iconUrl ?? existing.icon,
       updatedAt: now
     }
-    this.repository.upsertFeedWithArticles(refreshedFeed, articles)
+    this.repository.upsertFeedWithArticles(
+      refreshedFeed,
+      articles,
+      {
+        feedId,
+        feedUrl: refreshedFeed.url,
+        etag: responseValidators?.etag ?? null,
+        lastModified: responseValidators?.lastModified ?? null,
+        updatedAt: now
+      }
+    )
     return { feedId, fetchedArticles: articles.length, insertedArticles }
   }
 

@@ -12,9 +12,24 @@ export interface RssFetchPayload {
   finalUrl: string
   contentType: string | null
   bytes: Uint8Array
+  notModified?: boolean
+  etag?: string | null
+  lastModified?: string | null
 }
 
-export type RssFetcher = (url: string) => Promise<RssFetchPayload>
+export interface RssRequestValidators {
+  etag?: string | null
+  lastModified?: string | null
+}
+
+export interface RssDirectFetchResult {
+  feed: DiscoveredRssFeed | null
+  notModified: boolean
+  etag: string | null
+  lastModified: string | null
+}
+
+export type RssFetcher = (url: string, validators?: RssRequestValidators) => Promise<RssFetchPayload>
 
 const parser = new Parser<Record<string, never>, CustomRssItem>({
   customFields: {
@@ -75,12 +90,45 @@ export class RssDiscoveryService {
     return this.parseFeedUrl(normalizeHttpUrl(feedUrl), normalizeHttpUrl(sourcePageUrl), false)
   }
 
+  async parseDirectConditional(
+    feedUrl: string,
+    sourcePageUrl = feedUrl,
+    validators: RssRequestValidators = {}
+  ): Promise<RssDirectFetchResult> {
+    const normalizedFeedUrl = normalizeHttpUrl(feedUrl)
+    const normalizedSourcePageUrl = normalizeHttpUrl(sourcePageUrl)
+    const payload = await this.fetcher(normalizedFeedUrl, validators)
+    if (payload.notModified) {
+      return {
+        feed: null,
+        notModified: true,
+        etag: payload.etag ?? validators.etag ?? null,
+        lastModified: payload.lastModified ?? validators.lastModified ?? null
+      }
+    }
+    return {
+      feed: await this.parsePayload(payload, normalizedFeedUrl, normalizedSourcePageUrl, false),
+      notModified: false,
+      etag: payload.etag ?? null,
+      lastModified: payload.lastModified ?? null
+    }
+  }
+
   private async parseFeedUrl(
     feedUrl: string,
     sourcePageUrl: string,
     discoveredFromPage: boolean
   ): Promise<DiscoveredRssFeed> {
     const payload = await this.fetcher(feedUrl)
+    return this.parsePayload(payload, feedUrl, sourcePageUrl, discoveredFromPage)
+  }
+
+  private async parsePayload(
+    payload: RssFetchPayload,
+    feedUrl: string,
+    sourcePageUrl: string,
+    discoveredFromPage: boolean
+  ): Promise<DiscoveredRssFeed> {
     const xml = decodePayload(payload)
     const parsed = await parser.parseString(xml)
     const title = parsed.title?.trim() ?? ''
@@ -89,11 +137,17 @@ export class RssDiscoveryService {
       throw new Error(`Feed 内容为空或格式无效：${feedUrl}`)
     }
 
-    const iconUrl = await this.iconFinder.findBestIcon(extractIconDomain(sourcePageUrl)).catch(() => null)
+    // 图标是可选元数据，不能让一个已经成功解析的 Feed 因 favicon/站点首页慢而迟迟不能添加。
+    const iconUrl = await optionalWithTimeout(
+      this.iconFinder.findBestIcon(extractIconDomain(sourcePageUrl)),
+      3_000
+    )
     return {
       feedUrl,
       sourcePageUrl,
       discoveredFromPage,
+      etag: payload.etag ?? null,
+      lastModified: payload.lastModified ?? null,
       title: title || safeHostName(sourcePageUrl),
       siteUrl: parsed.link?.trim() || null,
       // Android 在 RssHelper.parseFeedUrl 中始终使用 BestIconFinder 覆盖 Feed 自带 image。
@@ -103,22 +157,40 @@ export class RssDiscoveryService {
   }
 }
 
-export async function fetchRssPayload(url: string): Promise<RssFetchPayload> {
+export async function fetchRssPayload(
+  url: string,
+  validators: RssRequestValidators = {}
+): Promise<RssFetchPayload> {
+  const headers: Record<string, string> = {
+    'user-agent': DESKTOP_BROWSER_USER_AGENT,
+    Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.9, */*;q=0.8'
+  }
+  if (validators.etag) headers['If-None-Match'] = validators.etag
+  if (validators.lastModified) headers['If-Modified-Since'] = validators.lastModified
   const response = await fetch(url, {
     redirect: 'follow',
     signal: AbortSignal.timeout(20_000),
-    headers: {
-      'user-agent': DESKTOP_BROWSER_USER_AGENT,
-      Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.9, */*;q=0.8'
-    }
+    headers
   })
+  if (response.status === 304) {
+    return {
+      finalUrl: response.url || url,
+      contentType: response.headers.get('content-type'),
+      bytes: new Uint8Array(),
+      notModified: true,
+      etag: response.headers.get('etag'),
+      lastModified: response.headers.get('last-modified')
+    }
+  }
   if (!response.ok) {
     throw new Error(`请求失败：HTTP ${response.status}`)
   }
   return {
     finalUrl: response.url || url,
     contentType: response.headers.get('content-type'),
-    bytes: new Uint8Array(await response.arrayBuffer())
+    bytes: new Uint8Array(await response.arrayBuffer()),
+    etag: response.headers.get('etag'),
+    lastModified: response.headers.get('last-modified')
   }
 }
 
@@ -172,6 +244,7 @@ function toRssFeedItem(item: CustomRssItem & Parser.Item, index: number): RssFee
   const title = decodeHtmlText(item.title ?? '') || link || 'Untitled'
   const sourceId = item.guid?.trim() || link || `${title}|${publishedAt ?? 0}|${index}`
   const bodyForImage = contentHtml ?? descriptionHtml
+  const enclosureImage = rssEnclosureImage(item.enclosure)
 
   return {
     sourceId,
@@ -181,7 +254,22 @@ function toRssFeedItem(item: CustomRssItem & Parser.Item, index: number): RssFee
     publishedAt,
     descriptionHtml,
     contentHtml,
-    imageUrl: item.enclosure?.url?.trim() || findFirstImage(bodyForImage)
+    imageUrl: enclosureImage || findFirstImage(bodyForImage)
+  }
+}
+
+function rssEnclosureImage(enclosure: Parser.Item['enclosure']): string | null {
+  const url = enclosure?.url?.trim()
+  if (!url) return null
+  const type = enclosure?.type?.trim().toLowerCase() ?? ''
+  if (type.startsWith('image/')) return url
+  if (type) return null
+  // 少数老 Feed 不写 MIME；只在 URL 明确是常见图片扩展名时兜底，绝不能把 Podcast mp3 当图片。
+  try {
+    const pathname = new URL(url).pathname.toLowerCase()
+    return /\.(?:avif|bmp|gif|jpe?g|png|webp|svg)$/.test(pathname) ? url : null
+  } catch {
+    return null
   }
 }
 
@@ -226,5 +314,17 @@ function safeHostName(url: string): string {
 
 function distinct(values: string[]): string[] {
   return [...new Set(values)]
+}
+
+async function optionalWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      promise.catch(() => null),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs) })
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 

@@ -23,6 +23,7 @@ import {
   Settings,
   SlidersHorizontal,
   Square,
+  Trash2,
   Upload,
   X
 } from 'lucide-react'
@@ -30,7 +31,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { useTranslation } from 'react-i18next'
 import type { AppInfo } from '../../shared/contracts'
 import { resolveDesktopLanguage } from '../../shared/locale'
-import type { ArticleRecord, FeedRecord, GroupRecord, LibrarySnapshot } from '../../shared/library'
+import type { ArticleRecord, FeedArticleStats, FeedRecord, GroupRecord, LibrarySnapshot } from '../../shared/library'
 import type { AiSummaryPlacement, DesktopSettings } from '../../shared/settings'
 import type { SourceDiscoveryProgress, SourceDiscoveryResult, SourceDiscoveryStage } from '../../shared/source-discovery'
 import type { ReaderArticleContent } from '../../shared/reader'
@@ -57,6 +58,10 @@ type ArticleScope =
   | { kind: 'group'; id: string }
   | { kind: 'feed'; id: string }
 
+type ContextMenuState =
+  | { kind: 'feed'; x: number; y: number; feedId: string }
+  | { kind: 'article'; x: number; y: number; articleId: string }
+
 const destinations: Array<{ id: Destination; icon: typeof Inbox; labelKey: string }> = [
   { id: 'all', icon: Inbox, labelKey: 'allArticles' },
   { id: 'unread', icon: BookOpenText, labelKey: 'unread' },
@@ -78,6 +83,8 @@ export default function App(): React.JSX.Element {
   const [feeds, setFeeds] = useState<FeedRecord[]>([])
   const [groups, setGroups] = useState<GroupRecord[]>([])
   const [articles, setArticles] = useState<ArticleRecord[]>([])
+  const [scopeArticles, setScopeArticles] = useState<ArticleRecord[] | null>(null)
+  const [feedArticleStats, setFeedArticleStats] = useState<FeedArticleStats[]>([])
   const [settings, setSettings] = useState<DesktopSettings | null>(null)
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)
   const [query, setQuery] = useState('')
@@ -118,6 +125,7 @@ export default function App(): React.JSX.Element {
   const [opmlBusy, setOpmlBusy] = useState(false)
   const [opmlStatus, setOpmlStatus] = useState<string | null>(null)
   const [sourceSettingsFeed, setSourceSettingsFeed] = useState<FeedRecord | null>(null)
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [aiOptionsOpen, setAiOptionsOpen] = useState(false)
   const [translationTargetOpen, setTranslationTargetOpen] = useState(false)
   const [readerSearchOpen, setReaderSearchOpen] = useState(false)
@@ -139,17 +147,47 @@ export default function App(): React.JSX.Element {
   const speech = useReaderSpeech(settings?.ttsVoiceURI ?? '')
 
   const reloadLibrary = useCallback(async (): Promise<void> => {
-    const [snapshot, loadedFeeds, loadedGroups, loadedArticles] = await Promise.all([
+    const [snapshot, loadedFeeds, loadedGroups, loadedArticles, loadedFeedStats] = await Promise.all([
       window.origread.getLibrarySnapshot(),
       window.origread.listFeeds(),
       window.origread.listGroups(),
-      window.origread.listArticles()
+      window.origread.listArticles(),
+      window.origread.listFeedArticleStats()
     ])
     setLibrarySnapshot(snapshot)
     setFeeds(loadedFeeds)
     setGroups(loadedGroups)
     setArticles(loadedArticles)
+    setFeedArticleStats(loadedFeedStats)
   }, [])
+
+  const loadArticlesForScope = useCallback(async (scope: ArticleScope): Promise<ArticleRecord[] | null> => {
+    if (scope.kind === 'all') return null
+    if (scope.kind === 'feed') return window.origread.listArticlesByFeed(scope.id)
+    return window.origread.listArticlesByGroup(scope.id)
+  }, [])
+
+  const reloadCurrentScope = useCallback(async (): Promise<void> => {
+    const loaded = await loadArticlesForScope(articleScope)
+    setScopeArticles(loaded)
+  }, [articleScope, loadArticlesForScope])
+
+  useEffect(() => {
+    let cancelled = false
+    if (articleScope.kind === 'all') {
+      setScopeArticles(null)
+      return
+    }
+    setScopeArticles([])
+    void loadArticlesForScope(articleScope)
+      .then((loaded) => {
+        if (!cancelled) setScopeArticles(loaded)
+      })
+      .catch((error) => {
+        if (!cancelled) setSourceError(error instanceof Error ? error.message : String(error))
+      })
+    return () => { cancelled = true }
+  }, [articleScope, loadArticlesForScope])
 
   useEffect(() => {
     void Promise.all([
@@ -193,6 +231,23 @@ export default function App(): React.JSX.Element {
     return () => media.removeEventListener('change', update)
   }, [])
 
+  useEffect(() => {
+    const closeContextMenu = (): void => setContextMenu(null)
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') closeContextMenu()
+    }
+    window.addEventListener('pointerdown', closeContextMenu)
+    window.addEventListener('blur', closeContextMenu)
+    window.addEventListener('resize', closeContextMenu)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('pointerdown', closeContextMenu)
+      window.removeEventListener('blur', closeContextMenu)
+      window.removeEventListener('resize', closeContextMenu)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [])
+
   const resolvedTheme = settings?.theme === 'dark' ? 'dark' : settings?.theme === 'light' ? 'light' : systemDark ? 'dark' : 'light'
   useEffect(() => {
     document.documentElement.dataset.theme = resolvedTheme
@@ -209,6 +264,7 @@ export default function App(): React.JSX.Element {
       if (state.lastFinishedAt && state.lastFinishedAt !== lastObservedSyncFinish.current) {
         lastObservedSyncFinish.current = state.lastFinishedAt
         void reloadLibrary()
+        void reloadCurrentScope()
       }
     })
     const unsubscribeOriginal = window.origread.onOriginalArticleStateChanged(setOriginalViewState)
@@ -225,7 +281,7 @@ export default function App(): React.JSX.Element {
       unsubscribeAiProgress()
       unsubscribeSourceDiscoveryProgress()
     }
-  }, [reloadLibrary])
+  }, [reloadCurrentScope, reloadLibrary])
 
   useEffect(() => {
     if (!sourceDiscoveryRequestId || sourceDiscoveryStartedAt === null) {
@@ -312,7 +368,8 @@ export default function App(): React.JSX.Element {
     void window.origread.getReaderContent(selectedArticleId)
       .then(async (content) => {
         if (cancelled) return
-        const article = articles.find((item) => item.id === selectedArticleId)
+        const article = scopeArticles?.find((item) => item.id === selectedArticleId)
+          ?? articles.find((item) => item.id === selectedArticleId)
         const feed = article ? feeds.find((item) => item.id === article.feedId) : null
         if ((feed?.sourceType === 'website' || feed?.isFullContent) && content.mode !== 'full') {
           const result = await window.origread.fetchFullContent(selectedArticleId)
@@ -335,7 +392,7 @@ export default function App(): React.JSX.Element {
       })
 
     return () => { cancelled = true }
-  }, [articles, feeds, selectedArticleId, t])
+  }, [articles, feeds, scopeArticles, selectedArticleId, t])
 
   useEffect(() => {
     setReaderSearchOpen(false)
@@ -362,15 +419,7 @@ export default function App(): React.JSX.Element {
   )
 
   const normalizedQuery = query.trim().toLocaleLowerCase()
-  const scopeFeedIds = useMemo(() => {
-    if (articleScope.kind === 'all') return null
-    if (articleScope.kind === 'feed') return new Set([articleScope.id])
-    return new Set(feeds.filter((feed) => feed.groupId === articleScope.id).map((feed) => feed.id))
-  }, [articleScope, feeds])
-  const scopedArticles = useMemo(
-    () => scopeFeedIds ? articles.filter((article) => scopeFeedIds.has(article.feedId)) : articles,
-    [articles, scopeFeedIds]
-  )
+  const scopedArticles = articleScope.kind === 'all' ? articles : (scopeArticles ?? [])
   const visibleArticles = useMemo(() => {
     return scopedArticles.filter((article) => {
       if (destination === 'unread' && !article.isUnread) return false
@@ -394,13 +443,35 @@ export default function App(): React.JSX.Element {
     if (ungrouped.length > 0) result.push({ group: { id: '__ungrouped__', name: t('ungroupedSources'), sortOrder: Number.MAX_SAFE_INTEGER, isDefault: false }, feeds: ungrouped })
     return result
   }, [groups, t, visibleFeeds])
-  const selectedArticle = articles.find((article) => article.id === selectedArticleId) ?? null
+  const feedStatsById = useMemo(
+    () => new Map(feedArticleStats.map((stats) => [stats.feedId, stats])),
+    [feedArticleStats]
+  )
+  const feedStats = (feedId: string): FeedArticleStats =>
+    feedStatsById.get(feedId) ?? { feedId, total: 0, unread: 0, starred: 0 }
+  const statsForFeeds = (targetFeeds: FeedRecord[]): FeedArticleStats =>
+    targetFeeds.reduce<FeedArticleStats>((summary, feed) => {
+      const stats = feedStats(feed.id)
+      return {
+        feedId: summary.feedId,
+        total: summary.total + stats.total,
+        unread: summary.unread + stats.unread,
+        starred: summary.starred + stats.starred
+      }
+    }, { feedId: '__aggregate__', total: 0, unread: 0, starred: 0 })
+  const selectedArticle = scopedArticles.find((article) => article.id === selectedArticleId)
+    ?? articles.find((article) => article.id === selectedArticleId)
+    ?? null
   const selectedFeed = selectedArticle ? feeds.find((feed) => feed.id === selectedArticle.feedId) ?? null : null
   const activeScopeFeed = articleScope.kind === 'feed' ? feeds.find((feed) => feed.id === articleScope.id) ?? null : null
   const activeScopeGroup = articleScope.kind === 'group' ? groups.find((group) => group.id === articleScope.id) ?? null : null
   const scopeLabel = activeScopeFeed?.name ?? activeScopeGroup?.name ?? t('allSources')
-  const scopedUnreadCount = scopedArticles.filter((article) => article.isUnread).length
-  const scopedStarredCount = scopedArticles.filter((article) => article.isStarred).length
+  const scopedUnreadCount = articleScope.kind === 'all'
+    ? (librarySnapshot?.unread ?? scopedArticles.filter((article) => article.isUnread).length)
+    : scopedArticles.filter((article) => article.isUnread).length
+  const scopedStarredCount = articleScope.kind === 'all'
+    ? (librarySnapshot?.starred ?? scopedArticles.filter((article) => article.isStarred).length)
+    : scopedArticles.filter((article) => article.isStarred).length
   const originalUrl = normalizeHttpUrl(selectedArticle?.url)
 
   const mainSpeechText = useMemo(() => {
@@ -658,6 +729,10 @@ export default function App(): React.JSX.Element {
   const selectArticle = (article: ArticleRecord): void => {
     if (article.isUnread) {
       setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isUnread: false } : item))
+      setScopeArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isUnread: false } : item) ?? current)
+      setFeedArticleStats((current) => current.map((stats) => stats.feedId === article.feedId
+        ? { ...stats, unread: Math.max(0, stats.unread - 1) }
+        : stats))
       setLibrarySnapshot((current) => current ? { ...current, unread: Math.max(0, current.unread - 1) } : current)
       void window.origread.setArticleUnread(article.id, false)
     }
@@ -675,6 +750,10 @@ export default function App(): React.JSX.Element {
   const toggleStarred = (article: ArticleRecord): void => {
     const next = !article.isStarred
     setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isStarred: next } : item))
+    setScopeArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isStarred: next } : item) ?? current)
+    setFeedArticleStats((current) => current.map((stats) => stats.feedId === article.feedId
+      ? { ...stats, starred: Math.max(0, stats.starred + (next ? 1 : -1)) }
+      : stats))
     setLibrarySnapshot((current) => current ? {
       ...current,
       starred: Math.max(0, current.starred + (next ? 1 : -1))
@@ -685,6 +764,10 @@ export default function App(): React.JSX.Element {
   const toggleUnread = (article: ArticleRecord): void => {
     const next = !article.isUnread
     setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isUnread: next } : item))
+    setScopeArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isUnread: next } : item) ?? current)
+    setFeedArticleStats((current) => current.map((stats) => stats.feedId === article.feedId
+      ? { ...stats, unread: Math.max(0, stats.unread + (next ? 1 : -1)) }
+      : stats))
     setLibrarySnapshot((current) => current ? {
       ...current,
       unread: Math.max(0, current.unread + (next ? 1 : -1))
@@ -965,11 +1048,38 @@ export default function App(): React.JSX.Element {
     setSourceError(null)
     try {
       await window.origread.refreshSource(feed.id)
-      await reloadLibrary()
+      await Promise.all([reloadLibrary(), reloadCurrentScope()])
     } catch (error) {
       setSourceError(`${t('refreshFailed')}: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setRefreshingFeedId(null)
+    }
+  }
+
+  const deleteFeedFromMenu = async (feed: FeedRecord): Promise<void> => {
+    setContextMenu(null)
+    if (!window.confirm(t('confirmDeleteSource'))) return
+    setSourceError(null)
+    try {
+      await window.origread.deleteFeed(feed.id)
+      if (articleScope.kind === 'feed' && articleScope.id === feed.id) setArticleScope({ kind: 'all' })
+      if (selectedArticle?.feedId === feed.id) setSelectedArticleId(null)
+      if (sourceSettingsFeed?.id === feed.id) setSourceSettingsFeed(null)
+      await reloadLibrary()
+    } catch (error) {
+      setSourceError(`${t('deleteSource')}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  const moveFeedFromMenu = async (feed: FeedRecord, groupId: string): Promise<void> => {
+    setContextMenu(null)
+    if (feed.groupId === groupId) return
+    setSourceError(null)
+    try {
+      await window.origread.updateFeedSettings(feed.id, { groupId })
+      await Promise.all([reloadLibrary(), reloadCurrentScope()])
+    } catch (error) {
+      setSourceError(`${t('moveToGroup')}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -979,7 +1089,7 @@ export default function App(): React.JSX.Element {
     setSourceError(null)
     try {
       const result = await window.origread.refreshAllSources()
-      await reloadLibrary()
+      await Promise.all([reloadLibrary(), reloadCurrentScope()])
       if (result.failedCount > 0) {
         const firstFailure = result.results.find((item) => item.status === 'failed')
         setSourceError(t('syncPartialFailure', {
@@ -1132,12 +1242,12 @@ export default function App(): React.JSX.Element {
               <button
                 type="button"
                 className="icon-button refresh-all-button"
-                aria-label={t('refreshAll')}
-                title={t('refreshAll')}
+                aria-label={activeScopeFeed ? t('refresh') : t('refreshAll')}
+                title={activeScopeFeed ? t('reloadSourceArticles') : t('refreshAll')}
                 disabled={feeds.length === 0 || isRefreshingAll || refreshingFeedId !== null}
-                onClick={() => void refreshAllSources()}
+                onClick={() => activeScopeFeed ? void refreshFeed(activeScopeFeed) : void refreshAllSources()}
               >
-                <RefreshCw size={16} className={isRefreshingAll ? 'spinning' : ''} />
+                <RefreshCw size={16} className={isRefreshingAll || refreshingFeedId === activeScopeFeed?.id ? 'spinning' : ''} />
               </button>
               <button type="button" className="icon-button" aria-label={t('more')}>
                 <MoreHorizontal size={17} />
@@ -1157,20 +1267,20 @@ export default function App(): React.JSX.Element {
               <div className="list-content source-list source-scope-picker">
                 <button className={`source-scope-all ${articleScope.kind==='all'?'selected':''}`} type="button" onClick={()=>{setArticleScope({kind:'all'});setSourcePickerOpen(false);setSelectedArticleId(null);setQuery('')}}>
                   <div className="scope-icon"><Inbox size={15}/></div>
-                  <div><strong>{t('allSources')}</strong><span>{t('articleCount',{count:articles.length})}</span></div>
-                  <span className="scope-unread-count">{t('unreadCountShort',{count:articles.filter((article)=>article.isUnread).length})}</span>
+                  <div><strong>{t('allSources')}</strong><span>{t('articleCount',{count:librarySnapshot?.articles ?? articles.length})}</span></div>
+                  <span className="scope-unread-count">{t('unreadCountShort',{count:librarySnapshot?.unread ?? articles.filter((article)=>article.isUnread).length})}</span>
                 </button>
                 {groupedVisibleFeeds.map(({group,feeds:groupFeeds})=><section className="source-group-section" key={group.id}>
                   <button className={`source-group-header source-group-scope ${articleScope.kind==='group'&&articleScope.id===group.id?'selected':''}`} type="button" onClick={()=>{setArticleScope({kind:'group',id:group.id});setSourcePickerOpen(false);setSelectedArticleId(null);setQuery('')}}>
                     <span className="source-group-name"><strong>{group.name}</strong><small>{t('sourceCount',{count:groupFeeds.length})}</small></span>
-                    <span>{t('unreadCountShort',{count:articles.filter((article)=>groupFeeds.some((feed)=>feed.id===article.feedId)&&article.isUnread).length})}</span>
+                    <span>{t('unreadCountShort',{count:statsForFeeds(groupFeeds).unread})}</span>
                   </button>
                   <div className="source-group-items">{groupFeeds.map((feed) => (
-                    <article className={`source-item ${articleScope.kind==='feed'&&articleScope.id===feed.id?'selected':''}`} key={feed.id} tabIndex={0} role="button" onClick={()=>{setArticleScope({kind:'feed',id:feed.id});setSourcePickerOpen(false);setSelectedArticleId(null);setQuery('')}} onKeyDown={(event)=>{if(event.target!==event.currentTarget)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();setArticleScope({kind:'feed',id:feed.id});setSourcePickerOpen(false);setSelectedArticleId(null);setQuery('')}}}>
+                    <article className={`source-item ${articleScope.kind==='feed'&&articleScope.id===feed.id?'selected':''}`} key={feed.id} tabIndex={0} role="button" onClick={()=>{setArticleScope({kind:'feed',id:feed.id});setSourcePickerOpen(false);setSelectedArticleId(null);setQuery('')}} onContextMenu={(event)=>{event.preventDefault();event.stopPropagation();setContextMenu({kind:'feed',x:event.clientX,y:event.clientY,feedId:feed.id})}} onKeyDown={(event)=>{if(event.target!==event.currentTarget)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();setArticleScope({kind:'feed',id:feed.id});setSourcePickerOpen(false);setSelectedArticleId(null);setQuery('')}}}>
                       <FeedIcon feed={feed} />
                       <div className="source-copy">
                         <strong>{feed.name}</strong>
-                        <span>{t('sourceArticleStats',{total:articles.filter((article)=>article.feedId===feed.id).length,unread:articles.filter((article)=>article.feedId===feed.id&&article.isUnread).length})}</span>
+                        <span>{t('sourceArticleStats',{total:feedStats(feed.id).total,unread:feedStats(feed.id).unread})}</span>
                       </div>
                       <div className="source-actions">
                         <span className="source-type">{feed.sourceType.toUpperCase()}</span>
@@ -1207,6 +1317,7 @@ export default function App(): React.JSX.Element {
                     data-article-id={article.id}
                     data-feed-id={article.feedId}
                     onClick={() => selectArticle(article)}
+                    onContextMenu={(event)=>{event.preventDefault();event.stopPropagation();setContextMenu({kind:'article',x:event.clientX,y:event.clientY,articleId:article.id})}}
                   >
                     <div className="article-topline">
                       <span className={`unread-dot ${article.isUnread ? 'visible' : ''}`} />
@@ -1630,6 +1741,9 @@ export default function App(): React.JSX.Element {
                         <span className="candidate-main">
                           <strong>{candidate.title}</strong>
                           {candidate.sourceNotice && <span className="candidate-notice">{candidate.sourceNotice}</span>}
+                          {candidate.kind === 'WEBSITE_DYNAMIC' && !candidate.diagnostics.accepted && (
+                            <span className="candidate-notice warning">{t('dynamicWebsiteLowConfidenceNotice')}</span>
+                          )}
                         </span>
                         <span className="candidate-stats">
                           <span className={`candidate-kind kind-${candidate.kind.toLowerCase()}`}>{t(`sourceKind.${candidate.kind}`)}</span>
@@ -1699,6 +1813,38 @@ export default function App(): React.JSX.Element {
           </section>
         </div>
       )}
+      {contextMenu && (() => {
+        const menuStyle: CSSProperties = {
+          left: Math.max(8, Math.min(contextMenu.x, window.innerWidth - 238)),
+          top: Math.max(8, Math.min(contextMenu.y, window.innerHeight - 360))
+        }
+        if (contextMenu.kind === 'feed') {
+          const feed = feeds.find((item) => item.id === contextMenu.feedId)
+          if (!feed) return null
+          return (
+            <div className="desktop-context-menu" style={menuStyle} role="menu" onPointerDown={(event)=>event.stopPropagation()}>
+              <button type="button" role="menuitem" disabled={refreshingFeedId !== null || isRefreshingAll} onClick={()=>{setContextMenu(null);void refreshFeed(feed)}}><RefreshCw size={14}/><span>{t('reloadSourceArticles')}</span></button>
+              <button type="button" role="menuitem" onClick={()=>{setContextMenu(null);setSourceSettingsFeed(feed)}}><SlidersHorizontal size={14}/><span>{t('sourceSettings')}</span></button>
+              <div className="context-menu-separator" />
+              <div className="context-menu-label">{t('moveToGroup')}</div>
+              <div className="context-menu-groups">
+                {groups.map((group)=><button key={group.id} type="button" role="menuitemradio" aria-checked={feed.groupId===group.id} className={feed.groupId===group.id?'current':''} onClick={()=>void moveFeedFromMenu(feed,group.id)}><span>{group.name}</span>{feed.groupId===group.id&&<span className="context-menu-check">✓</span>}</button>)}
+              </div>
+              <div className="context-menu-separator" />
+              <button type="button" className="danger" role="menuitem" onClick={()=>void deleteFeedFromMenu(feed)}><Trash2 size={14}/><span>{t('deleteSource')}</span></button>
+            </div>
+          )
+        }
+        const article = scopedArticles.find((item)=>item.id===contextMenu.articleId)
+          ?? articles.find((item)=>item.id===contextMenu.articleId)
+        if (!article) return null
+        return (
+          <div className="desktop-context-menu" style={menuStyle} role="menu" onPointerDown={(event)=>event.stopPropagation()}>
+            <button type="button" role="menuitem" onClick={()=>{setContextMenu(null);toggleUnread(article)}}><BookOpenText size={14}/><span>{article.isUnread?t('markRead'):t('markUnread')}</span></button>
+            <button type="button" role="menuitem" onClick={()=>{setContextMenu(null);toggleStarred(article)}}><Star size={14} fill={article.isStarred?'currentColor':'none'}/><span>{article.isStarred?t('unstar'):t('starArticle')}</span></button>
+          </div>
+        )
+      })()}
       {sourceSettingsFeed && (
         <SourceSettingsDialog
           feed={sourceSettingsFeed}
@@ -1706,7 +1852,7 @@ export default function App(): React.JSX.Element {
           onChanged={(updated)=>{
             if (!updated && selectedFeed?.id === sourceSettingsFeed.id) setSelectedArticleId(null)
             setSourceSettingsFeed(null)
-            void reloadLibrary()
+            void Promise.all([reloadLibrary(), reloadCurrentScope()])
           }}
         />
       )}

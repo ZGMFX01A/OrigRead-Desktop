@@ -13,6 +13,46 @@ import type { WebsiteSourceService } from './website/website-source-service'
 import type { WebsiteSubscriptionService } from './website/website-subscription-service'
 
 describe('SourceDiscoveryService parity', () => {
+  it('keeps a direct RSS without redownloading it and still probes alternate source channels', async () => {
+    const directRss = vi.fn(async () => rssFeed('https://example.com/feed.xml', false))
+    const rss = vi.fn()
+    const rssHub = vi.fn(async () => [])
+    const json = vi.fn(async () => jsonProbe())
+    const website = vi.fn(async () => { throw new Error('not a website candidate') })
+    const dynamic = vi.fn()
+    const service = createService({ directRss, rss, rssHub, json, website, dynamic })
+
+    const result = await service.discover('https://example.com/feed.xml')
+
+    expect(result.candidates.map((candidate) => candidate.kind)).toEqual(['RSS_DIRECT', 'JSON'])
+    expect(directRss).toHaveBeenCalledTimes(1)
+    expect(rss).not.toHaveBeenCalled()
+    expect(rssHub).toHaveBeenCalledWith('https://example.com/')
+    expect(json).toHaveBeenCalledWith('https://example.com/')
+    expect(website).toHaveBeenCalledWith('https://example.com/')
+    expect(dynamic).not.toHaveBeenCalled()
+  })
+
+  it('keeps a successfully parsed empty RSS selectable and never falls through to Chromium', async () => {
+    const emptyFeed = rssFeed('https://example.com/quiet.xml', false)
+    emptyFeed.items = []
+    const dynamic = vi.fn()
+    const service = createService({
+      directRss: async () => emptyFeed,
+      rss: vi.fn(),
+      rssHub: vi.fn(),
+      json: vi.fn(),
+      website: vi.fn(),
+      dynamic
+    })
+
+    const result = await service.discover('https://example.com/quiet.xml')
+
+    expect(result.candidates).toHaveLength(1)
+    expect(result.candidates[0]).toMatchObject({ kind: 'RSS_DIRECT', diagnostics: { accepted: true, articleCount: 0 } })
+    expect(dynamic).not.toHaveBeenCalled()
+  })
+
   it('runs independent static probes concurrently and reports real progress stages', async () => {
     let started = 0
     let release!: () => void
@@ -71,6 +111,36 @@ describe('SourceDiscoveryService parity', () => {
     const result = await service.discover('https://example.com/')
     expect(dynamic).toHaveBeenCalledTimes(1)
     expect(result.candidates[0]?.kind).toBe('WEBSITE_DYNAMIC')
+  })
+
+  it('binds the dynamic payload when static and dynamic website candidates share the same URL id', async () => {
+    const staticInspection = websiteInspection(false)
+    staticInspection.candidate.articles = []
+    staticInspection.candidate.diagnostics = {
+      ...staticInspection.candidate.diagnostics,
+      state: 'INVALID_CONTENT', articleCount: 0, score: 0,
+      validTitleRate: 0, validLinkRate: 0, uniqueLinkRate: 0, parsedDateRate: 0,
+      reasons: ['invalid static list']
+    }
+    const dynamicInspection = websiteInspection(true)
+    const addWebsite = vi.fn(async (_inspection: WebsiteInspectionResult, dynamic: boolean) => ({
+      feedId: dynamic ? 'dynamic-feed' : 'static-feed', insertedArticles: 0
+    }))
+    const service = createService({
+      rss: async () => { throw new Error('no rss') },
+      rssHub: async () => [],
+      json: async () => null,
+      website: async () => staticInspection,
+      dynamic: async () => dynamicInspection,
+      websiteSubscribe: addWebsite
+    })
+
+    const discovery = await service.discover('https://example.com/')
+    const selected = discovery.candidates.find((candidate) => candidate.kind === 'WEBSITE_DYNAMIC')!
+    const subscribed = await service.subscribe(discovery.discoveryId, selected.id)
+
+    expect(subscribed.feedId).toBe('dynamic-feed')
+    expect(addWebsite).toHaveBeenCalledWith(dynamicInspection, true)
   })
 
   it('explicit JSON endpoint is JSON-only and never falls through to RSS or Website', async () => {
@@ -138,10 +208,10 @@ describe('SourceDiscoveryService parity', () => {
     expect(result.candidates.some((candidate) => candidate.kind === 'WEBSITE')).toBe(true)
   })
 
-  it('marks a reachable RSSHub feed as invalid_content when unified scoring rejects its articles', async () => {
-    const invalidFeed = rssFeed('https://rsshub.example.com/example/bad', false)
-    invalidFeed.items = [{
-      sourceId: 'bad', title: '', link: '', author: null,
+  it('keeps a structurally parsed RSSHub feed selectable even when entries lack website-style links', async () => {
+    const sparseFeed = rssFeed('https://rsshub.example.com/example/sparse', false)
+    sparseFeed.items = [{
+      sourceId: 'sparse', title: '', link: '', author: null,
       publishedAt: null, descriptionHtml: '', contentHtml: null, imageUrl: null
     }]
     const service = createService({
@@ -149,11 +219,11 @@ describe('SourceDiscoveryService parity', () => {
       rssHub: async () => [{
         available: true,
         state: 'available',
-        feed: invalidFeed,
+        feed: sparseFeed,
         message: null,
         match: {
-          route: { id: 'bad', name: 'Bad Hub', host: 'example.com', pathPrefix: '/', target: '/example/bad' },
-          feedUrl: invalidFeed.feedUrl,
+          route: { id: 'sparse', name: 'Sparse Hub', host: 'example.com', pathPrefix: '/', target: '/example/sparse' },
+          feedUrl: sparseFeed.feedUrl,
           parameters: {}, missingParameters: [], resolved: true
         }
       }],
@@ -162,9 +232,9 @@ describe('SourceDiscoveryService parity', () => {
       dynamic: vi.fn()
     })
     const result = await service.discover('https://example.com/')
-    expect(result.candidates.some((candidate) => candidate.kind === 'RSSHUB')).toBe(false)
+    expect(result.candidates.some((candidate) => candidate.kind === 'RSSHUB')).toBe(true)
     expect(result.rssHubRoutes[0]).toMatchObject({
-      routeId: 'bad', state: 'invalid_content', available: false, candidateId: null
+      routeId: 'sparse', state: 'available', available: true
     })
   })
 
@@ -230,6 +300,7 @@ describe('SourceDiscoveryService parity', () => {
 })
 
 function createService(options: {
+  directRss?: (...args: unknown[]) => Promise<DiscoveredRssFeed>
   rss: (...args: unknown[]) => Promise<DiscoveredRssFeed>
   rssHub: (...args: unknown[]) => Promise<any[]>
   rssHubLocal?: (...args: unknown[]) => any[]
@@ -237,10 +308,14 @@ function createService(options: {
   website: (...args: unknown[]) => Promise<WebsiteInspectionResult>
   dynamic: (...args: unknown[]) => Promise<WebsiteInspectionResult>
   rssHubSubscribe?: (...args: any[]) => any
+  websiteSubscribe?: (...args: any[]) => Promise<{ feedId: string; insertedArticles: number }>
   accountCoordinator?: { current: () => any; subscribeRss: (...args: any[]) => Promise<string> }
 }): SourceDiscoveryService {
   return new SourceDiscoveryService(
-    { discover: options.rss } as unknown as RssDiscoveryService,
+    {
+      parseDirect: options.directRss ?? (async () => { throw new Error('not a direct feed') }),
+      discover: options.rss
+    } as unknown as RssDiscoveryService,
     { addDiscovered: () => ({ feedId: 'rss-feed', insertedArticles: 0 }) } as unknown as RssSubscriptionService,
     {
       probe: options.rssHub,
@@ -254,7 +329,7 @@ function createService(options: {
       inspectDynamic: options.dynamic,
       hasRule: () => false
     } as unknown as WebsiteSourceService,
-    { add: async () => ({ feedId: 'website-feed', insertedArticles: 0 }) } as unknown as WebsiteSubscriptionService,
+    { add: options.websiteSubscribe ?? (async () => ({ feedId: 'website-feed', insertedArticles: 0 })) } as unknown as WebsiteSubscriptionService,
     options.accountCoordinator as any
   )
 }

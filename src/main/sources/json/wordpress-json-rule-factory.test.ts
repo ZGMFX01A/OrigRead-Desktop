@@ -14,8 +14,9 @@ describe('WordPressJsonRuleFactory Android parity', () => {
   })
 
   it('builds standard posts endpoint from a page url', () => {
-    expect(createWordPressRule('https://example.com/category/news').endpoint)
-      .toBe('https://example.com/wp-json/wp/v2/posts?_embed=1&per_page=30')
+    const rule = createWordPressRule('https://example.com/category/news')
+    expect(rule.endpoint).toBe('https://example.com/wp-json/wp/v2/posts?_embed=1&per_page=30')
+    expect(rule.descriptionPath).toBe('$.content.rendered')
   })
 
   it('restores only a WordPress posts endpoint', () => {

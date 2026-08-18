@@ -114,6 +114,18 @@ let aiRuleGenerationService: AiRuleGenerationService | null = null
 let accountRepository: AccountRepository | null = null
 let accountService: DesktopAccountService | null = null
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  })
+}
+
 function localizedAppName(): string {
   return resolveBrandName(app.getLocale())
 }
@@ -258,6 +270,21 @@ function registerIpcHandlers(): void {
       throw new TypeError('Article limit must be a finite number')
     }
     return libraryRepository.listArticles(limit === undefined ? 200 : limit)
+  })
+  ipcMain.handle(IPC_CHANNELS.listArticlesByFeed, (event, feedId: unknown) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    return libraryRepository.listArticlesByFeed(validateId(feedId, 'feedId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.listArticlesByGroup, (event, groupId: unknown) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    return libraryRepository.listArticlesByGroup(validateId(groupId, 'groupId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.listFeedArticleStats, (event) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    return libraryRepository.listFeedArticleStats()
   })
   ipcMain.handle(IPC_CHANNELS.setArticleUnread, async (event, articleId: unknown, unread: unknown) => {
     assertTrustedSender(event)
@@ -1101,7 +1128,7 @@ function validateAccountPatch(value: unknown): AccountPatch {
   return result
 }
 
-app.whenReady().then(() => {
+if (hasSingleInstanceLock) app.whenReady().then(() => {
   if (process.platform !== 'darwin') {
     Menu.setApplicationMenu(null)
   }

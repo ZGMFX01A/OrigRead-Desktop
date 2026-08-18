@@ -17,6 +17,7 @@ describe('JsonSourceService Android parity', () => {
     const result = await service.probe('https://example.com/news/')
 
     expect(result?.articles[0]?.title).toBe('WordPress article')
+    expect(result?.articles[0]?.descriptionHtml).toBe('<p>Full WordPress article body</p>')
     expect(requests[0]).toBe('/news/wp-json/wp/v2/posts?_embed=1&per_page=30')
   })
 
@@ -95,6 +96,7 @@ function wordpressResponse(title: string, link: string, id: number): string {
     date_gmt: '2026-08-03T08:00:00',
     link,
     title: { rendered: title },
-    excerpt: { rendered: 'Article summary' }
+    excerpt: { rendered: 'Article summary' },
+    content: { rendered: '<p>Full WordPress article body</p>' }
   }])
 }

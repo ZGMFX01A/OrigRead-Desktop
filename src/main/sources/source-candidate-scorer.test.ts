@@ -11,11 +11,34 @@ describe('SourceCandidateScorer parity', () => {
     expect(direct.score).toBeGreaterThan(website.score)
   })
 
-  it('invalid candidates cannot pass merely because their kind has a higher bonus', () => {
+  it('invalid website candidates cannot pass merely because their kind has a bonus', () => {
     const invalid = Array.from({ length: 20 }, () => ({ title: '首页', link: '', publishedAt: null }))
-    const diagnostics = scoreSourceCandidate(invalid, 'RSS_DIRECT')
+    const diagnostics = scoreSourceCandidate(invalid, 'WEBSITE')
     expect(diagnostics.accepted).toBe(false)
     expect(diagnostics.score).toBe(0)
+  })
+
+  it('keeps a non-empty parsed RSS selectable even when entries have no HTTP link', () => {
+    const guidOnlyFeed = Array.from({ length: 3 }, (_, index) => ({
+      title: `Episode ${index + 1}`,
+      link: '',
+      publishedAt: null
+    }))
+
+    expect(scoreSourceCandidate(guidOnlyFeed, 'RSS_DIRECT').accepted).toBe(true)
+    expect(scoreSourceCandidate(guidOnlyFeed, 'RSS_DISCOVERED').accepted).toBe(true)
+    expect(scoreSourceCandidate(guidOnlyFeed, 'RSSHUB').accepted).toBe(true)
+    expect(scoreSourceCandidate(guidOnlyFeed, 'JSON').accepted).toBe(true)
+    expect(scoreSourceCandidate(guidOnlyFeed, 'WEBSITE').accepted).toBe(false)
+  })
+
+  it('keeps an empty structured source selectable but still rejects an empty website', () => {
+    expect(scoreSourceCandidate([], 'RSS_DIRECT').accepted).toBe(true)
+    expect(scoreSourceCandidate([], 'RSS_DISCOVERED').accepted).toBe(true)
+    expect(scoreSourceCandidate([], 'RSSHUB').accepted).toBe(true)
+    expect(scoreSourceCandidate([], 'JSON').accepted).toBe(true)
+    expect(scoreSourceCandidate([], 'WEBSITE').accepted).toBe(false)
+    expect(scoreSourceCandidate([], 'WEBSITE_DYNAMIC').accepted).toBe(false)
   })
 
   it('sorts valid RSS > JSON > Website with equal content and deduplicates same save target', () => {
@@ -47,6 +70,17 @@ describe('SourceCandidateScorer parity', () => {
     expect(scoreSourceCandidate(oneUsableLink, 'WEBSITE').accepted).toBe(false)
     expect(scoreSourceCandidate(oneUsableLink, 'WEBSITE_DYNAMIC').accepted).toBe(true)
     expect(scoreSourceCandidate([], 'WEBSITE_DYNAMIC').accepted).toBe(false)
+  })
+
+  it('keeps an empty dynamic render as an explicit low-confidence fallback candidate', () => {
+    const ranked = rankSourceCandidates([
+      probe('WEBSITE_DYNAMIC', 'website', 'https://app.example.com/', [])
+    ])
+
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0]?.kind).toBe('WEBSITE_DYNAMIC')
+    expect(ranked[0]?.diagnostics.accepted).toBe(false)
+    expect(ranked[0]?.diagnostics.articleCount).toBe(0)
   })
 })
 

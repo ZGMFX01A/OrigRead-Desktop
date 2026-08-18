@@ -33,7 +33,9 @@ export function createWordPressRule(siteUrl: string): JsonRule {
     linkPath: '$.link',
     datePath: '$.date_gmt',
     authorPath: null,
-    descriptionPath: '$.excerpt.rendered',
+    // WordPress REST 的 excerpt 只是列表摘要；Reader 首屏应直接复用 API 已返回的完整正文，
+    // 避免用户明明订阅了 JSON/API 来源，打开文章却只看到标题/短摘要。
+    descriptionPath: '$.content.rendered',
     imagePath: null,
     idPath: '$.id',
     dateFormat: "yyyy-MM-dd'T'HH:mm:ss",

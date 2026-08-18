@@ -1,4 +1,4 @@
-import type { ArticleRecord, FeedRecord, GroupRecord, LibrarySnapshot } from './library'
+import type { ArticleRecord, FeedArticleStats, FeedRecord, GroupRecord, LibrarySnapshot } from './library'
 import type { DesktopSettings, DesktopSettingsPatch } from './settings'
 import type { RssSubscriptionResult } from './rss'
 import type { RssHubSettings } from './rsshub'
@@ -54,6 +54,9 @@ export interface OrigReadDesktopApi {
   listFeeds(): Promise<FeedRecord[]>
   listGroups(): Promise<GroupRecord[]>
   listArticles(limit?: number): Promise<ArticleRecord[]>
+  listArticlesByFeed(feedId: string): Promise<ArticleRecord[]>
+  listArticlesByGroup(groupId: string): Promise<ArticleRecord[]>
+  listFeedArticleStats(): Promise<FeedArticleStats[]>
   setArticleUnread(articleId: string, unread: boolean): Promise<void>
   setArticleStarred(articleId: string, starred: boolean): Promise<void>
   getAccounts(): Promise<AccountSnapshot>
@@ -166,6 +169,9 @@ export const IPC_CHANNELS = {
   listFeeds: 'library:list-feeds',
   listGroups: 'library:list-groups',
   listArticles: 'library:list-articles',
+  listArticlesByFeed: 'library:list-articles-by-feed',
+  listArticlesByGroup: 'library:list-articles-by-group',
+  listFeedArticleStats: 'library:list-feed-article-stats',
   setArticleUnread: 'library:set-article-unread',
   setArticleStarred: 'library:set-article-starred',
   getAccounts: 'account:list',

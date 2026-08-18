@@ -20,6 +20,9 @@ const api: OrigReadDesktopApi = Object.freeze({
   listFeeds: () => ipcRenderer.invoke(IPC_CHANNELS.listFeeds),
   listGroups: () => ipcRenderer.invoke(IPC_CHANNELS.listGroups),
   listArticles: (limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.listArticles, limit),
+  listArticlesByFeed: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.listArticlesByFeed, feedId),
+  listArticlesByGroup: (groupId: string) => ipcRenderer.invoke(IPC_CHANNELS.listArticlesByGroup, groupId),
+  listFeedArticleStats: () => ipcRenderer.invoke(IPC_CHANNELS.listFeedArticleStats),
   setArticleUnread: (articleId: string, unread: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.setArticleUnread, articleId, unread),
   setArticleStarred: (articleId: string, starred: boolean) =>

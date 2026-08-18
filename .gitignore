@@ -15,4 +15,5 @@ Thumbs.db
 .env
 .env.*
 !.env.example
-
+docs/DEVELOPMENT_PLAN.md
+release-validation/

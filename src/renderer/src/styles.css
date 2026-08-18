@@ -70,6 +70,44 @@
 .source-refresh-button:disabled,
 .source-settings-button:disabled { cursor: default; opacity: 0.55; }
 
+.desktop-context-menu {
+  position: fixed;
+  z-index: 1400;
+  width: 230px;
+  max-height: min(420px, calc(100vh - 16px));
+  overflow: hidden;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 12px 34px rgba(28, 29, 36, 0.18);
+}
+.desktop-context-menu > button,
+.context-menu-groups > button {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.desktop-context-menu > button:hover:not(:disabled),
+.context-menu-groups > button:hover { background: var(--surface-muted); }
+.desktop-context-menu > button:disabled { opacity: 0.5; cursor: default; }
+.desktop-context-menu > button.danger { color: #c64242; }
+.context-menu-separator { height: 1px; margin: 5px 3px; background: var(--border); }
+.context-menu-label { padding: 4px 9px 3px; color: var(--muted); font-size: 10.5px; }
+.context-menu-groups { max-height: 180px; overflow-y: auto; }
+.context-menu-groups > button { justify-content: space-between; }
+.context-menu-groups > button.current { font-weight: 650; }
+.context-menu-check { color: var(--accent); font-weight: 800; }
+
 .article-item {
   cursor: pointer;
   padding: 11px 11px 10px;

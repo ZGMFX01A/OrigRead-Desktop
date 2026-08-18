@@ -13,7 +13,7 @@ export class JsonSubscriptionService {
     private readonly articleFilters?: ArticleFilterRepository
   ) {}
 
-  /** Android subscribeJson：保存探测阶段确认的 endpoint，随后立即执行一次同规则同步。 */
+  /** 保存探测阶段确认的 endpoint，并直接落库探测阶段已经解析出的首批文章。 */
   async add(probe: JsonSourceProbeResult): Promise<{ feedId: string; insertedArticles: number }> {
     const existing = this.repository.findFeedByUrl(probe.endpointUrl)
     if (existing) throw new Error(`来源已存在：${existing.name}`)
@@ -37,9 +37,16 @@ export class JsonSubscriptionService {
       createdAt: now,
       updatedAt: now
     }
-    this.repository.upsertFeed(feed)
-    const refresh = await this.refresh(feedId)
-    return { feedId, insertedArticles: refresh.insertedArticles }
+    // 探测阶段已经完成一次真实网络请求并拿到了可用文章。
+    // 首次订阅必须直接复用这批已确认数据，不能先写空 Feed 再对同一 API 发第二次请求：
+    // 第二次请求一旦超时/限流，就会留下“预览 30 篇、订阅后 0 篇”的空来源。
+    const candidates = probe.articles
+      .map((article) => toArticleRecord(feed.id, article, now, feed.accountId))
+    const archivedLinks = this.repository.archivedLinks(feed.id, candidates.map((article) => article.url))
+    const candidateArticles = candidates.filter((article) => !article.url || !archivedLinks.has(article.url))
+    const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
+    this.repository.upsertFeedWithArticles(feed, articles)
+    return { feedId, insertedArticles: articles.length }
   }
 
   async refresh(
@@ -51,14 +58,13 @@ export class JsonSubscriptionService {
     if (feed.sourceType !== 'json') throw new Error(`来源不是 JSON/API：${feed.name}`)
 
     const parsed = await this.sourceService.fetch(feed, fetchedAt)
-    const candidateArticles = parsed
+    const candidates = parsed
       .map((article) => toArticleRecord(feed.id, article, fetchedAt, feed.accountId))
-      .filter((article) => !this.repository.isArchivedLink(feed.id, article.url))
+    const archivedLinks = this.repository.archivedLinks(feed.id, candidates.map((article) => article.url))
+    const candidateArticles = candidates.filter((article) => !article.url || !archivedLinks.has(article.url))
     const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
-    const insertedArticles = articles.reduce(
-      (count, article) => count + (this.repository.hasArticle(article.id) ? 0 : 1),
-      0
-    )
+    const existingIds = this.repository.existingArticleIds(articles.map((article) => article.id), feed.accountId)
+    const insertedArticles = articles.length - existingIds.size
     this.repository.upsertFeedWithArticles({ ...feed, updatedAt: fetchedAt }, articles)
     return { feedId, fetchedArticles: articles.length, insertedArticles }
   }

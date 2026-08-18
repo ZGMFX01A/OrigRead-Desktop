@@ -6,6 +6,7 @@ import type {
   WebsiteParsedArticle,
   WebsiteRule
 } from '../../../shared/website'
+import { defaultWebsiteRule } from '../../../shared/website'
 import { automaticRuleHistoryScore, shouldRunAutomaticFullScan } from './automatic-rule-stability-scorer'
 import {
   detectAutomaticWebsiteLists,
@@ -64,7 +65,15 @@ export class WebsiteSourceService {
   async inspectDynamic(url: string, fetchedAt = Date.now()): Promise<WebsiteInspectionResult> {
     if (!this.dynamicRenderer) throw new Error('动态 Chromium 渲染器不可用')
     const rendered = await this.dynamicRenderer.render(url)
-    return this.buildInspection(url, rendered.finalUrl, rendered.html, fetchedAt, true)
+    try {
+      return this.buildInspection(url, rendered.finalUrl, rendered.html, fetchedAt, true)
+    } catch (error) {
+      if (!isWebsiteHealthCheckFailure(error)) throw error
+      // 与 Android 的“最后兜底仍允许用户尝试添加”保持一致：Chromium 已经成功渲染页面，
+      // 只是自动规则没有提取出健康列表时，保留一个明确的低可信候选。后续刷新仍会重新
+      // 运行真实解析；这里不伪造文章，也不把它当作健康候选推荐。
+      return this.buildDynamicMetadataFallback(url, rendered.finalUrl, rendered.html)
+    }
   }
 
   async evaluateCandidates(feed: FeedRecord, fetchedAt = Date.now()): Promise<WebsiteParseCandidate[]> {
@@ -150,6 +159,32 @@ export class WebsiteSourceService {
       iconUrl,
       candidate: selection.candidate,
       candidates: selection.batch.candidates
+    }
+  }
+
+  private buildDynamicMetadataFallback(sourceUrl: string, baseUrl: string, html: string): WebsiteInspectionResult {
+    const $ = cheerio.load(html)
+    const host = safeHost(sourceUrl)
+    const rule = defaultWebsiteRule({
+      id: `dynamic-fallback:${unsignedHex(javaStringHash(sourceUrl))}`,
+      name: 'Dynamic Chromium fallback',
+      hosts: host ? [host] : [],
+      articleSelectors: [],
+      titleSelector: 'a[href]'
+    })
+    const candidate: WebsiteParseCandidate = {
+      rule,
+      articles: [],
+      diagnostics: rejectedWebsiteCandidate('动态渲染完成，但未识别出稳定的文章列表')
+    }
+    return {
+      title: $('title').first().text().trim() || host || baseUrl,
+      sourceUrl,
+      finalUrl: baseUrl,
+      description: $('meta[name="description"]').first().attr('content') ?? '',
+      iconUrl: findIconUrl($, baseUrl),
+      candidate,
+      candidates: [candidate]
     }
   }
 
@@ -309,6 +344,10 @@ function probeFeedRecord(url: string, now: number): FeedRecord {
 
 function safeHost(url: string): string {
   try { return new URL(url).hostname } catch { return '' }
+}
+
+function isWebsiteHealthCheckFailure(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith('当前网站的解析规则均未通过健康检查：')
 }
 
 function findIconUrl($: cheerio.CheerioAPI, baseUrl: string): string | null {

@@ -13,9 +13,9 @@ export class WebsiteSubscriptionService {
   ) {}
 
   /**
-   * Android subscribeWebsite 的订阅提交与后续同步是两件事：
-   * 来源先持久化，doSyncOneTime 即使网络失败也不会把“订阅”本身回滚成失败。
-   * Desktop 也保持这个语义，避免网站第二次请求遇到 418/429 时留下“已入库但 UI 仍报添加失败”的半状态。
+   * 探测阶段已经成功解析出了首批文章，确认订阅时必须直接复用这批结果原子落库。
+   * 不能在添加事务里再次请求目标站点，否则第二次请求遇到 418/429/超时会制造
+   * “预览明明有文章，添加后却是空来源”的伪成功。
    */
   async add(inspection: WebsiteInspectionResult, dynamicRendering = false): Promise<{ feedId: string; insertedArticles: number }> {
     const existing = this.repository.findFeedByUrl(inspection.sourceUrl)
@@ -39,15 +39,14 @@ export class WebsiteSubscriptionService {
       createdAt: now,
       updatedAt: now
     }
-    this.repository.upsertFeed(feed)
+    const candidates = inspection.candidate.articles
+      .map((item) => toWebsiteArticleRecord(feed.id, item, now, feed.accountId))
+    const archivedLinks = this.repository.archivedLinks(feed.id, candidates.map((article) => article.url))
+    const candidateArticles = candidates.filter((article) => !article.url || !archivedLinks.has(article.url))
+    const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
+    this.repository.upsertFeedWithArticles(feed, articles)
     this.sourceService.setDynamicRenderingEnabled(feedId, dynamicRendering)
-    try {
-      const refreshed = await this.refresh(feedId)
-      return { feedId, insertedArticles: refreshed.insertedArticles }
-    } catch {
-      // 订阅已经成功保存；刷新失败留给后续手动/周期同步重试，不把添加操作伪装成失败。
-      return { feedId, insertedArticles: 0 }
-    }
+    return { feedId, insertedArticles: articles.length }
   }
 
   async refresh(
@@ -58,11 +57,13 @@ export class WebsiteSubscriptionService {
     if (!feed) throw new Error(`来源不存在：${feedId}`)
     if (feed.sourceType !== 'website') throw new Error(`来源不是网站：${feed.name}`)
     const parsed = await this.sourceService.fetchArticles(feed, fetchedAt)
-    const candidateArticles = parsed
+    const candidates = parsed
       .map((item) => toWebsiteArticleRecord(feed.id, item, fetchedAt, feed.accountId))
-      .filter((article) => !this.repository.isArchivedLink(feed.id, article.url))
+    const archivedLinks = this.repository.archivedLinks(feed.id, candidates.map((article) => article.url))
+    const candidateArticles = candidates.filter((article) => !article.url || !archivedLinks.has(article.url))
     const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
-    const insertedArticles = articles.reduce((count, article) => count + (this.repository.hasArticle(article.id) ? 0 : 1), 0)
+    const existingIds = this.repository.existingArticleIds(articles.map((article) => article.id), feed.accountId)
+    const insertedArticles = articles.length - existingIds.size
     const existing = this.repository.listArticlesByFeed(feed.id)
     const obsolete = this.sourceService.findObsoleteArticleIds(feed, existing, parsed)
     this.repository.upsertWebsiteFeedWithArticles({ ...feed, updatedAt: fetchedAt }, articles, obsolete)

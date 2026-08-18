@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export const CURRENT_SCHEMA_VERSION = 4
+export const CURRENT_SCHEMA_VERSION = 5
 export const DEFAULT_GROUP_ID = 'local-default'
 export const DEFAULT_LOCAL_ACCOUNT_ID = 1
 export const CURRENT_ACCOUNT_SETTING_KEY = 'account.current_id'
@@ -224,6 +224,21 @@ const migrations: Migration[] = [
           PRIMARY KEY (feed_id, link)
         ) STRICT;
         CREATE INDEX archived_articles_feed_idx ON archived_articles(feed_id);
+      `)
+    }
+  },
+  {
+    version: 5,
+    up(database) {
+      database.exec(`
+        CREATE TABLE rss_http_cache (
+          feed_id TEXT PRIMARY KEY REFERENCES feeds(id) ON DELETE CASCADE,
+          feed_url TEXT NOT NULL,
+          etag TEXT,
+          last_modified TEXT,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+        CREATE INDEX rss_http_cache_url_idx ON rss_http_cache(feed_url);
       `)
     }
   }

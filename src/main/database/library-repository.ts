@@ -1,12 +1,24 @@
 import type { DatabaseSync } from 'node:sqlite'
 import type {
   ArticleRecord,
+  FeedArticleStats,
   FeedRecord,
   GroupRecord,
   LibrarySnapshot,
   SourceType
 } from '../../shared/library'
 import { CURRENT_ACCOUNT_SETTING_KEY, DEFAULT_LOCAL_ACCOUNT_ID } from './migrations'
+
+type PreparedStatement = ReturnType<DatabaseSync['prepare']>
+const ARTICLE_ID_QUERY_CHUNK_SIZE = 800
+
+export interface RssHttpCacheRecord {
+  feedId: string
+  feedUrl: string
+  etag: string | null
+  lastModified: string | null
+  updatedAt: number
+}
 
 interface GroupRow {
   id: string
@@ -112,11 +124,43 @@ export class LibraryRepository {
     `).all(accountId, feedId) as unknown as ArticleRow[]).map(toArticleRecord)
   }
 
+  listArticlesByGroup(groupId: string): ArticleRecord[] {
+    const accountId = this.getCurrentAccountId()
+    return (this.database.prepare(`
+      SELECT a.id, a.account_id, a.feed_id, a.title, a.url, a.author, a.published_at, a.description,
+             a.content_html, a.full_content_html, a.image_url, a.is_unread, a.is_starred,
+             a.created_at, a.updated_at
+      FROM articles a
+      INNER JOIN feeds f ON f.id = a.feed_id AND f.account_id = a.account_id
+      WHERE a.account_id = ? AND f.group_id = ?
+      ORDER BY COALESCE(a.published_at, a.created_at) DESC
+    `).all(accountId, groupId) as unknown as ArticleRow[]).map(toArticleRecord)
+  }
+
+  listFeedArticleStats(): FeedArticleStats[] {
+    const accountId = this.getCurrentAccountId()
+    const rows = this.database.prepare(`
+      SELECT feed_id,
+             COUNT(*) AS total_count,
+             SUM(CASE WHEN is_unread = 1 THEN 1 ELSE 0 END) AS unread_count,
+             SUM(CASE WHEN is_starred = 1 THEN 1 ELSE 0 END) AS starred_count
+      FROM articles
+      WHERE account_id = ?
+      GROUP BY feed_id
+    `).all(accountId) as unknown as Array<Record<string, string | number | bigint | null>>
+    return rows.map((row) => ({
+      feedId: String(row.feed_id),
+      total: Number(row.total_count ?? 0),
+      unread: Number(row.unread_count ?? 0),
+      starred: Number(row.starred_count ?? 0)
+    }))
+  }
+
   upsertWebsiteFeedWithArticles(feed: FeedRecord, articles: ArticleRecord[], obsoleteArticleIds: string[]): void {
     this.database.exec('BEGIN IMMEDIATE')
     try {
       this.upsertFeed(feed)
-      for (const article of articles) this.upsertArticle(article)
+      this.upsertArticlesPrepared(articles)
       const deleteStatement = this.database.prepare('DELETE FROM articles WHERE id = ? AND is_starred = 0')
       for (const articleId of obsoleteArticleIds) deleteStatement.run(articleId)
       this.database.exec('COMMIT')
@@ -130,7 +174,7 @@ export class LibraryRepository {
     this.database.exec('BEGIN IMMEDIATE')
     try {
       this.upsertFeed(feed)
-      for (const article of articles) this.upsertArticle(article)
+      this.upsertArticlesPrepared(articles)
       this.setRssHubSourceUrl(feed.id, sourceUrl)
       this.database.exec('COMMIT')
     } catch (error) {
@@ -144,11 +188,52 @@ export class LibraryRepository {
       .get(this.getCurrentAccountId(), articleId) !== undefined
   }
 
-  upsertFeedWithArticles(feed: FeedRecord, articles: ArticleRecord[]): void {
+  existingArticleIds(articleIds: string[], accountId = this.getCurrentAccountId()): Set<string> {
+    const ids = [...new Set(articleIds)]
+    if (ids.length === 0) return new Set()
+    const existing = new Set<string>()
+    for (let offset = 0; offset < ids.length; offset += ARTICLE_ID_QUERY_CHUNK_SIZE) {
+      const chunk = ids.slice(offset, offset + ARTICLE_ID_QUERY_CHUNK_SIZE)
+      const placeholders = chunk.map(() => '?').join(',')
+      const rows = this.database.prepare(
+        `SELECT id FROM articles WHERE account_id = ? AND id IN (${placeholders})`
+      ).all(accountId, ...chunk) as unknown as Array<{ id: string }>
+      for (const row of rows) existing.add(row.id)
+    }
+    return existing
+  }
+
+  getRssHttpCache(feedId: string): RssHttpCacheRecord | null {
+    const row = this.database.prepare(`
+      SELECT feed_id, feed_url, etag, last_modified, updated_at
+      FROM rss_http_cache
+      WHERE feed_id = ?
+    `).get(feedId) as {
+      feed_id: string
+      feed_url: string
+      etag: string | null
+      last_modified: string | null
+      updated_at: number
+    } | undefined
+    return row ? {
+      feedId: row.feed_id,
+      feedUrl: row.feed_url,
+      etag: row.etag,
+      lastModified: row.last_modified,
+      updatedAt: row.updated_at
+    } : null
+  }
+
+  upsertFeedWithArticles(
+    feed: FeedRecord,
+    articles: ArticleRecord[],
+    rssHttpCache?: RssHttpCacheRecord
+  ): void {
     this.database.exec('BEGIN IMMEDIATE')
     try {
       this.upsertFeed(feed)
-      for (const article of articles) this.upsertArticle(article)
+      this.upsertArticlesPrepared(articles)
+      if (rssHttpCache) this.upsertRssHttpCache(rssHttpCache)
       this.database.exec('COMMIT')
     } catch (error) {
       this.database.exec('ROLLBACK')
@@ -281,7 +366,11 @@ export class LibraryRepository {
   }
 
   upsertArticle(article: ArticleRecord): void {
-    this.database.prepare(`
+    this.runArticleUpsert(this.prepareArticleUpsert(), article)
+  }
+
+  private prepareArticleUpsert(): PreparedStatement {
+    return this.database.prepare(`
       INSERT INTO articles (
         id, account_id, feed_id, title, url, author, published_at, description,
         content_html, full_content_html, image_url, is_unread, is_starred,
@@ -299,7 +388,11 @@ export class LibraryRepository {
         full_content_html = COALESCE(excluded.full_content_html, articles.full_content_html),
         image_url = excluded.image_url,
         updated_at = excluded.updated_at
-    `).run(
+    `)
+  }
+
+  private runArticleUpsert(statement: PreparedStatement, article: ArticleRecord): void {
+    statement.run(
       article.id,
       article.accountId ?? this.getCurrentAccountId(),
       article.feedId,
@@ -316,6 +409,24 @@ export class LibraryRepository {
       article.createdAt,
       article.updatedAt
     )
+  }
+
+  private upsertArticlesPrepared(articles: ArticleRecord[]): void {
+    if (articles.length === 0) return
+    const statement = this.prepareArticleUpsert()
+    for (const article of articles) this.runArticleUpsert(statement, article)
+  }
+
+  private upsertRssHttpCache(cache: RssHttpCacheRecord): void {
+    this.database.prepare(`
+      INSERT INTO rss_http_cache (feed_id, feed_url, etag, last_modified, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(feed_id) DO UPDATE SET
+        feed_url = excluded.feed_url,
+        etag = excluded.etag,
+        last_modified = excluded.last_modified,
+        updated_at = excluded.updated_at
+    `).run(cache.feedId, cache.feedUrl, cache.etag, cache.lastModified, cache.updatedAt)
   }
 
   listArticles(limit = 200): ArticleRecord[] {
@@ -408,6 +519,21 @@ export class LibraryRepository {
     if(!link)return false
     return this.database.prepare('SELECT 1 AS found FROM archived_articles WHERE feed_id=? AND link=?')
       .get(feedId,link)!==undefined
+  }
+
+  archivedLinks(feedId: string, links: Array<string | null | undefined>): Set<string> {
+    const candidates = [...new Set(links.filter((link): link is string => Boolean(link)))]
+    if (candidates.length === 0) return new Set()
+    const archived = new Set<string>()
+    for (let offset = 0; offset < candidates.length; offset += ARTICLE_ID_QUERY_CHUNK_SIZE) {
+      const chunk = candidates.slice(offset, offset + ARTICLE_ID_QUERY_CHUNK_SIZE)
+      const placeholders = chunk.map(() => '?').join(',')
+      const rows = this.database.prepare(
+        `SELECT link FROM archived_articles WHERE feed_id = ? AND link IN (${placeholders})`
+      ).all(feedId, ...chunk) as unknown as Array<{ link: string }>
+      for (const row of rows) archived.add(row.link)
+    }
+    return archived
   }
 
   archiveExpiredArticlesForAccount(accountId:number,keepArchivedMillis:number,now=Date.now()):number {

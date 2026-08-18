@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http'
 import { expect, test } from '@playwright/test'
 import { launchIsolatedOrigRead } from './electron-test-app'
 
-test('website subscription remains added when the immediate post-subscribe refresh returns HTTP 418', async () => {
+test('website subscription persists discovered articles without a second source request', async () => {
   const fixture = await startWebsiteFixtureServer()
   const server = fixture.server
   const address = server.address()
@@ -29,7 +29,7 @@ test('website subscription remains added when the immediate post-subscribe refre
     fixture.setRejectRefresh(true)
     await page.locator('.dialog-submit').click()
     await expect(page.locator('.source-dialog')).toBeHidden({ timeout: 10_000 })
-    expect(fixture.rejectedRequests()).toBeGreaterThan(0)
+    expect(fixture.rejectedRequests()).toBe(0)
 
     await expect.poll(async () => page.evaluate(async (url) => {
       return (await window.origread.listFeeds()).filter((feed) => feed.url === url).length
@@ -40,6 +40,7 @@ test('website subscription remains added when the immediate post-subscribe refre
       return feed?.name ?? ''
     }, sourceUrl)
     expect(websiteFeedName).not.toBe('')
+    await expect(page.locator('.article-item').filter({ hasText: '原读完成正文提取能力升级' })).toBeVisible({ timeout: 10_000 })
     await page.locator('.scope-picker-button').click()
     const sourceItem = page.locator('.source-item').filter({ hasText: websiteFeedName })
     await expect(sourceItem).toBeVisible()

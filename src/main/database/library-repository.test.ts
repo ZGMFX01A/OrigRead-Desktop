@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { ArticleRecord, FeedRecord } from '../../shared/library'
 import { DesktopDatabase } from './database'
 import { LibraryRepository } from './library-repository'
-import { DEFAULT_GROUP_ID } from './migrations'
+import { CURRENT_SCHEMA_VERSION, DEFAULT_GROUP_ID } from './migrations'
 
 const tempDirectories: string[] = []
 
@@ -20,7 +20,7 @@ describe('LibraryRepository', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)
 
-    expect(database.schemaVersion).toBe(4)
+    expect(database.schemaVersion).toBe(CURRENT_SCHEMA_VERSION)
     expect(repository.listGroups()).toEqual([
       { id: DEFAULT_GROUP_ID, accountId: 1, name: 'Default', sortOrder: 0, isDefault: true }
     ])
@@ -140,6 +140,101 @@ describe('LibraryRepository', () => {
     expect(states).toHaveLength(1505)
     expect(states.every((article) => !article.isUnread && article.isStarred)).toBe(true)
     expect(repository.getArticleById(ids[0]!)?.updatedAt).toBe(123)
+    database.close()
+  })
+
+  it('keeps large feed and group scopes independent from the global 200-article window', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const feed = createFeed()
+    const secondGroupId = 'group-large'
+    repository.upsertGroup({
+      id: secondGroupId,
+      accountId: 1,
+      name: 'Large feeds',
+      sortOrder: 1,
+      isDefault: false
+    })
+    repository.upsertFeed({ ...feed, groupId: secondGroupId })
+
+    for (let index = 0; index < 470; index += 1) {
+      repository.upsertArticle({
+        ...createArticle(feed.id),
+        id: `rocket-${index}`,
+        title: `Rocket ${index}`,
+        url: `https://example.com/rocket/${index}`,
+        publishedAt: 10_000 + index,
+        isUnread: index < 469,
+        isStarred: index === 469
+      })
+    }
+
+    expect(repository.listArticles()).toHaveLength(200)
+    expect(repository.listArticlesByFeed(feed.id)).toHaveLength(470)
+    expect(repository.listArticlesByGroup(secondGroupId)).toHaveLength(470)
+    expect(repository.listFeedArticleStats()).toEqual([
+      { feedId: feed.id, total: 470, unread: 469, starred: 1 }
+    ])
+    database.close()
+  })
+
+  it('batch-queries existing article ids across the 800-parameter chunk boundary', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const feed = createFeed()
+    repository.upsertFeed(feed)
+    const articles = Array.from({ length: 1505 }, (_, index) => ({
+      ...createArticle(feed.id),
+      id: `existing-${index}`,
+      url: `https://example.com/existing/${index}`
+    }))
+    repository.upsertFeedWithArticles(feed, articles)
+
+    const ids = articles.map((article) => article.id)
+    const existing = repository.existingArticleIds([...ids, 'missing-1', 'missing-2'])
+    expect(existing.size).toBe(1505)
+    expect(existing.has('existing-0')).toBe(true)
+    expect(existing.has('existing-1504')).toBe(true)
+    expect(existing.has('missing-1')).toBe(false)
+    database.close()
+  })
+
+  it('batch-queries archived links across the 800-parameter chunk boundary', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const feed = createFeed()
+    repository.upsertFeed(feed)
+    const archived = ['https://example.com/archive/10', 'https://example.com/archive/1200']
+    const insert = database.connection.prepare(
+      'INSERT INTO archived_articles(feed_id,link,archived_at) VALUES(?,?,?)'
+    )
+    for (const link of archived) insert.run(feed.id, link, Date.now())
+    const candidates = Array.from({ length: 1505 }, (_, index) => `https://example.com/archive/${index}`)
+
+    expect([...repository.archivedLinks(feed.id, candidates)].sort()).toEqual([...archived].sort())
+    database.close()
+  })
+
+  it('persists RSS HTTP validators independently from Feed records', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const feed = createFeed()
+    repository.upsertFeedWithArticles(feed, [createArticle(feed.id)], {
+      feedId: feed.id,
+      feedUrl: feed.url,
+      etag: '"etag-v1"',
+      lastModified: 'Tue, 18 Aug 2026 12:00:00 GMT',
+      updatedAt: 1234
+    })
+
+    expect(repository.getRssHttpCache(feed.id)).toEqual({
+      feedId: feed.id,
+      feedUrl: feed.url,
+      etag: '"etag-v1"',
+      lastModified: 'Tue, 18 Aug 2026 12:00:00 GMT',
+      updatedAt: 1234
+    })
+    expect(repository.getFeedById(feed.id)).not.toHaveProperty('etag')
     database.close()
   })
 })

@@ -13,6 +13,8 @@ export interface DiscoveredRssFeed {
   feedUrl: string
   sourcePageUrl: string
   discoveredFromPage: boolean
+  etag?: string | null
+  lastModified?: string | null
   title: string
   siteUrl: string | null
   iconUrl: string | null

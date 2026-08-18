@@ -79,6 +79,51 @@ describe('RssSubscriptionService', () => {
     database.close()
   })
 
+  it('uses saved RSS validators and returns 0-0 on 304 without touching feed or article timestamps', async () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const lastModified = 'Tue, 18 Aug 2026 12:00:00 GMT'
+    const seenValidators: Array<{ etag?: string | null; lastModified?: string | null }> = []
+    const fetcher: RssFetcher = async (url, validators) => {
+      seenValidators.push(validators ?? {})
+      if (validators?.etag === '"etag-v1"') {
+        return {
+          finalUrl: url,
+          contentType: null,
+          bytes: new Uint8Array(),
+          notModified: true,
+          etag: '"etag-v1"',
+          lastModified
+        }
+      }
+      return {
+        ...rssPayload(url, RSS_ONE),
+        etag: '"etag-v1"',
+        lastModified
+      }
+    }
+    const service = new RssSubscriptionService(repository, new RssDiscoveryService(fetcher, noIconFinder))
+    const added = await service.add('https://example.com/feed.xml')
+    const initialCache = repository.getRssHttpCache(added.feedId)!
+    expect(initialCache).toMatchObject({
+      etag: '"etag-v1"',
+      lastModified
+    })
+    const before304Feed = repository.getFeedById(added.feedId)!
+    const before304Article = repository.listArticlesByFeed(added.feedId)[0]!
+
+    expect(await service.refresh(added.feedId, 2000)).toEqual({
+      feedId: added.feedId,
+      fetchedArticles: 0,
+      insertedArticles: 0
+    })
+    expect(seenValidators.at(-1)).toEqual({ etag: '"etag-v1"', lastModified })
+    expect(repository.getFeedById(added.feedId)?.updatedAt).toBe(before304Feed.updatedAt)
+    expect(repository.listArticlesByFeed(added.feedId)[0]?.updatedAt).toBe(before304Article.updatedAt)
+    expect(repository.getRssHttpCache(added.feedId)?.updatedAt).toBe(initialCache.updatedAt)
+    database.close()
+  })
+
   it('recovers a failed RSSHub fixed URL using the original source page and updates only the feed URL', async () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)
@@ -91,7 +136,7 @@ describe('RssSubscriptionService', () => {
 
     const discovery = {
       discover: async () => { throw new Error('not used') },
-      parseDirect: async () => { throw new Error('old instance offline') }
+      parseDirectConditional: async () => { throw new Error('old instance offline') }
     } as unknown as RssDiscoveryService
     const resolver = {
       probe: async () => [{

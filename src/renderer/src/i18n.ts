@@ -95,6 +95,8 @@ const resources = {
       restoreAutomaticParser: '恢复自动选择',
       sourceMaintenance: '来源维护',
       reloadIcon: '重新获取图标',
+      reloadSourceArticles: '重新加载文章',
+      moveToGroup: '移动到分组',
       clearSourceArticles: '清空文章',
       deleteSource: '删除来源',
       confirmClearSourceArticles: '清空这个来源的非收藏文章？收藏文章会保留。',
@@ -132,6 +134,7 @@ const resources = {
       candidateArticles: '{{count}} 篇',
       noSourceCandidate: '没有找到通过健康检查的来源。',
       selectSourceCandidate: '请选择一个来源候选。',
+      dynamicWebsiteLowConfidenceNotice: '动态页面已成功渲染，但当前没有识别出可靠的文章列表。你仍可继续添加此来源尝试，后续刷新可能仍然失败。',
       sourceKind: {
         RSS_DIRECT: 'RSS',
         RSS_DISCOVERED: 'RSS',
@@ -700,6 +703,8 @@ const resources = {
       restoreAutomaticParser: 'Restore automatic selection',
       sourceMaintenance: 'Source maintenance',
       reloadIcon: 'Reload icon',
+      reloadSourceArticles: 'Reload articles',
+      moveToGroup: 'Move to group',
       clearSourceArticles: 'Clear articles',
       deleteSource: 'Delete source',
       confirmClearSourceArticles: 'Clear non-starred articles from this source? Starred articles will be kept.',
@@ -737,6 +742,7 @@ const resources = {
       candidateArticles: '{{count}} articles',
       noSourceCandidate: 'No source passed the health checks.',
       selectSourceCandidate: 'Select a source candidate.',
+      dynamicWebsiteLowConfidenceNotice: 'The dynamic page rendered successfully, but no reliable article list was detected. You can still add this source to try it; later refreshes may still fail.',
       sourceKind: {
         RSS_DIRECT: 'RSS',
         RSS_DISCOVERED: 'RSS',

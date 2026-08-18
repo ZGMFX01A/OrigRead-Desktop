@@ -25,6 +25,13 @@ export interface FeedRecord {
   updatedAt: number
 }
 
+export interface FeedArticleStats {
+  feedId: string
+  total: number
+  unread: number
+  starred: number
+}
+
 export interface ArticleRecord {
   id: string
   accountId?: number

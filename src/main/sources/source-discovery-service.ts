@@ -76,14 +76,68 @@ export class SourceDiscoveryService {
       return result
     }
 
+    // 直接 Feed 先独立解析一次，避免 ATP / Rocket 这类大 RSS 在并行阶段被重复下载。
+    // 但 Direct RSS 成功绝不能终止多渠道发现：Android 仍会继续检查 RSSHub / JSON / Website。
+    // Desktop 这里复用 Feed 内的站点首页作为后续探测入口，不再次下载已经成功解析的 RSS XML。
+    reportProgress('rss', 'running')
+    const directRssOutcome = await captureOutcome(() => this.rssDiscovery.parseDirect(sourceUrl))
+    if (directRssOutcome.value) {
+      reportProgress('rss', 'completed')
+      const candidates: UnscoredSourceCandidate[] = [rssCandidate(directRssOutcome.value)]
+      const payloads: CandidatePayload[] = [{ type: 'rss', discovered: directRssOutcome.value }]
+      const discoveryUrl = directRssOutcome.value.siteUrl ?? sourceUrl
+
+      const [rssHubOutcome, jsonOutcome, websiteOutcome] = await Promise.all([
+        runStage('rsshub', reportProgress, async () => {
+          let local: RssHubProbeResult[] = []
+          let probed: RssHubProbeResult[] = []
+          let error: string | null = null
+          try { local = this.rssHubResolver.localRouteDiagnostics(discoveryUrl) } catch (cause) { error = errorMessage(cause) }
+          try { probed = await this.rssHubResolver.probe(discoveryUrl) } catch (cause) { error = errorMessage(cause) }
+          return { results: mergeRssHubProbeResults(local, probed), error }
+        }),
+        runStage('json', reportProgress, () => this.jsonSource.probe(discoveryUrl)),
+        runStage('website', reportProgress, () => withTimeout(this.websiteSource.inspect(discoveryUrl), 15_000, '网站静态探测超时'))
+      ])
+
+      const rssHubResults = rssHubOutcome.value?.results ?? []
+      for (const result of rssHubResults.filter((item) => item.available && item.feed && item.match.feedUrl)) {
+        candidates.push(rssHubCandidate(result))
+        payloads.push({ type: 'rsshub', sourceUrl: discoveryUrl, result })
+      }
+      if (jsonOutcome.value) {
+        candidates.push(jsonCandidate(jsonOutcome.value))
+        payloads.push({ type: 'json', probe: jsonOutcome.value })
+      }
+      if (websiteOutcome.value) {
+        candidates.push(websiteCandidate(
+          websiteOutcome.value,
+          false,
+          !this.websiteSource.hasRule(discoveryUrl),
+          rssHubFailureNotice(rssHubResults)
+        ))
+        payloads.push({ type: 'website', inspection: websiteOutcome.value, dynamic: false })
+      }
+
+      reportProgress('ranking', 'running')
+      const result = this.createSession(
+        sourceUrl,
+        candidates,
+        payloads,
+        jsonOutcome.error ?? rssHubOutcome.value?.error ?? rssHubOutcome.error ?? websiteOutcome.error,
+        rssHubResults.map(toRssHubRouteStatusSummary)
+      )
+      reportProgress('ranking', 'completed')
+      return result
+    }
+
     const candidates: UnscoredSourceCandidate[] = []
     const payloads: CandidatePayload[] = []
 
-    // RSS / RSSHub / JSON / 静态网页互不依赖。Desktop 过去把四条链串行执行，
-    // 在没有 RSS 的普通网站上会把每段网络等待直接相加。现在并行探测，但结果仍按
-    // Android 的固定来源顺序装配，统一评分/动态兜底语义不变。
+    // 输入 URL 本身不是 Feed 后，页面 RSS 发现 / RSSHub / JSON / 静态网页互不依赖，
+    // 此处仍并行执行以避免普通网站把多段网络等待串起来。
     const [rssOutcome, rssHubOutcome, jsonOutcome, websiteOutcome] = await Promise.all([
-      runStage('rss', reportProgress, () => withTimeout(this.rssDiscovery.discover(sourceUrl), 20_000, 'RSS 探测超时')),
+      captureOutcome(() => withTimeout(this.rssDiscovery.discover(sourceUrl), 20_000, 'RSS 探测超时')),
       runStage('rsshub', reportProgress, async () => {
         let local: RssHubProbeResult[] = []
         let probed: RssHubProbeResult[] = []
@@ -95,6 +149,7 @@ export class SourceDiscoveryService {
       runStage('json', reportProgress, () => this.jsonSource.probe(sourceUrl)),
       runStage('website', reportProgress, () => withTimeout(this.websiteSource.inspect(sourceUrl), 15_000, '网站静态探测超时'))
     ])
+    reportProgress('rss', 'completed')
 
     if (rssOutcome.value) {
       candidates.push(rssCandidate(rssOutcome.value))
@@ -117,11 +172,9 @@ export class SourceDiscoveryService {
       payloads.push({ type: 'website', inspection: websiteOutcome.value, dynamic: false })
     }
 
-    let lastError = websiteOutcome.error
-      ?? jsonOutcome.error
-      ?? rssHubOutcome.value?.error
-      ?? rssHubOutcome.error
-      ?? rssOutcome.error
+    let lastError = isLikelyDirectFeedUrl(sourceUrl)
+      ? rssOutcome.error ?? directRssOutcome.error ?? websiteOutcome.error ?? jsonOutcome.error
+      : websiteOutcome.error ?? jsonOutcome.error ?? rssHubOutcome.value?.error ?? rssHubOutcome.error ?? rssOutcome.error
 
     // Android：只有所有静态候选统一评分后一个都没通过，才启动动态 WebView/Chromium。
     if (rankSourceCandidates(candidates).length === 0) {
@@ -227,14 +280,16 @@ export class SourceDiscoveryService {
       sourceUrl,
       candidates,
       rssHubRoutes: normalizedRssHubRoutes,
-      selectedCandidateId: candidates[0]?.id ?? null,
+      // 低可信动态兜底必须由用户主动点选，不能像健康来源一样默认推荐/选中。
+      selectedCandidateId: candidates.find((candidate) => candidate.diagnostics.accepted)?.id ?? null,
       error: candidates.length === 0 ? error : null
     }
     const payloads = new Map<string, CandidatePayload>()
-    for (let index = 0; index < unscored.length; index += 1) {
-      const candidate = unscored[index]!
-      const id = `${candidate.sourceType.toUpperCase()}:${candidate.feedLink.trim()}`
-      if (result.candidates.some((item) => item.id === id) && !payloads.has(id)) payloads.set(id, rawPayloads[index]!)
+    for (const selected of result.candidates) {
+      const index = unscored.findIndex((candidate) =>
+        candidate.kind === selected.kind
+        && `${candidate.sourceType.toUpperCase()}:${candidate.feedLink.trim()}` === selected.id)
+      if (index >= 0 && rawPayloads[index]) payloads.set(selected.id, rawPayloads[index]!)
     }
     this.sessions.set(discoveryId, { createdAt: Date.now(), result, payloads })
     while (this.sessions.size > MAX_SESSIONS) this.sessions.delete(this.sessions.keys().next().value!)
@@ -307,6 +362,22 @@ function normalizeSourceUrl(value: string): string {
   return url.toString()
 }
 
+/** 仅用于失败时选择更有意义的错误信息；所有普通 HTTP(S) 输入仍都会先尝试一次直接 RSS。 */
+function isLikelyDirectFeedUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    const path = url.pathname.toLowerCase().replace(/\/+$/, '')
+    const leaf = path.split('/').filter(Boolean).at(-1) ?? ''
+    return ['rss', 'feed', 'feeds', 'atom'].includes(leaf)
+      || /\.(?:rss|xml|atom|rdf)$/.test(path)
+      || /(?:^|[?&])format=xml(?:&|$)/i.test(url.search)
+      || /^feeds?\./i.test(url.hostname)
+      || /feedburner\.com$/i.test(url.hostname)
+  } catch {
+    return false
+  }
+}
+
 function rssHubFailureNotice(results: RssHubProbeResult[]): string | null {
   const result = results.find((item) => ['timeout', 'network_unavailable', 'needs_input', 'unsupported'].includes(item.state))
   if (!result) return null
@@ -371,6 +442,14 @@ async function runStage<T>(
     return { value: null, error: errorMessage(error) }
   } finally {
     report(stage, 'completed')
+  }
+}
+
+async function captureOutcome<T>(work: () => Promise<T>): Promise<StageOutcome<T>> {
+  try {
+    return { value: await work(), error: null }
+  } catch (error) {
+    return { value: null, error: errorMessage(error) }
   }
 }
 

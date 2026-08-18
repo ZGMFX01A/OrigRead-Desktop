@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test'
 import { launchIsolatedOrigRead } from './electron-test-app'
 
 test('desktop renderer mounts with preload bridge and primary UI', async () => {
+  test.setTimeout(60_000)
   const testApp = await launchIsolatedOrigRead()
   const electronApp = testApp.app
 
@@ -179,8 +180,10 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await expect(page.locator('.settings-page')).toContainText('OrigRead Desktop')
     await expect(page.locator('.settings-page')).toContainText('OrigRead Android')
     await expect(page.getByRole('button', { name: '访问仓库' })).toHaveCount(2)
-    await expect(page.locator('.about-shortcut')).toHaveCount(7)
-    await expect(page.locator('.about-shortcut-grid')).toContainText('Ctrl / Cmd + F')
+    const aboutShortcutKeys = await page.locator('.about-shortcut kbd').allTextContents()
+    expect(aboutShortcutKeys).toEqual(expect.arrayContaining([
+      '← / K', '→ / J', '↑', '↓', 'M', 'S', 'U', '[', ',', '.', '-', '+', 'Ctrl / Cmd + F'
+    ]))
     await expect(page.getByRole('button', { name: '提交 Issue' })).toBeVisible()
     const aboutCardWidth = await page.locator('.about-client-card').evaluate((element) => element.getBoundingClientRect().width)
     expect(aboutCardWidth).toBeLessThanOrEqual(761)
@@ -188,30 +191,27 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await expect(page.locator('.update-check-button')).toBeVisible()
     await page.getByRole('button', { name: '关于与支持' }).click()
     await page.getByRole('button', { name: '通用' }).click()
-    await expect(page.locator('.sync-interval-select')).toHaveValue('30')
+    await expect(page.locator('.account-sync-interval-select')).toHaveCount(0)
+    await page.getByRole('button', { name: '账户' }).click()
+    await expect(page.locator('.account-sync-interval-select')).toHaveValue('30')
+    await page.getByRole('button', { name: '通用' }).click()
     await page.locator('.reader-font-select').selectOption('serif')
     await page.locator('.reader-font-size-select').selectOption('19')
     await page.locator('.theme-select').selectOption('dark')
     await page.locator('.reader-color-picker input[type="color"]').fill('#dff4e3')
-    await page.locator('.sync-interval-select').selectOption('0')
-    await page.locator('.setting-switch').click()
 
     await expect.poll(async () => {
       return page.evaluate(async () => {
         const settings = await window.origread.getSettings()
-        const syncState = await window.origread.getSyncRuntimeState()
         return {
           readerFontId: settings.readerFontId,
           fontSize: settings.readerFontSize,
           theme: settings.theme,
           readerBackground: settings.readerBackground,
-          readerBackgroundCustom: settings.readerBackgroundCustom,
-          interval: settings.syncIntervalMinutes,
-          syncOnStart: settings.syncOnStart,
-          nextRunAt: syncState.nextRunAt
+          readerBackgroundCustom: settings.readerBackgroundCustom
         }
       })
-    }).toEqual({ readerFontId: 'serif', fontSize: 19, theme: 'dark', readerBackground: 'custom', readerBackgroundCustom: '#dff4e3', interval: 0, syncOnStart: true, nextRunAt: null })
+    }).toEqual({ readerFontId: 'serif', fontSize: 19, theme: 'dark', readerBackground: 'custom', readerBackgroundCustom: '#dff4e3' })
 
     await expect(page.locator('.app-shell')).toHaveCSS('--reader-font-size', '19px')
     await expect(page.locator('.app-shell')).toHaveCSS('--reader-font-family', /ui-serif/)

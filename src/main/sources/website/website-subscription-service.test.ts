@@ -20,7 +20,7 @@ describe('WebsiteSubscriptionService', () => {
     try {
       const repository = new LibraryRepository(database.connection)
       const html = fixture('url-clusters.html')
-      const queue = [payload(html), payload(html), payload(html.replaceAll('100', '900'))]
+      const queue = [payload(html), payload(html.replaceAll('100', '900'))]
       const sourceService = new WebsiteSourceService(
         new WebsiteRuleRepository(join(dir, 'rules.json')),
         new WebsiteParsePreferenceRepository(join(dir, 'prefs.json')),
@@ -48,7 +48,7 @@ describe('WebsiteSubscriptionService', () => {
     }
   })
 
-  it('keeps the newly subscribed website when the immediate refresh is rejected', async () => {
+  it('persists inspection articles without making a second network request during add', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'origread-website-sub-failure-'))
     dirs.push(dir)
     const database = new DesktopDatabase(':memory:')
@@ -62,19 +62,21 @@ describe('WebsiteSubscriptionService', () => {
         async () => {
           calls += 1
           if (calls === 1) return payload(html)
-          return { status: 418, finalUrl: 'https://news.example.com/', html: 'blocked' }
+          throw new Error('add must not make a second request')
         }
       )
       const subscription = new WebsiteSubscriptionService(repository, sourceService)
       const inspected = await sourceService.inspect('https://news.example.com/')
       const added = await subscription.add(inspected)
 
-      expect(added.insertedArticles).toBe(0)
+      expect(added.insertedArticles).toBe(5)
+      expect(calls).toBe(1)
       expect(repository.getFeedById(added.feedId)).toMatchObject({
         url: 'https://news.example.com/',
         sourceType: 'website'
       })
       expect(repository.listFeeds()).toHaveLength(1)
+      expect(repository.listArticlesByFeed(added.feedId)).toHaveLength(5)
     } finally {
       database.close()
     }
