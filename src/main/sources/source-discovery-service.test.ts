@@ -201,6 +201,32 @@ describe('SourceDiscoveryService parity', () => {
     expect(subscribed.map((item) => item.feedId).sort()).toEqual(['hub-hot', 'hub-telegraph'])
     expect(subscribeHub).toHaveBeenCalledTimes(2)
   })
+
+  it('routes RSS subscription through the current Google Reader/FreshRSS account coordinator', async () => {
+    const remoteSubscribe = vi.fn(async () => 'remote-feed')
+    const service = createService({
+      rss: async () => rssFeed('https://example.com/feed.xml', false),
+      rssHub: async () => [], json: async () => null,
+      website: async () => { throw new Error('no website') }, dynamic: vi.fn(),
+      accountCoordinator: { current: () => ({ type: 'fresh_rss' }), subscribeRss: remoteSubscribe }
+    })
+    const discovery = await service.discover('https://example.com/')
+    const rssCandidate = discovery.candidates.find((candidate) => candidate.kind === 'RSS_DIRECT')!
+    const [result] = await service.subscribeMany(discovery.discoveryId, [rssCandidate.id])
+    expect(result?.feedId).toBe('remote-feed')
+    expect(remoteSubscribe).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects Website subscription under a remote account because Android exposes it only to Local', async () => {
+    const service = createService({
+      rss: async () => { throw new Error('no rss') }, rssHub: async () => [], json: async () => null,
+      website: async () => websiteInspection(false), dynamic: vi.fn(),
+      accountCoordinator: { current: () => ({ type: 'google_reader' }), subscribeRss: vi.fn() }
+    })
+    const discovery = await service.discover('https://example.com/')
+    const website = discovery.candidates.find((candidate) => candidate.kind === 'WEBSITE')!
+    await expect(service.subscribeMany(discovery.discoveryId, [website.id])).rejects.toThrow('网站 来源仅支持 Local 账户')
+  })
 })
 
 function createService(options: {
@@ -211,6 +237,7 @@ function createService(options: {
   website: (...args: unknown[]) => Promise<WebsiteInspectionResult>
   dynamic: (...args: unknown[]) => Promise<WebsiteInspectionResult>
   rssHubSubscribe?: (...args: any[]) => any
+  accountCoordinator?: { current: () => any; subscribeRss: (...args: any[]) => Promise<string> }
 }): SourceDiscoveryService {
   return new SourceDiscoveryService(
     { discover: options.rss } as unknown as RssDiscoveryService,
@@ -227,7 +254,8 @@ function createService(options: {
       inspectDynamic: options.dynamic,
       hasRule: () => false
     } as unknown as WebsiteSourceService,
-    { add: async () => ({ feedId: 'website-feed', insertedArticles: 0 }) } as unknown as WebsiteSubscriptionService
+    { add: async () => ({ feedId: 'website-feed', insertedArticles: 0 }) } as unknown as WebsiteSubscriptionService,
+    options.accountCoordinator as any
   )
 }
 

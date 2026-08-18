@@ -33,8 +33,9 @@ export class RssSubscriptionService {
 
     const now = Date.now()
     const feedId = randomUUID()
-    const feed = toFeedRecord(feedId, discovered, now)
-    const candidateArticles = discovered.items.map((item) => toArticleRecord(feedId, item, now))
+    const accountId = this.repository.getCurrentAccountId()
+    const feed = toFeedRecord(feedId, discovered, now, this.repository.getCurrentDefaultGroup().id, accountId)
+    const candidateArticles = discovered.items.map((item) => toArticleRecord(feedId, item, now, accountId))
     const articles = this.articleFilters?.filterArticles(feedId, candidateArticles).kept ?? candidateArticles
     this.repository.upsertFeedWithArticles(feed, articles)
 
@@ -61,7 +62,9 @@ export class RssSubscriptionService {
       if (!recovered) throw error
       discovered = recovered
     }
-    const candidateArticles = discovered.items.map((item) => toArticleRecord(existing.id, item, now))
+    const candidateArticles = discovered.items
+      .map((item) => toArticleRecord(existing.id, item, now, existing.accountId))
+      .filter((article) => !this.repository.isArchivedLink(existing.id, article.url))
     const articles = this.articleFilters?.filterArticles(existing.id, candidateArticles).kept ?? candidateArticles
     const insertedArticles = articles.reduce(
       (count, article) => count + (this.repository.hasArticle(article.id) ? 0 : 1),
@@ -97,10 +100,11 @@ export class RssSubscriptionService {
   }
 }
 
-export function toFeedRecord(feedId: string, discovered: DiscoveredRssFeed, now: number): FeedRecord {
+export function toFeedRecord(feedId: string, discovered: DiscoveredRssFeed, now: number, groupId = DEFAULT_GROUP_ID, accountId?: number): FeedRecord {
   return {
     id: feedId,
-    groupId: DEFAULT_GROUP_ID,
+    accountId,
+    groupId,
     name: discovered.title,
     url: discovered.feedUrl,
     sourcePageUrl: discovered.sourcePageUrl,
@@ -115,10 +119,11 @@ export function toFeedRecord(feedId: string, discovered: DiscoveredRssFeed, now:
   }
 }
 
-export function toArticleRecord(feedId: string, item: RssFeedItem, now: number): ArticleRecord {
+export function toArticleRecord(feedId: string, item: RssFeedItem, now: number, accountId?: number): ArticleRecord {
   const rawHtml = item.contentHtml ?? item.descriptionHtml
   return {
     id: stableArticleId(feedId, item),
+    accountId,
     feedId,
     title: item.title,
     url: item.link || null,

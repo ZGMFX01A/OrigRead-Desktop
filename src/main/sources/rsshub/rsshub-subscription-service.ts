@@ -42,8 +42,9 @@ export class RssHubSubscriptionService {
       feedUrl: result.match.feedUrl,
       sourcePageUrl
     }
-    const feed = toFeedRecord(feedId, discovered, now)
-    const articles = discovered.items.map((item) => toArticleRecord(feedId, item, now))
+    const accountId = this.repository.getCurrentAccountId()
+    const feed = toFeedRecord(feedId, discovered, now, this.repository.getCurrentDefaultGroup().id, accountId)
+    const articles = discovered.items.map((item) => toArticleRecord(feedId, item, now, accountId))
     this.repository.upsertRssHubFeedWithArticles(feed, articles, sourcePageUrl)
 
     return {

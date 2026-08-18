@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { ArticleRecord, FeedRecord } from '../../../shared/library'
 import type { WebsiteInspectionResult, WebsiteParsedArticle } from '../../../shared/website'
-import { DEFAULT_GROUP_ID } from '../../database/migrations'
 import { LibraryRepository } from '../../database/library-repository'
 import { WebsiteSourceService } from './website-source-service'
 import type { ArticleFilterRepository } from '../../filter/article-filter-repository'
@@ -23,9 +22,11 @@ export class WebsiteSubscriptionService {
     if (existing) throw new Error(`来源已存在：${existing.name}`)
     const now = Date.now()
     const feedId = randomUUID()
+    const accountId = this.repository.getCurrentAccountId()
     const feed: FeedRecord = {
       id: feedId,
-      groupId: DEFAULT_GROUP_ID,
+      accountId,
+      groupId: this.repository.getCurrentDefaultGroup().id,
       name: inspection.title,
       url: inspection.sourceUrl,
       sourcePageUrl: inspection.sourceUrl,
@@ -57,7 +58,9 @@ export class WebsiteSubscriptionService {
     if (!feed) throw new Error(`来源不存在：${feedId}`)
     if (feed.sourceType !== 'website') throw new Error(`来源不是网站：${feed.name}`)
     const parsed = await this.sourceService.fetchArticles(feed, fetchedAt)
-    const candidateArticles = parsed.map((item) => toWebsiteArticleRecord(feed.id, item, fetchedAt))
+    const candidateArticles = parsed
+      .map((item) => toWebsiteArticleRecord(feed.id, item, fetchedAt, feed.accountId))
+      .filter((article) => !this.repository.isArchivedLink(feed.id, article.url))
     const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
     const insertedArticles = articles.reduce((count, article) => count + (this.repository.hasArticle(article.id) ? 0 : 1), 0)
     const existing = this.repository.listArticlesByFeed(feed.id)
@@ -67,9 +70,10 @@ export class WebsiteSubscriptionService {
   }
 }
 
-function toWebsiteArticleRecord(feedId: string, item: WebsiteParsedArticle, now: number): ArticleRecord {
+function toWebsiteArticleRecord(feedId: string, item: WebsiteParsedArticle, now: number, accountId?: number): ArticleRecord {
   return {
     id: `website-${createHash('sha256').update(feedId).update('\u0000').update(item.link).digest('hex')}`,
+    accountId,
     feedId,
     title: item.title,
     url: item.link,

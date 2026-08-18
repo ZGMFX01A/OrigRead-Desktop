@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, shell, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, powerMonitor, shell, type IpcMainInvokeEvent } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -62,6 +62,10 @@ import type { ArticleFilterRuleType } from '../shared/filter-rules'
 import type { UpdateCheckResult } from '../shared/update'
 import { ReleaseUpdateService } from './update/release-update-service'
 import { DESKTOP_BROWSER_USER_AGENT } from './network/user-agent-policy'
+import { AccountRepository } from './accounts/account-repository'
+import { RemoteAccountSyncService } from './accounts/remote-account-sync-service'
+import { AccountSyncSettingsProvider, DesktopAccountService } from './accounts/desktop-account-service'
+import type { AccountCreateInput, AccountPatch, AccountType } from '../shared/account'
 
 const isDevelopment = Boolean(process.env.ELECTRON_RENDERER_URL)
 if (process.env.ORIGREAD_E2E_USER_DATA_DIR) {
@@ -107,6 +111,8 @@ let configurationBackupService: ConfigurationBackupService | null = null
 let opmlService: OpmlService | null = null
 let feedDiscoveryCatalog: FeedDiscoveryCatalog | null = null
 let aiRuleGenerationService: AiRuleGenerationService | null = null
+let accountRepository: AccountRepository | null = null
+let accountService: DesktopAccountService | null = null
 
 function localizedAppName(): string {
   return resolveBrandName(app.getLocale())
@@ -253,48 +259,113 @@ function registerIpcHandlers(): void {
     }
     return libraryRepository.listArticles(limit === undefined ? 200 : limit)
   })
-  ipcMain.handle(IPC_CHANNELS.setArticleUnread, (event, articleId: unknown, unread: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.setArticleUnread, async (event, articleId: unknown, unread: unknown) => {
     assertTrustedSender(event)
-    if (!libraryRepository) throw new Error('OrigRead database is not ready')
-    libraryRepository.setArticleUnread(validateId(articleId, 'articleId'), validateBoolean(unread, 'unread'))
+    if (!accountService) throw new Error('Account service is not ready')
+    await accountService.markArticleUnread(validateId(articleId, 'articleId'), validateBoolean(unread, 'unread'))
   })
-  ipcMain.handle(IPC_CHANNELS.setArticleStarred, (event, articleId: unknown, starred: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.setArticleStarred, async (event, articleId: unknown, starred: unknown) => {
     assertTrustedSender(event)
-    if (!libraryRepository) throw new Error('OrigRead database is not ready')
-    libraryRepository.setArticleStarred(validateId(articleId, 'articleId'), validateBoolean(starred, 'starred'))
+    if (!accountService) throw new Error('Account service is not ready')
+    await accountService.markArticleStarred(validateId(articleId, 'articleId'), validateBoolean(starred, 'starred'))
   })
-  ipcMain.handle(IPC_CHANNELS.addGroup, (event, name: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.getAccounts, (event) => {
     assertTrustedSender(event)
-    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    if (!accountService) throw new Error('Account service is not ready')
+    return accountService.snapshot()
+  })
+  ipcMain.handle(IPC_CHANNELS.addAccount, async (event, input: unknown) => {
+    assertTrustedSender(event)
+    if (!accountService) throw new Error('Account service is not ready')
+    const validated = validateAccountCreateInput(input)
+    if (validated.useClientCertificate) {
+      const selected = await dialog.showOpenDialog({
+        title: '选择客户端证书',
+        properties: ['openFile'],
+        filters: [{ name: 'PKCS#12 client certificate', extensions: ['p12', 'pfx'] }]
+      })
+      if (selected.canceled || !selected.filePaths[0]) throw new Error('客户端证书选择已取消')
+      const bytes = readFileSync(selected.filePaths[0])
+      if (bytes.length === 0 || bytes.length > 10 * 1024 * 1024) throw new Error('客户端证书文件无效或过大')
+      validated.clientCertificateBase64 = bytes.toString('base64')
+    }
+    const result = await accountService.add(validated)
+    periodicSyncScheduler?.reconfigure()
+    return result
+  })
+  ipcMain.handle(IPC_CHANNELS.updateAccount, (event, patch: unknown) => {
+    assertTrustedSender(event)
+    if (!accountService) throw new Error('Account service is not ready')
+    const result = accountService.update(validateAccountPatch(patch))
+    periodicSyncScheduler?.reconfigure()
+    return result
+  })
+  ipcMain.handle(IPC_CHANNELS.switchAccount, (event, accountId: unknown) => {
+    assertTrustedSender(event)
+    if (!accountService) throw new Error('Account service is not ready')
+    const result = accountService.switchTo(validateAccountId(accountId))
+    periodicSyncScheduler?.reconfigure()
+    return result
+  })
+  ipcMain.handle(IPC_CHANNELS.deleteAccount, (event, accountId: unknown) => {
+    assertTrustedSender(event)
+    if (!accountService) throw new Error('Account service is not ready')
+    const result = accountService.delete(validateAccountId(accountId))
+    periodicSyncScheduler?.reconfigure()
+    return result
+  })
+  ipcMain.handle(IPC_CHANNELS.testAccountConnection, async (event, accountId: unknown) => {
+    assertTrustedSender(event)
+    if (!accountService) throw new Error('Account service is not ready')
+    return accountService.testConnection(validateAccountId(accountId))
+  })
+  ipcMain.handle(IPC_CHANNELS.clearAccountArticles, (event, accountId: unknown) => {
+    assertTrustedSender(event)
+    if (!accountService) throw new Error('Account service is not ready')
+    accountService.clearArticles(validateAccountId(accountId))
+  })
+  ipcMain.handle(IPC_CHANNELS.importAccountClientCertificate, async (event, accountId: unknown, passphrase: unknown) => {
+    assertTrustedSender(event)
+    if (!accountRepository) throw new Error('Account repository is not ready')
+    const id = validateAccountId(accountId)
+    if (typeof passphrase !== 'string' || passphrase.length > 4_096) throw new TypeError('client certificate passphrase is invalid')
+    const selected = await dialog.showOpenDialog({
+      title: '选择客户端证书',
+      properties: ['openFile'],
+      filters: [{ name: 'PKCS#12 client certificate', extensions: ['p12', 'pfx'] }]
+    })
+    if (selected.canceled || !selected.filePaths[0]) return null
+    return accountRepository.setClientCertificate(id, readFileSync(selected.filePaths[0]), passphrase)
+  })
+  ipcMain.handle(IPC_CHANNELS.clearAccountClientCertificate, (event, accountId: unknown) => {
+    assertTrustedSender(event)
+    if (!accountRepository) throw new Error('Account repository is not ready')
+    return accountRepository.clearClientCertificate(validateAccountId(accountId))
+  })
+  ipcMain.handle(IPC_CHANNELS.addGroup, async (event, name: unknown) => {
+    assertTrustedSender(event)
+    if (!accountService || !libraryRepository) throw new Error('Account service is not ready')
     const normalizedName = validateText(name, 'groupName', 200).trim()
     const groups = libraryRepository.listGroups()
     if (!groups.some((group) => group.name === normalizedName)) {
-      libraryRepository.upsertGroup({
-        id: randomUUID(),
-        name: normalizedName,
-        sortOrder: Math.max(-1, ...groups.map((group) => group.sortOrder)) + 1,
-        isDefault: false
-      })
+      await accountService.addGroup(normalizedName)
     }
     return libraryRepository.listGroups()
   })
-  ipcMain.handle(IPC_CHANNELS.updateFeedSettings, (event, feedId: unknown, patch: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.updateFeedSettings, async (event, feedId: unknown, patch: unknown) => {
     assertTrustedSender(event)
-    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    if (!libraryRepository || !accountService) throw new Error('Account service is not ready')
     const id = validateId(feedId, 'feedId')
     const current = libraryRepository.getFeedById(id)
     if (!current) throw new Error('来源不存在')
     const nextPatch = validateFeedSettingsPatch(patch)
     if (nextPatch.groupId && !libraryRepository.listGroups().some((group) => group.id === nextPatch.groupId)) throw new Error('分组不存在')
-    const next = {
-      ...current,
+    const normalizedPatch = {
       ...nextPatch,
       isFullContent: nextPatch.isFullContent === true ? true : (nextPatch.isBrowser === true ? false : nextPatch.isFullContent ?? current.isFullContent),
       isBrowser: nextPatch.isBrowser === true ? true : (nextPatch.isFullContent === true ? false : nextPatch.isBrowser ?? current.isBrowser),
-      updatedAt: Date.now()
     }
-    libraryRepository.upsertFeed(next)
-    return libraryRepository.getFeedById(id)!
+    return accountService.updateFeed(id, normalizedPatch)
   })
   ipcMain.handle(IPC_CHANNELS.clearFeedArticles, (event, feedId: unknown) => {
     assertTrustedSender(event)
@@ -303,15 +374,14 @@ function registerIpcHandlers(): void {
     if (!libraryRepository.getFeedById(id)) throw new Error('来源不存在')
     libraryRepository.deleteArticlesByFeed(id, false)
   })
-  ipcMain.handle(IPC_CHANNELS.deleteFeed, (event, feedId: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.deleteFeed, async (event, feedId: unknown) => {
     assertTrustedSender(event)
-    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    if (!libraryRepository || !accountService) throw new Error('Account service is not ready')
     const id = validateId(feedId, 'feedId')
     if (!libraryRepository.getFeedById(id)) return
     articleFilterRepository?.deleteByFeed(id)
     websitePreferenceRepository?.delete(id)
-    libraryRepository.deleteArticlesByFeed(id, true)
-    libraryRepository.deleteFeed(id)
+    await accountService.deleteFeed(id)
   })
   ipcMain.handle(IPC_CHANNELS.reloadFeedIcon, async (event, feedId: unknown) => {
     assertTrustedSender(event)
@@ -416,13 +486,20 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle(IPC_CHANNELS.addRssSource, async (event, inputUrl: unknown) => {
     assertTrustedSender(event)
-    if (!rssSubscriptionService) throw new Error('RSS service is not ready')
-    return rssSubscriptionService.add(validateUrlInput(inputUrl))
+    if (!rssSubscriptionService || !accountService) throw new Error('RSS/account service is not ready')
+    const url = validateUrlInput(inputUrl)
+    if (accountService.current().type === 'local') return rssSubscriptionService.add(url)
+    const discovered = await new RssDiscoveryService().discover(url)
+    const feedId = await accountService.subscribeRss(discovered)
+    return { feedId, feed: discovered, insertedArticles: 0 }
   })
   ipcMain.handle(IPC_CHANNELS.refreshRssSource, async (event, feedId: unknown) => {
     assertTrustedSender(event)
-    if (!rssSubscriptionService) throw new Error('RSS service is not ready')
-    return rssSubscriptionService.refresh(validateId(feedId, 'feedId'))
+    if (!rssSubscriptionService || !accountService) throw new Error('RSS/account service is not ready')
+    const id = validateId(feedId, 'feedId')
+    if (accountService.current().type === 'local') return rssSubscriptionService.refresh(id)
+    await accountService.syncCurrent()
+    return { feedId: id, fetchedArticles: 0, insertedArticles: 0 }
   })
   ipcMain.handle(IPC_CHANNELS.getRssHubSettings, (event) => {
     assertTrustedSender(event)
@@ -627,14 +704,22 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle(IPC_CHANNELS.refreshSource, async (event, feedId: unknown) => {
     assertTrustedSender(event)
+    if (!accountService || !libraryRepository) throw new Error('Account service is not ready')
+    const id = validateId(feedId, 'feedId')
+    if (accountService.current().type !== 'local') {
+      await accountService.syncCurrent()
+      const feed = libraryRepository.getFeedById(id)
+      if (!feed) throw new Error('来源不存在')
+      return { feedId:id, feedName:feed.name, sourceType:feed.sourceType, status:'success' as const, fetchedArticles:0, insertedArticles:0, deletedArticles:0, error:null }
+    }
     if (!sourceSyncService) throw new Error('Source sync service is not ready')
-    return sourceSyncService.refreshSource(validateId(feedId, 'feedId'))
+    return sourceSyncService.refreshSource(id)
   })
   ipcMain.handle(IPC_CHANNELS.refreshAllSources, async (event) => {
     assertTrustedSender(event)
     if (periodicSyncScheduler) return periodicSyncScheduler.runNow('manual')
-    if (!sourceSyncService) throw new Error('Source sync service is not ready')
-    return sourceSyncService.refreshAllSources()
+    if (!accountService) throw new Error('Account service is not ready')
+    return accountService.refreshAllSources()
   })
   ipcMain.handle(IPC_CHANNELS.getSyncRuntimeState, (event) => {
     assertTrustedSender(event)
@@ -769,7 +854,10 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle(IPC_CHANNELS.importOpml, async (event) => {
     assertTrustedSender(event)
-    if (!opmlService) throw new Error('OPML service is not ready')
+    if (!opmlService || !accountService) throw new Error('OPML/account service is not ready')
+    if (accountService.current().type !== 'local') {
+      return { ok: false, cancelled: false, path: null, error: '当前远端账户不支持从客户端导入 OPML；请在服务端管理订阅，或切换到 Local 账户。' }
+    }
     try {
       const selected = await showOpenDialog({
         title: '导入 OPML',
@@ -955,6 +1043,64 @@ function validateText(value: unknown, field: string, maxLength: number): string 
   return value
 }
 
+function validateAccountId(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) throw new TypeError('accountId must be a positive integer')
+  return value
+}
+
+function validateAccountType(value: unknown): AccountType {
+  if (value === 'local' || value === 'fever' || value === 'google_reader' || value === 'fresh_rss') return value
+  throw new TypeError('Unsupported account type')
+}
+
+function validateAccountCreateInput(value: unknown): AccountCreateInput {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Invalid account input')
+  const input = value as Record<string, unknown>
+  const type = validateAccountType(input.type)
+  const result: AccountCreateInput = { type }
+  if (input.name !== undefined) result.name = validateText(input.name, 'name', 200)
+  if (type !== 'local') {
+    result.serverUrl = validateText(input.serverUrl, 'serverUrl', 4_096)
+    result.username = validateText(input.username, 'username', 500)
+    result.password = validateText(input.password, 'password', 4_096)
+    if (input.useClientCertificate !== undefined) result.useClientCertificate = validateBoolean(input.useClientCertificate, 'useClientCertificate')
+    if (input.clientCertificatePassphrase !== undefined) {
+      if (typeof input.clientCertificatePassphrase !== 'string' || input.clientCertificatePassphrase.length > 4_096) throw new TypeError('clientCertificatePassphrase is invalid')
+      result.clientCertificatePassphrase = input.clientCertificatePassphrase
+    }
+  }
+  return result
+}
+
+function validateAccountPatch(value: unknown): AccountPatch {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Invalid account patch')
+  const input = value as Record<string, unknown>
+  const result: AccountPatch = { id: validateAccountId(input.id) }
+  if (input.name !== undefined) result.name = validateText(input.name, 'name', 200)
+  if (input.serverUrl !== undefined) result.serverUrl = validateText(input.serverUrl, 'serverUrl', 4_096)
+  if (input.username !== undefined) result.username = validateText(input.username, 'username', 500)
+  if (input.password !== undefined) {
+    if (typeof input.password !== 'string' || input.password.length > 4_096) throw new TypeError('password is invalid')
+    result.password = input.password
+  }
+  if (input.syncIntervalMinutes !== undefined) {
+    if (typeof input.syncIntervalMinutes !== 'number' || !Number.isFinite(input.syncIntervalMinutes)) throw new TypeError('syncIntervalMinutes is invalid')
+    result.syncIntervalMinutes = input.syncIntervalMinutes
+  }
+  for (const key of ['syncOnStart', 'syncOnlyOnWiFi', 'syncOnlyWhenCharging'] as const) {
+    if (input[key] !== undefined) result[key] = validateBoolean(input[key], key)
+  }
+  if (input.keepArchivedMillis !== undefined) {
+    if (typeof input.keepArchivedMillis !== 'number' || !Number.isFinite(input.keepArchivedMillis)) throw new TypeError('keepArchivedMillis is invalid')
+    result.keepArchivedMillis = input.keepArchivedMillis
+  }
+  if (input.syncBlockList !== undefined) {
+    if (!Array.isArray(input.syncBlockList) || input.syncBlockList.some((item) => typeof item !== 'string')) throw new TypeError('syncBlockList is invalid')
+    result.syncBlockList = input.syncBlockList.slice(0, 500) as string[]
+  }
+  return result
+}
+
 app.whenReady().then(() => {
   if (process.platform !== 'darwin') {
     Menu.setApplicationMenu(null)
@@ -970,6 +1116,9 @@ app.whenReady().then(() => {
   )
   readerFontRepository = new ReaderFontRepository(join(app.getPath('userData'), 'reader-fonts'))
   const secretStore = new ElectronSecretStore(join(app.getPath('userData'), 'secrets.json'))
+  accountRepository = new AccountRepository(desktopDatabase.connection, secretStore)
+  const legacySettings = settingsRepository.current()
+  accountRepository.migrateLegacySyncSettings(legacySettings.syncIntervalMinutes, legacySettings.syncOnStart)
   const systemLanguage = app.getLocale()
   aiSettingsRepository = new AiSettingsRepository(desktopDatabase.connection, secretStore, systemLanguage)
   translationSettingsRepository = new TranslationSettingsRepository(desktopDatabase.connection, secretStore, systemLanguage)
@@ -1011,22 +1160,13 @@ app.whenReady().then(() => {
   )
   websiteSubscriptionService = new WebsiteSubscriptionService(libraryRepository, websiteSourceService, articleFilterRepository)
   rssHubSubscriptionService = new RssHubSubscriptionService(libraryRepository)
-  sourceDiscoveryService = new SourceDiscoveryService(
-    new RssDiscoveryService(),
-    rssSubscriptionService,
-    rssHubResolver,
-    rssHubSubscriptionService,
-    jsonSourceService,
-    jsonSubscriptionService,
-    websiteSourceService,
-    websiteSubscriptionService
-  )
   aiSummaryService = new AiSummaryService(libraryRepository, readerContentService, aiSettingsRepository, join(app.getPath('userData'), 'cache', 'ai-summary'))
   aiRuleGenerationService = new AiRuleGenerationService(aiSettingsRepository, websiteRuleRepository, jsonRuleRepository, new JsonArticleParser())
   translationService = new TranslationService(libraryRepository, readerContentService, translationSettingsRepository, aiSettingsRepository, join(app.getPath('userData'), 'cache', 'translation'))
   configurationBackupService = new ConfigurationBackupService(
     app.getVersion(), libraryRepository, settingsRepository, websiteRuleRepository, jsonRuleRepository,
-    articleFilterRepository, websitePreferenceRepository, rssHubSettingsRepository, translationSettingsRepository, aiSettingsRepository
+    articleFilterRepository, websitePreferenceRepository, rssHubSettingsRepository, translationSettingsRepository, aiSettingsRepository,
+    accountRepository
   )
   sourceSyncService = new SourceSyncService(
     libraryRepository,
@@ -1049,13 +1189,30 @@ app.whenReady().then(() => {
       notification.show()
     }
   )
+  const remoteAccountSyncService = new RemoteAccountSyncService(accountRepository, libraryRepository)
+  accountService = new DesktopAccountService(accountRepository, libraryRepository, remoteAccountSyncService, sourceSyncService)
+  sourceDiscoveryService = new SourceDiscoveryService(
+    new RssDiscoveryService(),
+    rssSubscriptionService,
+    rssHubResolver,
+    rssHubSubscriptionService,
+    jsonSourceService,
+    jsonSubscriptionService,
+    websiteSourceService,
+    websiteSubscriptionService,
+    accountService
+  )
   periodicSyncScheduler = new PeriodicSyncScheduler(
-    settingsRepository,
-    sourceSyncService,
+    new AccountSyncSettingsProvider(accountRepository),
+    accountService,
     (state) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send(IPC_CHANNELS.syncRuntimeStateChanged, state)
       }
+    },
+    () => {
+      const account = accountRepository?.current()
+      return !account?.syncOnlyWhenCharging || !powerMonitor.isOnBatteryPower()
     }
   )
   registerIpcHandlers()

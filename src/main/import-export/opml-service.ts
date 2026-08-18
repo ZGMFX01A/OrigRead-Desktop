@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { DOMParser } from 'linkedom'
 import type { LibraryRepository } from '../database/library-repository'
-import { DEFAULT_GROUP_ID } from '../database/migrations'
 import type { FeedRecord, GroupRecord } from '../../shared/library'
 import type { OpmlImportResult } from '../../shared/opml'
 
@@ -45,7 +44,7 @@ export class OpmlService {
     let feedsSkipped = 0
 
     for (const sourceGroup of parsed) {
-      let groupId = DEFAULT_GROUP_ID
+      let groupId = this.library.getCurrentDefaultGroup().id
       if (!sourceGroup.isDefault) {
         const group: GroupRecord = {
           id: `group-${randomUUID()}`,

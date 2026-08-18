@@ -1,4 +1,4 @@
-import { BookOpenText, Bot, Clock3, DatabaseBackup, FileJson2, Filter, Globe2, Languages, Plus, RefreshCw, Settings2, Trash2, Upload, Download, CircleHelp, Sparkles, FileText, Search, RadioTower, RotateCcw, X, Eye, EyeOff, Save, ExternalLink, Monitor, Smartphone, Keyboard, MessageSquareWarning } from 'lucide-react'
+import { BookOpenText, Bot, Clock3, DatabaseBackup, FileJson2, Filter, Globe2, Languages, Plus, RefreshCw, Settings2, Trash2, Upload, Download, CircleHelp, Sparkles, FileText, Search, RadioTower, RotateCcw, X, Eye, EyeOff, Save, ExternalLink, Monitor, Smartphone, Keyboard, MessageSquareWarning, UserRound } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AiProviderProfile, AiSettings } from '../../shared/ai'
@@ -13,8 +13,9 @@ import type { RssHubSettings } from '../../shared/rsshub'
 import type { AiGeneratedRuleKind, AiGeneratedRulePreview } from '../../shared/ai-rule'
 import { BUILTIN_READER_FONTS, type ReaderFontEntry } from '../../shared/reader-font'
 import type { UpdateCheckResult } from '../../shared/update'
+import type { AccountCreateInput, AccountPatch, AccountRecord, AccountSnapshot, AccountType } from '../../shared/account'
 
-type SettingsPage = 'general' | 'translation' | 'ai' | 'filters' | 'jsonRules' | 'websiteRules' | 'rsshub' | 'backup' | 'about' | 'update'
+type SettingsPage = 'general' | 'accounts' | 'translation' | 'ai' | 'filters' | 'jsonRules' | 'websiteRules' | 'rsshub' | 'backup' | 'about' | 'update'
 const INTERNAL_ITHOME_RULE_ID = 'ithome-home'
 const DESKTOP_REPOSITORY_URL = 'https://github.com/ZGMFX01A/OrigRead-Desktop'
 const ANDROID_REPOSITORY_URL = 'https://github.com/ZGMFX01A/OrigRead'
@@ -27,15 +28,17 @@ interface SettingsPanelProps {
   syncState: SyncRuntimeState | null
   onChange(patch: DesktopSettingsPatch): void
   onConfigurationRestored?(): void
+  onAccountChanged?(): void
 }
 
-export function SettingsPanel({ settings, appInfo, syncState, onChange, onConfigurationRestored }: SettingsPanelProps): React.JSX.Element {
+export function SettingsPanel({ settings, appInfo, syncState, onChange, onConfigurationRestored, onAccountChanged }: SettingsPanelProps): React.JSX.Element {
   const { t } = useTranslation()
   const [page, setPage] = useState<SettingsPage>('general')
   return <div className="settings-layout">
     <aside className="settings-nav">
       <div className="settings-nav-title"><Settings2 size={18}/><span>{t('settings')}</span></div>
       <SettingsNavButton active={page==='general'} icon={<Globe2 size={16}/>} label={t('settingsGeneral')} onClick={()=>setPage('general')}/>
+      <SettingsNavButton active={page==='accounts'} icon={<UserRound size={16}/>} label={t('accountsTitle')} onClick={()=>setPage('accounts')}/>
       <SettingsNavButton active={page==='ai'} icon={<Bot size={16}/>} label={t('aiSettingsTitle')} onClick={()=>setPage('ai')}/>
       <SettingsNavButton active={page==='translation'} icon={<Languages size={16}/>} label={t('translationSettingsTitle')} onClick={()=>setPage('translation')}/>
       <SettingsNavButton active={page==='filters'} icon={<Filter size={16}/>} label={t('articleFilters')} onClick={()=>setPage('filters')}/>
@@ -49,7 +52,8 @@ export function SettingsPanel({ settings, appInfo, syncState, onChange, onConfig
       <small>{appInfo ? `v${appInfo.version} · ${appInfo.platform}` : '—'}</small>
     </aside>
     <div className="settings-page settings-subpage">
-      {page==='general' && <GeneralSettings settings={settings} syncState={syncState} onChange={onChange}/>}
+      {page==='general' && <GeneralSettings settings={settings} onChange={onChange}/>}
+      {page==='accounts' && <AccountsSettingsPage syncState={syncState} onChanged={onAccountChanged}/>}
       {page==='update' && <UpdateSettingsPage settings={settings} appInfo={appInfo} onChange={onChange}/>}
       {page==='translation' && <TranslationSettingsPage/>}
       {page==='ai' && <AiSettingsPage/>}
@@ -63,8 +67,8 @@ export function SettingsPanel({ settings, appInfo, syncState, onChange, onConfig
   </div>
 }
 
-function GeneralSettings({settings,syncState,onChange}:{settings:DesktopSettings;syncState:SyncRuntimeState|null;onChange:(patch:DesktopSettingsPatch)=>void}):React.JSX.Element{
-  const {t,i18n}=useTranslation();const locale=i18n.resolvedLanguage?.startsWith('zh')?'zh-CN':'en-US'
+function GeneralSettings({settings,onChange}:{settings:DesktopSettings;onChange:(patch:DesktopSettingsPatch)=>void}):React.JSX.Element{
+  const {t}=useTranslation()
   const [customFonts,setCustomFonts]=useState<ReaderFontEntry[]>([])
   const [fontStatus,setFontStatus]=useState('')
   useEffect(()=>{let cancelled=false;void window.origread.listReaderFonts().then((fonts)=>{if(!cancelled)setCustomFonts(fonts)}).catch((error)=>{if(!cancelled)setFontStatus(errorText(error))});return()=>{cancelled=true}},[])
@@ -86,13 +90,129 @@ function GeneralSettings({settings,syncState,onChange}:{settings:DesktopSettings
       <SettingRow title={t('readerLineHeight')} description={t('readerLineHeightDescription')}><select className="reader-line-height-select" value={settings.readerLineHeight} onChange={(e)=>onChange({readerLineHeight:Number(e.target.value)})}><option value={1.65}>{t('readerCompact')}</option><option value={1.85}>{t('readerStandard')}</option><option value={2.05}>{t('readerRelaxed')}</option></select></SettingRow>
       <SettingRow title={t('readerContentWidth')} description={t('readerContentWidthDescription')}><select className="reader-content-width-select" value={settings.readerContentWidth} onChange={(e)=>onChange({readerContentWidth:Number(e.target.value)})}><option value={680}>{t('readerWidthNarrow')}</option><option value={760}>{t('readerWidthStandard')}</option><option value={900}>{t('readerWidthWide')}</option></select></SettingRow>
     </SettingsSection>
-    <SettingsSection icon={<Clock3 size={17}/>} title={t('settingsSync')}>
-      <SettingRow title={t('syncInterval')} description={t('syncIntervalDescription')}><select className="sync-interval-select" value={settings.syncIntervalMinutes} onChange={(e)=>onChange({syncIntervalMinutes:Number(e.target.value) as SyncIntervalMinutes})}>{SYNC_INTERVAL_OPTIONS.map((m)=><option key={m} value={m}>{syncIntervalLabel(m,t)}</option>)}</select></SettingRow>
-      <SettingRow title={t('syncOnStart')} description={t('syncOnStartDescription')}><Toggle checked={settings.syncOnStart} onChange={(value)=>onChange({syncOnStart:value})}/></SettingRow>
-      <div className="sync-runtime-card"><div><span>{t('syncStatus')}</span><strong>{syncState?.running?t('syncRunning'):t('syncIdle')}</strong></div><div><span>{t('lastSync')}</span><strong>{formatDate(syncState?.lastFinishedAt,t('never'),locale)}</strong></div><div><span>{t('nextSync')}</span><strong>{formatDate(syncState?.nextRunAt,t('manualOnly'),locale)}</strong></div></div>
-    </SettingsSection>
   </>
 }
+
+function AccountsSettingsPage({syncState,onChanged}:{syncState:SyncRuntimeState|null;onChanged?:()=>void}):React.JSX.Element{
+  const {t,i18n}=useTranslation()
+  const locale=i18n.resolvedLanguage?.startsWith('zh')?'zh-CN':'en-US'
+  const [snapshot,setSnapshot]=useState<AccountSnapshot|null>(null)
+  const [selectedId,setSelectedId]=useState<number|null>(null)
+  const [status,setStatus]=useState('')
+  const [adding,setAdding]=useState(false)
+  const [addType,setAddType]=useState<AccountType>('local')
+  const [addName,setAddName]=useState('')
+  const [addServer,setAddServer]=useState('')
+  const [addUsername,setAddUsername]=useState('')
+  const [addPassword,setAddPassword]=useState('')
+  const [addUseClientCertificate,setAddUseClientCertificate]=useState(false)
+  const [addClientCertificatePassphrase,setAddClientCertificatePassphrase]=useState('')
+  const reload=async()=>{
+    const next=await window.origread.getAccounts()
+    setSnapshot(next)
+    setSelectedId((current)=>current&&next.accounts.some((item)=>item.id===current)?current:next.currentAccountId)
+  }
+  useEffect(()=>{void reload().catch((error)=>setStatus(errorText(error)))},[])
+  const switchTo=async(id:number)=>{setStatus('');try{await window.origread.switchAccount(id);await reload();onChanged?.()}catch(error){setStatus(errorText(error))}}
+  const add=async()=>{
+    setAdding(true);setStatus('')
+    const input:AccountCreateInput={type:addType}
+    if(addName.trim())input.name=addName.trim()
+    if(addType!=='local'){
+      input.serverUrl=addServer.trim();input.username=addUsername.trim();input.password=addPassword
+      input.useClientCertificate=addUseClientCertificate
+      if(addUseClientCertificate)input.clientCertificatePassphrase=addClientCertificatePassphrase
+    }
+    try{
+      const account=await window.origread.addAccount(input)
+      await reload();setSelectedId(account.id);onChanged?.()
+      setStatus(account.type==='local'?t('accountAdded'):t('accountAddedSyncing'))
+      setAddName('');setAddServer('');setAddUsername('');setAddPassword('');setAddUseClientCertificate(false);setAddClientCertificatePassphrase('')
+    }catch(error){setStatus(`${t('accountAddFailed')}: ${errorText(error)}`)}finally{setAdding(false)}
+  }
+  const selected=snapshot?.accounts.find((item)=>item.id===selectedId)??null
+  return <>
+    <PageIntro icon={<UserRound size={22}/>} title={t('accountsTitle')} description={t('accountsDescription')}/>
+    <SettingsSection icon={<UserRound size={17}/>} title={t('accountsTitle')}>
+      <div className="account-list">
+        {snapshot?.accounts.map((account)=><button type="button" key={account.id} className={`account-row ${selectedId===account.id?'selected':''}`} onClick={()=>setSelectedId(account.id)}>
+          <div className="settings-action-icon"><UserRound size={16}/></div>
+          <div className="account-row-copy"><strong>{account.name}</strong><span>{t(accountTypeLabelKey(account.type))}{snapshot.currentAccountId===account.id?` · ${t('currentAccount')}`:''}</span></div>
+          {snapshot.currentAccountId!==account.id&&<span className="mini-action" onClick={(event)=>{event.stopPropagation();void switchTo(account.id)}}>{t('switchAccount')}</span>}
+          {snapshot.currentAccountId===account.id&&<span className="account-current-badge">{t('currentAccount')}</span>}
+        </button>)}
+      </div>
+    </SettingsSection>
+
+    {selected&&<AccountDetailsEditor key={selected.id} account={selected} isCurrent={snapshot?.currentAccountId===selected.id} accountCount={snapshot?.accounts.length??1} syncState={syncState} locale={locale} onReload={async()=>{await reload();onChanged?.()}} onStatus={setStatus}/>}
+
+    <SettingsSection icon={<Plus size={17}/>} title={t('addAccount')}>
+      <SettingRow title={t('accountType')} description={t('accountTypeDescription')}><select value={addType} onChange={(event)=>setAddType(event.target.value as AccountType)}><option value="local">Local</option><option value="fresh_rss">FreshRSS</option><option value="google_reader">Google Reader</option><option value="fever">Fever</option></select></SettingRow>
+      <SettingRow title={t('accountName')} description={t('accountNameDescription')}><input value={addName} placeholder={t(accountTypeLabelKey(addType))} onChange={(event)=>setAddName(event.target.value)}/></SettingRow>
+      {addType!=='local'&&<>
+        <SettingRow title={t('serverUrl')} description={t('accountServerDescription')}><input value={addServer} placeholder={addType==='fever'?'https://example.com/api/fever.php':'https://example.com/api/greader.php/'} onChange={(event)=>setAddServer(event.target.value)}/></SettingRow>
+        <SettingRow title={t('username')} description=""><input value={addUsername} onChange={(event)=>setAddUsername(event.target.value)}/></SettingRow>
+        <SettingRow title={t('password')} description=""><input type="password" value={addPassword} onChange={(event)=>setAddPassword(event.target.value)}/></SettingRow>
+        <SettingRow title={t('clientCertificate')} description={t('clientCertificateAddDescription')}><Toggle checked={addUseClientCertificate} onChange={setAddUseClientCertificate}/></SettingRow>
+        {addUseClientCertificate&&<SettingRow title={t('clientCertificatePassphrase')} description={t('clientCertificatePassphraseDescription')}><input type="password" value={addClientCertificatePassphrase} onChange={(event)=>setAddClientCertificatePassphrase(event.target.value)}/></SettingRow>}
+      </>}
+      <div className="settings-inline-actions"><button type="button" className="mini-action" disabled={adding} onClick={()=>void add()}>{adding&&<RefreshCw size={13} className="spinning"/>}{adding?t('accountValidating'):t('addAccount')}</button></div>
+    </SettingsSection>
+    {status&&<StatusText text={status}/>}
+  </>
+}
+
+function AccountDetailsEditor({account,isCurrent,accountCount,syncState,locale,onReload,onStatus}:{account:AccountRecord;isCurrent:boolean;accountCount:number;syncState:SyncRuntimeState|null;locale:string;onReload:()=>Promise<void>;onStatus:(value:string)=>void}):React.JSX.Element{
+  const {t}=useTranslation()
+  const [name,setName]=useState(account.name)
+  const [serverUrl,setServerUrl]=useState(account.serverUrl??'')
+  const [username,setUsername]=useState(account.username??'')
+  const [password,setPassword]=useState('')
+  const [clientCertificatePassphrase,setClientCertificatePassphrase]=useState('')
+  const [busy,setBusy]=useState<'save'|'test'|'certificate'|'clear'|'delete'|null>(null)
+  const update=async(patch:AccountPatch,message?:string)=>{const next=await window.origread.updateAccount(patch);if(message)onStatus(message);await onReload();return next}
+  const save=async()=>{
+    setBusy('save');onStatus('')
+    const patch:AccountPatch={id:account.id,name:name.trim()}
+    if(account.type!=='local'){patch.serverUrl=serverUrl.trim();patch.username=username.trim();if(password)patch.password=password}
+    try{await update(patch,t('accountSaved'));setPassword('')}catch(error){onStatus(`${t('accountSaveFailed')}: ${errorText(error)}`)}finally{setBusy(null)}
+  }
+  const test=async()=>{setBusy('test');onStatus(t('accountTesting'));try{const result=await window.origread.testAccountConnection(account.id);onStatus(result.ok?t('connectionOk'):`${t('connectionFailed')}: ${result.error??'Error'}`)}catch(error){onStatus(`${t('connectionFailed')}: ${errorText(error)}`)}finally{setBusy(null)}}
+  const importCertificate=async()=>{setBusy('certificate');onStatus('');try{const result=await window.origread.importAccountClientCertificate(account.id,clientCertificatePassphrase);if(result){setClientCertificatePassphrase('');onStatus(t('clientCertificateImported'));await onReload()}}catch(error){onStatus(`${t('clientCertificateImportFailed')}: ${errorText(error)}`)}finally{setBusy(null)}}
+  const clearCertificate=async()=>{setBusy('certificate');onStatus('');try{await window.origread.clearAccountClientCertificate(account.id);setClientCertificatePassphrase('');onStatus(t('clientCertificateCleared'));await onReload()}catch(error){onStatus(errorText(error))}finally{setBusy(null)}}
+  const clear=async()=>{if(!window.confirm(t('confirmClearAccountArticles')))return;setBusy('clear');try{await window.origread.clearAccountArticles(account.id);onStatus(t('accountArticlesCleared'));await onReload()}catch(error){onStatus(errorText(error))}finally{setBusy(null)}}
+  const remove=async()=>{if(!window.confirm(t('confirmDeleteAccount')))return;setBusy('delete');try{await window.origread.deleteAccount(account.id);onStatus(t('accountDeleted'));await onReload()}catch(error){onStatus(errorText(error))}finally{setBusy(null)}}
+  return <SettingsSection icon={<Settings2 size={17}/>} title={`${t('accountDetails')} · ${account.name}`}>
+    <SettingRow title={t('accountName')} description=""><input value={name} onChange={(event)=>setName(event.target.value)}/></SettingRow>
+    <SettingRow title={t('accountType')} description=""><span className="setting-value">{t(accountTypeLabelKey(account.type))}</span></SettingRow>
+    {account.type!=='local'&&<>
+      <SettingRow title={t('serverUrl')} description=""><input value={serverUrl} onChange={(event)=>setServerUrl(event.target.value)}/></SettingRow>
+      <SettingRow title={t('username')} description=""><input value={username} onChange={(event)=>setUsername(event.target.value)}/></SettingRow>
+      <SettingRow title={t('password')} description={account.hasPassword?t('accountPasswordSaved'):t('accountPasswordMissing')}><input type="password" value={password} placeholder={t('accountPasswordKeep')} onChange={(event)=>setPassword(event.target.value)}/></SettingRow>
+      <SettingRow title={t('clientCertificate')} description={account.hasClientCertificate?t('clientCertificateConfigured'):t('clientCertificateOptional')}><div className="inline-controls"><input type="password" value={clientCertificatePassphrase} placeholder={t('clientCertificatePassphrasePlaceholder')} onChange={(event)=>setClientCertificatePassphrase(event.target.value)}/><button type="button" className="mini-action" disabled={busy!==null} onClick={()=>void importCertificate()}>{busy==='certificate'&&<RefreshCw size={13} className="spinning"/>}{account.hasClientCertificate?t('replaceClientCertificate'):t('importClientCertificate')}</button>{account.hasClientCertificate&&<button type="button" className="mini-action danger" disabled={busy!==null} onClick={()=>void clearCertificate()}>{t('removeClientCertificate')}</button>}</div></SettingRow>
+      <SettingRow title={t('connection')} description={t('accountConnectionDescription')}><button type="button" className="mini-action" disabled={busy!==null} onClick={()=>void test()}>{busy==='test'&&<RefreshCw size={13} className="spinning"/>}{busy==='test'?t('connectionTestingShort'):t('testConnection')}</button></SettingRow>
+    </>}
+    <SettingRow title={t('syncInterval')} description={t('syncIntervalDescription')}><select value={account.syncIntervalMinutes} onChange={(event)=>void update({id:account.id,syncIntervalMinutes:Number(event.target.value)},t('accountSaved'))}>{SYNC_INTERVAL_OPTIONS.map((minutes)=><option key={minutes} value={minutes}>{syncIntervalLabel(minutes,t)}</option>)}</select></SettingRow>
+    <SettingRow title={t('syncOnStart')} description={t('syncOnStartDescription')}><Toggle checked={account.syncOnStart} onChange={(value)=>void update({id:account.id,syncOnStart:value},t('accountSaved'))}/></SettingRow>
+    <SettingRow title={t('syncOnlyOnWiFi')} description={t('desktopWifiConstraintDescription')}><Toggle checked={account.syncOnlyOnWiFi} onChange={(value)=>void update({id:account.id,syncOnlyOnWiFi:value},t('accountSaved'))}/></SettingRow>
+    <SettingRow title={t('syncOnlyWhenCharging')} description={t('desktopChargingConstraintDescription')}><Toggle checked={account.syncOnlyWhenCharging} onChange={(value)=>void update({id:account.id,syncOnlyWhenCharging:value},t('accountSaved'))}/></SettingRow>
+    <SettingRow title={t('keepArchivedArticles')} description={t('keepArchivedDescription')}><select value={account.keepArchivedMillis} onChange={(event)=>void update({id:account.id,keepArchivedMillis:Number(event.target.value)},t('accountSaved'))}>{KEEP_ARCHIVED_OPTIONS.map((option)=><option key={option.value} value={option.value}>{t(option.labelKey)}</option>)}</select></SettingRow>
+    {isCurrent&&<div className="sync-runtime-card"><div><span>{t('syncStatus')}</span><strong>{syncState?.running?t('syncRunning'):t('syncIdle')}</strong></div><div><span>{t('lastSync')}</span><strong>{formatDate(account.updatedAt??syncState?.lastFinishedAt,t('never'),locale)}</strong></div><div><span>{t('nextSync')}</span><strong>{formatDate(syncState?.nextRunAt,t('manualOnly'),locale)}</strong></div></div>}
+    <div className="settings-inline-actions"><button type="button" className="mini-action" disabled={busy!==null} onClick={()=>void save()}>{busy==='save'&&<RefreshCw size={13} className="spinning"/>}<Save size={13}/>{t('save')}</button><button type="button" className="mini-action danger" disabled={busy!==null} onClick={()=>void clear()}>{t('clearAccountArticles')}</button>{accountCount>1&&<button type="button" className="mini-action danger" disabled={busy!==null} onClick={()=>void remove()}><Trash2 size={13}/>{t('deleteAccount')}</button>}</div>
+  </SettingsSection>
+}
+
+function accountTypeLabelKey(type:AccountType):string{return type==='local'?'accountTypeLocal':type==='fresh_rss'?'accountTypeFreshRSS':type==='google_reader'?'accountTypeGoogleReader':'accountTypeFever'}
+
+const KEEP_ARCHIVED_OPTIONS = [
+  { value: 0, labelKey: 'keepArchivedAlways' },
+  { value: 86_400_000, labelKey: 'keepArchived1Day' },
+  { value: 172_800_000, labelKey: 'keepArchived2Days' },
+  { value: 259_200_000, labelKey: 'keepArchived3Days' },
+  { value: 604_800_000, labelKey: 'keepArchived1Week' },
+  { value: 1_209_600_000, labelKey: 'keepArchived2Weeks' },
+  { value: 2_592_000_000, labelKey: 'keepArchived1Month' }
+] as const
 
 function UpdateSettingsPage({settings,appInfo,onChange}:{settings:DesktopSettings;appInfo:AppInfo|null;onChange:(patch:DesktopSettingsPatch)=>void}):React.JSX.Element{
   const {t,i18n}=useTranslation()
@@ -208,6 +328,7 @@ function AiSettingsPage():React.JSX.Element{
   const [visibleKeys,setVisibleKeys]=useState<Record<string,boolean>>({})
   const [status,setStatus]=useState('')
   const [providerStatus,setProviderStatus]=useState<Record<string,string>>({})
+  const [testingProviders,setTestingProviders]=useState<Record<string,boolean>>({})
 
   useEffect(()=>{
     let cancelled=false
@@ -234,6 +355,18 @@ function AiSettingsPage():React.JSX.Element{
       setProviderStatus((value)=>({...value,[provider.id]:saved?t('credentialSaved',{count:saved.length}):t('credentialRemoved')}))
     }catch(error){setProviderStatus((value)=>({...value,[provider.id]:`${t('credentialSaveFailed')}: ${errorText(error)}`}))}
   }
+  const testProvider=async(providerId:string)=>{
+    setTestingProviders((value)=>({...value,[providerId]:true}))
+    setProviderStatus((value)=>({...value,[providerId]:t('connectionTesting')}))
+    try{
+      const result=await window.origread.testAiProvider(providerId)
+      setProviderStatus((value)=>({...value,[providerId]:result.ok?t('connectionOk'):`${t('connectionFailed')}: ${result.error??'Error'}`}))
+    }catch(error){
+      setProviderStatus((value)=>({...value,[providerId]:`${t('connectionFailed')}: ${errorText(error)}`}))
+    }finally{
+      setTestingProviders((value)=>({...value,[providerId]:false}))
+    }
+  }
   if(!settings)return <LoadingSettings/>
   return <><PageIntro icon={<Bot size={22}/>} title={t('aiSettingsTitle')} description={t('aiSettingsDescription')}/>
     <SettingsSection icon={<Bot size={17}/>} title={t('aiGlobal')}>
@@ -246,11 +379,11 @@ function AiSettingsPage():React.JSX.Element{
     </SettingsSection>
     <div className="settings-section-title standalone-settings-section-title"><Bot size={17}/><span>{t('aiProviders')}</span><button className="mini-action" onClick={async()=>{const next=await window.origread.addAiProvider();const added=next.providers.find((item)=>!settings.providers.some((old)=>old.id===item.id));setSettings(next);if(added){setKeys((value)=>({...value,[added.id]:''}));setSavedKeys((value)=>({...value,[added.id]:''}))}}}><Plus size={14}/>{t('add')}</button></div>
     <p className="settings-section-description">{t('aiProvidersDescription')}</p>
-    {settings.providers.map((provider)=>{const dirty=(keys[provider.id]??'')!==(savedKeys[provider.id]??'');return <section className="provider-card" key={provider.id}>
+    {settings.providers.map((provider)=>{const dirty=(keys[provider.id]??'')!==(savedKeys[provider.id]??'');const testing=testingProviders[provider.id]===true;return <section className="provider-card" key={provider.id}>
       <div className="provider-card-head"><input className="provider-name" value={provider.name} onChange={(e)=>setSettings({...settings,providers:settings.providers.map((p)=>p.id===provider.id?{...p,name:e.target.value}:p)})} onBlur={()=>void updateProvider(provider,{name:settings.providers.find((p)=>p.id===provider.id)!.name})}/><Toggle checked={provider.enabled} onChange={(v)=>void updateProvider(provider,{enabled:v})}/>{settings.providers.length>1&&<button className="icon-button danger" onClick={async()=>{const next=await window.origread.removeAiProvider(provider.id);setSettings(next);setKeys((value)=>withoutKey(value,provider.id));setSavedKeys((value)=>withoutKey(value,provider.id))}}><Trash2 size={15}/></button>}</div>
       <Field label="Endpoint"><input value={provider.endpoint} onChange={(e)=>setSettings({...settings,providers:settings.providers.map((p)=>p.id===provider.id?{...p,endpoint:e.target.value}:p)})} onBlur={()=>void updateProvider(provider,{endpoint:settings.providers.find((p)=>p.id===provider.id)!.endpoint})}/></Field>
       <Field label="API Key"><SecretKeyEditor value={keys[provider.id]??''} savedValue={savedKeys[provider.id]??''} visible={visibleKeys[provider.id]===true} onChange={(value)=>setKeys((current)=>({...current,[provider.id]:value}))} onToggle={()=>setVisibleKeys((current)=>({...current,[provider.id]:!current[provider.id]}))} onSave={()=>void saveKey(provider)}/></Field>
-      <Field label={t('aiModel')}><div className="inline-controls"><select value={provider.defaultModel} onChange={(e)=>void updateProvider(provider,{defaultModel:e.target.value})}><option value="">{t('selectModel')}</option>{provider.models.map((m)=><option key={m} value={m}>{m}</option>)}</select><button className="mini-action" onClick={async()=>{try{const models=await window.origread.refreshAiModels(provider.id,keys[provider.id]);setSettings(await window.origread.getAiSettings());setProviderStatus((value)=>({...value,[provider.id]:t('modelsLoaded',{count:models.length})}))}catch(e){setProviderStatus((value)=>({...value,[provider.id]:errorText(e)}))}}}><RefreshCw size={13}/>{t('loadModels')}</button><button className="mini-action" disabled={dirty} title={dirty?t('saveCredentialFirst'):undefined} onClick={async()=>{const r=await window.origread.testAiProvider(provider.id);setProviderStatus((value)=>({...value,[provider.id]:r.ok?t('connectionOk'):r.error??'Error'}))}}>{t('testConnection')}</button></div></Field>
+      <Field label={t('aiModel')}><div className="inline-controls"><select value={provider.defaultModel} onChange={(e)=>void updateProvider(provider,{defaultModel:e.target.value})}><option value="">{t('selectModel')}</option>{provider.models.map((m)=><option key={m} value={m}>{m}</option>)}</select><button className="mini-action" onClick={async()=>{try{const models=await window.origread.refreshAiModels(provider.id,keys[provider.id]);setSettings(await window.origread.getAiSettings());setProviderStatus((value)=>({...value,[provider.id]:t('modelsLoaded',{count:models.length})}))}catch(e){setProviderStatus((value)=>({...value,[provider.id]:errorText(e)}))}}}><RefreshCw size={13}/>{t('loadModels')}</button><button className="mini-action" disabled={dirty||testing} title={dirty?t('saveCredentialFirst'):undefined} onClick={()=>void testProvider(provider.id)}>{testing&&<RefreshCw size={13} className="spinning"/>}{testing?t('connectionTestingShort'):t('testConnection')}</button></div></Field>
       {providerStatus[provider.id]&&<StatusText text={providerStatus[provider.id]!}/>}
     </section>})}
     {status&&<StatusText text={status}/>} </>

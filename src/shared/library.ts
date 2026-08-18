@@ -2,6 +2,7 @@ export type SourceType = 'rss' | 'website' | 'json'
 
 export interface GroupRecord {
   id: string
+  accountId?: number
   name: string
   sortOrder: number
   isDefault: boolean
@@ -9,6 +10,7 @@ export interface GroupRecord {
 
 export interface FeedRecord {
   id: string
+  accountId?: number
   groupId: string
   name: string
   url: string
@@ -25,6 +27,7 @@ export interface FeedRecord {
 
 export interface ArticleRecord {
   id: string
+  accountId?: number
   feedId: string
   title: string
   url: string | null

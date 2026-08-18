@@ -383,11 +383,11 @@ UA 回归测试必须保证网页链路 UA 不含 `Electron`、`OrigRead`、`Mob
 - [x] 修复 AI / 翻译 Provider 修改其他字段时错误清空 Key 草稿的问题；AI Reader E2E 现在要求真实 Bearer Key 鉴权成功才能通过。
 - [x] 左侧文章列表折叠改为当前会话状态：应用启动和配置恢复时始终展开，旧 `workspaceCollapsed=true` 会自动纠正；折叠后保留 34 px 明确侧轨和完整展开按钮，避免出现“文章列表像丢失”的假故障。Renderer E2E 覆盖持久化 true 后 reload 自动恢复。
 
-## 9. 唯一剩余工作基线（2026-08-17 代码重新核对）
+## 9. 唯一剩余工作基线（2026-08-18 代码重新核对）
 
 从本节开始，后续开发、验收和 checkpoint 统一以此清单为准。前面的 Phase 与 16 项清单用于保留开发历史；“接下来做什么”只看本节和第 10 节。
 
-2026-08-17 本轮再次直接对照 `src/main`、`src/preload`、`src/renderer`、`src/shared`、Vitest、Playwright Electron E2E 与 `electron-builder` 配置核对，而不是根据旧勾选推断。确认来源发现/RSSHub/JSON/Website/动态 Chromium、单本地库同步、Reader/WebContentsView、AI/翻译、规则、OPML/配置备份、文章内搜索、字体导入、三域朗读、AI 摘要停靠、背景色/深色、Release/自动更新均已存在真实实现和自动测试。当前唯一未完成的产品功能仍是 A4 账户与自托管同步；其余未完成项属于跨平台构建、签名和发布级人工验收。
+2026-08-18 再次直接对照 `src/main`、`src/preload`、`src/renderer`、`src/shared`、Vitest、Electron E2E 与 Android `AccountService / RssService / GoogleReaderRssService / FeverRssService / GoogleReaderAPI / FeverAPI` 核对。A4 账户与自托管同步已经从固定 `sourceAccountId: 1` 的备份兼容占位升级为真实 Account domain；当前明确未完成的产品能力只剩已主动置灰的“AI 生成 JSON 规则 / AI 生成网站解析规则”。FreshRSS / Google Reader / Fever 因当前没有可用真实服务或凭据，代码完成度以 Android 业务代码逐段对照、本地 HTTP fixture、SQLite v2→v3 迁移/账户隔离测试和本地真实 mTLS 测试为验收依据；正式发布前仍需补一次真实服务器 smoke，不能把 Mock 结果表述成真实服务验证。
 
 ### A. 仍未开发的产品功能
 
@@ -397,6 +397,7 @@ UA 回归测试必须保证网页链路 UA 不含 `Electron`、`OrigRead`、`Mob
    - `published_at` / `created_at` 面向用户统一格式化为 `yyyy-MM-dd`，不直接显示 ISO 时间戳。
    - 提供“直接下载当前平台安装包”和“打开完整 Release 页面”两个独立动作。
    - 当前仓库仍为私有库时，不在客户端内置 GitHub Token；匿名 GitHub API 返回 401/404 时明确归类为“仓库不可访问 / 可能仍为私有”，绝不误报“已是最新”。仓库公开后同一实现无需改架构即可直接工作。
+   - GitHub 标准 Release 页面自动显示 `Source code (zip)` / `Source code (tar.gz)`，它们不是工作流上传的 Release Asset，无法通过 Release Assets API 或 workflow 删除/隐藏。OrigRead 自己的下载入口继续只展示打包好的安装资产；若未来必须得到“网页上也只看见安装包”的效果，需要使用 OrigRead 自建下载页，而不是尝试修改 GitHub 标准 Release 页。
 
 2. [x] **手动检查更新完整闭环**
    - 设置页提供明确的“检查更新”。
@@ -414,10 +415,17 @@ UA 回归测试必须保证网页链路 UA 不含 `Electron`、`OrigRead`、`Mob
    - Renderer 至少覆盖“已是最新 / 有更新 / 查询失败”三种可见状态。
    - 当前私有仓库阶段以本地 GitHub API mock 完成自动验收；真实公开 GitHub Release 的最后一次网络 smoke 留到仓库公开 / 正式发版时执行，不属于 B 功能缺口。
 
-5. [ ] **Desktop 账户与自托管同步**
-   - Android 的 Local / FreshRSS / Google Reader / Fever 是真实账户与同步能力；Desktop 当前固定 `sourceAccountId: 1` 只是备份兼容字段，不是账户实现。
-   - 在进入跨平台发布工程前完成当前本地资料库到默认 Local Account 的无损迁移，以及远端账户凭据校验、同步、切换、隔离、删除保护和 `safeStorage` 凭据保存。
-   - 详细实现与验收边界见第 10 节 A4。
+5. [x] **Desktop 账户与自托管同步代码闭环完成；真实服务器 smoke 待外部条件**
+   - 数据库 schema 升级为 v4：v3 引入 `accounts` 与 Group / Feed / Article 的 `account_id` 隔离，v4 增加 Android 同语义 `archived_articles(feed_id, link)`；v2 → v4 会把现有 Desktop 数据无损归入默认 Local Account 1，保留已读、收藏、全文、图片、RSSHub 原始 URL 等状态；Feed 唯一约束改为 `UNIQUE(account_id, url)`，不同账户可以订阅同一地址。
+   - Local / FreshRSS / Google Reader / Fever 已进入真实账户域。添加账户严格对齐 Android：先插入并切换 → 真实协议验证凭据 → 失败删除新账户并恢复原账户 → 成功后异步启动首次同步；最后一个账户禁止删除。
+   - Google Reader / FreshRSS 已实现 ClientLogin、`GoogleLogin auth`、action token、401 重新认证、subscription quickadd/edit/unsubscribe、continuation、items contents、read/starred 双向状态；Fever 已实现 `md5(username:password)` api_key、groups / feeds / favicons / items-since / unread / saved / mark item。Fever 按 Android capability 明确禁止客户端新增、移动、重命名和删除订阅。
+   - 2026-08-18 外部代码审核后补齐三处账户同步边界：Android / Desktop 的本地默认组 `read_you_app_default_group` 不再作为真实 Google Reader/FreshRSS label 发往服务器；根目录 → 标签只发送 `a`，标签 → 根目录只发送 `r`。Desktop Google Reader 状态校准改为与 Android 相同的内存差集后批量 `WHERE id IN (...)` 更新，1000 条一批，不再逐文章单条 UPDATE，也不再把最近一个月 `remoteRead` 窗口之外的条目仅凭“不在 unread 集合”强制改为已读。Fever 在两端遇到没有 `feeds_groups` 归属的远端 Feed 时均回退到本地默认组，不再 NPE / 整轮失败；Android 清理孤儿 Feed 同时改为按本轮真实远端 feed 集合判断。
+   - Desktop 的已读/收藏状态 UPDATE 同步对齐 Android `ArticleDao`：只修改 `is_unread / is_starred`，不刷新文章 `updated_at`，避免单纯状态同步把历史文章伪装成“刚更新”而干扰 `keepArchived` 的年龄判断。
+   - 来源能力边界已与 Android 对齐：Website / JSON / RSSHub 只允许 Local；Google Reader / FreshRSS 的 RSS 新增、重命名、移动、退订走远端协议；Fever 不提供这些本地管理能力；OPML 导入仅允许 Local。远端已读/收藏写入失败时不会提前污染本地状态。
+   - 密码、PFX/P12 客户端证书和证书口令均进入 `safeStorage`，不写普通 SQLite / JSON。Android 的可选客户端证书能力在 Desktop 以 PFX/P12 + 账户专用 TLS fetch 实现，并已由本地 HTTPS 服务端强制 `requestCert=true / rejectUnauthorized=true` 的真实 mTLS 测试验证握手成功和客户端身份。
+   - 账户级同步间隔、启动同步、切换、资料库隔离、清空非收藏文章、删除保护、备份 `sourceAccountId` 和当前账户设置均已接通；Android `KeepArchivedPreference` 七档已接入实际同步后清理：仅删除超过保留期、已读且未收藏文章，Local 源同时记录归档链接防止后续重复抓回。`syncOnlyWhenCharging` 通过 Electron `powerMonitor` 只约束周期同步，手动/启动一次同步不受限；`syncOnlyOnWiFi` 因 Desktop 没有可靠跨平台 metered/unmetered API 保留配置但不伪造判断。Android 当前 `syncBlockList` 本身也未进入执行链，因此 Desktop 同样只保留字段，不自造新语义。
+   - 旧 Desktop 全局同步偏好一次性迁入默认 Local Account，通用设置页不再保留第二套冲突同步设置。
+   - 当前无法本机闭环的仅是“真实 FreshRSS / Google Reader / Fever 实例端到端 smoke”，因为没有可用服务/凭据；该项保留为正式发布前外部验收，而不是继续把 A4 标记为没有实现。
 
 ### B. 跨平台构建与发布工程
 
@@ -479,12 +487,13 @@ UA 回归测试必须保证网页链路 UA 不含 `Electron`、`OrigRead`、`Mob
 ### 当前自动回归基线
 
 - `npm run typecheck`：通过。
-- `npm test`：58 files / 195 tests 通过。
+- `npm test`：**65 files / 231 tests** 通过；账户专项新增覆盖默认组不下发伪 label、根目录↔真实标签移动参数、Google Reader Android 同款 read/starred 差集、1505 条文章跨 1000 分块批量 UPDATE、状态变化不刷新 `updated_at`、Fever 孤立 Feed 默认组兜底；既有 v2→v4 数据迁移、账户隔离、Add Account 失败回滚、远端写失败不污染本地状态、收藏孤儿保留、keepArchived、周期充电约束与真实本地 mTLS 继续通过。
 - `npm run build`：通过。
-- Electron E2E：7 / 7 通过。
-- 除 A4 账户与自托管同步外，当前已落地的来源、单本地库同步、Reader、AI、翻译、规则、OPML、背景/主题等主产品功能后续以防回归为主。
+- `tests/e2e/unified-add-source.spec.ts`：**1 / 1** 通过，确认账户改造没有破坏现有 Local 来源发现、订阅和 Reader 主链。
+- 真实 Electron 账户 UI smoke：默认 Local 账户可显示；新增第二个 Local 后 UI 可见；切换后 `currentAccountId` 正确恢复。
+- AI Provider 可用性 UI 使用本地延迟 OpenAI-Compatible 服务实际验证：请求期间按钮显示“测试中…”并立即展示“正在测试 AI 服务连接，请稍候…”，请求完成后显示“连接正常”。
 
-以上数字已于 2026-08-17 本轮重新执行确认：`npm run typecheck`、`npm test -- --run`、`npm run build`、`npm run test:e2e` 均成功，不沿用旧会话中的测试数量。
+以上为 2026-08-18 本轮重新执行的当前数字；不再沿用 2026-08-17 的旧测试数量。裸跑全部 `npx playwright test` 会把 Vitest `.test.ts` / Electron-only 模块纳入 Playwright 发现范围，因此当前只使用真实 `.spec.ts` E2E 或项目既定脚本，不把测试发现配置问题误报为产品回归。
 
 ## 10. 后续按大项开发顺序
 
@@ -504,12 +513,10 @@ UA 回归测试必须保证网页链路 UA 不含 `Electron`、`OrigRead`、`Mob
   - 对齐 Android：apple-touch-icon > SVG > PNG > ICO > GIF > JPG，同格式按字节大小；页面失败时回退标准根目录图标。
   - RSS 发现不再以 Feed 自带 image 作为最终图标；来源列表显示持久化图标并在加载失败时回退 RSS 图标。
   - A2/A3 验收：`npm run typecheck` / `npm test`（50 files / 155 tests）/ `npm run build` / Electron E2E（6/6）通过。
-- [ ] A4 **账户与自托管同步**（E 发布工程前置项）。
-  - Android 的“账户”不是展示页：Local / FreshRSS / Google Reader / Fever 均连接真实 `AccountService + RssService`，包含凭据校验、同步、切换、删除和账户级数据隔离。
-  - Desktop 当前没有 Account domain；配置备份中的固定 `sourceAccountId: 1` 仅用于 Android schema 兼容，不能视为账户功能，更不能先补一个不可工作的假 UI。
-  - 实现时先把当前单本地资料库无损迁移为默认 Local Account，再增加 FreshRSS / Google Reader / Fever；Fever 在 UI 中继续明确“旧协议 / 不推荐”，但若保留入口就必须真实可用。
-  - 账户凭据必须进入 `safeStorage`，不得写入普通 SQLite/JSON；Feed / Group / Article 查询、同步任务、通知、备份恢复均必须绑定当前账户，并覆盖切换账户后 Reader/来源列表不会串数据。
-  - A4 完成验收至少包含：旧库迁移、Local 默认账户、三类远端凭据校验、一次真实/Mock 同步、账户切换隔离、删除保护、备份兼容和 Electron E2E。
+- [x] A4 **账户与自托管同步代码闭环完成；真实服务 smoke 待外部条件**。
+  - 具体实现与验收见第 9 节当前状态；不再存在“Desktop 没有 Account domain / 固定 `sourceAccountId: 1`”的旧状态。
+  - 自动验收已覆盖旧库迁移、Local 默认账户、三类远端协议 Mock、订阅维护、账户切换隔离、删除保护、备份兼容、PFX/P12 mTLS 和 Electron UI smoke。
+  - 真实 FreshRSS / Google Reader / Fever 服务在获得可用实例/凭据后补 smoke；正式 1.0 发布前必须完成，但不再阻塞 E1 工程代码开发。
 
 ### 大项 C：阅读效率增强
 
@@ -578,7 +585,7 @@ UA 回归测试必须保证网页链路 UA 不含 `Electron`、`OrigRead`、`Mob
 - [x] B3 启动自动检查开关、版本比较、下载/跳转、错误降级；默认与 Android 一致为开启，后台检查不阻塞启动；中国大陆优先 GitHub Release 加速候选并始终保留 GitHub 官方地址回退，不代理 GitHub API 或普通网页。
 - [x] B4 相关网络与版本逻辑单测 + Electron E2E mock 完成；覆盖隐藏双语日志、SemVer、平台资产、国内代理失败回退官方、有更新、已最新和私有仓库 404。
 
-**B1 → B4 已完成。下一步先完成 A4 账户与自托管同步，再进入大项 E 跨平台构建与正式发布。** 当前私有仓库不阻塞 B 的开发完成；公开仓库后的真实 Release 网络 smoke 留到正式发布验收。
+**B1 → B4 与 A4 账户代码闭环均已完成，当前可以进入大项 E 跨平台构建与正式发布工程。** 当前私有仓库不阻塞 B 的开发完成；公开仓库后的真实 Release 网络 smoke，以及真实 FreshRSS / Google Reader / Fever 实例 smoke，留到正式发布验收。
 
 ### 2026-08-17 E 前产品收口
 
@@ -589,7 +596,7 @@ UA 回归测试必须保证网页链路 UA 不含 `Electron`、`OrigRead`、`Mob
 - [x] Android“提示和支持”第二轮视觉收口：去掉标题右上角错位版本角标，Hero Logo 从 240dp 收至 204dp，并统一“原读 / OrigRead / 来源优先的阅读器 / v版本”中心轴；多平台介绍增加水平内边距和居中排版，Android / Desktop 两个入口改为带手机/电脑平台图标的等宽轻量卡片，GitHub 图标仅作为仓库语义提示；删除上下 `SpaceAround` 造成的断层式大留白，并增加轻量开源页脚。
 - [x] Desktop 无文章阅读区删除“Electron 重构进行中 / DB ready”等开发态占位信息，改为正式产品空态：资料库为空时引导添加/发现来源；当前筛选无结果时提示调整范围；有文章未选择时保持极简留白并显示真实阅读快捷键。
 - [x] Desktop 阅读快捷键二次收口：`← / →` 控制上一篇/下一篇（`K / J` 继续作为兼容快捷键），`↑ / ↓` 控制正文上下滚动；`,` / `.` 循环切换 AI 摘要位置，`- / +` 缩小/放大停靠摘要面板；`M` 已读/未读、`S` 收藏、`U` 原文、`[` 折叠/展开工作区保持不变，`Ctrl/Cmd+F` 继续只搜索当前 Reader 正文。无文章 Reader 空态与“关于与支持”均同步展示这组真实快捷键。
-- [ ] **在进入 E1 前先完成 A4 账户与自托管同步。** 这是本轮重新对照 Android 后发现的真实产品能力缺口，优先级高于打包流水线。
+- [x] **A4 账户与自托管同步代码闭环已完成。** 2026-08-18 外部审核后的默认分组、批量状态校准和 Fever 孤立 Feed 边界也已收口；真实远端实例 smoke 仍作为正式发布前外部验收项。
 
 ### 2026-08-18 添加来源进度、性能与未完成功能收口
 

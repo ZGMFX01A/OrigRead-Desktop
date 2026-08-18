@@ -1,9 +1,8 @@
-import type { DesktopSettings } from '../../shared/settings'
 import type { SourceSyncBatchResult } from '../../shared/source-sync'
 import type { SyncRuntimeState, SyncTrigger } from '../../shared/sync-runtime'
 
 interface SettingsProvider {
-  current(): DesktopSettings
+  current(): { syncIntervalMinutes:number; syncOnStart:boolean; syncOnlyWhenCharging?:boolean }
 }
 
 interface SyncRunner {
@@ -30,7 +29,8 @@ export class PeriodicSyncScheduler {
   constructor(
     private readonly settings: SettingsProvider,
     private readonly syncRunner: SyncRunner,
-    private readonly onStateChanged: (state: SyncRuntimeState) => void = () => undefined
+    private readonly onStateChanged: (state: SyncRuntimeState) => void = () => undefined,
+    private readonly periodicConstraintsSatisfied: () => boolean = () => true
   ) {}
 
   start(): void {
@@ -100,6 +100,24 @@ export class PeriodicSyncScheduler {
     this.patchState({ nextRunAt })
     this.timer = setTimeout(() => {
       this.timer = null
+      if (!this.periodicConstraintsSatisfied()) {
+        this.scheduleConstraintRetry()
+        return
+      }
+      void this.runNow('periodic').catch(() => undefined)
+    }, delay)
+  }
+
+  private scheduleConstraintRetry(): void {
+    if (this.stopped) return
+    const delay = 60_000
+    this.patchState({ nextRunAt: Date.now() + delay })
+    this.timer = setTimeout(() => {
+      this.timer = null
+      if (!this.periodicConstraintsSatisfied()) {
+        this.scheduleConstraintRetry()
+        return
+      }
       void this.runNow('periodic').catch(() => undefined)
     }, delay)
   }

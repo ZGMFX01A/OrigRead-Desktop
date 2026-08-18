@@ -11,6 +11,7 @@ import type {
   SourceSubscriptionResult
 } from '../../shared/source-discovery'
 import type { WebsiteInspectionResult } from '../../shared/website'
+import type { AccountRecord } from '../../shared/account'
 import { JsonSourceService } from './json/json-source-service'
 import { JsonSubscriptionService } from './json/json-subscription-service'
 import { RssDiscoveryService } from './rss/rss-discovery-service'
@@ -37,6 +38,11 @@ const SESSION_TTL_MS = 10 * 60_000
 const MAX_SESSIONS = 20
 type ProgressReporter = (stage: SourceDiscoveryStage, state: SourceDiscoveryStageState) => void
 
+interface AccountSourceCoordinator {
+  current(): AccountRecord
+  subscribeRss(discovered: DiscoveredRssFeed, groupId?: string): Promise<string>
+}
+
 interface StageOutcome<T> {
   value: T | null
   error: string | null
@@ -53,7 +59,8 @@ export class SourceDiscoveryService {
     private readonly jsonSource: JsonSourceService,
     private readonly jsonSubscription: JsonSubscriptionService,
     private readonly websiteSource: WebsiteSourceService,
-    private readonly websiteSubscription: WebsiteSubscriptionService
+    private readonly websiteSubscription: WebsiteSubscriptionService,
+    private readonly accountCoordinator?: AccountSourceCoordinator
   ) {}
 
   async discover(rawUrl: string, reportProgress: ProgressReporter = () => undefined): Promise<SourceDiscoveryResult> {
@@ -163,15 +170,22 @@ export class SourceDiscoveryService {
       let feedId: string
       switch (payload!.type) {
         case 'rss':
-          feedId = this.rssSubscription.addDiscovered(payload!.discovered).feedId
+          if (this.accountCoordinator && this.accountCoordinator.current().type !== 'local') {
+            feedId = await this.accountCoordinator.subscribeRss(payload!.discovered)
+          } else {
+            feedId = this.rssSubscription.addDiscovered(payload!.discovered).feedId
+          }
           break
         case 'rsshub':
+          this.requireLocalAccount('RSSHub')
           feedId = this.rssHubSubscription.subscribe(payload!.sourceUrl, payload!.result).feedId
           break
         case 'json':
+          this.requireLocalAccount('JSON/API')
           feedId = (await this.jsonSubscription.add(payload!.probe)).feedId
           break
         case 'website':
+          this.requireLocalAccount('网站')
           feedId = (await this.websiteSubscription.add(payload!.inspection, payload!.dynamic)).feedId
           break
       }
@@ -179,6 +193,11 @@ export class SourceDiscoveryService {
     }
     this.sessions.delete(discoveryId)
     return results
+  }
+
+  private requireLocalAccount(sourceKind:string):void {
+    const account=this.accountCoordinator?.current()
+    if(account && account.type!=='local')throw new Error(`${sourceKind} 来源仅支持 Local 账户`)
   }
 
   private createSession(

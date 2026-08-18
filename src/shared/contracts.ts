@@ -22,6 +22,7 @@ import type { AiGeneratedRuleKind, AiGeneratedRulePreview } from './ai-rule'
 import type { ReaderFontEntry, ReaderFontFileResult } from './reader-font'
 import type { OpmlExportFileResult, OpmlImportFileResult } from './opml'
 import type { UpdateCheckResult, UpdateDownloadResult } from './update'
+import type { AccountConnectionTestResult, AccountCreateInput, AccountPatch, AccountRecord, AccountSnapshot } from './account'
 
 export interface WebsiteSourceRuleSettings {
   feedId: string
@@ -55,6 +56,15 @@ export interface OrigReadDesktopApi {
   listArticles(limit?: number): Promise<ArticleRecord[]>
   setArticleUnread(articleId: string, unread: boolean): Promise<void>
   setArticleStarred(articleId: string, starred: boolean): Promise<void>
+  getAccounts(): Promise<AccountSnapshot>
+  addAccount(input: AccountCreateInput): Promise<AccountRecord>
+  updateAccount(patch: AccountPatch): Promise<AccountRecord>
+  switchAccount(accountId: number): Promise<AccountRecord>
+  deleteAccount(accountId: number): Promise<AccountRecord>
+  testAccountConnection(accountId: number): Promise<AccountConnectionTestResult>
+  clearAccountArticles(accountId: number): Promise<void>
+  importAccountClientCertificate(accountId: number, passphrase: string): Promise<AccountRecord | null>
+  clearAccountClientCertificate(accountId: number): Promise<AccountRecord>
   addGroup(name: string): Promise<GroupRecord[]>
   updateFeedSettings(feedId: string, patch: FeedSettingsPatch): Promise<FeedRecord>
   clearFeedArticles(feedId: string): Promise<void>
@@ -158,6 +168,15 @@ export const IPC_CHANNELS = {
   listArticles: 'library:list-articles',
   setArticleUnread: 'library:set-article-unread',
   setArticleStarred: 'library:set-article-starred',
+  getAccounts: 'account:list',
+  addAccount: 'account:add',
+  updateAccount: 'account:update',
+  switchAccount: 'account:switch',
+  deleteAccount: 'account:delete',
+  testAccountConnection: 'account:test',
+  clearAccountArticles: 'account:clear-articles',
+  importAccountClientCertificate: 'account:client-certificate:import',
+  clearAccountClientCertificate: 'account:client-certificate:clear',
   addGroup: 'library:add-group',
   updateFeedSettings: 'library:feed:update-settings',
   clearFeedArticles: 'library:feed:clear-articles',

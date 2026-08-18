@@ -60,6 +60,25 @@ describe('RssSubscriptionService', () => {
     database.close()
   })
 
+  it('does not reinsert a Local RSS article whose link was archived by keepArchived', async () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const fetcher: RssFetcher = async (url) => rssPayload(url, RSS_ONE)
+    const service = new RssSubscriptionService(repository, new RssDiscoveryService(fetcher, noIconFinder))
+    const added = await service.add('https://example.com/feed.xml')
+    const article = repository.listArticles()[0]!
+    repository.setArticleUnread(article.id, false)
+    database.connection.prepare('UPDATE articles SET updated_at=? WHERE id=?').run(1, article.id)
+    expect(repository.archiveExpiredArticlesForAccount(1, 86_400_000, Date.now())).toBe(1)
+    expect(repository.listArticles()).toHaveLength(0)
+
+    const refreshed = await service.refresh(added.feedId)
+    expect(refreshed.fetchedArticles).toBe(0)
+    expect(refreshed.insertedArticles).toBe(0)
+    expect(repository.listArticles()).toHaveLength(0)
+    database.close()
+  })
+
   it('recovers a failed RSSHub fixed URL using the original source page and updates only the feed URL', async () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)

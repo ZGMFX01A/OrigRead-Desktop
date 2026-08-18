@@ -12,6 +12,7 @@ import type { TranslationProviderPatch, TranslationProviderType, TranslationSett
 import type { ArticleFilterRuleType } from '../shared/filter-rules'
 import type { AiGeneratedRuleKind } from '../shared/ai-rule'
 import type { SourceDiscoveryProgress } from '../shared/source-discovery'
+import type { AccountCreateInput, AccountPatch } from '../shared/account'
 
 const api: OrigReadDesktopApi = Object.freeze({
   getAppInfo: () => ipcRenderer.invoke(IPC_CHANNELS.getAppInfo),
@@ -23,6 +24,15 @@ const api: OrigReadDesktopApi = Object.freeze({
     ipcRenderer.invoke(IPC_CHANNELS.setArticleUnread, articleId, unread),
   setArticleStarred: (articleId: string, starred: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.setArticleStarred, articleId, starred),
+  getAccounts: () => ipcRenderer.invoke(IPC_CHANNELS.getAccounts),
+  addAccount: (input: AccountCreateInput) => ipcRenderer.invoke(IPC_CHANNELS.addAccount, input),
+  updateAccount: (patch: AccountPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateAccount, patch),
+  switchAccount: (accountId: number) => ipcRenderer.invoke(IPC_CHANNELS.switchAccount, accountId),
+  deleteAccount: (accountId: number) => ipcRenderer.invoke(IPC_CHANNELS.deleteAccount, accountId),
+  testAccountConnection: (accountId: number) => ipcRenderer.invoke(IPC_CHANNELS.testAccountConnection, accountId),
+  clearAccountArticles: (accountId: number) => ipcRenderer.invoke(IPC_CHANNELS.clearAccountArticles, accountId),
+  importAccountClientCertificate: (accountId: number, passphrase: string) => ipcRenderer.invoke(IPC_CHANNELS.importAccountClientCertificate, accountId, passphrase),
+  clearAccountClientCertificate: (accountId: number) => ipcRenderer.invoke(IPC_CHANNELS.clearAccountClientCertificate, accountId),
   addGroup: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.addGroup, name),
   updateFeedSettings: (feedId: string, patch: FeedSettingsPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateFeedSettings, feedId, patch),
   clearFeedArticles: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.clearFeedArticles, feedId),

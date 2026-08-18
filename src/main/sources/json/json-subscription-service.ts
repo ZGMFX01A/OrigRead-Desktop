@@ -2,7 +2,6 @@ import { createHash, randomUUID } from 'node:crypto'
 import * as cheerio from 'cheerio'
 import type { ArticleRecord, FeedRecord } from '../../../shared/library'
 import type { JsonParsedArticle, JsonSourceProbeResult } from '../../../shared/json-source'
-import { DEFAULT_GROUP_ID } from '../../database/migrations'
 import { LibraryRepository } from '../../database/library-repository'
 import { JsonSourceService } from './json-source-service'
 import type { ArticleFilterRepository } from '../../filter/article-filter-repository'
@@ -21,9 +20,11 @@ export class JsonSubscriptionService {
 
     const now = Date.now()
     const feedId = randomUUID()
+    const accountId = this.repository.getCurrentAccountId()
     const feed: FeedRecord = {
       id: feedId,
-      groupId: DEFAULT_GROUP_ID,
+      accountId,
+      groupId: this.repository.getCurrentDefaultGroup().id,
       name: probe.title,
       url: probe.endpointUrl,
       sourcePageUrl: probe.sourcePageUrl,
@@ -50,7 +51,9 @@ export class JsonSubscriptionService {
     if (feed.sourceType !== 'json') throw new Error(`来源不是 JSON/API：${feed.name}`)
 
     const parsed = await this.sourceService.fetch(feed, fetchedAt)
-    const candidateArticles = parsed.map((article) => toArticleRecord(feed.id, article, fetchedAt))
+    const candidateArticles = parsed
+      .map((article) => toArticleRecord(feed.id, article, fetchedAt, feed.accountId))
+      .filter((article) => !this.repository.isArchivedLink(feed.id, article.url))
     const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
     const insertedArticles = articles.reduce(
       (count, article) => count + (this.repository.hasArticle(article.id) ? 0 : 1),
@@ -61,9 +64,10 @@ export class JsonSubscriptionService {
   }
 }
 
-function toArticleRecord(feedId: string, item: JsonParsedArticle, now: number): ArticleRecord {
+function toArticleRecord(feedId: string, item: JsonParsedArticle, now: number, accountId?: number): ArticleRecord {
   return {
     id: `json-${createHash('sha256').update(feedId).update('\u0000').update(item.stableId).digest('hex')}`,
+    accountId,
     feedId,
     title: item.title,
     url: item.link,

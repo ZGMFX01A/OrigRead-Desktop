@@ -555,6 +555,17 @@ export default function App(): React.JSX.Element {
     await reloadLibrary()
   }
 
+  const handleAccountChanged = async (): Promise<void> => {
+    setSelectedArticleId(null)
+    setReaderContent(null)
+    setAiSummary(null)
+    setTranslationDocument(null)
+    setReaderMode('article')
+    if (originalViewState.open) await closeOriginalArticle()
+    await reloadLibrary()
+    setSyncRuntimeState(await window.origread.getSyncRuntimeState())
+  }
+
   const updateDesktopSettings = async (patch: Parameters<typeof window.origread.updateSettings>[0]): Promise<void> => {
     setSettingsError(null)
     try {
@@ -1351,6 +1362,7 @@ export default function App(): React.JSX.Element {
               syncState={syncRuntimeState}
               onChange={(patch) => void updateDesktopSettings(patch)}
               onConfigurationRestored={() => void handleConfigurationRestored()}
+              onAccountChanged={() => void handleAccountChanged()}
             />
           </>
         ) : sourceCatalogOpen ? (

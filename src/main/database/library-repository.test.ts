@@ -20,9 +20,9 @@ describe('LibraryRepository', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)
 
-    expect(database.schemaVersion).toBe(2)
+    expect(database.schemaVersion).toBe(4)
     expect(repository.listGroups()).toEqual([
-      { id: DEFAULT_GROUP_ID, name: 'Default', sortOrder: 0, isDefault: true }
+      { id: DEFAULT_GROUP_ID, accountId: 1, name: 'Default', sortOrder: 0, isDefault: true }
     ])
     expect(repository.snapshot()).toEqual({ groups: 1, feeds: 0, articles: 0, unread: 0, starred: 0 })
 
@@ -39,6 +39,7 @@ describe('LibraryRepository', () => {
     repository.upsertArticle(article)
     repository.setArticleUnread(article.id, false)
     repository.setArticleStarred(article.id, true)
+    expect(repository.getArticleById(article.id)?.updatedAt).toBe(article.updatedAt)
 
     repository.upsertArticle({
       ...article,
@@ -94,6 +95,51 @@ describe('LibraryRepository', () => {
     repository.deleteFeed(feed.id)
     expect(repository.getFeedById(feed.id)).toBeNull()
     expect(repository.listArticlesByFeed(feed.id)).toEqual([])
+    database.close()
+  })
+
+  it('archives only expired read and unstarred articles and records their links', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const feed = createFeed()
+    const now = 1_786_000_000_000
+    repository.upsertFeed(feed)
+    repository.upsertArticle({ ...createArticle(feed.id), id:'expired', url:'https://example.com/expired', isUnread:false, isStarred:false, updatedAt:now-2*86_400_000 })
+    repository.upsertArticle({ ...createArticle(feed.id), id:'starred', url:'https://example.com/starred', isUnread:false, isStarred:true, updatedAt:now-2*86_400_000 })
+    repository.upsertArticle({ ...createArticle(feed.id), id:'unread', url:'https://example.com/unread', isUnread:true, isStarred:false, updatedAt:now-2*86_400_000 })
+    repository.upsertArticle({ ...createArticle(feed.id), id:'recent', url:'https://example.com/recent', isUnread:false, isStarred:false, updatedAt:now })
+
+    expect(repository.archiveExpiredArticlesForAccount(1,86_400_000,now)).toBe(1)
+    expect(repository.listArticles().map((article)=>article.id).sort()).toEqual(['recent','starred','unread'])
+    expect(repository.isArchivedLink(feed.id,'https://example.com/expired')).toBe(true)
+    expect(repository.isArchivedLink(feed.id,'https://example.com/starred')).toBe(false)
+    database.close()
+  })
+
+  it('updates article read and starred state in batches larger than 1000 rows', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const feed = createFeed()
+    repository.upsertFeed(feed)
+    const ids: string[] = []
+    for (let index = 0; index < 1505; index += 1) {
+      const id = `article-${index}`
+      ids.push(id)
+      repository.upsertArticle({
+        ...createArticle(feed.id),
+        id,
+        url: `https://example.com/${index}`,
+        updatedAt: 123
+      })
+    }
+
+    repository.setArticleUnreadBatchForAccount(1, ids, false)
+    repository.setArticleStarredBatchForAccount(1, ids, true)
+
+    const states = repository.listArticleStateForAccount(1)
+    expect(states).toHaveLength(1505)
+    expect(states.every((article) => !article.isUnread && article.isStarred)).toBe(true)
+    expect(repository.getArticleById(ids[0]!)?.updatedAt).toBe(123)
     database.close()
   })
 })

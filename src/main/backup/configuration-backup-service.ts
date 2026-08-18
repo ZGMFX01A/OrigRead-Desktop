@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { AiSettingsRepository } from '../ai/ai-settings-repository'
 import type { LibraryRepository } from '../database/library-repository'
-import { DEFAULT_GROUP_ID } from '../database/migrations'
 import type { SettingsRepository } from '../database/settings-repository'
 import type { ArticleFilterRepository } from '../filter/article-filter-repository'
 import type { JsonRuleRepository } from '../sources/json/json-rule-repository'
@@ -15,6 +14,7 @@ import type { FeedRecord,GroupRecord,SourceType } from '../../shared/library'
 import type { TranslationProviderType } from '../../shared/translation'
 import { TRANSLATION_PROVIDER_TYPES } from '../../shared/translation'
 import { decryptConfigurationSecrets,encryptConfigurationSecrets } from './configuration-backup-crypto'
+import type { AccountRepository } from '../accounts/account-repository'
 
 export class ConfigurationBackupService {
   constructor(
@@ -27,11 +27,12 @@ export class ConfigurationBackupService {
     private readonly websitePreferences:WebsiteParsePreferenceRepository,
     private readonly rssHub:RssHubSettingsRepository,
     private readonly translation:TranslationSettingsRepository,
-    private readonly ai:AiSettingsRepository
+    private readonly ai:AiSettingsRepository,
+    private readonly accounts?:AccountRepository
   ){}
 
   exportBackup(password=''):string{
-    const groups=this.library.listGroups(),feeds=this.library.listFeeds(),settings=this.desktopSettings.current(),translation=this.translation.current(),ai=this.ai.current()
+    const groups=this.library.listGroups(),feeds=this.library.listFeeds(),settings=this.desktopSettings.current(),translation=this.translation.current(),ai=this.ai.current(),account=this.accounts?.current()
     const secrets:ConfigurationBackupSecrets={
       translationApiKeys:Object.fromEntries(TRANSLATION_PROVIDER_TYPES.map((type)=>[type,this.translation.getApiKey(type)]).filter(([,value])=>Boolean(value))) as Partial<Record<TranslationProviderType,string>>,
       aiApiKeys:Object.fromEntries(ai.providers.map((provider)=>[provider.id,this.ai.getApiKey(provider.id)]).filter(([,value])=>Boolean(value)))
@@ -41,8 +42,8 @@ export class ConfigurationBackupService {
     if(includeSecrets&&password.length<6)throw new Error('备份密码至少需要 6 个字符')
     const backup:ConfigurationBackup={
       schemaVersion:1,appName:'OrigRead',sourceVersion:this.appVersion,createdAtEpochMillis:Date.now(),preferences:desktopPreferences(settings),
-      accountSettings:{syncIntervalMinutes:settings.syncIntervalMinutes,syncOnStart:settings.syncOnStart,syncOnlyOnWiFi:false,syncOnlyWhenCharging:false,keepArchivedMillis:2_592_000_000,syncBlockList:[]},
-      subscriptions:{sourceAccountId:1,groups:groups.map((group)=>({id:group.id,name:group.name,isDefault:group.isDefault})),feeds:feeds.map(toBackupFeed)},
+      accountSettings:{syncIntervalMinutes:account?.syncIntervalMinutes??settings.syncIntervalMinutes,syncOnStart:account?.syncOnStart??settings.syncOnStart,syncOnlyOnWiFi:account?.syncOnlyOnWiFi??false,syncOnlyWhenCharging:account?.syncOnlyWhenCharging??false,keepArchivedMillis:account?.keepArchivedMillis??2_592_000_000,syncBlockList:account?.syncBlockList??[]},
+      subscriptions:{sourceAccountId:account?.id??1,groups:groups.map((group)=>({id:group.id,name:group.name,isDefault:group.isDefault})),feeds:feeds.map(toBackupFeed)},
       websiteRules:JSON.parse(this.websiteRules.exportRules()),jsonRules:JSON.parse(this.jsonRules.exportRules()),articleFilters:JSON.parse(this.articleFilters.exportRules()),websiteParsePreferences:JSON.parse(this.websitePreferences.exportBackup(new Set(feeds.map((feed)=>feed.id)))),
       rssHub:this.rssHub.current(),rssHubSourceUrls:this.library.listRssHubSourceUrls(),translation:toTranslationBackup(translation),ai:toAiBackup(ai),
       encryptedSecrets:includeSecrets&&hasSecrets?encryptConfigurationSecrets(secrets,password):null
@@ -57,11 +58,12 @@ export class ConfigurationBackupService {
     const secrets=backup.encryptedSecrets?decryptConfigurationSecrets(backup.encryptedSecrets,password):null
     // 到这里才开始任何写入：格式、规则、订阅和密码均已完整校验。
     const {feedIdMap,groupsAdded,feedsAdded,feedsUpdated}=this.restoreSubscriptions(backup)
-    this.desktopSettings.update({
-      ...readDesktopPreferences(backup.preferences),
-      syncIntervalMinutes:normalizeDesktopSyncInterval(backup.accountSettings.syncIntervalMinutes),
-      syncOnStart:backup.accountSettings.syncOnStart
-    })
+    this.desktopSettings.update(readDesktopPreferences(backup.preferences))
+    if(this.accounts){
+      this.accounts.update({id:this.accounts.currentId(),syncIntervalMinutes:normalizeDesktopSyncInterval(backup.accountSettings.syncIntervalMinutes),syncOnStart:backup.accountSettings.syncOnStart,syncOnlyOnWiFi:backup.accountSettings.syncOnlyOnWiFi,syncOnlyWhenCharging:backup.accountSettings.syncOnlyWhenCharging,keepArchivedMillis:backup.accountSettings.keepArchivedMillis,syncBlockList:backup.accountSettings.syncBlockList})
+    }else{
+      this.desktopSettings.update({syncIntervalMinutes:normalizeDesktopSyncInterval(backup.accountSettings.syncIntervalMinutes),syncOnStart:backup.accountSettings.syncOnStart})
+    }
     this.websiteRules.restoreBackup(JSON.stringify(backup.websiteRules))
     this.jsonRules.restoreBackup(JSON.stringify(backup.jsonRules))
     const filterRulesRestored=this.articleFilters.restoreBackup(JSON.stringify(backup.articleFilters),feedIdMap)
@@ -88,10 +90,10 @@ export class ConfigurationBackupService {
   }
 
   private restoreSubscriptions(backup:ConfigurationBackup):{feedIdMap:Map<string,string>;groupsAdded:number;feedsAdded:number;feedsUpdated:number}{
-    const existingGroups=this.library.listGroups();const groupMap=new Map<string,string>();let groupsAdded=0
-    for(const source of backup.subscriptions.groups){if(source.isDefault){groupMap.set(source.id,DEFAULT_GROUP_ID);continue}let target=existingGroups.find((group)=>group.name===source.name);if(!target){target={id:`group-${randomUUID()}`,name:source.name,sortOrder:existingGroups.length+groupsAdded+1,isDefault:false};this.library.upsertGroup(target);existingGroups.push(target);groupsAdded++}groupMap.set(source.id,target.id)}
+    const existingGroups=this.library.listGroups();const groupMap=new Map<string,string>();let groupsAdded=0;const defaultGroupId=this.library.getCurrentDefaultGroup().id
+    for(const source of backup.subscriptions.groups){if(source.isDefault){groupMap.set(source.id,defaultGroupId);continue}let target=existingGroups.find((group)=>group.name===source.name);if(!target){target={id:`group-${randomUUID()}`,name:source.name,sortOrder:existingGroups.length+groupsAdded+1,isDefault:false};this.library.upsertGroup(target);existingGroups.push(target);groupsAdded++}groupMap.set(source.id,target.id)}
     const feedIdMap=new Map<string,string>();let feedsAdded=0,feedsUpdated=0
-    for(const source of backup.subscriptions.feeds){const existing=this.library.findFeedByUrl(source.url.trim());const now=Date.now();const feed:FeedRecord=existing?{...existing,name:source.name,icon:source.icon,groupId:groupMap.get(source.groupId)??DEFAULT_GROUP_ID,isNotification:source.isNotification,isFullContent:source.isFullContent,isBrowser:source.isBrowser,sourceType:fromAndroidSourceType(source.sourceType),updatedAt:now}:{id:`feed-${randomUUID()}`,name:source.name,url:source.url.trim(),sourcePageUrl:source.url.trim(),icon:source.icon,groupId:groupMap.get(source.groupId)??DEFAULT_GROUP_ID,isNotification:source.isNotification,isFullContent:source.isFullContent,isBrowser:source.isBrowser,sourceType:fromAndroidSourceType(source.sourceType),dynamicRendering:false,createdAt:now,updatedAt:now};this.library.upsertFeed(feed);feedIdMap.set(source.id,feed.id);existing?feedsUpdated++:feedsAdded++}
+    for(const source of backup.subscriptions.feeds){const existing=this.library.findFeedByUrl(source.url.trim());const now=Date.now();const feed:FeedRecord=existing?{...existing,name:source.name,icon:source.icon,groupId:groupMap.get(source.groupId)??defaultGroupId,isNotification:source.isNotification,isFullContent:source.isFullContent,isBrowser:source.isBrowser,sourceType:fromAndroidSourceType(source.sourceType),updatedAt:now}:{id:`feed-${randomUUID()}`,name:source.name,url:source.url.trim(),sourcePageUrl:source.url.trim(),icon:source.icon,groupId:groupMap.get(source.groupId)??defaultGroupId,isNotification:source.isNotification,isFullContent:source.isFullContent,isBrowser:source.isBrowser,sourceType:fromAndroidSourceType(source.sourceType),dynamicRendering:false,createdAt:now,updatedAt:now};this.library.upsertFeed(feed);feedIdMap.set(source.id,feed.id);existing?feedsUpdated++:feedsAdded++}
     return{feedIdMap,groupsAdded,feedsAdded,feedsUpdated}
   }
   private restoreTranslation(value:TranslationBackup,keys?:Partial<Record<TranslationProviderType,string>>):void{const fallback=TRANSLATION_PROVIDER_TYPES.includes(value.defaultProvider as TranslationProviderType)?value.defaultProvider as TranslationProviderType:'ML_KIT';this.translation.restore({defaultProvider:fallback,defaultTarget:backupTargetToTranslationTarget(value.defaultTarget,fallback),targetLanguage:value.targetLanguage,displayMode:value.displayMode,providers:TRANSLATION_PROVIDER_TYPES.map((type)=>{const source=value.providers.find((item)=>item.type===type);return{type,enabled:source?.enabled??type==='ML_KIT',endpoint:source?.endpoint??'',region:source?.region??''}})},keys)}

@@ -531,6 +531,16 @@ button { color: inherit; }
 .sync-runtime-card > div { min-width: 0; display: flex; flex-direction: column; gap: 5px; padding: 12px 14px; background: #fafafd; }
 .sync-runtime-card span { color: #92949d; font-size: 9.5px; }
 .sync-runtime-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #555761; font-size: 10.5px; font-weight: 630; }
+.account-list { display: grid; }
+.account-row { width: 100%; min-height: 62px; display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; gap: 10px; border: 0; border-bottom: 1px solid #ededf1; padding: 10px 13px; background: #fff; color: inherit; text-align: left; cursor: pointer; }
+.account-row:last-child { border-bottom: 0; }
+.account-row:hover { background: #fafafd; }
+.account-row.selected { background: #f8f7ff; }
+.account-row-copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.account-row-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #363840; font-size: 11.5px; font-weight: 680; }
+.account-row-copy span { color: #8e9099; font-size: 10px; }
+.account-current-badge { border-radius: 999px; padding: 5px 8px; background: #ece9ff; color: #6256c7; font-size: 9.5px; font-weight: 700; }
+.settings-inline-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding: 11px 14px; border-top: 1px solid #ededf1; background: #fafafd; }
 .setting-placeholder { opacity: 0.62; }
 .coming-badge { flex: 0 0 auto; border-radius: 999px; padding: 4px 7px; background: #f0f0f4; color: #9698a0; font-size: 9px; font-weight: 700; text-transform: uppercase; }
 .settings-about { display: flex; justify-content: space-between; align-items: center; margin-top: 30px; padding: 0 3px; color: #9a9ca4; }
@@ -1236,6 +1246,13 @@ mark.reader-search-match.current { background: #ffc96b; outline: 2px solid #d9a2
 [data-theme='dark'] .source-settings-tabs button { color: #aeb1bb; }
 [data-theme='dark'] .source-settings-tabs button:hover { background: #292b33; color: #c7c1ff; }
 [data-theme='dark'] .source-settings-tabs button.active { background: #302d4b; color: #b9b1ff; }
+[data-theme='dark'] .account-row { border-color: #343740; background: #22242a; }
+[data-theme='dark'] .account-row:hover { background: #292b33; }
+[data-theme='dark'] .account-row.selected { background: #302d4b; }
+[data-theme='dark'] .account-row-copy strong { color: #e2e4ea; }
+[data-theme='dark'] .account-row-copy span { color: #a7aab4; }
+[data-theme='dark'] .account-current-badge { background: #3a3558; color: #c2baff; }
+[data-theme='dark'] .settings-inline-actions { border-color: #343740; background: #1f2127; }
 [data-theme='dark'] .source-discovery-progress { border-color: #373a43; background: #25272e; }
 [data-theme='dark'] .source-discovery-progress-head strong { color: #e1e3e9; }
 [data-theme='dark'] .source-discovery-progress-head span,

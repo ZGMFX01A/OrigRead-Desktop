@@ -74,6 +74,34 @@ describe('PeriodicSyncScheduler', () => {
     finish(result())
     await first
   })
+
+  it('applies charging constraints only to periodic runs and retries after the constraint becomes available', async () => {
+    const settings = createSettings({ syncOnStart: true, syncIntervalMinutes: 15 })
+    const refresh = vi.fn(async () => result())
+    let charging = false
+    const scheduler = new PeriodicSyncScheduler(
+      { current: () => settings },
+      { refreshAllSources: refresh },
+      () => undefined,
+      () => charging
+    )
+
+    scheduler.start()
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    expect(refresh).toHaveBeenCalledTimes(1) // startup is intentionally unconstrained, matching Android one-time sync
+
+    await vi.advanceTimersByTimeAsync(15 * 60_000)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(scheduler.currentState().nextRunAt).toBe(Date.now() + 60_000)
+
+    charging = true
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(refresh).toHaveBeenCalledTimes(2)
+    expect(scheduler.currentState().lastTrigger).toBe('periodic')
+
+    await scheduler.runNow('manual')
+    expect(refresh).toHaveBeenCalledTimes(3)
+  })
 })
 
 function createSettings(overrides: Partial<DesktopSettings> = {}): DesktopSettings {
