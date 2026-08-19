@@ -233,6 +233,16 @@ Desktop 使用 **GNU Affero General Public License v3.0 only（AGPL-3.0-only）*
 - Android 版本：https://github.com/ZGMFX01A/OrigRead
 - 操作手册：[简体中文](USER_GUIDE-zh-CN.md) · [English](USER_GUIDE.md)
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=ZGMFX01A%2FOrigRead-Desktop&type=timeline&logscale=&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ZGMFX01A/OrigRead-Desktop&type=timeline&theme=dark&logscale&legend=top-left&sealed_token=9yvZTezWRptvx7uH1yBQewjMuH6m_RkPmRhxuhTr3gCap3szSQY2yEuM0Yoc9uN5ZPr6dwgFU754Grus68KOrSEa8qx5QNqEGkVVlFb4H3-t_dIgUEl2xpnzrkCYUgVlqmeumlDMHVbkchqNX0BmsIKXk6b2dQc2veu09IzN6XO2SAks_MTwdl4dUt_L" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ZGMFX01A/OrigRead-Desktop&type=timeline&logscale&legend=top-left&sealed_token=9yvZTezWRptvx7uH1yBQewjMuH6m_RkPmRhxuhTr3gCap3szSQY2yEuM0Yoc9uN5ZPr6dwgFU754Grus68KOrSEa8qx5QNqEGkVVlFb4H3-t_dIgUEl2xpnzrkCYUgVlqmeumlDMHVbkchqNX0BmsIKXk6b2dQc2veu09IzN6XO2SAks_MTwdl4dUt_L" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ZGMFX01A/OrigRead-Desktop&type=timeline&logscale&legend=top-left&sealed_token=9yvZTezWRptvx7uH1yBQewjMuH6m_RkPmRhxuhTr3gCap3szSQY2yEuM0Yoc9uN5ZPr6dwgFU754Grus68KOrSEa8qx5QNqEGkVVlFb4H3-t_dIgUEl2xpnzrkCYUgVlqmeumlDMHVbkchqNX0BmsIKXk6b2dQc2veu09IzN6XO2SAks_MTwdl4dUt_L" />
+ </picture>
+</a>
+
 ## 搜索关键词
 
 桌面 RSS 阅读器、Windows RSS 阅读器、macOS RSS 阅读器、Linux RSS 阅读器、Ubuntu RSS 阅读器、Feed 阅读器、新闻阅读器、个人信息阅读器、RSSHub 客户端、RSSHub Desktop、RSS 来源发现、网页转 RSS、网页订阅、Website Parser、HTML Parser、JSON API 阅读器、WordPress 阅读器、Next.js 阅读器、Nuxt 阅读器、Chromium 动态网页解析、全文 RSS、Readability、OPML、FreshRSS 客户端、Google Reader API 客户端、Fever 客户端、AI RSS 阅读器、AI 文章摘要、文章总结、AI 翻译、OpenAI Compatible、DeepL、DeepLX、Electron RSS Reader、来源优先阅读器。

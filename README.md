@@ -233,6 +233,16 @@ Desktop is distributed under the **GNU Affero General Public License v3.0 only (
 - Android edition: https://github.com/ZGMFX01A/OrigRead
 - User guide: [English](USER_GUIDE.md) · [简体中文](USER_GUIDE-zh-CN.md)
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=ZGMFX01A%2FOrigRead-Desktop&type=timeline&logscale=&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ZGMFX01A/OrigRead-Desktop&type=timeline&theme=dark&logscale&legend=top-left&sealed_token=9yvZTezWRptvx7uH1yBQewjMuH6m_RkPmRhxuhTr3gCap3szSQY2yEuM0Yoc9uN5ZPr6dwgFU754Grus68KOrSEa8qx5QNqEGkVVlFb4H3-t_dIgUEl2xpnzrkCYUgVlqmeumlDMHVbkchqNX0BmsIKXk6b2dQc2veu09IzN6XO2SAks_MTwdl4dUt_L" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ZGMFX01A/OrigRead-Desktop&type=timeline&logscale&legend=top-left&sealed_token=9yvZTezWRptvx7uH1yBQewjMuH6m_RkPmRhxuhTr3gCap3szSQY2yEuM0Yoc9uN5ZPr6dwgFU754Grus68KOrSEa8qx5QNqEGkVVlFb4H3-t_dIgUEl2xpnzrkCYUgVlqmeumlDMHVbkchqNX0BmsIKXk6b2dQc2veu09IzN6XO2SAks_MTwdl4dUt_L" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ZGMFX01A/OrigRead-Desktop&type=timeline&logscale&legend=top-left&sealed_token=9yvZTezWRptvx7uH1yBQewjMuH6m_RkPmRhxuhTr3gCap3szSQY2yEuM0Yoc9uN5ZPr6dwgFU754Grus68KOrSEa8qx5QNqEGkVVlFb4H3-t_dIgUEl2xpnzrkCYUgVlqmeumlDMHVbkchqNX0BmsIKXk6b2dQc2veu09IzN6XO2SAks_MTwdl4dUt_L" />
+ </picture>
+</a>
+
 ## Search keywords
 
 Desktop RSS reader, Windows RSS reader, macOS RSS reader, Linux RSS reader, Ubuntu RSS reader, feed reader, news reader, personal information reader, RSSHub client, RSSHub Desktop, RSS discovery, website to RSS, website subscription, Website Parser, HTML Parser, JSON API reader, WordPress reader, Next.js reader, Nuxt reader, Chromium dynamic page parsing, full-text RSS, Readability, OPML, FreshRSS client, Google Reader API client, Fever client, AI RSS reader, AI article summary, AI translation, OpenAI Compatible, DeepL, DeepLX, Electron RSS Reader, source-first reader.
