@@ -9,6 +9,7 @@ import {
   releaseTagFromPageUrl,
   releaseDownloadCandidates,
   ReleaseUpdateService,
+  releaseCheckCandidates,
   resolveLatestReleasePageUrl,
   selectReleaseAsset,
   shouldPreferMainlandReleaseMirror
@@ -62,6 +63,27 @@ describe('release update service', () => {
     expect(releaseDownloadCandidates('https://api.github.com/repos/x/y', 'zh-CN')).toEqual(['https://api.github.com/repos/x/y'])
     expect(shouldPreferMainlandReleaseMirror('zh_CN')).toBe(true)
     expect(shouldPreferMainlandReleaseMirror('zh-SG')).toBe(false)
+  })
+
+  it('checks mainland release metadata through the proxy and falls back to GitHub API', async () => {
+    const official = 'https://api.github.com/repos/ZGMFX01A/OrigRead-Desktop/releases/latest'
+    const calls: string[] = []
+    const service = new ReleaseUpdateService(async (input) => {
+      calls.push(input)
+      if (input.startsWith('https://gh-proxy.com/')) return new Response('proxy failed', { status: 502 })
+      return new Response(JSON.stringify({
+        tag_name: 'v1.2.3',
+        html_url: 'https://github.com/ZGMFX01A/OrigRead-Desktop/releases/tag/v1.2.3',
+        assets: []
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+
+    const result = await service.check('0.1.0', 'win32', 'x64', 'zh', 'zh-CN')
+
+    expect(releaseCheckCandidates(official, 'zh-CN')).toEqual([`https://gh-proxy.com/${official}`, official])
+    expect(calls).toEqual([`https://gh-proxy.com/${official}`, official])
+    expect(result.status).toBe('available')
+    expect(result.release?.version).toBe('1.2.3')
   })
 
   it('falls back to official GitHub asset when mainland proxy download fails', async () => {
@@ -167,6 +189,19 @@ describe('release update service', () => {
     expect(result.release?.publishedDate).toBe('2026-08-17')
     expect(result.release?.notes).toBe('- 新版本')
     expect(result.release?.asset?.id).toBe(8)
+  })
+
+  it('rejects release metadata whose tag does not match its official page URL', async () => {
+    const service = new ReleaseUpdateService(async () => new Response(JSON.stringify({
+      tag_name: 'v1.2.0',
+      html_url: 'https://github.com/ZGMFX01A/OrigRead-Desktop/releases/tag/v1.1.0',
+      assets: []
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+
+    const result = await service.check('0.1.0', 'win32', 'x64', 'en')
+
+    expect(result.status).toBe('error')
+    expect(result.errorCode).toBe('INVALID_RESPONSE')
   })
 })
 

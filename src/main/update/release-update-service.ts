@@ -11,6 +11,7 @@ import type {
 
 export const ORIGREAD_DESKTOP_REPOSITORY = 'ZGMFX01A/OrigRead-Desktop'
 const OFFICIAL_RELEASE_DOWNLOAD_PREFIX = `https://github.com/${ORIGREAD_DESKTOP_REPOSITORY}/releases/download/`
+const OFFICIAL_LATEST_RELEASE_API_URL = `https://api.github.com/repos/${ORIGREAD_DESKTOP_REPOSITORY}/releases/latest`
 const OFFICIAL_LATEST_RELEASE_URL = `https://github.com/${ORIGREAD_DESKTOP_REPOSITORY}/releases/latest`
 const MAINLAND_RELEASE_PROXY = 'https://gh-proxy.com/'
 
@@ -43,71 +44,86 @@ export class ReleaseUpdateService {
     currentVersion: string,
     platform: NodeJS.Platform,
     arch: string,
-    language: string
+    language: string,
+    locale = language
   ): Promise<UpdateCheckResult> {
     const checkedAt = Date.now()
-    let response: Response
-    try {
-      response = await this.fetcher(`${this.apiBase.replace(/\/$/, '')}/repos/${ORIGREAD_DESKTOP_REPOSITORY}/releases/latest`, {
-        headers: {
-          Accept: 'application/vnd.github+json',
-          'User-Agent': `OrigRead-Desktop/${currentVersion}`,
-          'X-GitHub-Api-Version': '2022-11-28'
+    const apiUrl = `${this.apiBase.replace(/\/$/, '')}/repos/${ORIGREAD_DESKTOP_REPOSITORY}/releases/latest`
+    const candidates = releaseCheckCandidates(apiUrl, locale)
+    let lastResponse: Response | null = null
+    let lastNetworkError: unknown = null
+
+    for (const [index, candidate] of candidates.entries()) {
+      try {
+        const response = await this.fetcher(candidate, {
+          headers: {
+            Accept: 'application/vnd.github+json',
+            'User-Agent': `OrigRead-Desktop/${currentVersion}`,
+            'X-GitHub-Api-Version': '2022-11-28'
+          }
+        })
+        lastResponse = response
+
+        if (response.status === 401 || response.status === 404) {
+          if (index < candidates.length - 1) continue
+          return failure(
+            currentVersion,
+            checkedAt,
+            'REPOSITORY_UNAVAILABLE',
+            'GitHub Release 当前不可访问；仓库可能仍为私有仓库，或尚未创建公开 Release。'
+          )
         }
-      })
-    } catch (error) {
-      return await this.checkViaPublicLatestRelease(
-        currentVersion,
-        platform,
-        arch,
-        checkedAt,
-        'NETWORK',
-        errorText(error)
-      )
+        if (response.status === 403 || response.status === 429) {
+          if (index < candidates.length - 1) continue
+          return await this.checkViaPublicLatestRelease(
+            currentVersion,
+            platform,
+            arch,
+            checkedAt,
+            'RATE_LIMITED',
+            'GitHub API 请求受限，请稍后重试。'
+          )
+        }
+        if (!response.ok) {
+          if (index < candidates.length - 1) continue
+          return failure(currentVersion, checkedAt, 'NETWORK', `GitHub API HTTP ${response.status}`)
+        }
+
+        let payload: GitHubReleasePayload
+        try {
+          payload = await response.json() as GitHubReleasePayload
+        } catch (error) {
+          if (index < candidates.length - 1) continue
+          return failure(currentVersion, checkedAt, 'INVALID_RESPONSE', errorText(error))
+        }
+
+        const release = parseRelease(payload, platform, arch, language)
+        if (!release) {
+          if (index < candidates.length - 1) continue
+          return failure(currentVersion, checkedAt, 'INVALID_RESPONSE', 'GitHub Release 返回的数据不完整。')
+        }
+
+        return {
+          status: compareVersions(release.version, currentVersion) > 0 ? 'available' : 'latest',
+          currentVersion,
+          checkedAt,
+          release,
+          errorCode: null,
+          errorMessage: null
+        }
+      } catch (error) {
+        lastNetworkError = error
+      }
     }
 
-    if (response.status === 401 || response.status === 404) {
-      return failure(
-        currentVersion,
-        checkedAt,
-        'REPOSITORY_UNAVAILABLE',
-        'GitHub Release 当前不可访问；仓库可能仍为私有仓库，或尚未创建公开 Release。'
-      )
-    }
-    if (response.status === 403 || response.status === 429) {
-      return await this.checkViaPublicLatestRelease(
-        currentVersion,
-        platform,
-        arch,
-        checkedAt,
-        'RATE_LIMITED',
-        'GitHub API 请求受限，请稍后重试。'
-      )
-    }
-    if (!response.ok) {
-      return failure(currentVersion, checkedAt, 'NETWORK', `GitHub API HTTP ${response.status}`)
-    }
-
-    let payload: GitHubReleasePayload
-    try {
-      payload = await response.json() as GitHubReleasePayload
-    } catch (error) {
-      return failure(currentVersion, checkedAt, 'INVALID_RESPONSE', errorText(error))
-    }
-
-    const release = parseRelease(payload, platform, arch, language)
-    if (!release) {
-      return failure(currentVersion, checkedAt, 'INVALID_RESPONSE', 'GitHub Release 返回的数据不完整。')
-    }
-
-    return {
-      status: compareVersions(release.version, currentVersion) > 0 ? 'available' : 'latest',
+    return await this.checkViaPublicLatestRelease(
       currentVersion,
+      platform,
+      arch,
       checkedAt,
-      release,
-      errorCode: null,
-      errorMessage: null
-    }
+      'NETWORK',
+      errorText(lastNetworkError ?? lastResponse?.status ?? 'Unknown network error')
+    )
   }
 
   private async checkViaPublicLatestRelease(
@@ -296,6 +312,11 @@ export function releaseDownloadCandidates(url: string, locale: string): string[]
   return shouldPreferMainlandReleaseMirror(locale) ? [`${MAINLAND_RELEASE_PROXY}${url}`, url] : [url]
 }
 
+export function releaseCheckCandidates(url: string, locale: string): string[] {
+  if (url !== OFFICIAL_LATEST_RELEASE_API_URL) return [url]
+  return shouldPreferMainlandReleaseMirror(locale) ? [`${MAINLAND_RELEASE_PROXY}${url}`, url] : [url]
+}
+
 export function shouldPreferMainlandReleaseMirror(locale: string): boolean {
   const normalized = locale.trim().replaceAll('_', '-').toLowerCase()
   return /(?:^|-)cn(?:-|$)/.test(normalized)
@@ -359,7 +380,7 @@ function isTrustedReleasePageUrl(value: string): boolean {
 function parseRelease(payload: GitHubReleasePayload, platform: NodeJS.Platform, arch: string, language: string): DesktopReleaseInfo | null {
   const tagName = typeof payload.tag_name === 'string' ? payload.tag_name.trim() : ''
   const releasePageUrl = typeof payload.html_url === 'string' ? payload.html_url.trim() : ''
-  if (!tagName || !releasePageUrl.startsWith(`https://github.com/${ORIGREAD_DESKTOP_REPOSITORY}/releases/`)) return null
+  if (!tagName || releaseTagFromPageUrl(releasePageUrl) !== tagName) return null
   const assets = Array.isArray(payload.assets) ? payload.assets as GitHubReleaseAssetPayload[] : []
   return {
     tagName,

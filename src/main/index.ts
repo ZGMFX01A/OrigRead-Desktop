@@ -454,7 +454,13 @@ function registerIpcHandlers(): void {
       }
       return lastUpdateCheck
     }
-    lastUpdateCheck = await releaseUpdateService.check(app.getVersion(), process.platform, process.arch, language)
+    lastUpdateCheck = await releaseUpdateService.check(
+      app.getVersion(),
+      process.platform,
+      process.arch,
+      language,
+      app.getLocale()
+    )
     return lastUpdateCheck
   })
   ipcMain.handle(IPC_CHANNELS.downloadUpdateAsset, async (event, assetId: unknown) => {
