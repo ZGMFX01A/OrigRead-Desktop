@@ -1,6 +1,12 @@
 import type { DatabaseSync } from 'node:sqlite'
+import {
+  ORIGREAD_DESKTOP_RELEASE_FEED_ICON,
+  ORIGREAD_DESKTOP_RELEASE_FEED_NAME,
+  ORIGREAD_DESKTOP_RELEASE_FEED_URL,
+  ORIGREAD_DESKTOP_RELEASES_URL
+} from '../../shared/origread-release'
 
-export const CURRENT_SCHEMA_VERSION = 5
+export const CURRENT_SCHEMA_VERSION = 6
 export const DEFAULT_GROUP_ID = 'local-default'
 export const DEFAULT_LOCAL_ACCOUNT_ID = 1
 export const CURRENT_ACCOUNT_SETTING_KEY = 'account.current_id'
@@ -240,6 +246,43 @@ const migrations: Migration[] = [
         ) STRICT;
         CREATE INDEX rss_http_cache_url_idx ON rss_http_cache(feed_url);
       `)
+    }
+  },
+  {
+    version: 6,
+    up(database) {
+      // 与 Android 初始 Local Account 的 OrigRead Releases 行为对齐：
+      // 只在迁移发生时给最早的 Local Account 补一次内置项目 Release Feed。
+      // 用户之后如果主动删除，不会在每次启动时被强行加回来。
+      database.prepare(`
+        INSERT INTO feeds (
+          id, account_id, group_id, name, url, source_page_url, source_type, icon,
+          is_notification, is_full_content, is_browser, dynamic_rendering, created_at, updated_at
+        )
+        SELECT
+          'origread-desktop-releases-' || a.id,
+          a.id,
+          g.id,
+          ?, ?, ?, 'rss', ?,
+          0, 0, 0, 0, ?, ?
+        FROM accounts a
+        JOIN groups g ON g.account_id = a.id AND g.is_default = 1
+        WHERE a.type = 'local'
+          AND NOT EXISTS (
+            SELECT 1 FROM feeds f
+            WHERE f.account_id = a.id AND f.url = ?
+          )
+        ORDER BY a.id ASC
+        LIMIT 1
+      `).run(
+        ORIGREAD_DESKTOP_RELEASE_FEED_NAME,
+        ORIGREAD_DESKTOP_RELEASE_FEED_URL,
+        ORIGREAD_DESKTOP_RELEASES_URL,
+        ORIGREAD_DESKTOP_RELEASE_FEED_ICON,
+        Date.now(),
+        Date.now(),
+        ORIGREAD_DESKTOP_RELEASE_FEED_URL
+      )
     }
   }
 ]

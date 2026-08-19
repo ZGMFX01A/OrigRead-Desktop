@@ -3,6 +3,7 @@ import type { ArticleRecord, FeedRecord, SourceType } from '../../shared/library
 import { DesktopDatabase } from '../database/database'
 import { LibraryRepository } from '../database/library-repository'
 import { DEFAULT_GROUP_ID } from '../database/migrations'
+import { ORIGREAD_DESKTOP_RELEASE_FEED_URL } from '../../shared/origread-release'
 import type { JsonSubscriptionService } from './json/json-subscription-service'
 import type { RssSubscriptionService } from './rss/rss-subscription-service'
 import { SourceSyncService, type SourceNewArticlesListener } from './source-sync-service'
@@ -147,7 +148,10 @@ describe('SourceSyncService', () => {
 function createRepository(): LibraryRepository {
   const database = new DesktopDatabase(':memory:')
   databases.push(database)
-  return new LibraryRepository(database.connection)
+  const repository = new LibraryRepository(database.connection)
+  const builtInReleaseFeed = repository.findFeedByUrl(ORIGREAD_DESKTOP_RELEASE_FEED_URL)
+  if (builtInReleaseFeed) repository.deleteFeed(builtInReleaseFeed.id)
+  return repository
 }
 
 function createFeed(id: string, sourceType: SourceType): FeedRecord {

@@ -11,6 +11,7 @@ import type {
 
 export const ORIGREAD_DESKTOP_REPOSITORY = 'ZGMFX01A/OrigRead-Desktop'
 const OFFICIAL_RELEASE_DOWNLOAD_PREFIX = `https://github.com/${ORIGREAD_DESKTOP_REPOSITORY}/releases/download/`
+const OFFICIAL_LATEST_RELEASE_URL = `https://github.com/${ORIGREAD_DESKTOP_REPOSITORY}/releases/latest`
 const MAINLAND_RELEASE_PROXY = 'https://gh-proxy.com/'
 
 export type UpdateFetch = (input: string, init?: RequestInit) => Promise<Response>
@@ -55,7 +56,14 @@ export class ReleaseUpdateService {
         }
       })
     } catch (error) {
-      return failure(currentVersion, checkedAt, 'NETWORK', errorText(error))
+      return await this.checkViaPublicLatestRelease(
+        currentVersion,
+        platform,
+        arch,
+        checkedAt,
+        'NETWORK',
+        errorText(error)
+      )
     }
 
     if (response.status === 401 || response.status === 404) {
@@ -67,7 +75,14 @@ export class ReleaseUpdateService {
       )
     }
     if (response.status === 403 || response.status === 429) {
-      return failure(currentVersion, checkedAt, 'RATE_LIMITED', 'GitHub API 请求受限，请稍后重试。')
+      return await this.checkViaPublicLatestRelease(
+        currentVersion,
+        platform,
+        arch,
+        checkedAt,
+        'RATE_LIMITED',
+        'GitHub API 请求受限，请稍后重试。'
+      )
     }
     if (!response.ok) {
       return failure(currentVersion, checkedAt, 'NETWORK', `GitHub API HTTP ${response.status}`)
@@ -87,6 +102,62 @@ export class ReleaseUpdateService {
 
     return {
       status: compareVersions(release.version, currentVersion) > 0 ? 'available' : 'latest',
+      currentVersion,
+      checkedAt,
+      release,
+      errorCode: null,
+      errorMessage: null
+    }
+  }
+
+  private async checkViaPublicLatestRelease(
+    currentVersion: string,
+    platform: NodeJS.Platform,
+    arch: string,
+    checkedAt: number,
+    fallbackErrorCode: UpdateErrorCode,
+    fallbackErrorMessage: string
+  ): Promise<UpdateCheckResult> {
+    let response: Response
+    try {
+      response = await this.fetcher(OFFICIAL_LATEST_RELEASE_URL, {
+        headers: { 'User-Agent': `OrigRead-Desktop/${currentVersion}` },
+        redirect: 'manual'
+      })
+    } catch {
+      return failure(currentVersion, checkedAt, fallbackErrorCode, fallbackErrorMessage)
+    }
+
+    if (response.status === 404) {
+      return failure(
+        currentVersion,
+        checkedAt,
+        'REPOSITORY_UNAVAILABLE',
+        'OrigRead Desktop 仓库已可访问，但当前还没有可用的公开 Release。'
+      )
+    }
+
+    const releasePageUrl = resolveLatestReleasePageUrl(response)
+    if (!releasePageUrl) {
+      return failure(currentVersion, checkedAt, fallbackErrorCode, fallbackErrorMessage)
+    }
+
+    const tagName = releaseTagFromPageUrl(releasePageUrl)
+    if (!tagName) {
+      return failure(currentVersion, checkedAt, 'INVALID_RESPONSE', 'GitHub 最新版本链接未返回有效版本号。')
+    }
+    const version = normalizeVersion(tagName)
+    const release: DesktopReleaseInfo = {
+      tagName,
+      version,
+      title: `OrigRead ${tagName}`,
+      notes: '',
+      publishedDate: '',
+      releasePageUrl,
+      asset: buildFallbackReleaseAsset(tagName, platform, arch)
+    }
+    return {
+      status: compareVersions(version, currentVersion) > 0 ? 'available' : 'latest',
       currentVersion,
       checkedAt,
       release,
@@ -232,6 +303,57 @@ export function shouldPreferMainlandReleaseMirror(locale: string): boolean {
 
 export function isTrustedReleaseDownloadUrl(value: string): boolean {
   return value.startsWith(OFFICIAL_RELEASE_DOWNLOAD_PREFIX)
+}
+
+export function resolveLatestReleasePageUrl(response: Response): string | null {
+  const location = response.headers.get('location')?.trim() ?? ''
+  if (location) {
+    try {
+      const resolved = new URL(location, OFFICIAL_LATEST_RELEASE_URL).toString()
+      return isTrustedReleasePageUrl(resolved) ? resolved : null
+    } catch {
+      return null
+    }
+  }
+  const responseUrl = response.url.trim()
+  return isTrustedReleasePageUrl(responseUrl) ? responseUrl : null
+}
+
+export function releaseTagFromPageUrl(value: string): string | null {
+  try {
+    const url = new URL(value)
+    if (url.origin !== 'https://github.com') return null
+    const prefix = `/${ORIGREAD_DESKTOP_REPOSITORY}/releases/tag/`
+    if (!url.pathname.startsWith(prefix)) return null
+    const tag = decodeURIComponent(url.pathname.slice(prefix.length)).trim()
+    return tag && !tag.includes('/') ? tag : null
+  } catch {
+    return null
+  }
+}
+
+export function buildFallbackReleaseAsset(
+  tagName: string,
+  platform: NodeJS.Platform,
+  arch: string
+): DesktopReleaseAsset | null {
+  const version = normalizeVersion(tagName)
+  const normalizedArch = arch.toLowerCase()
+  let fileName = ''
+  if (platform === 'win32' && normalizedArch === 'x64') fileName = `OrigRead-${version}-x64.exe`
+  if (platform === 'darwin' && normalizedArch === 'arm64') fileName = `OrigRead-${version}-arm64.dmg`
+  if (platform === 'linux' && normalizedArch === 'x64') fileName = `OrigRead-${version}-x64.AppImage`
+  if (!fileName) return null
+  return {
+    id: 0,
+    name: fileName,
+    size: 0,
+    downloadUrl: `${OFFICIAL_RELEASE_DOWNLOAD_PREFIX}${encodeURIComponent(tagName)}/${fileName}`
+  }
+}
+
+function isTrustedReleasePageUrl(value: string): boolean {
+  return value.startsWith(`https://github.com/${ORIGREAD_DESKTOP_REPOSITORY}/releases/tag/`)
 }
 
 function parseRelease(payload: GitHubReleasePayload, platform: NodeJS.Platform, arch: string, language: string): DesktopReleaseInfo | null {

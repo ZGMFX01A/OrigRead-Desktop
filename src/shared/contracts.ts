@@ -37,6 +37,7 @@ export interface AppInfo {
   version: string
   locale: string
   platform: string
+  arch: string
 }
 
 export interface FeedSettingsPatch {

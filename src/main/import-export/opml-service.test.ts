@@ -60,7 +60,7 @@ describe('OpmlService', () => {
     const repository = new LibraryRepository(database.connection)
     const service = new OpmlService(repository)
     expect(() => service.importFromString('<html><body>nope</body></html>')).toThrow('OPML')
-    expect(repository.snapshot()).toMatchObject({ groups: 1, feeds: 0 })
+    expect(repository.snapshot()).toMatchObject({ groups: 1, feeds: 1 })
     database.close()
   })
 })

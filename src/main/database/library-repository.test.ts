@@ -6,6 +6,7 @@ import type { ArticleRecord, FeedRecord } from '../../shared/library'
 import { DesktopDatabase } from './database'
 import { LibraryRepository } from './library-repository'
 import { CURRENT_SCHEMA_VERSION, DEFAULT_GROUP_ID } from './migrations'
+import { ORIGREAD_DESKTOP_RELEASE_FEED_URL } from '../../shared/origread-release'
 
 const tempDirectories: string[] = []
 
@@ -24,7 +25,8 @@ describe('LibraryRepository', () => {
     expect(repository.listGroups()).toEqual([
       { id: DEFAULT_GROUP_ID, accountId: 1, name: 'Default', sortOrder: 0, isDefault: true }
     ])
-    expect(repository.snapshot()).toEqual({ groups: 1, feeds: 0, articles: 0, unread: 0, starred: 0 })
+    expect(repository.snapshot()).toEqual({ groups: 1, feeds: 1, articles: 0, unread: 0, starred: 0 })
+    expect(repository.findFeedByUrl(ORIGREAD_DESKTOP_RELEASE_FEED_URL)).toMatchObject({ name: 'OrigRead Desktop Releases', sourceType: 'rss' })
 
     database.close()
   })
@@ -54,7 +56,7 @@ describe('LibraryRepository', () => {
     expect(updated?.title).toBe('Updated title from source')
     expect(updated?.isUnread).toBe(false)
     expect(updated?.isStarred).toBe(true)
-    expect(repository.snapshot()).toMatchObject({ feeds: 1, articles: 1, unread: 0, starred: 1 })
+    expect(repository.snapshot()).toMatchObject({ feeds: 2, articles: 1, unread: 0, starred: 1 })
 
     database.close()
   })
@@ -75,7 +77,7 @@ describe('LibraryRepository', () => {
 
     const secondDatabase = new DesktopDatabase(databasePath)
     const secondRepository = new LibraryRepository(secondDatabase.connection)
-    expect(secondRepository.snapshot()).toMatchObject({ feeds: 1, articles: 1, unread: 1, starred: 1 })
+    expect(secondRepository.snapshot()).toMatchObject({ feeds: 2, articles: 1, unread: 1, starred: 1 })
     expect(secondRepository.listArticles()[0]?.id).toBe(article.id)
     secondDatabase.close()
   })

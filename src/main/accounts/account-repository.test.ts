@@ -3,6 +3,7 @@ import { DesktopDatabase } from '../database/database'
 import { LibraryRepository } from '../database/library-repository'
 import { MemorySecretStore } from '../security/secret-store'
 import { AccountRepository } from './account-repository'
+import { ORIGREAD_DESKTOP_RELEASE_FEED_URL } from '../../shared/origread-release'
 
 describe('AccountRepository', () => {
   it('isolates library data by current account and allows the same feed URL in different accounts', () => {
@@ -20,7 +21,11 @@ describe('AccountRepository', () => {
     expect(library.listFeeds().map((item) => item.id)).toEqual(['feed-b'])
 
     accounts.switchTo(first.id)
-    expect(library.listFeeds().map((item) => item.id)).toEqual(['feed-a'])
+    expect(library.listFeeds().find((item) => item.url === ORIGREAD_DESKTOP_RELEASE_FEED_URL)).toMatchObject({
+      name: 'OrigRead Desktop Releases',
+      accountId: first.id
+    })
+    expect(library.listFeeds().filter((item) => item.url !== ORIGREAD_DESKTOP_RELEASE_FEED_URL).map((item) => item.id)).toEqual(['feed-a'])
     expect(library.listArticles().map((item) => item.id)).toEqual(['article-a'])
     database.close()
   })

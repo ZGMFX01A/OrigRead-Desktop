@@ -182,7 +182,7 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await expect(page.getByRole('button', { name: '访问仓库' })).toHaveCount(2)
     const aboutShortcutKeys = await page.locator('.about-shortcut kbd').allTextContents()
     expect(aboutShortcutKeys).toEqual(expect.arrayContaining([
-      '← / K', '→ / J', '↑', '↓', 'M', 'S', 'U', '[', ',', '.', '-', '+', 'Ctrl / Cmd + F'
+      '← / K', '→ / J', '↑', '↓', 'M', 'S', 'U', '[', '<', '>', '-', '+', 'Ctrl / Cmd + F'
     ]))
     await expect(page.getByRole('button', { name: '提交 Issue' })).toBeVisible()
     const aboutCardWidth = await page.locator('.about-client-card').evaluate((element) => element.getBoundingClientRect().width)

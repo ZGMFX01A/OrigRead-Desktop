@@ -245,7 +245,8 @@ function registerIpcHandlers(): void {
     return {
       version: app.getVersion(),
       locale: app.getLocale(),
-      platform: process.platform
+      platform: process.platform,
+      arch: process.arch
     }
   })
   ipcMain.handle(IPC_CHANNELS.getLibrarySnapshot, (event) => {

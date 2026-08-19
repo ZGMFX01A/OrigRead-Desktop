@@ -3,10 +3,13 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  buildFallbackReleaseAsset,
   compareVersions,
   localizedReleaseNotes,
+  releaseTagFromPageUrl,
   releaseDownloadCandidates,
   ReleaseUpdateService,
+  resolveLatestReleasePageUrl,
   selectReleaseAsset,
   shouldPreferMainlandReleaseMirror
 } from './release-update-service'
@@ -85,6 +88,63 @@ describe('release update service', () => {
     const result = await service.check('0.1.0', 'win32', 'x64', 'zh')
     expect(result.status).toBe('unavailable')
     expect(result.errorCode).toBe('REPOSITORY_UNAVAILABLE')
+  })
+
+  it('falls back to public releases/latest when anonymous GitHub API is rate limited', async () => {
+    const calls: string[] = []
+    const service = new ReleaseUpdateService(async (input, init) => {
+      calls.push(input)
+      if (input.startsWith('https://api.github.com/')) {
+        return new Response('{}', { status: 429 })
+      }
+      expect(init?.redirect).toBe('manual')
+      return new Response('', {
+        status: 302,
+        headers: { location: '/ZGMFX01A/OrigRead-Desktop/releases/tag/v1.2.3' }
+      })
+    })
+    const result = await service.check('0.1.0', 'win32', 'x64', 'zh')
+    expect(result.status).toBe('available')
+    expect(result.errorCode).toBeNull()
+    expect(result.release?.version).toBe('1.2.3')
+    expect(result.release?.asset?.name).toBe('OrigRead-1.2.3-x64.exe')
+    expect(result.release?.asset?.downloadUrl).toBe(
+      'https://github.com/ZGMFX01A/OrigRead-Desktop/releases/download/v1.2.3/OrigRead-1.2.3-x64.exe'
+    )
+    expect(calls).toEqual([
+      'https://api.github.com/repos/ZGMFX01A/OrigRead-Desktop/releases/latest',
+      'https://github.com/ZGMFX01A/OrigRead-Desktop/releases/latest'
+    ])
+  })
+
+  it('uses public releases/latest fallback after GitHub API network failure', async () => {
+    let call = 0
+    const service = new ReleaseUpdateService(async () => {
+      call += 1
+      if (call === 1) throw new Error('api blocked')
+      return new Response('', {
+        status: 302,
+        headers: { location: 'https://github.com/ZGMFX01A/OrigRead-Desktop/releases/tag/v0.1.0' }
+      })
+    })
+    const result = await service.check('0.1.0', 'win32', 'x64', 'zh')
+    expect(result.status).toBe('latest')
+    expect(result.errorCode).toBeNull()
+    expect(result.release?.version).toBe('0.1.0')
+  })
+
+  it('parses only trusted latest-release redirects and builds deterministic fallback assets', () => {
+    const response = new Response('', {
+      status: 302,
+      headers: { location: '/ZGMFX01A/OrigRead-Desktop/releases/tag/v2.0.0' }
+    })
+    expect(resolveLatestReleasePageUrl(response)).toBe(
+      'https://github.com/ZGMFX01A/OrigRead-Desktop/releases/tag/v2.0.0'
+    )
+    expect(releaseTagFromPageUrl('https://github.com/ZGMFX01A/OrigRead-Desktop/releases/tag/v2.0.0')).toBe('v2.0.0')
+    expect(releaseTagFromPageUrl('https://example.com/ZGMFX01A/OrigRead-Desktop/releases/tag/v2.0.0')).toBeNull()
+    expect(buildFallbackReleaseAsset('v2.0.0', 'darwin', 'arm64')?.name).toBe('OrigRead-2.0.0-arm64.dmg')
+    expect(buildFallbackReleaseAsset('v2.0.0', 'linux', 'x64')?.name).toBe('OrigRead-2.0.0-x64.AppImage')
   })
 
   it('parses release, localizes notes, selects asset and reports update', async () => {

@@ -75,7 +75,7 @@ describe('WebsiteSubscriptionService', () => {
         url: 'https://news.example.com/',
         sourceType: 'website'
       })
-      expect(repository.listFeeds()).toHaveLength(1)
+      expect(repository.listFeeds().filter((feed) => feed.sourceType === 'website')).toHaveLength(1)
       expect(repository.listArticlesByFeed(added.feedId)).toHaveLength(5)
     } finally {
       database.close()

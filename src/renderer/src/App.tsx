@@ -51,6 +51,7 @@ import { BUILTIN_READER_FONTS, type ReaderFontEntry } from '../../shared/reader-
 import type { UpdateCheckResult } from '../../shared/update'
 import { selectMainSpeechSource, speechTextFromHtml, speechTextFromMarkdown, useReaderSpeech } from './useReaderSpeech'
 import { readerToolFeedback, type ReaderToolFeedback } from './reader-tool-feedback'
+import { isOrigReadDesktopReleaseFeed, toOrigReadDesktopReleaseLinks } from '../../shared/origread-release'
 
 type Destination = 'all' | 'unread' | 'starred'
 type ReaderMode = 'article' | 'ai' | 'translation'
@@ -475,6 +476,10 @@ export default function App(): React.JSX.Element {
     ? (librarySnapshot?.starred ?? scopedArticles.filter((article) => article.isStarred).length)
     : scopedArticles.filter((article) => article.isStarred).length
   const originalUrl = normalizeHttpUrl(selectedArticle?.url)
+  const origReadReleaseLinks = useMemo(
+    () => toOrigReadDesktopReleaseLinks(selectedArticle?.url, appInfo?.platform, appInfo?.arch),
+    [appInfo?.arch, appInfo?.platform, selectedArticle?.url]
+  )
 
   const mainSpeechText = useMemo(() => {
     if (!selectedArticle) return ''
@@ -1046,17 +1051,36 @@ export default function App(): React.JSX.Element {
     }
   }
 
-  const refreshFeed = async (feed: FeedRecord): Promise<void> => {
+  const refreshFeed = async (feed: FeedRecord, scopeAfterRefresh?: ArticleScope): Promise<void> => {
     if (refreshingFeedId || isRefreshingAll) return
     setRefreshingFeedId(feed.id)
     setSourceError(null)
     try {
       await window.origread.refreshSource(feed.id)
-      await Promise.all([reloadLibrary(), reloadCurrentScope()])
+      if (scopeAfterRefresh) {
+        const [_, loadedScopeArticles] = await Promise.all([
+          reloadLibrary(),
+          loadArticlesForScope(scopeAfterRefresh)
+        ])
+        setScopeArticles(loadedScopeArticles)
+      } else {
+        await Promise.all([reloadLibrary(), reloadCurrentScope()])
+      }
     } catch (error) {
       setSourceError(`${t('refreshFailed')}: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setRefreshingFeedId(null)
+    }
+  }
+
+  const selectFeedScope = (feed: FeedRecord): void => {
+    const scope: ArticleScope = { kind: 'feed', id: feed.id }
+    setArticleScope(scope)
+    setSourcePickerOpen(false)
+    setSelectedArticleId(null)
+    setQuery('')
+    if (isOrigReadDesktopReleaseFeed(feed.url) && feedStats(feed.id).total === 0) {
+      void refreshFeed(feed, scope)
     }
   }
 
@@ -1280,7 +1304,7 @@ export default function App(): React.JSX.Element {
                     <span>{t('unreadCountShort',{count:statsForFeeds(groupFeeds).unread})}</span>
                   </button>
                   <div className="source-group-items">{groupFeeds.map((feed) => (
-                    <article className={`source-item ${articleScope.kind==='feed'&&articleScope.id===feed.id?'selected':''}`} key={feed.id} tabIndex={0} role="button" onClick={()=>{setArticleScope({kind:'feed',id:feed.id});setSourcePickerOpen(false);setSelectedArticleId(null);setQuery('')}} onContextMenu={(event)=>{event.preventDefault();event.stopPropagation();setContextMenu({kind:'feed',x:event.clientX,y:event.clientY,feedId:feed.id})}} onKeyDown={(event)=>{if(event.target!==event.currentTarget)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();setArticleScope({kind:'feed',id:feed.id});setSourcePickerOpen(false);setSelectedArticleId(null);setQuery('')}}}>
+                    <article className={`source-item ${articleScope.kind==='feed'&&articleScope.id===feed.id?'selected':''}`} key={feed.id} tabIndex={0} role="button" onClick={()=>selectFeedScope(feed)} onContextMenu={(event)=>{event.preventDefault();event.stopPropagation();setContextMenu({kind:'feed',x:event.clientX,y:event.clientY,feedId:feed.id})}} onKeyDown={(event)=>{if(event.target!==event.currentTarget)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();selectFeedScope(feed)}}}>
                       <FeedIcon feed={feed} />
                       <div className="source-copy">
                         <strong>{feed.name}</strong>
@@ -1554,6 +1578,28 @@ export default function App(): React.JSX.Element {
               />
             ) : (
               <div className="article-body-status">{selectedArticle.description || t('readerTextUnavailable')}</div>
+            )}
+            {origReadReleaseLinks && (
+              <section className="origread-release-actions" aria-label={t('projectReleaseActions')}>
+                <div className="origread-release-actions-copy">
+                  <strong>{t('projectReleaseActions')}</strong>
+                  {origReadReleaseLinks.assetName ? (
+                    <span>{t('projectReleaseAssetForDevice', { asset: origReadReleaseLinks.assetName })}</span>
+                  ) : (
+                    <span>{t('projectReleaseNoAssetForDevice')}</span>
+                  )}
+                </div>
+                <div className="origread-release-actions-buttons">
+                  {origReadReleaseLinks.downloadUrl && (
+                    <button type="button" className="origread-release-download" onClick={()=>void openExternal(origReadReleaseLinks.downloadUrl!)}>
+                      <Download size={15}/><span>{t('downloadUpdate')}</span>
+                    </button>
+                  )}
+                  <button type="button" className="origread-release-page" onClick={()=>void openExternal(origReadReleaseLinks.releasePageUrl)}>
+                    <ExternalLink size={15}/><span>{t('openReleasePage')}</span>
+                  </button>
+                </div>
+              </section>
             )}
           </div>
           {aiSummaryDocked && (aiSummaryPlacement==='right'||aiSummaryPlacement==='bottom') && renderAiSummaryPanel()}

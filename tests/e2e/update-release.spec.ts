@@ -20,7 +20,15 @@ test('desktop update flow handles available, latest and private repository state
     const updateDialog = page.locator('.update-available-dialog')
     await expect(updateDialog).toBeVisible({ timeout: 10_000 })
     await expect(updateDialog).toContainText('v1.0.0')
+    await expect(updateDialog.locator('.update-release-notes-markdown h4')).toHaveText(/新增功能|New features/)
+    await expect(updateDialog.locator('.update-release-notes-markdown li')).toContainText(/新的更新流程|New update flow/)
+    await expect(updateDialog.locator('.update-release-notes-markdown hr')).toHaveCount(1)
+    await expect(updateDialog.locator('.update-release-asset-summary')).toContainText('OrigRead-1.0.0-x64.exe')
     await expect(updateDialog.getByRole('button', { name: /下载安装包|Download installer/ })).toBeVisible()
+    const compactDialog = await updateDialog.boundingBox()
+    expect(compactDialog).not.toBeNull()
+    expect(compactDialog!.width).toBeLessThanOrEqual(570)
+    expect(compactDialog!.height).toBeLessThan(460)
     await updateDialog.locator('.dialog-close').click()
 
     await page.locator('.settings-button').click()
@@ -31,7 +39,7 @@ test('desktop update flow handles available, latest and private repository state
 
     // 同一 Release body 使用不可见注释分段；Main 可按当前软件语言选择英文段。
     const english = await page.evaluate(async () => window.origread.checkForUpdates('en'))
-    expect(english.release?.notes).toBe('- New update flow')
+    expect(english.release?.notes).toBe('## New features\n- New update flow\n\n---')
 
     fixture.setMode('latest')
     await page.locator('.update-check-button').click()
@@ -62,7 +70,7 @@ async function startUpdateServer(): Promise<{ server: Server; setMode(mode: 'ava
     json(response, {
       tag_name: `v${version}`,
       name: `OrigRead Desktop ${version}`,
-      body: '<!-- lang:zh -->\n- 新的更新流程\n\n<!-- lang:en -->\n- New update flow',
+      body: '<!-- lang:zh -->\n## 新增功能\n- 新的更新流程\n\n---\n\n<!-- lang:en -->\n## New features\n- New update flow\n\n---',
       published_at: '2026-08-17T02:00:00Z',
       html_url: `https://github.com/ZGMFX01A/OrigRead-Desktop/releases/tag/v${version}`,
       assets: [{

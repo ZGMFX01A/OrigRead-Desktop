@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { applyMigrations, CURRENT_ACCOUNT_SETTING_KEY, CURRENT_SCHEMA_VERSION } from './migrations'
+import { ORIGREAD_DESKTOP_RELEASE_FEED_URL } from '../../shared/origread-release'
 
 describe('database migration v2 -> current schema', () => {
   it('moves existing library rows into Local account 1 without losing read/starred state', () => {
@@ -29,6 +30,23 @@ describe('database migration v2 -> current schema', () => {
     expect(db.prepare('SELECT value FROM app_settings WHERE key=?').get(CURRENT_ACCOUNT_SETTING_KEY)).toEqual({value:'1'})
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='archived_articles'").get()).toEqual({name:'archived_articles'})
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='rss_http_cache'").get()).toEqual({name:'rss_http_cache'})
+    expect(db.prepare(`
+      SELECT f.account_id,f.group_id,f.name,f.url,f.source_page_url,f.source_type,f.icon
+      FROM feeds f
+      JOIN groups g ON g.id=f.group_id
+      WHERE f.url=? AND g.is_default=1
+    `).get(ORIGREAD_DESKTOP_RELEASE_FEED_URL)).toEqual({
+      account_id:1,
+      group_id:'local-default',
+      name:'OrigRead Desktop Releases',
+      url:ORIGREAD_DESKTOP_RELEASE_FEED_URL,
+      source_page_url:'https://github.com/ZGMFX01A/OrigRead-Desktop/releases',
+      source_type:'rss',
+      icon:'https://github.com/ZGMFX01A.png'
+    })
+    db.prepare('DELETE FROM feeds WHERE url=?').run(ORIGREAD_DESKTOP_RELEASE_FEED_URL)
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM feeds WHERE url=?').get(ORIGREAD_DESKTOP_RELEASE_FEED_URL)).toEqual({count:0})
     db.close()
   })
 })
