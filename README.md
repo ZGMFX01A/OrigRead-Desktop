@@ -46,23 +46,6 @@ The goal is simple: **bring the sources you deliberately follow into one timelin
 
 ## Screenshots
 
-<!--
-The final screenshot directories are ready: assets/readme/screenshots/en-US/
-
-1. overview.png
-   Main workspace with sources/groups, article list and an opened article visible together.
-
-2. source-discovery.png
-   Add-source result with real progress and at least two real candidate types. A site that exposes both RSSHub and Website candidates is preferred.
-
-3. reader-ai.png
-   Readable article body with a docked AI summary. The translation control may remain visible, but no credentials should appear.
-
-4. settings.png
-   Capture Accounts, RSSHub or Rules settings to show capabilities beyond a basic RSS reader.
-
-Uncomment the image block below after the final screenshots are ready:
-
 <p align="center"><img src="assets/readme/screenshots/en-US/overview.png" width="1000" alt="OrigRead Desktop overview" /></p>
 
 | Source discovery | Reading & AI | Settings |
