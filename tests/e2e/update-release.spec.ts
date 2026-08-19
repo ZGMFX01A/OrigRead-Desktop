@@ -26,7 +26,7 @@ test('desktop update flow handles available, latest and private repository state
     await page.locator('.settings-button').click()
     await page.getByRole('button', { name: /软件更新|Software update/ }).click()
     await expect(page.locator('.update-status-card')).toContainText(/发现新版本|New version available/)
-    await expect(page.locator('.update-release-asset')).toContainText('OrigRead-1.0.0-Windows-x64.exe')
+    await expect(page.locator('.update-release-asset')).toContainText('OrigRead-1.0.0-x64.exe')
     await expect(page.locator('.setting-switch input').last()).toBeChecked()
 
     // 同一 Release body 使用不可见注释分段；Main 可按当前软件语言选择英文段。
@@ -67,9 +67,9 @@ async function startUpdateServer(): Promise<{ server: Server; setMode(mode: 'ava
       html_url: `https://github.com/ZGMFX01A/OrigRead-Desktop/releases/tag/v${version}`,
       assets: [{
         id: 100,
-        name: `OrigRead-${version}-Windows-x64.exe`,
+        name: `OrigRead-${version}-x64.exe`,
         size: 1024 * 1024 * 80,
-        browser_download_url: `https://github.com/ZGMFX01A/OrigRead-Desktop/releases/download/v${version}/OrigRead-${version}-Windows-x64.exe`
+        browser_download_url: `https://github.com/ZGMFX01A/OrigRead-Desktop/releases/download/v${version}/OrigRead-${version}-x64.exe`
       }]
     })
   })

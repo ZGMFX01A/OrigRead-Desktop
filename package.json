@@ -28,9 +28,9 @@
     "test:e2e": "npm run build && playwright test tests/e2e",
     "build": "npm run typecheck && electron-vite build",
     "package": "npm run build && electron-builder --publish never",
-    "package:win": "npm run build && electron-builder --win nsis --publish never",
-    "package:mac": "npm run build && electron-builder --mac dmg --publish never",
-    "package:linux": "npm run build && electron-builder --linux AppImage deb --publish never"
+    "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "package:mac": "npm run build && electron-builder --mac dmg --arm64 --publish never",
+    "package:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

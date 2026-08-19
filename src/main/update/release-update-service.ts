@@ -265,8 +265,8 @@ function parseAsset(value: GitHubReleaseAssetPayload): DesktopReleaseAsset | nul
 function assetScore(asset: DesktopReleaseAsset, platform: NodeJS.Platform, arch: string): number {
   const name = asset.name.toLowerCase()
   let score = 0
-  if (platform === 'win32' && name.includes('windows')) score += 40
-  if (platform === 'darwin' && (name.includes('macos') || name.includes('mac'))) score += 40
+  // 平台已经由扩展名筛选，不再依赖 Windows/macOS/Linux 出现在文件名中。
+  // 这样新产物可以统一使用 OrigRead-{version}-{arch}.{ext}，同时旧 Release 仍可兼容。
   if (platform === 'linux' && name.endsWith('.appimage')) score += 30
   if (arch === 'x64' && (name.includes('x64') || name.includes('amd64'))) score += 20
   if (arch === 'arm64' && (name.includes('arm64') || name.includes('aarch64'))) score += 20

@@ -35,13 +35,13 @@ jobs:
       - name: Verify Windows installer
         shell: pwsh
         run: |
-          $files = Get-ChildItem release -Filter "OrigRead-*-Windows-x64.exe"
+          $files = Get-ChildItem release -Filter "OrigRead-*-x64.exe"
           if ($files.Count -lt 1) { throw "Windows NSIS installer was not generated" }
           $files | Format-Table Name, Length
       - uses: actions/upload-artifact@v4
         with:
           name: origread-windows-x64
-          path: release/OrigRead-*-Windows-x64.exe
+          path: release/OrigRead-*-x64.exe
           if-no-files-found: error
 
   macos:
@@ -65,12 +65,12 @@ jobs:
         run: npx electron-builder --mac dmg --arm64 --publish never
       - name: Verify macOS package
         run: |
-          ls -lh release/OrigRead-*-macOS-arm64.dmg
-          test -f $(find release -maxdepth 1 -name 'OrigRead-*-macOS-arm64.dmg' -print -quit)
+          ls -lh release/OrigRead-*-arm64.dmg
+          test -f $(find release -maxdepth 1 -name 'OrigRead-*-arm64.dmg' -print -quit)
       - uses: actions/upload-artifact@v4
         with:
           name: origread-macos-arm64
-          path: release/OrigRead-*-macOS-arm64.dmg
+          path: release/OrigRead-*-arm64.dmg
           if-no-files-found: error
 
   linux:
@@ -96,16 +96,16 @@ jobs:
         run: npx electron-builder --linux AppImage deb --x64 --publish never
       - name: Verify Linux packages
         run: |
-          ls -lh release/OrigRead-*-Linux-*.AppImage
-          ls -lh release/OrigRead-*-Linux-*.deb
-          test -n "$(find release -maxdepth 1 -name 'OrigRead-*-Linux-*.AppImage' -print -quit)"
-          test -n "$(find release -maxdepth 1 -name 'OrigRead-*-Linux-*.deb' -print -quit)"
+          ls -lh release/OrigRead-*-x64.AppImage
+          ls -lh release/OrigRead-*-x64.deb
+          test -n "$(find release -maxdepth 1 -name 'OrigRead-*-x64.AppImage' -print -quit)"
+          test -n "$(find release -maxdepth 1 -name 'OrigRead-*-x64.deb' -print -quit)"
       - uses: actions/upload-artifact@v4
         with:
           name: origread-linux-x64
           path: |
-            release/OrigRead-*-Linux-*.AppImage
-            release/OrigRead-*-Linux-*.deb
+            release/OrigRead-*-x64.AppImage
+            release/OrigRead-*-x64.deb
           if-no-files-found: error
 
   release:

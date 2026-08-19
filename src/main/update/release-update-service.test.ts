@@ -30,11 +30,24 @@ describe('release update service', () => {
   it('selects current platform installer asset', () => {
     const base = 'https://github.com/ZGMFX01A/OrigRead-Desktop/releases/download/v1.0.0/'
     const assets = [
-      { id: 1, name: 'OrigRead-1.0.0-Windows-x64.exe', size: 10, browser_download_url: `${base}OrigRead-1.0.0-Windows-x64.exe` },
-      { id: 2, name: 'OrigRead-1.0.0-macOS-arm64.dmg', size: 11, browser_download_url: `${base}OrigRead-1.0.0-macOS-arm64.dmg` }
+      { id: 1, name: 'OrigRead-1.0.0-x64.exe', size: 10, browser_download_url: `${base}OrigRead-1.0.0-x64.exe` },
+      { id: 2, name: 'OrigRead-1.0.0-arm64.dmg', size: 11, browser_download_url: `${base}OrigRead-1.0.0-arm64.dmg` },
+      { id: 3, name: 'OrigRead-1.0.0-x64.AppImage', size: 12, browser_download_url: `${base}OrigRead-1.0.0-x64.AppImage` },
+      { id: 4, name: 'OrigRead-1.0.0-x64.deb', size: 13, browser_download_url: `${base}OrigRead-1.0.0-x64.deb` }
     ]
     expect(selectReleaseAsset(assets, 'win32', 'x64')?.id).toBe(1)
     expect(selectReleaseAsset(assets, 'darwin', 'arm64')?.id).toBe(2)
+    expect(selectReleaseAsset(assets, 'linux', 'x64')?.id).toBe(3)
+  })
+
+  it('keeps old platform-labelled release assets compatible', () => {
+    const base = 'https://github.com/ZGMFX01A/OrigRead-Desktop/releases/download/v0.1.0/'
+    const assets = [
+      { id: 11, name: 'OrigRead-0.1.0-Windows-x64.exe', size: 10, browser_download_url: `${base}OrigRead-0.1.0-Windows-x64.exe` },
+      { id: 12, name: 'OrigRead-0.1.0-macOS-arm64.dmg', size: 11, browser_download_url: `${base}OrigRead-0.1.0-macOS-arm64.dmg` }
+    ]
+    expect(selectReleaseAsset(assets, 'win32', 'x64')?.id).toBe(11)
+    expect(selectReleaseAsset(assets, 'darwin', 'arm64')?.id).toBe(12)
   })
 
   it('only prepends mainland proxy for trusted release assets', () => {
@@ -49,7 +62,7 @@ describe('release update service', () => {
   })
 
   it('falls back to official GitHub asset when mainland proxy download fails', async () => {
-    const official = 'https://github.com/ZGMFX01A/OrigRead-Desktop/releases/download/v1.0.0/OrigRead-1.0.0-Windows-x64.exe'
+    const official = 'https://github.com/ZGMFX01A/OrigRead-Desktop/releases/download/v1.0.0/OrigRead-1.0.0-x64.exe'
     const calls: string[] = []
     const service = new ReleaseUpdateService(async (input) => {
       calls.push(input)
@@ -83,9 +96,9 @@ describe('release update service', () => {
       html_url: 'https://github.com/ZGMFX01A/OrigRead-Desktop/releases/tag/v1.0.0',
       assets: [{
         id: 8,
-        name: 'OrigRead-1.0.0-Windows-x64.exe',
+        name: 'OrigRead-1.0.0-x64.exe',
         size: 123,
-        browser_download_url: 'https://github.com/ZGMFX01A/OrigRead-Desktop/releases/download/v1.0.0/OrigRead-1.0.0-Windows-x64.exe'
+        browser_download_url: 'https://github.com/ZGMFX01A/OrigRead-Desktop/releases/download/v1.0.0/OrigRead-1.0.0-x64.exe'
       }]
     }), { status: 200, headers: { 'content-type': 'application/json' } }))
     const result = await service.check('0.1.0', 'win32', 'x64', 'zh')

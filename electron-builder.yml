@@ -11,7 +11,7 @@ asar: true
 win:
   target:
     - nsis
-  artifactName: OrigRead-${version}-Windows-${arch}.${ext}
+  artifactName: OrigRead-${version}-x64.${ext}
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
@@ -21,7 +21,7 @@ mac:
   target:
     - dmg
   category: public.app-category.news
-  artifactName: OrigRead-${version}-macOS-${arch}.${ext}
+  artifactName: OrigRead-${version}-arm64.${ext}
 linux:
   target:
     - AppImage
@@ -29,4 +29,4 @@ linux:
   category: Network
   executableName: origread
   syncDesktopName: true
-  artifactName: OrigRead-${version}-Linux-${arch}.${ext}
+  artifactName: OrigRead-${version}-x64.${ext}
