@@ -885,9 +885,9 @@ export default function App(): React.JSX.Element {
       } else if (key === 'u' && originalUrl) {
         event.preventDefault()
         void showOriginalArticle()
-      } else if ((key === ',' || key === '.') && aiSummaryVisible && (aiSummary || aiLoading)) {
+      } else if ((event.code === 'Comma' || event.code === 'Period') && aiSummaryVisible && (aiSummary || aiLoading)) {
         event.preventDefault()
-        cycleAiSummaryPlacement(key === ',' ? -1 : 1)
+        cycleAiSummaryPlacement(event.code === 'Comma' ? -1 : 1)
       } else if ((key === '-' || key === '=' || key === '+') && aiSummaryVisible && (aiSummary || aiLoading)) {
         event.preventDefault()
         resizeAiSummaryPanel(key === '-' ? -1 : 1)
@@ -1168,10 +1168,10 @@ export default function App(): React.JSX.Element {
                 <Compass size={17}/>
               </button>
               <div className="subscription-menu-anchor">
-                <button className="primary-action" type="button" onClick={()=>setSubscriptionMenuOpen((open)=>!open)} disabled={opmlBusy} aria-expanded={subscriptionMenuOpen}>
-                  <Plus size={16} strokeWidth={2.2} />
-                  {t('addSubscription')}
-                  <ChevronDown size={14}/>
+                <button className="primary-action subscription-trigger" type="button" title={t('addSubscription')} aria-label={t('addSubscription')} onClick={()=>setSubscriptionMenuOpen((open)=>!open)} disabled={opmlBusy} aria-expanded={subscriptionMenuOpen}>
+                  <Plus size={14} strokeWidth={2.2} />
+                  {t('add')}
+                  <ChevronDown size={12}/>
                 </button>
                 {subscriptionMenuOpen && (
                   <>
@@ -1588,8 +1588,8 @@ export default function App(): React.JSX.Element {
                   <span><kbd>S</kbd>{t('shortcutToggleStar')}</span>
                   <span><kbd>U</kbd>{t('shortcutOriginal')}</span>
                   <span><kbd>[</kbd>{t('shortcutSidebar')}</span>
-                  <span><kbd>,</kbd>{t('shortcutSummaryPlacementPrevious')}</span>
-                  <span><kbd>.</kbd>{t('shortcutSummaryPlacementNext')}</span>
+                  <span><kbd>{'<'}</kbd>{t('shortcutSummaryPlacementPrevious')}</span>
+                  <span><kbd>{'>'}</kbd>{t('shortcutSummaryPlacementNext')}</span>
                   <span><kbd>-</kbd>{t('shortcutSummarySizeDecrease')}</span>
                   <span><kbd>+</kbd>{t('shortcutSummarySizeIncrease')}</span>
                 </div>

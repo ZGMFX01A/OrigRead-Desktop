@@ -69,6 +69,15 @@ test('reader generates AI summary and full-article translation through main-proc
     expect(await page.evaluate(() => typeof window.speechSynthesis?.speak === 'function')).toBe(true)
     expect(fixture.aiRequests()).toBeGreaterThan(0)
 
+    await page.keyboard.down('Shift')
+    await page.keyboard.press('Comma')
+    await page.keyboard.up('Shift')
+    await expect.poll(async () => (await page.evaluate(() => window.origread.getSettings())).aiSummaryPlacement).toBe('bottom')
+    await page.keyboard.down('Shift')
+    await page.keyboard.press('Period')
+    await page.keyboard.up('Shift')
+    await expect.poll(async () => (await page.evaluate(() => window.origread.getSettings())).aiSummaryPlacement).toBe('replace')
+
     await page.locator('.reader-tool-options').first().click()
     await expect(page.locator('.reader-tool-dialog')).toBeVisible()
     await page.locator('.summary-mode-option').filter({hasText:'深入'}).click()
