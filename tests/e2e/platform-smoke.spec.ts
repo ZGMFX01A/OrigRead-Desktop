@@ -19,7 +19,12 @@ test('packaging platform smoke: Electron, preload, database and renderer start n
 
     await page.locator('.settings-button').click()
     await expect(page.locator('.settings-layout')).toBeVisible()
-    await expect(page.getByRole('button', { name: /通用|General/ })).toBeVisible()
+    // 这是平台打包 smoke，不应该依赖 runner 的系统语言或 i18n 可访问名称。
+    // 只验证设置导航已经真正渲染，并且默认 General 页处于激活状态。
+    await expect(page.locator('.settings-nav')).toBeVisible()
+    await expect(page.locator('.settings-nav-button').first()).toBeVisible()
+    await expect(page.locator('.settings-nav-button.active')).toBeVisible()
+    await expect(page.locator('.settings-page.settings-subpage .settings-intro')).toBeVisible()
     expect(pageErrors).toEqual([])
   } finally {
     await testApp.close()

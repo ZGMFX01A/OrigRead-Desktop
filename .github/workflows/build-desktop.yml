@@ -31,7 +31,7 @@ jobs:
       - name: Build NSIS x64
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run package:win -- --x64
+        run: npx electron-builder --win nsis --x64
       - name: Verify Windows installer
         shell: pwsh
         run: |
@@ -62,7 +62,7 @@ jobs:
       - name: Build unsigned DMG arm64
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run package:mac -- --arm64
+        run: npx electron-builder --mac dmg --arm64
       - name: Verify macOS package
         run: |
           ls -lh release/OrigRead-*-macOS-arm64.dmg
@@ -93,7 +93,7 @@ jobs:
       - name: Build AppImage and DEB x64
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run package:linux -- --x64
+        run: npx electron-builder --linux AppImage deb --x64
       - name: Verify Linux packages
         run: |
           ls -lh release/OrigRead-*-Linux-*.AppImage
