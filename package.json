@@ -27,10 +27,10 @@
     "test:watch": "vitest",
     "test:e2e": "npm run build && playwright test tests/e2e",
     "build": "npm run typecheck && electron-vite build",
-    "package": "npm run build && electron-builder",
-    "package:win": "npm run build && electron-builder --win nsis",
-    "package:mac": "npm run build && electron-builder --mac dmg",
-    "package:linux": "npm run build && electron-builder --linux AppImage deb"
+    "package": "npm run build && electron-builder --publish never",
+    "package:win": "npm run build && electron-builder --win nsis --publish never",
+    "package:mac": "npm run build && electron-builder --mac dmg --publish never",
+    "package:linux": "npm run build && electron-builder --linux AppImage deb --publish never"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
