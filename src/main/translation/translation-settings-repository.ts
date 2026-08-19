@@ -71,7 +71,9 @@ export class TranslationSettingsRepository {
 function secretKey(type: TranslationProviderType): string { return `translation:${type}:api-key` }
 function defaultProvider(type: TranslationProviderType): StoredProvider {
   switch (type) {
-    case 'ML_KIT': return { type, enabled: true, endpoint: '', region: '' }
+    // ML Kit 只存在于 Android。Desktop 为了兼容共享备份 schema 保留类型，
+    // 但永远不把它作为可启用/可默认的本地翻译服务。
+    case 'ML_KIT': return { type, enabled: false, endpoint: '', region: '' }
     case 'MICROSOFT': return { type, enabled: false, endpoint: 'https://api.cognitive.microsofttranslator.com', region: '' }
     case 'DEEPL': return { type, enabled: false, endpoint: 'https://api-free.deepl.com/v2/translate', region: '' }
     case 'GOOGLE_CLOUD': return { type, enabled: false, endpoint: 'https://translation.googleapis.com/language/translate/v2', region: '' }
@@ -79,13 +81,23 @@ function defaultProvider(type: TranslationProviderType): StoredProvider {
   }
 }
 function defaults(defaultTargetLanguage = 'zh-CN'): StoredSettings {
-  return { defaultProvider: 'ML_KIT', defaultTarget: { type: 'traditional', provider: 'ML_KIT' }, targetLanguage: defaultTargetLanguage, displayMode: 'TRANSLATED', providers: TRANSLATION_PROVIDER_TYPES.map(defaultProvider) }
+  return { defaultProvider: 'MICROSOFT', defaultTarget: { type: 'traditional', provider: 'MICROSOFT' }, targetLanguage: defaultTargetLanguage, displayMode: 'TRANSLATED', providers: TRANSLATION_PROVIDER_TYPES.map(defaultProvider) }
 }
 function normalizeSettings(value: Partial<StoredSettings>, defaultTargetLanguage = 'zh-CN'): StoredSettings {
   const incoming = new Map((Array.isArray(value.providers) ? value.providers : []).map((item) => [item.type, item]))
-  const providers = TRANSLATION_PROVIDER_TYPES.map((type) => ({ ...defaultProvider(type), ...incoming.get(type), type }))
-  const defaultProviderType = TRANSLATION_PROVIDER_TYPES.includes(value.defaultProvider as TranslationProviderType) ? value.defaultProvider as TranslationProviderType : 'ML_KIT'
-  const defaultTarget = normalizeTarget(value.defaultTarget, defaultProviderType)
+  const providers = TRANSLATION_PROVIDER_TYPES.map((type) => {
+    const provider = { ...defaultProvider(type), ...incoming.get(type), type }
+    return type === 'ML_KIT' ? { ...provider, enabled: false } : provider
+  })
+  const enabledDesktopProvider = providers.find((provider) => provider.type !== 'ML_KIT' && provider.enabled)?.type ?? 'MICROSOFT'
+  const requestedDefaultProvider = TRANSLATION_PROVIDER_TYPES.includes(value.defaultProvider as TranslationProviderType)
+    ? value.defaultProvider as TranslationProviderType
+    : enabledDesktopProvider
+  const defaultProviderType = requestedDefaultProvider === 'ML_KIT' ? enabledDesktopProvider : requestedDefaultProvider
+  const normalizedTarget = normalizeTarget(value.defaultTarget, defaultProviderType)
+  const defaultTarget = normalizedTarget.type === 'traditional' && normalizedTarget.provider === 'ML_KIT'
+    ? { type: 'traditional' as const, provider: defaultProviderType }
+    : normalizedTarget
   return { defaultProvider: defaultProviderType, defaultTarget, targetLanguage: value.targetLanguage === undefined ? defaultTargetLanguage : String(value.targetLanguage), displayMode: value.displayMode === 'BILINGUAL' ? 'BILINGUAL' : 'TRANSLATED', providers }
 }
 function normalizeTarget(value: unknown, fallback: TranslationProviderType): TranslationTarget {

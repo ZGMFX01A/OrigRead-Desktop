@@ -37,7 +37,7 @@ import type { SourceDiscoveryProgress, SourceDiscoveryResult, SourceDiscoverySta
 import type { ReaderArticleContent } from '../../shared/reader'
 import type { SyncRuntimeState } from '../../shared/sync-runtime'
 import type { OriginalArticleViewState, OriginalViewBounds } from '../../shared/original-view'
-import { SettingsPanel } from './SettingsPanel'
+import { SettingsPanel, type SettingsPage } from './SettingsPanel'
 import { UpdateAvailableDialog } from './UpdateAvailableDialog'
 import type { AiSummaryDocument, AiSummaryProgress, AiSummaryProgressStage } from '../../shared/ai'
 import type { TranslationDocument, TranslationTarget } from '../../shared/translation'
@@ -50,6 +50,7 @@ import { ReaderSearchBar, SearchableHtml, nextSearchIndex } from './ReaderSearch
 import { BUILTIN_READER_FONTS, type ReaderFontEntry } from '../../shared/reader-font'
 import type { UpdateCheckResult } from '../../shared/update'
 import { selectMainSpeechSource, speechTextFromHtml, speechTextFromMarkdown, useReaderSpeech } from './useReaderSpeech'
+import { readerToolFeedback, type ReaderToolFeedback } from './reader-tool-feedback'
 
 type Destination = 'all' | 'unread' | 'starred'
 type ReaderMode = 'article' | 'ai' | 'translation'
@@ -115,8 +116,9 @@ export default function App(): React.JSX.Element {
   const [aiSummaryElapsedSeconds, setAiSummaryElapsedSeconds] = useState(0)
   const [translationDocument, setTranslationDocument] = useState<TranslationDocument | null>(null)
   const [readerToolLoading, setReaderToolLoading] = useState<ReaderMode | null>(null)
-  const [readerToolError, setReaderToolError] = useState<string | null>(null)
+  const [readerToolNotice, setReaderToolNotice] = useState<ReaderToolFeedback | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsInitialPage, setSettingsInitialPage] = useState<SettingsPage>('general')
   const [startupUpdate, setStartupUpdate] = useState<UpdateCheckResult | null>(null)
   const [sourceCatalogOpen, setSourceCatalogOpen] = useState(false)
   const [subscriptionMenuOpen, setSubscriptionMenuOpen] = useState(false)
@@ -363,7 +365,7 @@ export default function App(): React.JSX.Element {
     setAiSummaryProgress(null)
     setAiSummaryStartedAt(null)
     setTranslationDocument(null)
-    setReaderToolError(null)
+    setReaderToolNotice(null)
     setReaderContentLoading(true)
     void window.origread.getReaderContent(selectedArticleId)
       .then(async (content) => {
@@ -556,7 +558,7 @@ export default function App(): React.JSX.Element {
     if (originalViewState.open) await closeOriginalArticle()
     setSettingsOpen(false)
     setReaderToolLoading('ai')
-    setReaderToolError(null)
+    setReaderToolNotice(null)
     setAiSummaryProgress({ articleId: requestArticleId, stage: 'PREPARING' })
     setAiSummaryStartedAt(Date.now())
     setAiSummaryVisible(true)
@@ -569,7 +571,7 @@ export default function App(): React.JSX.Element {
       setReaderMode((settings?.aiSummaryPlacement ?? 'replace') === 'replace' ? 'ai' : 'article')
     } catch (error) {
       if (runId === aiSummaryRunRef.current && selectedArticleIdRef.current === requestArticleId) {
-        setReaderToolError(error instanceof Error ? error.message : String(error))
+        setReaderToolNotice(readerToolFeedback(error, 'ai'))
         if (!aiSummary) setAiSummaryVisible(false)
       }
     } finally {
@@ -589,7 +591,7 @@ export default function App(): React.JSX.Element {
     setReaderToolLoading(null)
     setAiSummaryProgress(null)
     setAiSummaryStartedAt(null)
-    setReaderToolError(null)
+    setReaderToolNotice(null)
     if (!aiSummary) {
       setAiSummaryVisible(false)
       if (readerMode === 'ai') setReaderMode('article')
@@ -601,13 +603,13 @@ export default function App(): React.JSX.Element {
     if (originalViewState.open) await closeOriginalArticle()
     setSettingsOpen(false)
     setReaderToolLoading('translation')
-    setReaderToolError(null)
+    setReaderToolNotice(null)
     try {
       const result = await window.origread.translateArticle(selectedArticleId, target, forceRefresh)
       setTranslationDocument(result)
       setReaderMode('translation')
     } catch (error) {
-      setReaderToolError(error instanceof Error ? error.message : String(error))
+      setReaderToolNotice(readerToolFeedback(error, 'translation'))
     } finally {
       setReaderToolLoading(null)
     }
@@ -653,10 +655,12 @@ export default function App(): React.JSX.Element {
     }
   }
 
-  const showSettings = async (): Promise<void> => {
+  const showSettings = async (page: SettingsPage = 'general'): Promise<void> => {
     if (originalViewState.open) await closeOriginalArticle()
     setSourceCatalogOpen(false)
+    setSettingsInitialPage(page)
     setSettingsOpen(true)
+    setReaderToolNotice(null)
     setSettingsError(null)
   }
 
@@ -1471,6 +1475,7 @@ export default function App(): React.JSX.Element {
               settings={settings}
               appInfo={appInfo}
               syncState={syncRuntimeState}
+              initialPage={settingsInitialPage}
               onChange={(patch) => void updateDesktopSettings(patch)}
               onConfigurationRestored={() => void handleConfigurationRestored()}
               onAccountChanged={() => void handleAccountChanged()}
@@ -1502,7 +1507,20 @@ export default function App(): React.JSX.Element {
               )}
               <div>{selectedArticle.author ?? ''}</div>
             </div>
-            {readerToolError && <div className="reader-tool-error">{readerToolError}</div>}
+            {readerToolNotice && (
+              <div className="reader-tool-notice" role="status" aria-live="polite">
+                <div className="reader-tool-notice-copy">
+                  <strong>{t(readerToolNotice.code)}</strong>
+                </div>
+                {readerToolNotice.settingsPage && (
+                  <button type="button" className="reader-tool-notice-action" onClick={()=>void showSettings(readerToolNotice.settingsPage!)}>
+                    <Settings size={14}/>
+                    <span>{t(readerToolNotice.settingsPage === 'ai' ? 'openAiSettings' : 'openTranslationSettings')}</span>
+                  </button>
+                )}
+                <button type="button" className="reader-tool-notice-close" aria-label={t('close')} onClick={()=>setReaderToolNotice(null)}><X size={14}/></button>
+              </div>
+            )}
             {aiLoading && aiSummaryPlacement === 'replace' && !aiSummary && (
               <AiSummaryProgressBanner stage={aiSummaryProgress?.stage ?? null} elapsedSeconds={aiSummaryElapsedSeconds} onStop={stopAiSummary}/>
             )}
@@ -1862,12 +1880,14 @@ export default function App(): React.JSX.Element {
       {aiOptionsOpen && selectedArticle && (
         <AiSummaryOptionsDialog
           onClose={()=>setAiOptionsOpen(false)}
+          onOpenSettings={()=>{setAiOptionsOpen(false);void showSettings('ai')}}
           onGenerate={(options)=>{void generateAiSummary(true,options)}}
         />
       )}
       {translationTargetOpen && selectedArticle && (
         <TranslationTargetDialog
           onClose={()=>setTranslationTargetOpen(false)}
+          onOpenSettings={()=>{setTranslationTargetOpen(false);void showSettings('translation')}}
           onTranslate={async(target,setDefault)=>{
             if(setDefault) await window.origread.updateTranslationSettings({defaultTarget:target})
             await translateSelectedArticle(true,target)

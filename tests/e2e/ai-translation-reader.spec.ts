@@ -152,6 +152,59 @@ test('reader generates AI summary and full-article translation through main-proc
   }
 })
 
+test('reader shows friendly setup guidance instead of raw IPC errors when AI or translation is not configured', async () => {
+  const fixture = await startFixtureServer()
+  const address = fixture.server.address()
+  if (!address || typeof address === 'string') throw new Error('Fixture server did not expose a TCP port')
+  const testApp = await launchIsolatedOrigRead()
+
+  try {
+    const page = await testApp.app.firstWindow()
+    await expect(page.locator('.app-shell')).toBeVisible()
+
+    const articleId = await page.evaluate(async (feedUrl) => {
+      const translation = await window.origread.getTranslationSettings()
+      if (translation.defaultTarget.type !== 'traditional' || translation.defaultTarget.provider !== 'MICROSOFT') {
+        throw new Error(`Unexpected Desktop translation default: ${JSON.stringify(translation.defaultTarget)}`)
+      }
+      const mlKit = translation.providers.find((provider) => provider.type === 'ML_KIT')
+      if (mlKit?.enabled) throw new Error('ML Kit must not be enabled on Desktop')
+
+      const added = await window.origread.addRssSource(feedUrl)
+      const article = (await window.origread.listArticles(100)).find((item) => item.feedId === added.feedId && item.title === 'OrigRead AI E2E Article 1')
+      if (!article) throw new Error('Fixture article was not saved')
+      return article.id
+    }, `http://127.0.0.1:${address.port}/feed.xml`)
+
+    await page.reload()
+    const article = page.locator(`.article-item[data-article-id="${articleId}"]`)
+    await expect(article).toBeVisible()
+    await article.click()
+    await expect(page.locator('.article-body')).toContainText('Original full article body one')
+
+    await page.locator('.ai-summary-button').click()
+    const aiNotice = page.locator('.reader-tool-notice')
+    await expect(aiNotice).toContainText('AI 摘要尚未配置完成')
+    await expect(aiNotice).not.toContainText('Error invoking remote method')
+    await aiNotice.getByRole('button', { name: '打开 AI 设置' }).click()
+    await expect(page.locator('.settings-layout')).toBeVisible()
+    await expect(page.locator('.settings-nav-button.active')).toContainText('AI')
+
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.settings-layout')).toBeHidden()
+    await page.locator('.translation-button').click()
+    const translationNotice = page.locator('.reader-tool-notice')
+    await expect(translationNotice).toContainText('还没有可用的桌面翻译服务')
+    await expect(translationNotice).not.toContainText('Error invoking remote method')
+    await translationNotice.getByRole('button', { name: '打开翻译设置' }).click()
+    await expect(page.locator('.settings-layout')).toBeVisible()
+    await expect(page.locator('.settings-nav-button.active')).toContainText('翻译')
+  } finally {
+    await testApp.close()
+    await closeServer(fixture.server)
+  }
+})
+
 async function startFixtureServer(): Promise<{ server: Server; aiRequests: () => number; aiAbortedRequests: () => number; translationRequests: () => number }> {
   let aiRequests = 0
   let aiAbortedRequests = 0

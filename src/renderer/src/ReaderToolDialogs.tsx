@@ -3,10 +3,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AiSettings, AiSummaryLength, AiSummaryRequestOptions } from '../../shared/ai'
 import type { TranslationSettings, TranslationTarget } from '../../shared/translation'
+import { readerToolFeedback } from './reader-tool-feedback'
 
-export function AiSummaryOptionsDialog({ onClose, onGenerate }: {
+export function AiSummaryOptionsDialog({ onClose, onGenerate, onOpenSettings }: {
   onClose(): void
   onGenerate(options: AiSummaryRequestOptions): void
+  onOpenSettings(): void
 }): React.JSX.Element {
   const { t } = useTranslation()
   const [settings, setSettings] = useState<AiSettings | null>(null)
@@ -22,16 +24,18 @@ export function AiSummaryOptionsDialog({ onClose, onGenerate }: {
       setProviderId(provider?.id ?? '')
       setModel(provider?.defaultModel || provider?.models[0] || '')
       setLength(loaded.summaryLength)
-    }).catch((reason)=>setError(reason instanceof Error?reason.message:String(reason)))
+    }).catch((reason)=>setError(t(readerToolFeedback(reason,'ai').code)))
   }, [])
 
   const provider = settings?.providers.find((item)=>item.id===providerId) ?? null
+  const ready = Boolean(settings?.enabled && providerId && model)
 
   return <div className="dialog-backdrop nested-dialog" role="presentation" onMouseDown={onClose}>
     <section className="reader-tool-dialog" role="dialog" aria-modal="true" onMouseDown={(event)=>event.stopPropagation()}>
       <header className="dialog-header"><div><h2>{t('aiSummaryOptions')}</h2><p>{t('aiSummaryOptionsDescription')}</p></div><button className="dialog-close" type="button" onClick={onClose}><X size={17}/></button></header>
       <div className="reader-tool-dialog-body">
         {error&&<div className="dialog-error">{error}</div>}
+        {settings && !ready && <div className="reader-tool-dialog-notice"><span>{t('aiSetupRequired')}</span><button type="button" className="mini-action" onClick={onOpenSettings}>{t('openAiSettings')}</button></div>}
         <label className="dialog-field"><span>{t('aiProvider')}</span><select value={providerId} onChange={(event)=>{const id=event.target.value;setProviderId(id);const next=settings?.providers.find((item)=>item.id===id);setModel(next?.defaultModel||next?.models[0]||'')}}>{settings?.providers.filter((item)=>item.enabled).map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label className="dialog-field"><span>{t('model')}</span><select value={model} onChange={(event)=>setModel(event.target.value)}>{provider?.models.map((item)=><option key={item} value={item}>{item}</option>)}{model&&!provider?.models.includes(model)&&<option value={model}>{model}</option>}</select></label>
         <div className="dialog-field"><span>{t('summaryLength')}</span><div className="summary-mode-selector">
@@ -42,14 +46,15 @@ export function AiSummaryOptionsDialog({ onClose, onGenerate }: {
           ] as const).map(([value,labelKey,descriptionKey])=><button type="button" key={value} className={`summary-mode-option ${length===value?'selected':''}`} onClick={()=>setLength(value)}><strong>{t(labelKey)}</strong><span>{t(descriptionKey)}</span></button>)}
         </div></div>
       </div>
-      <footer className="dialog-footer"><span className="dialog-footer-spacer"/><button type="button" className="dialog-cancel" onClick={onClose}>{t('cancel')}</button><button type="button" className="dialog-submit" disabled={!providerId||!model} onClick={()=>{setError(null);onClose();onGenerate({providerId,model,length})}}>{t('generate')}</button></footer>
+      <footer className="dialog-footer"><span className="dialog-footer-spacer"/><button type="button" className="dialog-cancel" onClick={onClose}>{t('cancel')}</button><button type="button" className="dialog-submit" disabled={!ready} onClick={()=>{setError(null);onClose();onGenerate({providerId,model,length})}}>{t('generate')}</button></footer>
     </section>
   </div>
 }
 
-export function TranslationTargetDialog({ onClose, onTranslate }: {
+export function TranslationTargetDialog({ onClose, onTranslate, onOpenSettings }: {
   onClose(): void
   onTranslate(target: TranslationTarget, setDefault: boolean): Promise<void>
+  onOpenSettings(): void
 }): React.JSX.Element {
   const { t } = useTranslation()
   const [translation, setTranslation] = useState<TranslationSettings | null>(null)
@@ -59,12 +64,12 @@ export function TranslationTargetDialog({ onClose, onTranslate }: {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(()=>{void Promise.all([window.origread.getTranslationSettings(),window.origread.getAiSettings()]).then(([translationSettings,aiSettings])=>{setTranslation(translationSettings);setAi(aiSettings);setSelectedKey(targetKey(translationSettings.defaultTarget))}).catch((reason)=>setError(reason instanceof Error?reason.message:String(reason)))},[])
+  useEffect(()=>{void Promise.all([window.origread.getTranslationSettings(),window.origread.getAiSettings()]).then(([translationSettings,aiSettings])=>{setTranslation(translationSettings);setAi(aiSettings);setSelectedKey(targetKey(translationSettings.defaultTarget))}).catch((reason)=>setError(t(readerToolFeedback(reason,'translation').code)))},[])
 
   const targets = useMemo(()=>{
     const values:Array<{key:string;label:string;target:TranslationTarget}>=[]
     for(const provider of translation?.providers??[]){if(provider.enabled&&provider.desktopSupported)values.push({key:`traditional:${provider.type}`,label:providerLabel(provider.type),target:{type:'traditional',provider:provider.type}})}
-    for(const provider of ai?.providers??[]){if(!provider.enabled)continue;for(const model of distinct([provider.defaultModel,...provider.models]).filter(Boolean)){const target:TranslationTarget={type:'ai',providerId:provider.id,providerName:provider.name,model};values.push({key:targetKey(target),label:`${provider.name} · ${model}`,target})}}
+    if(ai?.enabled)for(const provider of ai.providers){if(!provider.enabled)continue;for(const model of distinct([provider.defaultModel,...provider.models]).filter(Boolean)){const target:TranslationTarget={type:'ai',providerId:provider.id,providerName:provider.name,model};values.push({key:targetKey(target),label:`${provider.name} · ${model}`,target})}}
     return values
   },[translation,ai])
   const traditionalTargets=targets.filter((item)=>item.target.type==='traditional')
@@ -76,6 +81,7 @@ export function TranslationTargetDialog({ onClose, onTranslate }: {
       <header className="dialog-header"><div><h2>{t('translationTarget')}</h2><p>{t('translationTargetDescription')}</p></div><button className="dialog-close" type="button" onClick={onClose}><X size={17}/></button></header>
       <div className="reader-tool-dialog-body">
         {error&&<div className="dialog-error">{error}</div>}
+        {translation && targets.length===0 && <div className="reader-tool-dialog-notice"><span>{t('translationSetupRequired')}</span><button type="button" className="mini-action" onClick={onOpenSettings}>{t('openTranslationSettings')}</button></div>}
         <div className="translation-target-groups">
           {traditionalTargets.length>0&&<section className="translation-target-group"><header><strong>{t('traditionalTranslation')}</strong><span>{t('traditionalTranslationDescription')}</span></header><div className="translation-target-list">{traditionalTargets.map((item)=><label key={item.key} className={`translation-target-option ${selectedKey===item.key?'selected':''}`}><input type="radio" name="translation-target" checked={selectedKey===item.key} onChange={()=>setSelectedKey(item.key)}/><span>{item.label}</span></label>)}</div></section>}
           {aiTargets.length>0&&<section className="translation-target-group"><header><strong>{t('aiTranslation')}</strong><span>{t('aiTranslationDescription')}</span></header><div className="translation-target-list">{aiTargets.map((item)=><label key={item.key} className={`translation-target-option ${selectedKey===item.key?'selected':''}`}><input type="radio" name="translation-target" checked={selectedKey===item.key} onChange={()=>setSelectedKey(item.key)}/><span>{item.label}</span></label>)}</div></section>}

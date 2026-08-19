@@ -15,7 +15,7 @@ import { BUILTIN_READER_FONTS, type ReaderFontEntry } from '../../shared/reader-
 import type { UpdateCheckResult } from '../../shared/update'
 import type { AccountCreateInput, AccountPatch, AccountRecord, AccountSnapshot, AccountType } from '../../shared/account'
 
-type SettingsPage = 'general' | 'accounts' | 'translation' | 'ai' | 'filters' | 'jsonRules' | 'websiteRules' | 'rsshub' | 'backup' | 'about' | 'update'
+export type SettingsPage = 'general' | 'accounts' | 'translation' | 'ai' | 'filters' | 'jsonRules' | 'websiteRules' | 'rsshub' | 'backup' | 'about' | 'update'
 const INTERNAL_ITHOME_RULE_ID = 'ithome-home'
 const DESKTOP_REPOSITORY_URL = 'https://github.com/ZGMFX01A/OrigRead-Desktop'
 const ANDROID_REPOSITORY_URL = 'https://github.com/ZGMFX01A/OrigRead'
@@ -26,14 +26,16 @@ interface SettingsPanelProps {
   settings: DesktopSettings
   appInfo: AppInfo | null
   syncState: SyncRuntimeState | null
+  initialPage?: SettingsPage
   onChange(patch: DesktopSettingsPatch): void
   onConfigurationRestored?(): void
   onAccountChanged?(): void
 }
 
-export function SettingsPanel({ settings, appInfo, syncState, onChange, onConfigurationRestored, onAccountChanged }: SettingsPanelProps): React.JSX.Element {
+export function SettingsPanel({ settings, appInfo, syncState, initialPage = 'general', onChange, onConfigurationRestored, onAccountChanged }: SettingsPanelProps): React.JSX.Element {
   const { t } = useTranslation()
-  const [page, setPage] = useState<SettingsPage>('general')
+  const [page, setPage] = useState<SettingsPage>(initialPage)
+  useEffect(()=>setPage(initialPage),[initialPage])
   return <div className="settings-layout">
     <aside className="settings-nav">
       <div className="settings-nav-title"><Settings2 size={18}/><span>{t('settings')}</span></div>

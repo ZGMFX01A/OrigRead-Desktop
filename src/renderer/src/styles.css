@@ -740,7 +740,13 @@ button { color: inherit; }
 .reader-tool-options { width: 24px !important; padding: 0 !important; margin-left: -4px; }
 .reader-voice-select { max-width: 155px; height: 30px; border: 1px solid #dfdfe6; border-radius: 8px; background: #fafafd; color: #666872; font-size: 9.5px; padding: 0 7px; outline: 0; }
 .reader-voice-select:focus { border-color: #b9b3e7; }
-.reader-tool-error { max-width: var(--reader-content-width); margin: 22px auto -8px; padding: 9px 12px; border-radius: 9px; background: #fff0f0; color: #a74343; font-size: 11px; line-height: 1.5; }
+.reader-tool-notice { max-width: var(--reader-content-width); margin: 22px auto -8px; padding: 10px 10px 10px 12px; border: 1px solid #ddd9f4; border-radius: 11px; background: #f7f5ff; color: #545160; display: flex; align-items: center; gap: 10px; font-size: 11px; line-height: 1.5; }
+.reader-tool-notice-copy { flex: 1; min-width: 0; }
+.reader-tool-notice-copy strong { font-weight: 550; color: #454250; }
+.reader-tool-notice-action { flex: none; min-height: 30px; padding: 0 10px; border: 1px solid #d3cdec; border-radius: 8px; background: #fff; color: #5b50a5; display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; cursor: pointer; }
+.reader-tool-notice-action:hover { background: #f1edff; }
+.reader-tool-notice-close { flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: #8a8794; display: grid; place-items: center; cursor: pointer; }
+.reader-tool-notice-close:hover { background: rgba(82, 76, 113, 0.08); color: #5f5b68; }
 .ai-summary-view { max-width: var(--reader-content-width); margin: 34px auto 0; color: #3f4148; }
 .ai-result-meta,
 .translation-result-meta { max-width: var(--reader-content-width); margin: 26px auto -14px; color: #8e9099; font-size: 10px; }
@@ -1020,6 +1026,8 @@ mark.reader-search-match.current { background: #ffc96b; outline: 2px solid #d9a2
 .reader-tool-dialog > .dialog-header { border-bottom: 1px solid #ececf1; }
 .reader-tool-dialog > .dialog-footer { border-top: 1px solid #ececf1; }
 .reader-tool-dialog-body { padding: 0 22px 20px; max-height: min(540px, calc(100vh - 180px)); overflow-y: auto; }
+.reader-tool-dialog-notice { margin: 0 0 14px; padding: 10px 11px; border: 1px solid #ddd9f4; border-radius: 10px; background: #f7f5ff; color: #5f5b68; display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 10.5px; line-height: 1.5; }
+.reader-tool-dialog-notice > span { flex: 1; min-width: 0; }
 .summary-mode-selector { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
 .summary-mode-option { min-width: 0; min-height: 72px; display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 5px; padding: 10px 11px; border: 1px solid #dfdfe6; border-radius: 10px; background: #fafafd; color: #666872; text-align: left; cursor: pointer; }
 .summary-mode-option:hover { border-color: #cbc6e8; background: #f7f5ff; }
@@ -1330,6 +1338,13 @@ mark.reader-search-match.current { background: #ffc96b; outline: 2px solid #d9a2
 [data-theme='dark'] .about-shortcut kbd { border-color: #454852; background: #292b32; color: #d7dae2; box-shadow: inset 0 1px 0 rgba(255,255,255,.05); }
 [data-theme='dark'] .mini-action.secondary { background: #2a2c33; color: #b5b8c2; }
 [data-theme='dark'] .mini-action.secondary:hover:not(:disabled) { background: #32353d; color: #e1e3e9; }
+[data-theme='dark'] .reader-tool-notice,
+[data-theme='dark'] .reader-tool-dialog-notice { border-color: #45405f; background: #29263a; color: #c7c3d4; }
+[data-theme='dark'] .reader-tool-notice-copy strong { color: #e4e0ed; }
+[data-theme='dark'] .reader-tool-notice-action { border-color: #514b73; background: #302d45; color: #c4bcff; }
+[data-theme='dark'] .reader-tool-notice-action:hover { background: #393451; }
+[data-theme='dark'] .reader-tool-notice-close { color: #9b97a6; }
+[data-theme='dark'] .reader-tool-notice-close:hover { background: rgba(196,188,255,.09); color: #d8d4e0; }
 [data-theme='dark'] .setting-row,
 [data-theme='dark'] .reader-tool-dialog > .dialog-header,
 [data-theme='dark'] .reader-tool-dialog > .dialog-footer,
