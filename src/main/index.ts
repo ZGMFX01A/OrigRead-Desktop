@@ -56,7 +56,7 @@ import { OpmlService } from './import-export/opml-service'
 import { FeedDiscoveryCatalog } from './discovery/feed-discovery-catalog'
 import { AiRuleGenerationService } from './ai/ai-rule-generation-service'
 import type { AiProviderPatch, AiSettingsPatch, AiSummaryLength, AiSummaryRequestOptions } from '../shared/ai'
-import type { AiGeneratedRuleKind } from '../shared/ai-rule'
+import type { AiGeneratedRuleKind, AiRuleGenerationOptions } from '../shared/ai-rule'
 import type { TranslationProviderPatch, TranslationProviderType, TranslationSettingsPatch, TranslationTarget } from '../shared/translation'
 import type { ArticleFilterRuleType } from '../shared/filter-rules'
 import type { UpdateCheckResult } from '../shared/update'
@@ -271,6 +271,21 @@ function registerIpcHandlers(): void {
       throw new TypeError('Article limit must be a finite number')
     }
     return libraryRepository.listArticles(limit === undefined ? 200 : limit)
+  })
+  ipcMain.handle(IPC_CHANNELS.getArticleById, (event, articleId: unknown) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    return libraryRepository.getArticleById(validateId(articleId, 'articleId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.searchArticles, (event, query: unknown, limit?: unknown) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    const validatedQuery = validateText(query, 'query', 200).trim()
+    if (!validatedQuery) return []
+    if (limit !== undefined && (typeof limit !== 'number' || !Number.isFinite(limit))) {
+      throw new TypeError('Search limit must be a finite number')
+    }
+    return libraryRepository.searchArticles(validatedQuery, limit === undefined ? 100 : limit)
   })
   ipcMain.handle(IPC_CHANNELS.listArticlesByFeed, (event, feedId: unknown) => {
     assertTrustedSender(event)
@@ -588,6 +603,11 @@ function registerIpcHandlers(): void {
     if (!jsonRuleRepository) throw new Error('JSON rule repository is not ready')
     return jsonRuleRepository.listRules()
   })
+  ipcMain.handle(IPC_CHANNELS.listJsonRulesForUrl, (event, url: unknown) => {
+    assertTrustedSender(event)
+    if (!jsonRuleRepository) throw new Error('JSON rule repository is not ready')
+    return jsonRuleRepository.findConfiguredRules(validateUrlInput(url))
+  })
   ipcMain.handle(IPC_CHANNELS.importJsonRules, (event, content: unknown) => {
     assertTrustedSender(event)
     if (!jsonRuleRepository) throw new Error('JSON rule repository is not ready')
@@ -620,13 +640,33 @@ function registerIpcHandlers(): void {
     if (!locale) throw new TypeError('Unknown guide language')
     return readFileSync(join(__dirname, `../../resources/rule-guides/${ruleKind}-rules-${locale}.md`), 'utf8')
   })
-  ipcMain.handle(IPC_CHANNELS.generateAiRule, async (event, kind: unknown, url: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.getUserGuide, (event, language: unknown) => {
+    assertTrustedSender(event)
+    const locale = language === 'zh' ? 'zh-CN' : language === 'en' ? 'en' : null
+    if (!locale) throw new TypeError('Unknown guide language')
+    const fileName = locale === 'zh-CN' ? 'USER_GUIDE-zh-CN.md' : 'USER_GUIDE.md'
+    return readFileSync(join(__dirname, `../../${fileName}`), 'utf8')
+  })
+  ipcMain.handle(IPC_CHANNELS.generateAiRule, async (event, kind: unknown, url: unknown, rawOptions?: unknown) => {
     assertTrustedSender(event)
     if (!aiRuleGenerationService) throw new Error('AI rule generation service is not ready')
     const sourceUrl = validateUrlInput(url)
-    return validateAiRuleKind(kind) === 'WEBSITE'
-      ? aiRuleGenerationService.generateWebsiteRule(sourceUrl)
-      : aiRuleGenerationService.generateJsonRule(sourceUrl)
+    const options = validateAiRuleGenerationOptions(rawOptions)
+    const requestId = options.requestId ?? randomUUID()
+    const sendProgress = (stage: string, attempt: number, detail: string | null): void => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(IPC_CHANNELS.aiRuleProgress, { requestId, stage, attempt, detail, at: Date.now() })
+      }
+    }
+    sendProgress('PREPARING', 1, null)
+    try {
+      return validateAiRuleKind(kind) === 'WEBSITE'
+        ? await aiRuleGenerationService.generateWebsiteRule(sourceUrl, options, sendProgress)
+        : await aiRuleGenerationService.generateJsonRule(sourceUrl, options, sendProgress)
+    } catch (error) {
+      sendProgress('FAILED', 1, error instanceof Error ? error.message : String(error))
+      throw error
+    }
   })
   ipcMain.handle(IPC_CHANNELS.saveAiGeneratedRule, (event, previewId: unknown) => {
     assertTrustedSender(event)
@@ -669,6 +709,11 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (!websiteRuleRepository) throw new Error('Website rule repository is not ready')
     return websiteRuleRepository.listRules()
+  })
+  ipcMain.handle(IPC_CHANNELS.listWebsiteRulesForUrl, (event, url: unknown) => {
+    assertTrustedSender(event)
+    if (!websiteRuleRepository) throw new Error('Website rule repository is not ready')
+    return websiteRuleRepository.findConfiguredRules(validateUrlInput(url))
   })
   ipcMain.handle(IPC_CHANNELS.importWebsiteRules, (event, content: unknown) => {
     assertTrustedSender(event)
@@ -1048,6 +1093,18 @@ function validateGuideRuleKind(value: unknown): 'website' | 'json' {
 function validateAiRuleKind(value: unknown): AiGeneratedRuleKind {
   if (value === 'WEBSITE' || value === 'JSON') return value
   throw new TypeError('Unknown AI rule kind')
+}
+
+function validateAiRuleGenerationOptions(value: unknown): AiRuleGenerationOptions {
+  if (value === undefined) return {}
+  const record = validateRecord(value, 'AI rule generation options')
+  const allowed = new Set(['providerId', 'model', 'requestId'])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unknown AI rule generation option: ${key}`)
+  return {
+    providerId: record.providerId === undefined ? undefined : validateId(record.providerId, 'providerId'),
+    model: record.model === undefined ? undefined : validateOptionalText(record.model, 'model', 256).trim() || undefined,
+    requestId: record.requestId === undefined ? undefined : validateId(record.requestId, 'requestId')
+  }
 }
 
 function websiteSourceRuleSettings(feedId: string) {

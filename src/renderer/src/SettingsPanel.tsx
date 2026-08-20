@@ -1,4 +1,4 @@
-import { BookOpenText, Bot, Clock3, DatabaseBackup, FileJson2, Filter, Globe2, Languages, Plus, RefreshCw, Settings2, Trash2, Upload, Download, CircleHelp, Sparkles, FileText, Search, RadioTower, RotateCcw, X, Eye, EyeOff, Save, ExternalLink, Monitor, Smartphone, Keyboard, MessageSquareWarning, UserRound } from 'lucide-react'
+import { ArrowRight, BookOpenText, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleAlert, Clock3, Copy, DatabaseBackup, FileJson2, Filter, Globe2, Languages, Link2, ListChecks, Plus, RefreshCw, Settings2, Trash2, Upload, Download, CircleHelp, Sparkles, FileText, Search, RadioTower, RotateCcw, X, Eye, EyeOff, Save, ExternalLink, Monitor, Smartphone, Keyboard, MessageSquareWarning, UserRound } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AiProviderProfile, AiSettings } from '../../shared/ai'
@@ -10,7 +10,7 @@ import type { TranslationProviderSettings, TranslationProviderType, TranslationS
 import type { WebsiteRule } from '../../shared/website'
 import type { JsonRule } from '../../shared/json-source'
 import { formatRssHubLocation, type RssHubSettings, type RssHubUiLanguage } from '../../shared/rsshub'
-import type { AiGeneratedRuleKind, AiGeneratedRulePreview } from '../../shared/ai-rule'
+import type { AiGeneratedRuleKind, AiGeneratedRulePreview, AiRuleGenerationProgress } from '../../shared/ai-rule'
 import { BUILTIN_READER_FONTS, type ReaderFontEntry } from '../../shared/reader-font'
 import type { UpdateCheckResult } from '../../shared/update'
 import type { AccountCreateInput, AccountPatch, AccountRecord, AccountSnapshot, AccountType } from '../../shared/account'
@@ -242,7 +242,7 @@ function UpdateSettingsPage({settings,appInfo,onChange}:{settings:DesktopSetting
         {result.errorCode&&<p>{updateErrorDescription(result,t)}</p>}
         {release&&<>
           <div className="update-release-meta"><span><b>v{release.version}</b>{release.title&&release.title!==release.tagName?` · ${release.title}`:''}</span><span>{t('releaseDate')}: {release.publishedDate||'—'}</span></div>
-          {release.notes&&<div className="update-release-notes"><strong>{t('releaseNotes')}</strong><pre>{release.notes}</pre></div>}
+          {release.notes&&<div className="update-release-notes"><strong>{t('releaseNotes')}</strong><div className="update-release-notes-surface"><MarkdownContent text={release.notes}/></div></div>}
           <div className="update-release-asset"><strong>{t('releaseAsset')}</strong>{release.asset?<span>{release.asset.name} · {formatBytes(release.asset.size)}</span>:<span>{t('noPlatformAsset')}</span>}</div>
           <div className="update-release-actions">
             {release.asset&&result.status==='available'&&<button type="button" className="dialog-submit" disabled={downloading} onClick={()=>void download()}>{downloading&&<RefreshCw size={14} className="spinning"/>}{downloading?t('downloadingUpdate'):t('downloadUpdate')}</button>}
@@ -257,7 +257,9 @@ function UpdateSettingsPage({settings,appInfo,onChange}:{settings:DesktopSetting
 }
 
 function AboutAndSupportPage({appInfo,onOpenUpdate}:{appInfo:AppInfo|null;onOpenUpdate:()=>void}):React.JSX.Element{
-  const {t}=useTranslation()
+  const {t,i18n}=useTranslation()
+  const [userGuide,setUserGuide]=useState<string|null>(null)
+  const language:'zh'|'en'=i18n.resolvedLanguage?.startsWith('zh')?'zh':'en'
   const shortcuts=[
     ['← / K',t('shortcutPreviousArticle')],
     ['→ / J',t('shortcutNextArticle')],
@@ -271,7 +273,8 @@ function AboutAndSupportPage({appInfo,onOpenUpdate}:{appInfo:AppInfo|null;onOpen
     ['>',t('shortcutSummaryPlacementNext')],
     ['-',t('shortcutSummarySizeDecrease')],
     ['+',t('shortcutSummarySizeIncrease')],
-    ['Ctrl / Cmd + F',t('findInArticle')]
+    ['Ctrl / Cmd + F',t('findInArticle')],
+    ['Ctrl / Cmd + Shift + F',t('globalSearchTitle')]
   ] as const
   return <div className="about-page">
     <PageIntro icon={<img className="about-brand-logo" src="./logo.png" alt=""/>} title={t('aboutPageTitle')} description={t('aboutPageDescription')}/>
@@ -304,8 +307,10 @@ function AboutAndSupportPage({appInfo,onOpenUpdate}:{appInfo:AppInfo|null;onOpen
         <div className="about-shortcuts-heading"><div className="settings-action-icon"><Keyboard size={16}/></div><div><strong>{t('keyboardShortcuts')}</strong><span>{t('keyboardShortcutsDescription')}</span></div></div>
         <div className="about-shortcut-grid">{shortcuts.map(([key,label])=><div className="about-shortcut" key={key}><kbd>{key}</kbd><span>{label}</span></div>)}</div>
       </div>
+      <AboutLinkRow icon={<BookOpenText size={16}/>} title={t('userGuide')} description={t('userGuideDescription')} actionLabel={t('openGuide')} onClick={()=>void window.origread.getUserGuide(language).then(setUserGuide).catch((error)=>window.alert(errorText(error)))}/>
       <AboutLinkRow icon={<MessageSquareWarning size={16}/>} title={t('feedbackAndIssues')} description={t('feedbackAndIssuesDescription')} actionLabel={t('submitIssue')} onClick={()=>void window.origread.openExternalUrl(DESKTOP_ISSUES_URL)}/>
     </SettingsSection>
+    {userGuide!==null&&<RuleModal title={t('userGuide')} onClose={()=>setUserGuide(null)}><MarkdownContent text={userGuide}/></RuleModal>}
   </div>
 }
 
@@ -492,23 +497,63 @@ function WebsiteRulesSettingsPage():React.JSX.Element{
 }
 
 function RuleHeaderActions({kind,onDone,onSaved}:{kind:'json'|'website';onDone:(value:string)=>void;onSaved:()=>void}):React.JSX.Element{
-  const {t,i18n}=useTranslation();const[guide,setGuide]=useState<string|null>(null);const[dialog,setDialog]=useState<'ai'|'test'|null>(null);const[url,setUrl]=useState('');const[busy,setBusy]=useState(false);const[preview,setPreview]=useState<AiGeneratedRulePreview|null>(null);const[error,setError]=useState('');const[featureUnavailable,setFeatureUnavailable]=useState(false)
+  const {t,i18n}=useTranslation();const[guide,setGuide]=useState<string|null>(null);const[dialog,setDialog]=useState<'ai'|'test'|null>(null);const[url,setUrl]=useState('');const[busy,setBusy]=useState(false);const[preview,setPreview]=useState<AiGeneratedRulePreview|null>(null);const[error,setError]=useState('');const[aiSettings,setAiSettings]=useState<AiSettings|null>(null);const[selectedProviderId,setSelectedProviderId]=useState('');const[selectedModel,setSelectedModel]=useState('');const[requestId,setRequestId]=useState('');const[progress,setProgress]=useState<AiRuleGenerationProgress|null>(null);const[showJson,setShowJson]=useState(false);const[copied,setCopied]=useState(false)
   const language:'zh'|'en'=i18n.resolvedLanguage?.startsWith('zh')?'zh':'en'
+  const enabledProviders=aiSettings?.providers.filter((provider)=>provider.enabled)??[]
+  const selectedProvider=enabledProviders.find((provider)=>provider.id===selectedProviderId)??enabledProviders[0]??null
   const showGuide=async()=>{try{setGuide(await window.origread.getRuleGuide(kind,language))}catch(e){onDone(errorText(e))}}
   const exportTemplate=async()=>{const r=await window.origread.exportRuleTemplateFile(kind);if(!r.cancelled)onDone(r.ok?t('ruleTemplateExported'):r.error??'Error')}
-  const runDialog=async()=>{if(!url.trim()||!dialog)return;setBusy(true);setError('');try{if(dialog==='test'){const r=await window.origread.testWebsiteRule(url);if(r.ok){onDone(t('websiteRuleTestSuccess',{count:r.articleCount}));setDialog(null);setUrl('')}else setError(t('websiteRuleTestFailed',{error:r.error??''}))}else{setPreview(await window.origread.generateAiRule(kind==='website'?'WEBSITE':'JSON',url));setDialog(null)}}catch(e){setError(errorText(e))}finally{setBusy(false)}}
+  const openAiDialog=async()=>{setDialog('ai');setUrl('');setError('');setProgress(null);setPreview(null);setShowJson(false);setCopied(false);try{const loaded=await window.origread.getAiSettings();const providers=loaded.providers.filter((provider)=>provider.enabled);const provider=providers.find((item)=>item.id===loaded.defaultProviderId)??providers[0];setAiSettings(loaded);setSelectedProviderId(provider?.id??'');setSelectedModel(provider?.defaultModel??provider?.models[0]??'')}catch(e){setError(errorText(e))}}
+  useEffect(()=>window.origread.onAiRuleProgress((value)=>{if(value.requestId===requestId)setProgress(value)}),[requestId])
+  const runDialog=async()=>{if(!url.trim()||!dialog)return;setBusy(true);setError('');try{if(dialog==='test'){const r=await window.origread.testWebsiteRule(url);if(r.ok){onDone(t('websiteRuleTestSuccess',{count:r.articleCount}));setDialog(null);setUrl('')}else setError(t('websiteRuleTestFailed',{error:r.error??''}))}else{const id=globalThis.crypto.randomUUID();setRequestId(id);setProgress({requestId:id,stage:'PREPARING',attempt:1,detail:null,at:Date.now()});setPreview(await window.origread.generateAiRule(kind==='website'?'WEBSITE':'JSON',url,{providerId:selectedProvider?.id,model:selectedModel.trim()||undefined,requestId:id}));setDialog(null)}}catch(e){setProgress((current)=>current?.requestId===requestId?{...current,stage:'FAILED',detail:errorText(e)}:current);setError(errorText(e))}finally{setBusy(false)}}
   const savePreview=async()=>{if(!preview)return;setBusy(true);setError('');try{await window.origread.saveAiGeneratedRule(preview.previewId);setPreview(null);setUrl('');onDone(t('aiRuleSaved'));onSaved()}catch(e){setError(errorText(e))}finally{setBusy(false)}}
+  const copyJson=async()=>{if(!preview)return;try{await navigator.clipboard.writeText(preview.ruleJson);setCopied(true);window.setTimeout(()=>setCopied(false),1600)}catch(e){setError(errorText(e))}}
   return <>
     <RuleActionRow icon={<CircleHelp size={16}/>} title={kind==='website'?t('websiteRuleTutorial'):t('rulesTutorial')} description={kind==='json'?t('jsonRulesTutorialDescription'):undefined} onClick={()=>void showGuide()}/>
-    <RuleActionRow unavailable icon={<Sparkles size={16}/>} title={kind==='website'?t('aiGenerateWebsiteRule'):t('aiGenerateJsonRule')} description={t('aiGenerateRuleDescription')} onClick={()=>setFeatureUnavailable(true)}/>
+    <RuleActionRow icon={<Sparkles size={16}/>} title={kind==='website'?t('aiGenerateWebsiteRule'):t('aiGenerateJsonRule')} description={t('aiGenerateRuleDescription')} onClick={()=>void openAiDialog()}/>
     <RuleActionRow icon={<FileText size={16}/>} title={kind==='website'?t('exportWebsiteRuleTemplate'):t('exportJsonRuleTemplate')} onClick={()=>void exportTemplate()}/>
     <RuleFileActions kind={kind} onDone={(s)=>{onDone(s);onSaved()}}/>
     {kind==='website'&&<RuleActionRow icon={<Search size={16}/>} title={t('testWebsiteRule')} onClick={()=>{setDialog('test');setUrl('');setError('')}}/>}
-    {guide!==null&&<RuleModal title={kind==='website'?t('websiteRuleTutorial'):t('rulesTutorial')} onClose={()=>setGuide(null)}><GuideMarkdown text={guide}/></RuleModal>}
-    {featureUnavailable&&<RuleModal title={t('featureUnavailableTitle')} onClose={()=>setFeatureUnavailable(false)}><p className="rule-feature-unavailable">{t('aiRuleFeatureUnavailable')}</p></RuleModal>}
-    {dialog!==null&&<RuleModal title={dialog==='test'?t('testWebsiteRule'):kind==='website'?t('aiGenerateWebsiteRule'):t('aiGenerateJsonRule')} onClose={()=>!busy&&setDialog(null)}><label className="rule-dialog-field"><span>{t('targetUrl')}</span><input autoFocus value={url} placeholder={dialog==='test'||kind==='website'?'https://www.example.com/news/':'https://api.example.com/posts'} onChange={(e)=>setUrl(e.target.value)}/></label>{error&&<div className="rule-dialog-error">{error}</div>}<div className="rule-dialog-actions"><button className="mini-action secondary" disabled={busy} onClick={()=>setDialog(null)}>{t('cancel')}</button><button className="mini-action" disabled={busy||!url.trim()} onClick={()=>void runDialog()}>{busy?t('working'):dialog==='test'?t('testWebsiteRule'):t('generate')}</button></div></RuleModal>}
-    {preview&&<RuleModal title={t('aiRulePreviewTitle')} onClose={()=>!busy&&setPreview(null)}><div className="ai-rule-validation"><strong>{t('aiRuleLocalValidationPassed')}</strong><span>{t('aiRulePreviewMetrics',{count:preview.articleCount,score:preview.score})}</span></div>{preview.sampleTitles.length>0&&<div className="ai-rule-samples"><strong>{t('aiRuleSampleArticles')}</strong>{preview.sampleTitles.map((title,index)=><span key={index}>{title}</span>)}</div>}<strong className="rule-json-label">{t('aiRuleJsonPreview')}</strong><pre className="rule-json-preview">{preview.ruleJson}</pre>{error&&<div className="rule-dialog-error">{error}</div>}<div className="rule-dialog-actions"><button className="mini-action secondary" disabled={busy} onClick={()=>setPreview(null)}>{t('cancel')}</button><button className="mini-action" disabled={busy} onClick={()=>void savePreview()}>{t('aiRuleSave')}</button></div></RuleModal>}
+    {guide!==null&&<RuleModal title={kind==='website'?t('websiteRuleTutorial'):t('rulesTutorial')} onClose={()=>setGuide(null)}><MarkdownContent text={guide}/></RuleModal>}
+    {dialog==='ai'&&<RuleModal wide title={kind==='website'?t('aiGenerateWebsiteRule'):t('aiGenerateJsonRule')} description={t('aiRuleDialogDescription')} onClose={()=>!busy&&setDialog(null)}>
+      <div className="ai-rule-dialog">
+        <div className="ai-rule-steps"><AiRuleStep active={progress===null} number="1" label={t('aiRuleStepTarget')}/><ArrowRight size={14}/><AiRuleStep active={false} number="2" label={t('aiRuleStepService')}/><ArrowRight size={14}/><AiRuleStep active={progress!==null} number="3" label={t('aiRuleStepGenerate')}/></div>
+        <div className="ai-rule-card ai-rule-target-card"><div className="ai-rule-card-heading"><span className="ai-rule-card-icon"><Link2 size={15}/></span><div><strong>{t('aiRuleStepTarget')}</strong><span>{t('aiRuleTargetHint')}</span></div></div><label className="rule-dialog-field"><span>{t('targetUrl')}</span><input autoFocus value={url} placeholder={kind==='website'?'https://www.example.com/news/':'https://api.example.com/posts'} disabled={busy} onChange={(e)=>setUrl(e.target.value)}/></label></div>
+        <div className="ai-rule-card"><div className="ai-rule-card-heading"><span className="ai-rule-card-icon"><Bot size={15}/></span><div><strong>{t('aiRuleStepService')}</strong><span>{t('aiRuleProviderHint')}</span></div></div>{enabledProviders.length===0?<div className="ai-rule-empty"><CircleAlert size={16}/><span>{t('aiRuleNoProvider')}</span></div>:<div className="ai-rule-provider-grid">{enabledProviders.map((provider)=><button type="button" key={provider.id} className={`ai-rule-provider-option ${provider.id===selectedProvider?.id?'selected':''}`} disabled={busy} onClick={()=>{setSelectedProviderId(provider.id);setSelectedModel(provider.defaultModel||provider.models[0]||'')}}><span className="ai-rule-provider-mark"><Bot size={15}/></span><span className="ai-rule-provider-copy"><strong>{provider.name}</strong><small>{t('aiRuleModelChoices',{count:provider.models.length+(provider.defaultModel?1:0)})}</small></span>{provider.id===aiSettings?.defaultProviderId&&<em>{t('aiRuleDefault')}</em>}{provider.id===selectedProvider?.id&&<CheckCircle2 size={16}/>}</button>)}</div>}</div>
+        {selectedProvider&&<div className="ai-rule-card"><div className="ai-rule-card-heading"><span className="ai-rule-card-icon"><ListChecks size={15}/></span><div><strong>{t('aiRuleModel')}</strong><span>{t('aiRuleModelHint')}</span></div></div><AiRuleModelPicker provider={selectedProvider} value={selectedModel} disabled={busy} onChange={setSelectedModel}/></div>}
+        {progress&&<AiRuleProgressPanel progress={progress} busy={busy}/>} {error&&<div className="rule-dialog-error"><CircleAlert size={15}/><span>{error}</span></div>}
+        <div className="rule-dialog-actions"><button className="mini-action secondary" disabled={busy} onClick={()=>setDialog(null)}>{t('cancel')}</button><button className="dialog-submit" disabled={busy||!url.trim()||!selectedModel.trim()||!selectedProvider} onClick={()=>void runDialog()}><Sparkles size={14}/>{busy?t('working'):t('generate')}</button></div>
+      </div>
+    </RuleModal>}
+    {dialog==='test'&&<RuleModal title={t('testWebsiteRule')} onClose={()=>!busy&&setDialog(null)}><label className="rule-dialog-field"><span>{t('targetUrl')}</span><input autoFocus value={url} placeholder="https://www.example.com/news/" disabled={busy} onChange={(e)=>setUrl(e.target.value)}/></label>{error&&<div className="rule-dialog-error">{error}</div>}<div className="rule-dialog-actions"><button className="mini-action secondary" disabled={busy} onClick={()=>setDialog(null)}>{t('cancel')}</button><button className="mini-action" disabled={busy||!url.trim()} onClick={()=>void runDialog()}>{busy?t('working'):t('testWebsiteRule')}</button></div></RuleModal>}
+    {preview&&<RuleModal wide title={t('aiRulePreviewTitle')} description={t('aiRulePreviewSubtitle')} onClose={()=>!busy&&setPreview(null)}><div className="ai-rule-preview"><div className="ai-rule-validation"><div><strong><CheckCircle2 size={16}/>{t('aiRuleLocalValidationPassed')}</strong><span>{t('aiRuleValidationHint')}</span></div><span className="ai-rule-score-badge">{preview.score}</span></div><div className={`ai-rule-content-status ${preview.contentStatus.toLowerCase()}`}><strong>{preview.contentStatus==='VERIFIED'?t('aiRuleContentVerified'):preview.contentStatus==='FAILED'?t('aiRuleContentFailed'):t('aiRuleContentSkipped')}</strong><span>{preview.contentMessage??t('aiRuleContentNoMessage')}{preview.contentSampleCount>0?` · ${t('aiRuleContentSamples',{count:preview.contentSampleCount})}`:''}</span></div><div className="ai-rule-metrics"><AiRuleMetric value={String(preview.articleCount)} label={t('aiRuleArticles')}/><AiRuleMetric value={String(preview.score)} label={t('aiRuleScore')}/><AiRuleMetric value={String(preview.attempts)} label={t('aiRuleAttempts')}/></div><div className="ai-rule-runtime"><span>{t('aiRulePreviewRuntime',{provider:preview.providerName,model:preview.model,attempts:preview.attempts})}</span>{preview.finalUrl!==preview.targetUrl&&<span>{t('aiRulePreviewFinalUrl',{url:preview.finalUrl})}</span>}{preview.sourceKind&&<span>{t('aiRulePreviewSourceKind',{kind:preview.sourceKind})}</span>}</div>{preview.sampleTitles.length>0&&<div className="ai-rule-samples"><strong>{t('aiRuleSampleArticles')}</strong>{preview.sampleTitles.map((title,index)=><span key={index}><CheckCircle2 size={13}/>{title}</span>)}</div>}<div className="ai-rule-json-heading"><strong>{t('aiRuleJsonPreview')}</strong><button className="mini-action secondary" onClick={()=>void copyJson()}><Copy size={13}/>{copied?t('aiRuleCopied'):t('aiRuleCopyJson')}</button></div><button type="button" className="ai-rule-json-toggle" onClick={()=>setShowJson((value)=>!value)}>{showJson?<ChevronUp size={14}/>:<ChevronDown size={14}/>}<span>{showJson?t('aiRuleHideJson'):t('aiRuleShowJson')}</span></button>{showJson&&<pre className="rule-json-preview">{preview.ruleJson}</pre>}{error&&<div className="rule-dialog-error">{error}</div>}<div className="rule-dialog-actions"><button className="mini-action secondary" disabled={busy} onClick={()=>setPreview(null)}>{t('cancel')}</button><button className="dialog-submit" disabled={busy} onClick={()=>void savePreview()}><CheckCircle2 size={14}/>{t('aiRuleSave')}</button></div></div></RuleModal>}
   </>
+}
+
+function AiRuleStep({active,number,label}:{active:boolean;number:string;label:string}){return <span className={`ai-rule-step ${active?'active':''}`}><b>{number}</b>{label}</span>}
+function AiRuleMetric({value,label}:{value:string;label:string}){return <div><strong>{value}</strong><span>{label}</span></div>}
+function AiRuleModelPicker({provider,value,disabled,onChange}:{provider:AiProviderProfile;value:string;disabled:boolean;onChange:(value:string)=>void}){
+  const {t}=useTranslation();const models=useMemo(()=>Array.from(new Set([provider.defaultModel,...provider.models].map((value)=>value.trim()).filter(Boolean))),[provider]);const[open,setOpen]=useState(false);const[custom,setCustom]=useState(false);const[query,setQuery]=useState('')
+  useEffect(()=>{setOpen(false);setCustom(false);setQuery('')},[provider.id])
+  const filtered=models.filter((model)=>!query.trim()||model.toLowerCase().includes(query.trim().toLowerCase()))
+  return <div className="ai-rule-model-picker"><div className="ai-rule-model-control"><Search size={14}/><input value={custom?query:value} readOnly={!custom} disabled={disabled} placeholder={t('aiRuleModelSelectHint')} onFocus={()=>{if(!custom){setQuery('');setOpen(true)}}} onChange={(e)=>{setQuery(e.target.value);onChange(e.target.value)}}/><button type="button" disabled={disabled} onClick={()=>{if(custom){setCustom(false);setQuery('')}else{setQuery('');setOpen(true)}}}>{custom?<ChevronUp size={14}/>:<ChevronDown size={14}/>}</button></div>{open&&!custom&&<div className="ai-rule-model-menu"><label><Search size={13}/><input autoFocus value={query} placeholder={t('aiRuleSearchModel')} onChange={(e)=>setQuery(e.target.value)}/></label><div className="ai-rule-model-options">{filtered.length>0?filtered.map((model)=><button type="button" key={model} className={model===value?'selected':''} onClick={()=>{onChange(model);setOpen(false);setQuery('')}}><span>{model}</span>{model===provider.defaultModel&&<em>{t('aiRuleDefault')}</em>}{model===value&&<CheckCircle2 size={14}/>}</button>):<span className="ai-rule-no-match">{t('aiRuleNoModelMatch')}</span>}</div><button type="button" className="ai-rule-custom-model" onClick={()=>{setCustom(true);setQuery(value);setOpen(false)}}>{t('aiRuleUseCustomModel')}</button></div>}<small>{custom?t('aiRuleModelCustomHint'):t('aiRuleModelChoices',{count:models.length})}</small></div>
+}
+function AiRuleProgressPanel({progress,busy}:{progress:AiRuleGenerationProgress;busy:boolean}){const{t}=useTranslation();const stages:AiRuleGenerationProgress['stage'][]=['PREPARING','FETCHING_SOURCE','ANALYZING_SOURCE','GENERATING_CANDIDATE','VALIDATING_CANDIDATE','REPAIRING_CANDIDATE','FETCHING_CONTENT','GENERATING_CONTENT','VALIDATING_CONTENT','COMPLETED'];const index=Math.max(0,stages.indexOf(progress.stage));const failed=progress.stage==='FAILED';return <div className={`ai-rule-progress-panel ${failed?'failed':''}`} role="status"><div className="ai-rule-progress-heading">{failed?<CircleAlert size={16}/>:progress.stage==='COMPLETED'?<CheckCircle2 size={16}/>:<Sparkles size={16}/>}<div><strong>{t(aiRuleProgressLabelKey(progress.stage))}</strong><span>{progress.attempt>1?t('aiRuleAttempt',{count:progress.attempt}):t('aiRuleProgressHint')}</span></div>{busy&&<RefreshCw size={14} className="spinning"/>}</div><div className="ai-rule-progress-track"><span style={{width:`${failed?100:Math.max(8,((index+1)/stages.length)*100)}%`}}/></div><div className="ai-rule-progress-stages">{stages.map((stage,stageIndex)=><span className={stageIndex<=index?'done':''} key={stage}>{stageIndex<index?'✓':stageIndex===index?'●':'○'} {t(aiRuleProgressLabelKey(stage))}</span>)}</div>{progress.detail&&<small>{progress.detail}</small>}</div>}
+
+function aiRuleProgressLabelKey(stage: AiRuleGenerationProgress['stage']): string {
+  switch(stage){
+    case 'PREPARING': return 'aiRuleStagePreparing'
+    case 'FETCHING_SOURCE': return 'aiRuleStageFetching'
+    case 'ANALYZING_SOURCE': return 'aiRuleStageAnalyzing'
+    case 'GENERATING_CANDIDATE': return 'aiRuleStageGenerating'
+    case 'VALIDATING_CANDIDATE': return 'aiRuleStageValidating'
+    case 'REPAIRING_CANDIDATE': return 'aiRuleStageRepairing'
+    case 'FETCHING_CONTENT': return 'aiRuleStageFetchingContent'
+    case 'GENERATING_CONTENT': return 'aiRuleStageGeneratingContent'
+    case 'VALIDATING_CONTENT': return 'aiRuleStageValidatingContent'
+    case 'COMPLETED': return 'aiRuleStageCompleted'
+    case 'FAILED': return 'aiRuleStageFailed'
+  }
 }
 
 function RssHubSettingsPage():React.JSX.Element{
@@ -549,8 +594,32 @@ function SecretKeyEditor({value,savedValue,visible,onChange,onToggle,onSave,disa
 function summaryLengthDescriptionKey(length:AiSettings['summaryLength']):string{return length==='BRIEF'?'summaryBriefDescription':length==='DETAILED'?'summaryDetailedDescription':'summaryStandardDescription'}
 function RuleActionRow({icon,title,description,disabled=false,unavailable=false,onClick}:{icon:React.ReactNode;title:string;description?:string;disabled?:boolean;unavailable?:boolean;onClick?:()=>void}){if(onClick)return <button type="button" className={`settings-action-row interactive ${unavailable?'disabled':''}`} data-unavailable={unavailable||undefined} disabled={disabled} onClick={onClick}><div className="settings-action-icon">{icon}</div><div><strong>{title}</strong>{description&&<span>{description}</span>}</div></button>;return <div className={`settings-action-row ${disabled||unavailable?'disabled':''}`}><div className="settings-action-icon">{icon}</div><div><strong>{title}</strong>{description&&<span>{description}</span>}</div></div>}
 function SettingsActionRow({icon,title,description,onClick,disabled=false}:{icon:React.ReactNode;title:string;description:string;onClick:()=>void;disabled?:boolean}){return <button type="button" className="settings-action-row interactive" disabled={disabled} onClick={onClick}><div className="settings-action-icon">{icon}</div><div><strong>{title}</strong><span>{description}</span></div></button>}
-function RuleModal({title,onClose,children}:{title:string;onClose:()=>void;children:React.ReactNode}){return <div className="rule-modal-backdrop" role="presentation" onMouseDown={(e)=>{if(e.target===e.currentTarget)onClose()}}><section className="rule-modal" role="dialog" aria-modal="true"><header><h2>{title}</h2><button type="button" className="icon-button" onClick={onClose}><X size={17}/></button></header><div className="rule-modal-body">{children}</div></section></div>}
-function GuideMarkdown({text}:{text:string}){const blocks=text.replace(/\r\n/g,'\n').split(/\n{2,}/);return <div className="rule-guide-content">{blocks.map((block,index)=>{const value=block.trim();if(!value)return null;if(value.startsWith('```'))return <pre key={index}><code>{value.replace(/^```[^\n]*\n?/,'').replace(/```$/,'').trimEnd()}</code></pre>;if(value.startsWith('### '))return <h4 key={index}>{value.slice(4)}</h4>;if(value.startsWith('## '))return <h3 key={index}>{value.slice(3)}</h3>;if(value.startsWith('# '))return <h2 key={index}>{value.slice(2)}</h2>;if(value.split('\n').every((line)=>line.startsWith('- ')))return <ul key={index}>{value.split('\n').map((line,lineIndex)=><li key={lineIndex}>{line.slice(2)}</li>)}</ul>;return <p key={index}>{value}</p>})}</div>}
+function RuleModal({title,description,wide=false,onClose,children}:{title:string;description?:string;wide?:boolean;onClose:()=>void;children:React.ReactNode}){return <div className="rule-modal-backdrop" role="presentation" onMouseDown={(e)=>{if(e.target===e.currentTarget)onClose()}}><section className={`rule-modal ${wide?'wide':''}`} role="dialog" aria-modal="true"><header><div><h2>{title}</h2>{description&&<p>{description}</p>}</div><button type="button" className="icon-button" onClick={onClose}><X size={17}/></button></header><div className="rule-modal-body">{children}</div></section></div>}
+function MarkdownContent({text}:{text:string}){
+  const lines=text.replace(/\r\n/g,'\n').split('\n');const blocks:React.ReactNode[]=[];let index=0
+  while(index<lines.length){
+    const line=lines[index]??''
+    const headers=parseMarkdownTableRow(line);const separator=parseMarkdownTableRow(lines[index+1]??'')
+    if(headers&&separator&&headers.length===separator.length&&isMarkdownTableSeparator(separator)){
+      const rows:string[][]=[];index+=2
+      while(index<lines.length){const row=parseMarkdownTableRow(lines[index]??'');if(!row||row.length!==headers.length)break;rows.push(row);index++}
+      blocks.push(<div className="rule-guide-table-scroll" key={blocks.length}><table className="rule-guide-table"><thead><tr>{headers.map((cell,cellIndex)=><th key={cellIndex}>{renderMarkdownInline(cell)}</th>)}</tr></thead><tbody>{rows.map((row,rowIndex)=><tr key={rowIndex}>{row.map((cell,cellIndex)=><td key={cellIndex}>{renderMarkdownInline(cell)}</td>)}</tr>)}</tbody></table></div>);continue
+    }
+    if(!line.trim()){index++;continue}
+    if(line.startsWith('```')){const code:string[]=[];index++;while(index<lines.length&&!((lines[index]??'').startsWith('```'))){code.push(lines[index]??'');index++}if(index<lines.length)index++;blocks.push(<pre key={blocks.length}><code>{code.join('\n')}</code></pre>);continue}
+    if(/^#{1,6}\s/.test(line)){const level=line.match(/^(#+)/)?.[1]?.length??1;const value=line.replace(/^#{1,6}\s*/,'');const Heading: 'h2'|'h3'|'h4'=level<=1?'h2':level===2?'h3':'h4';blocks.push(<Heading key={blocks.length}>{renderMarkdownInline(value)}</Heading>);index++;continue}
+    if(/^[-*]\s+/.test(line)){const items:string[]=[];while(index<lines.length&&/^[-*]\s+/.test(lines[index]??'')){items.push((lines[index]??'').replace(/^[-*]\s+/,''));index++}blocks.push(<ul key={blocks.length}>{items.map((item,itemIndex)=><li key={itemIndex}>{renderMarkdownInline(item)}</li>)}</ul>);continue}
+    if(/^\d+[.)]\s+/.test(line)){const items:string[]=[];while(index<lines.length&&/^\d+[.)]\s+/.test(lines[index]??'')){items.push((lines[index]??'').replace(/^\d+[.)]\s+/,''));index++}blocks.push(<ol key={blocks.length}>{items.map((item,itemIndex)=><li key={itemIndex}>{renderMarkdownInline(item)}</li>)}</ol>);continue}
+    if(/^>\s?/.test(line)){const quote:string[]=[];while(index<lines.length&&/^>\s?/.test(lines[index]??'')){quote.push((lines[index]??'').replace(/^>\s?/,''));index++}blocks.push(<blockquote key={blocks.length}>{quote.map((item,itemIndex)=><div key={itemIndex}>{renderMarkdownInline(item)}</div>)}</blockquote>);continue}
+    if(/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line)){blocks.push(<hr key={blocks.length}/>);index++;continue}
+    const paragraph:string[]=[line];index++;while(index<lines.length&&(lines[index]??'').trim()&&!/^```|^#{1,6}\s|^[-*]\s+|^\d+[.)]\s+|^>\s?|^\s*([-*_])(?:\s*\1){2,}\s*$/.test(lines[index]??'')){paragraph.push(lines[index]??'');index++}blocks.push(<p key={blocks.length}>{renderMarkdownInline(paragraph.join('\n'))}</p>)
+  }
+  return <div className="rule-guide-content">{blocks}</div>
+}
+function parseMarkdownTableRow(value:string):string[]|null{const line=value.trim();if(!line.includes('|'))return null;const cells=line.replace(/^\|/,'').replace(/\|$/,'').split('|').map((cell)=>cell.trim());return cells.length>=2&&cells.some(Boolean)?cells:null}
+function isMarkdownTableSeparator(cells:string[]):boolean{return cells.length>=2&&cells.every((cell)=>/^:?-{3,}:?$/.test(cell.replace(/\s/g,'')))}
+function renderMarkdownInline(value:string):React.ReactNode[]{const tokens=/(\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\[[^\]]+\]\((?:https?:\/\/|mailto:)[^)]+\))/g;const parts=value.split(tokens);return parts.map((part,index)=>{if(!part)return null;if((part.startsWith('**')&&part.endsWith('**'))||(part.startsWith('__')&&part.endsWith('__')))return <strong key={index}>{part.slice(2,-2)}</strong>;if(part.startsWith('`')&&part.endsWith('`'))return <code key={index}>{part.slice(1,-1)}</code>;const link=part.match(/^\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^)]+)\)$/);if(link)return <a key={index} href={link[2]} target="_blank" rel="noreferrer">{link[1]}</a>;return <span key={index}>{part}</span>})}
+function GuideMarkdown({text}:{text:string}){return <MarkdownContent text={text}/>}
 function Toggle({checked,onChange,disabled=false}:{checked:boolean;onChange:(value:boolean)=>void;disabled?:boolean}){return <label className="setting-switch"><input type="checkbox" checked={checked} disabled={disabled} onChange={(e)=>onChange(e.target.checked)}/><span/></label>}
 function StatusText({text}:{text:string}){return <div className="settings-status">{text}</div>}
 function LoadingSettings(){const{t}=useTranslation();return <div className="article-body-status">{t('loadingContent')}</div>}

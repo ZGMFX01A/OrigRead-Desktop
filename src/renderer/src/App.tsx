@@ -31,7 +31,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { useTranslation } from 'react-i18next'
 import type { AppInfo } from '../../shared/contracts'
 import { resolveDesktopLanguage } from '../../shared/locale'
-import type { ArticleRecord, FeedArticleStats, FeedRecord, GroupRecord, LibrarySnapshot } from '../../shared/library'
+import type { ArticleRecord, ArticleSearchResult, FeedArticleStats, FeedRecord, GroupRecord, LibrarySnapshot } from '../../shared/library'
 import type { AiSummaryPlacement, DesktopSettings } from '../../shared/settings'
 import type { SourceDiscoveryProgress, SourceDiscoveryResult, SourceDiscoveryStage } from '../../shared/source-discovery'
 import type { ReaderArticleContent } from '../../shared/reader'
@@ -47,6 +47,7 @@ import { SourceSettingsDialog } from './SourceSettingsDialog'
 import { AiSummaryOptionsDialog, TranslationTargetDialog } from './ReaderToolDialogs'
 import type { AiSummaryRequestOptions } from '../../shared/ai'
 import { ReaderSearchBar, SearchableHtml, nextSearchIndex } from './ReaderSearch'
+import { GlobalSearchDialog } from './GlobalSearchDialog'
 import { BUILTIN_READER_FONTS, type ReaderFontEntry } from '../../shared/reader-font'
 import type { UpdateCheckResult } from '../../shared/update'
 import { selectMainSpeechSource, speechTextFromHtml, speechTextFromMarkdown, useReaderSpeech } from './useReaderSpeech'
@@ -135,6 +136,10 @@ export default function App(): React.JSX.Element {
   const [readerSearchQuery, setReaderSearchQuery] = useState('')
   const [readerSearchCount, setReaderSearchCount] = useState(0)
   const [readerSearchIndex, setReaderSearchIndex] = useState(0)
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false)
+  const [globalSearchResults, setGlobalSearchResults] = useState<ArticleSearchResult[]>([])
+  const [globalSearchLoading, setGlobalSearchLoading] = useState(false)
+  const [globalSearchError, setGlobalSearchError] = useState<string | null>(null)
   const [readerFonts, setReaderFonts] = useState<ReaderFontEntry[]>([])
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [syncRuntimeState, setSyncRuntimeState] = useState<SyncRuntimeState | null>(null)
@@ -414,6 +419,19 @@ export default function App(): React.JSX.Element {
     setReaderSearchQuery('')
     setReaderSearchCount(0)
     setReaderSearchIndex(0)
+  }, [])
+
+  const openGlobalSearch = useCallback((): void => {
+    setGlobalSearchOpen(true)
+    setGlobalSearchResults([])
+    setGlobalSearchError(null)
+  }, [])
+
+  const closeGlobalSearch = useCallback((): void => {
+    setGlobalSearchOpen(false)
+    setGlobalSearchResults([])
+    setGlobalSearchLoading(false)
+    setGlobalSearchError(null)
   }, [])
 
   const activeLabel = useMemo(
@@ -756,6 +774,44 @@ export default function App(): React.JSX.Element {
     setSelectedArticleId(article.id)
   }
 
+  const searchCachedArticles = useCallback(async (value: string): Promise<void> => {
+    const normalized = value.trim()
+    if (!normalized) {
+      setGlobalSearchResults([])
+      setGlobalSearchLoading(false)
+      setGlobalSearchError(null)
+      return
+    }
+
+    setGlobalSearchLoading(true)
+    setGlobalSearchError(null)
+    try {
+      setGlobalSearchResults(await window.origread.searchArticles(normalized, 100))
+    } catch (error) {
+      setGlobalSearchResults([])
+      setGlobalSearchError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setGlobalSearchLoading(false)
+    }
+  }, [])
+
+  const selectGlobalSearchResult = async (result: ArticleSearchResult): Promise<void> => {
+    try {
+      const existing = articles.find((article) => article.id === result.id)
+        ?? scopeArticles?.find((article) => article.id === result.id)
+      const article = existing ?? await window.origread.getArticleById(result.id)
+      if (!article) {
+        setGlobalSearchError(t('globalSearchOpenFailed'))
+        return
+      }
+      if (!existing) setArticles((current) => current.some((item) => item.id === article.id) ? current : [...current, article])
+      closeGlobalSearch()
+      selectArticle(article)
+    } catch (error) {
+      setGlobalSearchError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   const toggleStarred = (article: ArticleRecord): void => {
     const next = !article.isStarred
     setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isStarred: next } : item))
@@ -815,6 +871,12 @@ export default function App(): React.JSX.Element {
       const target = event.target instanceof HTMLElement ? event.target : null
       const interactiveTarget = Boolean(target?.closest('input, textarea, select, button, a, [contenteditable="true"]'))
 
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && key === 'f' && !globalSearchOpen && !settingsOpen && !sourceCatalogOpen && !originalViewState.open && !document.querySelector('[role="dialog"]')) {
+        if (interactiveTarget) return
+        event.preventDefault()
+        openGlobalSearch()
+        return
+      }
       if ((event.ctrlKey || event.metaKey) && key === 'f' && selectedArticleId && !settingsOpen && !sourceCatalogOpen && !originalViewState.open) {
         if (interactiveTarget && !readerSearchOpen) return
         event.preventDefault()
@@ -900,7 +962,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, nextArticle, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settingsOpen, sourceCatalogOpen, sourcePickerOpen, subscriptionMenuOpen, visibleArticles, workspaceCollapsed])
+  }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settingsOpen, sourceCatalogOpen, sourcePickerOpen, subscriptionMenuOpen, visibleArticles, workspaceCollapsed])
 
   const openAddSource = (): void => {
     setSubscriptionMenuOpen(false)
@@ -1646,6 +1708,17 @@ export default function App(): React.JSX.Element {
         )}
         </div>
       </section>
+
+      {globalSearchOpen && (
+        <GlobalSearchDialog
+          results={globalSearchResults}
+          loading={globalSearchLoading}
+          error={globalSearchError}
+          onSearch={searchCachedArticles}
+          onClose={closeGlobalSearch}
+          onSelect={(result) => void selectGlobalSearchResult(result)}
+        />
+      )}
 
       {addSourceOpen && (
         <div className="dialog-backdrop" role="presentation" onMouseDown={closeAddSource}>

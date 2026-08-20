@@ -80,7 +80,7 @@ function toArticleRecord(feedId: string, item: JsonParsedArticle, now: number, a
     author: item.author,
     publishedAt: item.publishedAt,
     description: htmlToText(item.descriptionHtml).slice(0, 280),
-    contentHtml: item.descriptionHtml || null,
+    contentHtml: item.contentHtml || item.descriptionHtml || null,
     fullContentHtml: null,
     imageUrl: item.imageUrl,
     isUnread: true,

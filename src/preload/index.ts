@@ -10,7 +10,7 @@ import type {
 import type { AiProviderPatch, AiSettingsPatch, AiSummaryProgress, AiSummaryRequestOptions } from '../shared/ai'
 import type { TranslationProviderPatch, TranslationProviderType, TranslationSettingsPatch, TranslationTarget } from '../shared/translation'
 import type { ArticleFilterRuleType } from '../shared/filter-rules'
-import type { AiGeneratedRuleKind } from '../shared/ai-rule'
+import type { AiGeneratedRuleKind, AiRuleGenerationOptions, AiRuleGenerationProgress } from '../shared/ai-rule'
 import type { SourceDiscoveryProgress } from '../shared/source-discovery'
 import type { AccountCreateInput, AccountPatch } from '../shared/account'
 
@@ -20,6 +20,8 @@ const api: OrigReadDesktopApi = Object.freeze({
   listFeeds: () => ipcRenderer.invoke(IPC_CHANNELS.listFeeds),
   listGroups: () => ipcRenderer.invoke(IPC_CHANNELS.listGroups),
   listArticles: (limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.listArticles, limit),
+  getArticleById: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.getArticleById, articleId),
+  searchArticles: (query: string, limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.searchArticles, query, limit),
   listArticlesByFeed: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.listArticlesByFeed, feedId),
   listArticlesByGroup: (groupId: string) => ipcRenderer.invoke(IPC_CHANNELS.listArticlesByGroup, groupId),
   listFeedArticleStats: () => ipcRenderer.invoke(IPC_CHANNELS.listFeedArticleStats),
@@ -62,6 +64,7 @@ const api: OrigReadDesktopApi = Object.freeze({
   restoreDefaultRssHubSettings: () => ipcRenderer.invoke(IPC_CHANNELS.restoreDefaultRssHubSettings),
   getSourceCatalog: () => ipcRenderer.invoke(IPC_CHANNELS.getSourceCatalog),
   listJsonRules: () => ipcRenderer.invoke(IPC_CHANNELS.listJsonRules),
+  listJsonRulesForUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.listJsonRulesForUrl, url),
   importJsonRules: (content: string) => ipcRenderer.invoke(IPC_CHANNELS.importJsonRules, content),
   exportJsonRules: () => ipcRenderer.invoke(IPC_CHANNELS.exportJsonRules),
   exportJsonRuleTemplate: () => ipcRenderer.invoke(IPC_CHANNELS.exportJsonRuleTemplate),
@@ -69,13 +72,20 @@ const api: OrigReadDesktopApi = Object.freeze({
     ipcRenderer.invoke(IPC_CHANNELS.setJsonRuleEnabled, id, enabled),
   deleteJsonRule: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteJsonRule, id),
   getRuleGuide: (kind: 'website' | 'json', language: 'zh' | 'en') => ipcRenderer.invoke(IPC_CHANNELS.getRuleGuide, kind, language),
-  generateAiRule: (kind: AiGeneratedRuleKind, url: string) => ipcRenderer.invoke(IPC_CHANNELS.generateAiRule, kind, url),
+  getUserGuide: (language: 'zh' | 'en') => ipcRenderer.invoke(IPC_CHANNELS.getUserGuide, language),
+  generateAiRule: (kind: AiGeneratedRuleKind, url: string, options?: AiRuleGenerationOptions) => ipcRenderer.invoke(IPC_CHANNELS.generateAiRule, kind, url, options),
   saveAiGeneratedRule: (previewId: string) => ipcRenderer.invoke(IPC_CHANNELS.saveAiGeneratedRule, previewId),
+  onAiRuleProgress: (listener: (progress: AiRuleGenerationProgress) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, progress: AiRuleGenerationProgress): void => listener(progress)
+    ipcRenderer.on(IPC_CHANNELS.aiRuleProgress, wrapped)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.aiRuleProgress, wrapped)
+  },
   exportRuleTemplateFile: (kind: 'website' | 'json') => ipcRenderer.invoke(IPC_CHANNELS.exportRuleTemplateFile, kind),
   inspectWebsiteStatic: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.inspectWebsiteStatic, url),
   inspectWebsiteDynamic: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.inspectWebsiteDynamic, url),
   refreshWebsiteSource: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.refreshWebsiteSource, feedId),
   listWebsiteRules: () => ipcRenderer.invoke(IPC_CHANNELS.listWebsiteRules),
+  listWebsiteRulesForUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.listWebsiteRulesForUrl, url),
   importWebsiteRules: (content: string) => ipcRenderer.invoke(IPC_CHANNELS.importWebsiteRules, content),
   exportWebsiteRules: () => ipcRenderer.invoke(IPC_CHANNELS.exportWebsiteRules),
   exportWebsiteRuleTemplate: () => ipcRenderer.invoke(IPC_CHANNELS.exportWebsiteRuleTemplate),

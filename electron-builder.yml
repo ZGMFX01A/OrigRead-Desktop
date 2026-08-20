@@ -7,6 +7,8 @@ files:
   - out/**
   - resources/**
   - package.json
+  - USER_GUIDE.md
+  - USER_GUIDE-zh-CN.md
 asar: true
 win:
   target:

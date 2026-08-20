@@ -15,18 +15,21 @@ export class WebsiteRuleRepository {
 
   listRules(): WebsiteRule[] {
     const merged = new Map<string, WebsiteRule>()
-    for (const rule of this.loadCustomRules()) merged.set(rule.id, rule)
-    // 严格复刻 Android 当前 (loadCustomRules() + BUILT_IN_RULES).associateBy(id)：
-    // 同 id 时后面的内置规则覆盖自定义项。即使这与源码注释表达的“用户规则优先”有矛盾，
-    // Desktop 也不在迁移阶段擅自修正 Android 行为。
     for (const rule of BUILT_IN_WEBSITE_RULES) merged.set(rule.id, rule)
+    // 用户保存的状态覆盖同 id 内置规则；这样内置规则仍默认可用，但禁用状态可以持久化。
+    for (const rule of this.loadCustomRules()) merged.set(rule.id, rule)
     return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name))
   }
 
   findRules(url: string): WebsiteRule[] {
+    return this.findConfiguredRules(url).filter((rule) => rule.enabled)
+  }
+
+  /** 返回匹配地址的全部规则，包含已停用规则，供来源设置页展示真实启用状态。 */
+  findConfiguredRules(url: string): WebsiteRule[] {
     let host = ''
     try { host = new URL(url).hostname.toLowerCase() } catch { return [] }
-    return this.listRules().filter((rule) => rule.enabled && rule.hosts.some((expected) => {
+    return this.listRules().filter((rule) => rule.hosts.some((expected) => {
       const normalized = expected.toLowerCase()
       return host === normalized || host.endsWith(`.${normalized}`)
     }))
@@ -42,22 +45,26 @@ export class WebsiteRuleRepository {
 
   importRules(content: string): number {
     const incoming = this.decodeBundle(content)
-    incoming.rules.forEach((rule) => this.validateRule(rule))
+    const userRules = incoming.rules.filter((rule) => !BUILT_IN_WEBSITE_RULES.some((builtIn) => builtIn.id === rule.id))
+    userRules.forEach((rule) => this.validateRule(rule))
     const merged = new Map(this.loadCustomRules().map((rule) => [rule.id, rule]))
-    incoming.rules.forEach((rule) => merged.set(rule.id, rule))
+    userRules.forEach((rule) => merged.set(rule.id, rule))
     this.writeCustomRules([...merged.values()])
-    return incoming.rules.length
+    return userRules.length
   }
 
   validateBackup(content: string): void {
-    this.decodeBundle(content).rules.forEach((rule) => this.validateRule(rule))
+    this.decodeBundle(content).rules
+      .filter((rule) => !BUILT_IN_WEBSITE_RULES.some((builtIn) => builtIn.id === rule.id))
+      .forEach((rule) => this.validateRule(rule))
   }
 
   restoreBackup(content: string): number {
     const incoming = this.decodeBundle(content)
-    incoming.rules.forEach((rule) => this.validateRule(rule))
-    this.writeCustomRules(incoming.rules)
-    return incoming.rules.length
+    const userRules = incoming.rules.filter((rule) => !BUILT_IN_WEBSITE_RULES.some((builtIn) => builtIn.id === rule.id))
+    userRules.forEach((rule) => this.validateRule(rule))
+    this.writeCustomRules(userRules)
+    return userRules.length
   }
 
   validateCandidate(rule: WebsiteRule): void {
@@ -65,6 +72,9 @@ export class WebsiteRuleRepository {
   }
 
   saveRule(rule: WebsiteRule): void {
+    if (BUILT_IN_WEBSITE_RULES.some((builtIn) => builtIn.id === rule.id)) {
+      throw new Error(`内置规则不能作为用户规则保存：${rule.id}`)
+    }
     this.saveCustomRule(rule)
   }
 
@@ -94,7 +104,8 @@ export class WebsiteRuleRepository {
   }
 
   exportRules(): string {
-    return JSON.stringify({ schemaVersion: WEBSITE_RULE_SCHEMA_VERSION, rules: this.listRules() }, null, 2)
+    const rules = this.loadCustomRules().filter((rule) => !BUILT_IN_WEBSITE_RULES.some((builtIn) => builtIn.id === rule.id))
+    return JSON.stringify({ schemaVersion: WEBSITE_RULE_SCHEMA_VERSION, rules }, null, 2)
   }
 
   exportTemplate(): string {

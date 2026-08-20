@@ -40,6 +40,7 @@ export class JsonArticleParser {
     const link = resolveHttpUrl(baseUrl, linkValue)
     if (!link) return null
     const descriptionHtml = stringValue(item, rule.descriptionPath) ?? ''
+    const contentHtml = stringValue(item, rule.contentPath ?? null) ?? ''
     const imageValue = stringValue(item, rule.imagePath)
     const imageUrl = imageValue ? resolveHttpUrl(baseUrl, imageValue) : null
     const stableId = stringValue(item, rule.idPath)?.trim() || link
@@ -50,7 +51,8 @@ export class JsonArticleParser {
       link,
       author: nullIfBlank(toPlainText(stringValue(item, rule.authorPath) ?? '')),
       publishedAt: parseArticleDate(firstJsonPath(item, rule.datePath), rule.dateFormat, fetchedAt),
-      descriptionHtml,
+      descriptionHtml: descriptionHtml || contentHtml,
+      contentHtml: contentHtml || null,
       imageUrl
     }
   }

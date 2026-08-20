@@ -3,7 +3,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ArticleFilterRule, ArticleFilterRuleType } from '../../shared/filter-rules'
 import type { FeedRecord, GroupRecord } from '../../shared/library'
-import type { WebsiteParseCandidate } from '../../shared/website'
+import type { WebsiteParseCandidate, WebsiteRule } from '../../shared/website'
+import type { JsonRule } from '../../shared/json-source'
 import type { WebsiteSourceRuleSettings } from '../../shared/contracts'
 
 interface Props {
@@ -29,6 +30,8 @@ export function SourceSettingsDialog({ feed, onClose, onChanged }: Props): React
   const [filterType, setFilterType] = useState<ArticleFilterRuleType>('KEYWORD')
   const [websiteSettings, setWebsiteSettings] = useState<WebsiteSourceRuleSettings | null>(null)
   const [websiteCandidates, setWebsiteCandidates] = useState<WebsiteParseCandidate[]>([])
+  const [websiteRules, setWebsiteRules] = useState<WebsiteRule[]>([])
+  const [jsonRules, setJsonRules] = useState<JsonRule[]>([])
   const [busy, setBusy] = useState(false)
   const [candidateBusy, setCandidateBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -42,17 +45,21 @@ export function SourceSettingsDialog({ feed, onClose, onChanged }: Props): React
     void Promise.all([
       window.origread.listGroups(),
       window.origread.getArticleFilters(),
-      feed.sourceType === 'website' ? window.origread.getWebsiteSourceRuleSettings(feed.id) : Promise.resolve(null)
-    ]).then(([loadedGroups, snapshot, sourceRuleSettings]) => {
+      feed.sourceType === 'website' ? window.origread.getWebsiteSourceRuleSettings(feed.id) : Promise.resolve(null),
+      feed.sourceType === 'website' ? window.origread.listWebsiteRulesForUrl(feed.url) : Promise.resolve([]),
+      feed.sourceType === 'json' ? window.origread.listJsonRulesForUrl(feed.url) : Promise.resolve([])
+    ]).then(([loadedGroups, snapshot, sourceRuleSettings, configuredWebsiteRules, configuredJsonRules]) => {
       if (cancelled) return
       setGroups(loadedGroups)
       setFilters(snapshot.rules)
       setWebsiteSettings(sourceRuleSettings)
+      setWebsiteRules(configuredWebsiteRules)
+      setJsonRules(configuredJsonRules)
     }).catch((reason) => {
       if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason))
     })
     return () => { cancelled = true }
-  }, [feed.id, feed.sourceType])
+  }, [feed.id, feed.sourceType, feed.url])
 
   const save = async (): Promise<void> => {
     if (busy) return
@@ -129,6 +136,35 @@ export function SourceSettingsDialog({ feed, onClose, onChanged }: Props): React
     }
   }
 
+  const setWebsiteRuleEnabled = async (ruleId: string, enabled: boolean): Promise<void> => {
+    setCandidateBusy(true)
+    setError(null)
+    try {
+      await window.origread.setWebsiteRuleEnabled(ruleId, enabled)
+      setWebsiteRules(await window.origread.listWebsiteRulesForUrl(feed.url))
+      if (!enabled && websiteSettings?.preferredRuleId === ruleId) {
+        setWebsiteSettings(await window.origread.setWebsiteSourcePreferredRule(feed.id, null))
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setCandidateBusy(false)
+    }
+  }
+
+  const setJsonRuleEnabled = async (ruleId: string, enabled: boolean): Promise<void> => {
+    setCandidateBusy(true)
+    setError(null)
+    try {
+      await window.origread.setJsonRuleEnabled(ruleId, enabled)
+      setJsonRules(await window.origread.listJsonRulesForUrl(feed.url))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setCandidateBusy(false)
+    }
+  }
+
   const sourceTypeLabel = feed.sourceType === 'rss'
     ? t('sourceTypeRss')
     : feed.sourceType === 'website'
@@ -137,6 +173,13 @@ export function SourceSettingsDialog({ feed, onClose, onChanged }: Props): React
   const tabs: SourceSettingsTab[] = feed.sourceType === 'rss'
     ? ['general', 'filters', 'maintenance']
     : ['general', 'reading', 'filters', 'maintenance']
+  const websiteCandidateById = new Map(websiteCandidates.map((candidate) => [candidate.rule.id, candidate]))
+  const configuredWebsiteRuleIds = new Set(websiteRules.map((rule) => rule.id))
+  const builtInCandidates = websiteCandidates.filter((candidate) => !configuredWebsiteRuleIds.has(candidate.rule.id))
+  const candidateStateLabel = (candidate: WebsiteParseCandidate): string => candidate.diagnostics.state === 'AVAILABLE' ? t('websiteParserAvailable') : t('websiteParserUnavailable')
+  const candidateDisplayName = (candidate: WebsiteParseCandidate): string => candidate.rule.id.startsWith('auto-dom:')
+    ? `${t('websiteParserSmartDetection')}${candidate.rule.name.includes(' · ') ? ` · ${candidate.rule.name.split(' · ').slice(1).join(' · ')}` : ''}`
+    : candidate.rule.name
 
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
@@ -231,11 +274,55 @@ export function SourceSettingsDialog({ feed, onClose, onChanged }: Props): React
                 <button type="button" className="mini-action" disabled={candidateBusy} onClick={()=>void evaluateWebsite()}>{candidateBusy?<RefreshCw size={13} className="spinning"/>:null}{t('evaluateParserCandidates')}</button>
                 <button type="button" className="mini-action" disabled={candidateBusy||websiteSettings.preferredRuleId===null} onClick={()=>void setPreferredWebsiteRule(null)}>{t('restoreAutomaticParser')}</button>
               </div>
-              {websiteCandidates.length > 0 && <div className="source-parser-candidates">{websiteCandidates.map((candidate)=>(
-                <button type="button" key={candidate.rule.id} className={websiteSettings.preferredRuleId===candidate.rule.id?'selected':''} onClick={()=>void setPreferredWebsiteRule(candidate.rule.id)}>
-                  <strong>{candidate.rule.name}</strong><span>{candidate.diagnostics.articleCount} · {candidate.diagnostics.state} · {candidate.diagnostics.score}</span>
-                </button>
-              ))}</div>}
+              <div className="source-parser-groups">
+                <div className="source-parser-group">
+                  <div className="source-parser-group-heading"><div><h4>{t('websiteParserAutomatic')}</h4><p>{t('websiteParserAutomaticDesc')}</p></div></div>
+                  <button type="button" className={`source-parser-option ${websiteSettings.preferredRuleId===null?'selected':''}`} onClick={()=>void setPreferredWebsiteRule(null)}>
+                    <span><strong>{t('websiteParserAutomatic')}</strong><small>{t('websiteParserAutomaticDesc')}</small></span>
+                    <span className="source-parser-option-state">{websiteSettings.preferredRuleId===null?t('currentChoice'):''}</span>
+                  </button>
+                </div>
+
+                <div className="source-parser-group">
+                  <div className="source-parser-group-heading"><div><h4>{t('websiteParserRules')} ({websiteRules.length})</h4><p>{t('websiteParserRulesDesc')}</p></div></div>
+                  {websiteRules.length === 0 ? <p className="source-settings-muted">{t('noMatchingWebsiteRules')}</p> : <div className="source-parser-rule-list">{websiteRules.map((rule) => {
+                    const candidate = websiteCandidateById.get(rule.id)
+                    const selected = websiteSettings.preferredRuleId === rule.id
+                    return <div className={`source-parser-rule ${selected?'selected':''}`} key={rule.id}>
+                      <label className="source-parser-rule-toggle">
+                        <input type="checkbox" checked={rule.enabled} disabled={candidateBusy} onChange={(event)=>void setWebsiteRuleEnabled(rule.id,event.target.checked)} />
+                        <span><strong>{rule.name}</strong><small>{candidate ? t('websiteRuleCandidateStats', { count: candidate.diagnostics.articleCount, score: candidate.diagnostics.score, state: candidateStateLabel(candidate) }) : `${rule.hosts.join(', ')} · ${rule.enabled ? t('websiteRuleEnabled') : t('websiteRuleDisabled')}`}</small></span>
+                      </label>
+                      <button type="button" className="mini-action source-parser-use" disabled={candidateBusy||!rule.enabled} onClick={()=>void setPreferredWebsiteRule(rule.id)}>{selected?t('currentChoice'):t('useParser')}</button>
+                    </div>
+                  })}</div>}
+                </div>
+
+                <div className="source-parser-group">
+                  <div className="source-parser-group-heading"><div><h4>{t('websiteParserBuiltIn')} ({builtInCandidates.length})</h4><p>{t('websiteParserBuiltInDesc')}</p></div></div>
+                  {websiteCandidates.length === 0 ? <p className="source-settings-muted">{t('noBuiltInWebsiteCandidates')}</p> : builtInCandidates.length === 0 ? <p className="source-settings-muted">{t('noAvailableBuiltInWebsiteCandidates')}</p> : <div className="source-parser-candidates">{builtInCandidates.map((candidate) => {
+                    const available = candidate.diagnostics.state === 'AVAILABLE'
+                    return <button type="button" key={candidate.rule.id} disabled={!available||candidateBusy} className={`source-parser-option ${websiteSettings.preferredRuleId===candidate.rule.id?'selected':''} ${!available?'unavailable':''}`} onClick={()=>void setPreferredWebsiteRule(candidate.rule.id)}>
+                      <span><strong>{candidateDisplayName(candidate)}</strong><small>{t('websiteRuleCandidateStats', { count: candidate.diagnostics.articleCount, score: candidate.diagnostics.score, state: candidateStateLabel(candidate) })}</small></span>
+                      <span className="source-parser-option-state">{websiteSettings.preferredRuleId===candidate.rule.id?t('currentChoice'):''}</span>
+                    </button>
+                  })}</div>}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {activeTab === 'reading' && feed.sourceType === 'json' && (
+            <section className="source-settings-card">
+              <div className="source-section-heading"><div><h3>{t('jsonSourceParser')}</h3><p>{t('jsonSourceParserDesc')}</p></div></div>
+              {jsonRules.length === 0 ? <p className="source-settings-muted">{t('noMatchingJsonRules')}</p> : <div className="source-parser-candidates">
+                {jsonRules.map((rule) => (
+                  <label className={`source-parser-candidate ${rule.enabled ? 'selected' : ''}`} key={rule.id}>
+                    <input type="checkbox" checked={rule.enabled} disabled={candidateBusy} onChange={(event)=>void setJsonRuleEnabled(rule.id,event.target.checked)} />
+                    <span><strong>{rule.name}</strong><small>{rule.sourceKind} · {rule.enabled ? t('jsonRuleEnabled') : t('jsonRuleDisabled')}</small></span>
+                  </label>
+                ))}
+              </div>}
             </section>
           )}
 

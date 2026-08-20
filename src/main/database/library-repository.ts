@@ -5,6 +5,8 @@ import type {
   FeedRecord,
   GroupRecord,
   LibrarySnapshot,
+  ArticleSearchMatchField,
+  ArticleSearchResult,
   SourceType
 } from '../../shared/library'
 import { CURRENT_ACCOUNT_SETTING_KEY, DEFAULT_LOCAL_ACCOUNT_ID } from './migrations'
@@ -61,6 +63,20 @@ interface ArticleRow {
   is_starred: number
   created_at: number
   updated_at: number
+}
+
+interface ArticleSearchRow {
+  id: string
+  feed_id: string
+  feed_name: string
+  title: string
+  author: string | null
+  url: string | null
+  published_at: number | null
+  is_unread: number
+  is_starred: number
+  match_field: ArticleSearchMatchField
+  matched_text: string | null
 }
 
 export class LibraryRepository {
@@ -446,6 +462,83 @@ export class LibraryRepository {
     `).all(accountId, safeLimit) as unknown as ArticleRow[]).map(toArticleRecord)
   }
 
+  searchArticles(query: string, limit = 100): ArticleSearchResult[] {
+    const normalizedQuery = query.trim()
+    if (!normalizedQuery) return []
+
+    const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 200)
+    const like = `%${escapeLikePattern(normalizedQuery)}%`
+    const accountId = this.getCurrentAccountId()
+    const rows = this.database.prepare(`
+      WITH matched_articles AS (
+        SELECT
+          a.id,
+          a.feed_id,
+          f.name AS feed_name,
+          a.title,
+          a.author,
+          a.url,
+          a.published_at,
+          a.is_unread,
+          a.is_starred,
+          a.created_at,
+          CASE
+            WHEN a.title LIKE ? ESCAPE '\\' COLLATE NOCASE THEN 'title'
+            WHEN a.description LIKE ? ESCAPE '\\' COLLATE NOCASE THEN 'description'
+            ELSE 'content'
+          END AS match_field,
+          CASE
+            WHEN a.title LIKE ? ESCAPE '\\' COLLATE NOCASE THEN a.title
+            WHEN a.description LIKE ? ESCAPE '\\' COLLATE NOCASE THEN a.description
+            WHEN COALESCE(a.content_html, '') LIKE ? ESCAPE '\\' COLLATE NOCASE THEN a.content_html
+            ELSE a.full_content_html
+          END AS matched_text
+        FROM articles a
+        INNER JOIN feeds f ON f.id = a.feed_id AND f.account_id = a.account_id
+        WHERE a.account_id = ?
+          AND (
+            a.title LIKE ? ESCAPE '\\' COLLATE NOCASE
+            OR a.description LIKE ? ESCAPE '\\' COLLATE NOCASE
+            OR COALESCE(a.content_html, '') LIKE ? ESCAPE '\\' COLLATE NOCASE
+            OR COALESCE(a.full_content_html, '') LIKE ? ESCAPE '\\' COLLATE NOCASE
+          )
+      )
+      SELECT id, feed_id, feed_name, title, author, url, published_at,
+             is_unread, is_starred, match_field, matched_text
+      FROM matched_articles
+      ORDER BY
+        CASE match_field WHEN 'title' THEN 0 WHEN 'description' THEN 1 ELSE 2 END,
+        COALESCE(published_at, created_at) DESC
+      LIMIT ?
+    `).all(
+      like,
+      like,
+      like,
+      like,
+      like,
+      accountId,
+      like,
+      like,
+      like,
+      like,
+      safeLimit
+    ) as unknown as ArticleSearchRow[]
+
+    return rows.map((row) => ({
+      id: row.id,
+      feedId: row.feed_id,
+      feedName: row.feed_name,
+      title: row.title,
+      author: row.author,
+      url: row.url,
+      publishedAt: row.published_at,
+      isUnread: row.is_unread === 1,
+      isStarred: row.is_starred === 1,
+      matchField: row.match_field,
+      snippet: makeSearchSnippet(row.matched_text ?? row.title, normalizedQuery)
+    }))
+  }
+
   setArticleUnread(articleId: string, unread: boolean): void {
     this.setArticleUnreadForAccount(this.getCurrentAccountId(), articleId, unread)
   }
@@ -607,6 +700,29 @@ export class LibraryRepository {
 
 function toSqlBoolean(value: boolean): number {
   return value ? 1 : 0
+}
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&')
+}
+
+function makeSearchSnippet(value: string, query: string): string {
+  const text = value
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!text) return ''
+
+  const lowerText = text.toLocaleLowerCase()
+  const lowerQuery = query.toLocaleLowerCase()
+  const index = lowerText.indexOf(lowerQuery)
+  if (index < 0) return text.slice(0, 180)
+
+  const start = Math.max(0, index - 72)
+  const end = Math.min(text.length, index + query.length + 108)
+  return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`
 }
 
 function toGroupRecord(row: GroupRow): GroupRecord {

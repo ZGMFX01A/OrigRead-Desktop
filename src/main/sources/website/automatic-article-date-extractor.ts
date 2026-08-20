@@ -54,7 +54,7 @@ export class AutomaticArticleDateExtractor {
   }
 
   private extractNearbyTextDate(item: Element): number | null {
-    const selector = '.time, .date, .datetime, .publish-time, .published-time, .post-date, .article-date, [class*=time], [class*=date], [class*=publish], [id*=time], [id*=date], [id*=publish]'
+    const selector = '.age, .time, .date, .datetime, .publish-time, .published-time, .post-date, .article-date, [class*=time], [class*=date], [class*=publish], [id*=time], [id*=date], [id*=publish]'
     for (const element of selectWithin(this.$, item, selector).slice(0, 20)) {
       const parsed = this.parseDateFromText(this.$(element).text())
       if (parsed !== null) return parsed

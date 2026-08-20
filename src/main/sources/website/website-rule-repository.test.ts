@@ -26,7 +26,33 @@ describe('WebsiteRuleRepository', () => {
     const rule = repository.findRule('https://m.news.example.com/')
     expect(rule?.linkSelector).toBe('a.title')
     expect(rule?.maxItems).toBe(50)
-    expect(JSON.parse(repository.exportRules()).schemaVersion).toBe(1)
+    const exported = JSON.parse(repository.exportRules())
+    expect(exported.schemaVersion).toBe(1)
+    expect(exported.rules.some((item: { id: string }) => item.id === 'ithome-home')).toBe(false)
+  })
+
+  it('allows a built-in rule to be disabled without exporting its internal marker', () => {
+    const repository = createRepository()
+    repository.setEnabled('ithome-home', false)
+    expect(repository.findConfiguredRules('https://www.ithome.com/')[0]?.enabled).toBe(false)
+    expect(repository.findRules('https://www.ithome.com/')).toHaveLength(0)
+    expect(JSON.parse(repository.exportRules()).rules.some((item: { id: string }) => item.id === 'ithome-home')).toBe(false)
+  })
+
+  it('ignores built-in rules when importing a shared rule file', () => {
+    const repository = createRepository()
+    expect(repository.importRules(JSON.stringify({ rules: [{ id: 'ithome-home', name: 'spoof', hosts: ['evil.example.com'], articleSelectors: ['article'], titleSelector: 'a' }] }))).toBe(0)
+    expect(repository.findConfiguredRules('https://evil.example.com/')).toHaveLength(0)
+  })
+
+  it('keeps disabled matching rules visible while excluding them from active parsing', () => {
+    const repository = createRepository()
+    repository.importRules(JSON.stringify({ rules: [{
+      id: 'disabled-sample', name: 'Disabled sample', enabled: false, hosts: ['news.example.com'], articleSelectors: ['article'], titleSelector: 'a'
+    }] }))
+    expect(repository.findConfiguredRules('https://news.example.com/')).toHaveLength(1)
+    expect(repository.findConfiguredRules('https://news.example.com/')[0]?.enabled).toBe(false)
+    expect(repository.findRules('https://news.example.com/')).toHaveLength(0)
   })
 
   it('rejects protocol/path hosts and invalid Android regex syntax', () => {

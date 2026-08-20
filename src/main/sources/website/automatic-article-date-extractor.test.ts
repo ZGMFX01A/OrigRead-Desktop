@@ -29,5 +29,12 @@ describe('AutomaticArticleDateExtractor', () => {
     const localExtractor = AutomaticArticleDateExtractor.create(fragment, 'https://news.example.com/', fetchedAt)
     expect(localExtractor.extract(fragment('#plain').get(0)!, 'https://news.example.com/article/2001')).toBe(fetchedAt)
   })
+
+  it('extracts Hacker News relative dates from the age class', () => {
+    const fragment = cheerio.load('<article id="hn-age"><span class="age">11 hours ago</span><a href="/item?id=2002">Hacker News story</a></article>')
+    const localExtractor = AutomaticArticleDateExtractor.create(fragment, 'https://news.ycombinator.com/', fetchedAt)
+    expect(localExtractor.extract(fragment('#hn-age').get(0)!, 'https://news.ycombinator.com/item?id=2002'))
+      .toBe(Date.parse('2026-08-04T23:00:00+08:00'))
+  })
 })
 

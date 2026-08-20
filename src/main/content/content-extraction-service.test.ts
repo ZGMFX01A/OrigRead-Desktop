@@ -29,6 +29,24 @@ describe('ContentExtractionService Android parity', () => {
     expect(result?.source).not.toBe('WEBSITE_RULE')
   })
 
+  it('chooses the highest-quality website selector instead of the first non-empty selector', () => {
+    const html = `<html><body>
+      <div class="shell-copy"><p>${'外围导航文字。'.repeat(30)}</p></div>
+      <article class="story-body"><h1>规则正文测试</h1><p>${'这是完整正文内容。'.repeat(40)}</p><p>${'正文第二段内容。'.repeat(20)}</p></article>
+    </body></html>`
+    const result = createService([rule('sample', 'example.com', ['.shell-copy', '.story-body'])])
+      .extract(html, 'https://example.com/news/1', '规则正文测试')
+    expect(result?.source).toBe('WEBSITE_RULE')
+    expect(result?.html).toContain('完整正文内容')
+  })
+
+  it('rejects a page-shell selector from an AI website rule', () => {
+    const html = `<html><body><main id="app"><nav>${'导航内容。'.repeat(20)}</nav><article><h1>页面标题</h1><p>${'正文内容。'.repeat(60)}</p></article></main></body></html>`
+    const result = createService([rule('ai-website-example-com', 'example.com', 'main')])
+      .extract(html, 'https://example.com/news/1', '页面标题')
+    expect(result?.source).not.toBe('WEBSITE_RULE')
+  })
+
   it('extracts JSON-LD articleBody and author', () => {
     const html = `<html><head><script type="application/ld+json">
       {"@type":"NewsArticle","headline":"测试标题","articleBody":"第一段正文内容足够长，用于验证结构化数据正文提取、候选评分和中文短讯兼容能力。\\n\\n第二段正文内容同样足够长，并确保明确提供的 articleBody 不会被普通页面导航内容覆盖。","author":{"name":"作者"}}
@@ -127,11 +145,11 @@ function createService(rules: WebsiteRule[] = []): ContentExtractionService {
   ])
 }
 
-function rule(id: string, host: string, contentSelector: string): WebsiteRule {
+function rule(id: string, host: string, contentSelector: string | string[]): WebsiteRule {
   return {
     id, name: id, version: 1, enabled: true, hosts: [host], articleSelectors: ['article'], titleSelector: 'h1',
     linkSelector: 'a', linkAttribute: 'href', dateRules: [], imageSelector: null, imageAttributes: ['src'],
-    contentSelectors: [contentSelector], includeUrlRegex: null, automaticUrlPattern: null, automaticDateExtraction: false,
+    contentSelectors: Array.isArray(contentSelector) ? contentSelector : [contentSelector], includeUrlRegex: null, automaticUrlPattern: null, automaticDateExtraction: false,
     automaticRegionScore: 0, excludeTitleRegexes: [], maxItems: 50, cleanupMode: 'NONE', urlIdRegex: null
   }
 }

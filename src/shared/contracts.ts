@@ -1,4 +1,4 @@
-import type { ArticleRecord, FeedArticleStats, FeedRecord, GroupRecord, LibrarySnapshot } from './library'
+import type { ArticleRecord, ArticleSearchResult, FeedArticleStats, FeedRecord, GroupRecord, LibrarySnapshot } from './library'
 import type { DesktopSettings, DesktopSettingsPatch } from './settings'
 import type { RssSubscriptionResult } from './rss'
 import type { RssHubSettings } from './rsshub'
@@ -18,7 +18,7 @@ import type { DeepLUsage, TranslationDocument, TranslationProviderPatch, Transla
 import type { ArticleFilterRule, ArticleFilterSnapshot, ArticleFilterRuleType } from './filter-rules'
 import type { ConfigurationBackupFileResult } from './configuration-backup'
 import type { FeedCatalogSnapshot } from './source-catalog'
-import type { AiGeneratedRuleKind, AiGeneratedRulePreview } from './ai-rule'
+import type { AiGeneratedRuleKind, AiRuleGenerationOptions, AiGeneratedRulePreview, AiRuleGenerationProgress } from './ai-rule'
 import type { ReaderFontEntry, ReaderFontFileResult } from './reader-font'
 import type { OpmlExportFileResult, OpmlImportFileResult } from './opml'
 import type { UpdateCheckResult, UpdateDownloadResult } from './update'
@@ -55,6 +55,8 @@ export interface OrigReadDesktopApi {
   listFeeds(): Promise<FeedRecord[]>
   listGroups(): Promise<GroupRecord[]>
   listArticles(limit?: number): Promise<ArticleRecord[]>
+  getArticleById(articleId: string): Promise<ArticleRecord | null>
+  searchArticles(query: string, limit?: number): Promise<ArticleSearchResult[]>
   listArticlesByFeed(feedId: string): Promise<ArticleRecord[]>
   listArticlesByGroup(groupId: string): Promise<ArticleRecord[]>
   listFeedArticleStats(): Promise<FeedArticleStats[]>
@@ -94,19 +96,23 @@ export interface OrigReadDesktopApi {
   restoreDefaultRssHubSettings(): Promise<RssHubSettings>
   getSourceCatalog(): Promise<FeedCatalogSnapshot>
   listJsonRules(): Promise<JsonRule[]>
+  listJsonRulesForUrl(url: string): Promise<JsonRule[]>
   importJsonRules(content: string): Promise<number>
   exportJsonRules(): Promise<string>
   exportJsonRuleTemplate(): Promise<string>
   setJsonRuleEnabled(id: string, enabled: boolean): Promise<void>
   deleteJsonRule(id: string): Promise<void>
   getRuleGuide(kind: 'website' | 'json', language: 'zh' | 'en'): Promise<string>
-  generateAiRule(kind: AiGeneratedRuleKind, url: string): Promise<AiGeneratedRulePreview>
+  getUserGuide(language: 'zh' | 'en'): Promise<string>
+  generateAiRule(kind: AiGeneratedRuleKind, url: string, options?: AiRuleGenerationOptions): Promise<AiGeneratedRulePreview>
   saveAiGeneratedRule(previewId: string): Promise<void>
+  onAiRuleProgress(listener: (progress: AiRuleGenerationProgress) => void): () => void
   exportRuleTemplateFile(kind: 'website' | 'json'): Promise<{ ok:boolean;cancelled:boolean;path:string|null;error:string|null }>
   inspectWebsiteStatic(url: string): Promise<WebsiteInspectionResult>
   inspectWebsiteDynamic(url: string): Promise<WebsiteInspectionResult>
   refreshWebsiteSource(feedId: string): Promise<{ feedId: string; fetchedArticles: number; insertedArticles: number; deletedArticles: number }>
   listWebsiteRules(): Promise<WebsiteRule[]>
+  listWebsiteRulesForUrl(url: string): Promise<WebsiteRule[]>
   importWebsiteRules(content: string): Promise<number>
   exportWebsiteRules(): Promise<string>
   exportWebsiteRuleTemplate(): Promise<string>
@@ -170,6 +176,8 @@ export const IPC_CHANNELS = {
   listFeeds: 'library:list-feeds',
   listGroups: 'library:list-groups',
   listArticles: 'library:list-articles',
+  getArticleById: 'library:get-article-by-id',
+  searchArticles: 'library:search-articles',
   listArticlesByFeed: 'library:list-articles-by-feed',
   listArticlesByGroup: 'library:list-articles-by-group',
   listFeedArticleStats: 'library:list-feed-article-stats',
@@ -209,19 +217,23 @@ export const IPC_CHANNELS = {
   restoreDefaultRssHubSettings: 'rsshub:settings:restore-default',
   getSourceCatalog: 'source:catalog:get',
   listJsonRules: 'json:rules:list',
+  listJsonRulesForUrl: 'json:rules:list-for-url',
   importJsonRules: 'json:rules:import',
   exportJsonRules: 'json:rules:export',
   exportJsonRuleTemplate: 'json:rules:export-template',
   setJsonRuleEnabled: 'json:rules:set-enabled',
   deleteJsonRule: 'json:rules:delete',
   getRuleGuide: 'rules:guide:get',
+  getUserGuide: 'user-guide:get',
   generateAiRule: 'rules:ai:generate',
   saveAiGeneratedRule: 'rules:ai:save',
+  aiRuleProgress: 'rules:ai:progress',
   exportRuleTemplateFile: 'rules:template:export-file',
   inspectWebsiteStatic: 'website:inspect-static',
   inspectWebsiteDynamic: 'website:inspect-dynamic',
   refreshWebsiteSource: 'website:refresh-source',
   listWebsiteRules: 'website:rules:list',
+  listWebsiteRulesForUrl: 'website:rules:list-for-url',
   importWebsiteRules: 'website:rules:import',
   exportWebsiteRules: 'website:rules:export',
   exportWebsiteRuleTemplate: 'website:rules:export-template',

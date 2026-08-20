@@ -19,6 +19,7 @@ export interface JsonRule {
   datePath: string | null
   authorPath: string | null
   descriptionPath: string | null
+  contentPath?: string | null
   imagePath: string | null
   idPath: string | null
   dateFormat: string | null
@@ -32,6 +33,7 @@ export interface JsonParsedArticle {
   author: string | null
   publishedAt: number
   descriptionHtml: string
+  contentHtml?: string | null
   imageUrl: string | null
 }
 
@@ -54,6 +56,7 @@ export function normalizeJsonRule(value: JsonRule): JsonRule {
     datePath: value.datePath ?? null,
     authorPath: value.authorPath ?? null,
     descriptionPath: value.descriptionPath ?? null,
+    contentPath: value.contentPath ?? null,
     imagePath: value.imagePath ?? null,
     idPath: value.idPath ?? null,
     dateFormat: value.dateFormat ?? null,

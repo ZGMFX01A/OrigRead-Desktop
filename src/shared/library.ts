@@ -50,6 +50,22 @@ export interface ArticleRecord {
   updatedAt: number
 }
 
+export type ArticleSearchMatchField = 'title' | 'description' | 'content'
+
+export interface ArticleSearchResult {
+  id: string
+  feedId: string
+  feedName: string
+  title: string
+  author: string | null
+  url: string | null
+  publishedAt: number | null
+  isUnread: boolean
+  isStarred: boolean
+  matchField: ArticleSearchMatchField
+  snippet: string
+}
+
 export interface LibrarySnapshot {
   groups: number
   feeds: number

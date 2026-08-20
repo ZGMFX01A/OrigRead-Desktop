@@ -13,6 +13,10 @@ export class JsonRuleRepository {
   }
 
   findRules(url: string): JsonRule[] {
+    return this.findConfiguredRules(url).filter((rule) => rule.enabled)
+  }
+
+  findConfiguredRules(url: string): JsonRule[] {
     let host = ''
     try {
       host = new URL(url).hostname.toLowerCase()
@@ -20,7 +24,7 @@ export class JsonRuleRepository {
       return []
     }
     return this.loadRules().filter((rule) =>
-      rule.enabled && rule.hosts.some((expected) => {
+      rule.hosts.some((expected) => {
         const normalized = expected.toLowerCase()
         return host === normalized || host.endsWith(`.${normalized}`)
       })
@@ -101,6 +105,7 @@ export class JsonRuleRepository {
         datePath: '$.publishedAt',
         authorPath: '$.author.name',
         descriptionPath: '$.summary',
+        contentPath: '$.content',
         imagePath: '$.cover',
         idPath: '$.id',
         dateFormat: null,
@@ -137,6 +142,7 @@ export class JsonRuleRepository {
       rule.datePath,
       rule.authorPath,
       rule.descriptionPath,
+      rule.contentPath,
       rule.imagePath,
       rule.idPath
     ].filter((path): path is string => Boolean(path)).forEach(validateJsonPath)

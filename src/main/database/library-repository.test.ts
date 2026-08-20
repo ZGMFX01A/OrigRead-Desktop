@@ -180,6 +180,49 @@ describe('LibraryRepository', () => {
     database.close()
   })
 
+  it('searches all cached article fields beyond the recent article window', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const feed = createFeed()
+    repository.upsertFeed(feed)
+
+    for (let index = 0; index < 220; index += 1) {
+      repository.upsertArticle({
+        ...createArticle(feed.id),
+        id: `cached-${index}`,
+        title: index === 219 ? 'Title keyword article' : `Cached article ${index}`,
+        description: index === 218 ? 'Description keyword summary' : 'Description',
+        contentHtml: index === 0 ? '<p>Body keyword is in an older cached article.</p>' : '<p>Body</p>',
+        fullContentHtml: index === 1 ? '<article>Full keyword is in the reader cache.</article>' : null,
+        publishedAt: 10_000 + index
+      })
+    }
+
+    expect(repository.listArticles()).toHaveLength(200)
+
+    const bodyResult = repository.searchArticles('keyword').find((result) => result.id === 'cached-0')
+    expect(bodyResult).toMatchObject({
+      id: 'cached-0',
+      feedName: 'Example',
+      matchField: 'content'
+    })
+    expect(bodyResult?.snippet).toContain('Body keyword')
+    expect(repository.searchArticles('summary')[0]).toMatchObject({
+      id: 'cached-218',
+      matchField: 'description'
+    })
+    expect(repository.searchArticles('Title keyword')[0]).toMatchObject({
+      id: 'cached-219',
+      matchField: 'title'
+    })
+    expect(repository.searchArticles('Full keyword')[0]).toMatchObject({
+      id: 'cached-1',
+      matchField: 'content'
+    })
+
+    database.close()
+  })
+
   it('batch-queries existing article ids across the 800-parameter chunk boundary', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)

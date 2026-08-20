@@ -18,7 +18,18 @@ export async function launchIsolatedOrigRead(envOverrides: Record<string, string
   env.ORIGREAD_E2E_USER_DATA_DIR = userDataDir
   env.ORIGREAD_DISABLE_AUTO_UPDATE_CHECK = '1'
   Object.assign(env, envOverrides)
-  const app = await electron.launch({ args: ['.'], cwd: process.cwd(), env })
+  const app = await electron.launch({
+    args: [
+      '.',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--no-sandbox',
+      '--disable-crash-reporter',
+      '--noerrdialogs'
+    ],
+    cwd: process.cwd(),
+    env
+  })
   return {
     app,
     async close() {

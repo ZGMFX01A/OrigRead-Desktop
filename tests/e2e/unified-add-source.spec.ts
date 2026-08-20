@@ -126,6 +126,16 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await page.locator('.reader-search-bar input').press('Escape')
     await expect(page.locator('.reader-search-bar')).toBeHidden()
 
+    await page.keyboard.press('Control+Shift+f')
+    await expect(page.locator('.global-search-dialog')).toBeVisible()
+    await expect(page.locator('.global-search-input-shell kbd')).toContainText('Ctrl')
+    await page.locator('.global-search-input-shell input').fill('OrigRead extracted full text article 1')
+    await expect(page.locator('.global-search-result').first()).toBeVisible()
+    await expect(page.locator('.global-search-result').first()).toContainText('正文命中')
+    await page.locator('.global-search-result').first().click()
+    await expect(page.locator('.global-search-dialog')).toBeHidden()
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+
     const shortcutArticle = page.locator('.article-item').nth(10)
     await shortcutArticle.click()
     const shortcutArticleId = await shortcutArticle.getAttribute('data-article-id')

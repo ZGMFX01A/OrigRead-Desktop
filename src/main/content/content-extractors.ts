@@ -1,11 +1,13 @@
 import { Readability } from '@mozilla/readability'
 import * as cheerio from 'cheerio'
 import JSON5 from 'json5'
+import type { Element } from 'domhandler'
 import { parseHTML } from 'linkedom'
 import type { WebsiteRule } from '../../shared/website'
 import type { WebsiteRuleRepository } from '../sources/website/website-rule-repository'
 import { scoreContentCandidate } from './content-candidate-scorer'
 import type { ContentExtractionCandidate } from './content-extraction-types'
+import { sanitizeContentHtml } from './content-html-sanitizer'
 
 export interface ContentExtractor {
   extract(html: string, sourceUrl: string): ContentExtractionCandidate[]
@@ -41,21 +43,74 @@ export class WebsiteRuleContentExtractor implements ContentExtractor {
     return this.ruleProvider(sourceUrl)
       .filter((rule) => rule.contentSelectors.length > 0)
       .flatMap((rule) => {
-        const selector = rule.contentSelectors.find((value) => normalizeText($(value).first().text()).length > 0)
-        if (!selector) return []
-        const element = $(selector).first()
-        const body = $.html(element)
+        const selection = selectBestWebsiteContentElement(
+          $,
+          sourceUrl,
+          rule.contentSelectors,
+          rule.id.startsWith('ai-website-')
+        )
+        if (!selection) return []
+        const body = $.html(selection.element)
         return [{
           source: 'WEBSITE_RULE' as const,
           html: body,
           title: null,
           author: null,
           publishedTime: null,
-          score: scoreContentCandidate(body)
+          score: selection.score
         }]
       })
   }
 }
+
+/** 规则验证和运行时必须使用同一套选择器排序，避免预览通过但实际选中错误容器。 */
+export function selectBestWebsiteContentElement(
+  $: cheerio.CheerioAPI,
+  sourceUrl: string,
+  selectors: string[],
+  rejectBroadShell = false
+): { element: Element; score: number } | null {
+  return selectors
+    .map((selector, index) => {
+      if (rejectBroadShell && isBroadWebsiteContentSelector(selector)) return null
+      const element = $(selector).first().get(0)
+      if (!element || element.type !== 'tag') return null
+      if (!normalizeText($(element).text())) return null
+      if (rejectBroadShell && isBroadWebsiteContentElement(element)) return null
+      const sanitized = sanitizeContentHtml($.html(element), sourceUrl)
+      if (!sanitized.trim()) return null
+      return { element, score: scoreContentCandidate(sanitized), index }
+    })
+    .filter((value): value is { element: Element; score: number; index: number } => value !== null)
+    .sort((left, right) => right.score - left.score || left.index - right.index)[0] ?? null
+}
+
+/** 明确指向页面壳的选择器不能作为 AI 正文规则。 */
+export function isBroadWebsiteContentSelector(selector: string): boolean {
+  const normalized = selector.trim().toLowerCase().replace(/\s+/g, '')
+  return BROAD_CONTENT_SELECTORS.has(normalized) || normalized.startsWith('body>') || normalized.startsWith('html>')
+}
+
+function isBroadWebsiteContentElement(element: Element): boolean {
+  const tagName = element.tagName.toLowerCase()
+  if (tagName === 'html' || tagName === 'body' || tagName === 'main') return true
+  if ((element.attribs.role ?? '').toLowerCase() === 'main') return true
+  const identifiers = [
+    element.attribs.id ?? '',
+    ...(element.attribs.class ?? '').split(/\s+/),
+  ].map((value) => value.trim().toLowerCase()).filter(Boolean)
+  return identifiers.some((value) => PAGE_SHELL_IDENTIFIERS.has(value))
+}
+
+const BROAD_CONTENT_SELECTORS = new Set([
+  'html', 'body', 'main', '[role=main]', '[role="main"]', "[role='main']",
+  '#app', '#root', '#page', '.app', '.root', '.page', '.page-container',
+  '.layout', '.layout-container', '.wrapper', '.site-wrapper'
+])
+
+const PAGE_SHELL_IDENTIFIERS = new Set([
+  'app', 'root', 'page', 'page-container', 'layout', 'layout-container', 'wrapper', 'site-wrapper'
+])
 
 export class StructuredMetadataContentExtractor implements ContentExtractor {
   extract(html: string): ContentExtractionCandidate[] {

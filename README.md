@@ -155,7 +155,7 @@ AI is optional and is called only after you configure and invoke it.
 - Visible processing stage and elapsed time, plus explicit cancellation.
 - Temporary provider/model/summary-mode selection without overwriting global defaults.
 
-> **AI-generated JSON rules and AI-generated Website Rules are not finished.** Their entries remain disabled and are not advertised as released features.
+AI-generated JSON rules and Website Rules are available as a confirmation-based workflow. The target is fetched, a configured Provider/model is selected, the candidate is locally parsed and health-checked, and only an explicitly confirmed candidate is saved. The UI reports each stage and shows the parsed-article count, score, model, and repair attempts.
 
 ## Rules and filters
 

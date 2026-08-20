@@ -1,9 +1,7 @@
 # OrigRead Desktop User Guide
 
-<div align="center">
-  <a href="USER_GUIDE.md">English</a> |
-  <a href="USER_GUIDE-zh-CN.md">简体中文</a>
-</div>
+Language: English. The Chinese version is `USER_GUIDE-zh-CN.md`.
+
 ## Quick index
 
 - [Quick start](#quick-start)
@@ -147,7 +145,23 @@ The AI summary can:
 
 Docked panels can be resized, and keyboard shortcuts are available for position and size changes.
 
-> **AI-generated JSON rules and AI-generated Website Rules are not finished.** Their entries remain disabled and do not affect normal AI summaries or AI full-article translation.
+### Generate rules with AI
+
+Desktop can generate a Website Rule or JSON/API Rule from the rule settings pages. It first creates a candidate from a real, reachable list page or endpoint and then runs the candidate through the local parser. It is not a guarantee that every website can become a stable subscription.
+
+1. Open **Settings → Website Rules** or **Settings → JSON Rules**, then choose **AI generate**.
+2. Enter the target address. For a Website Rule, use an article list page. For a JSON/API Rule, use a public JSON endpoint or a page containing static Next.js / Nuxt embedded JSON.
+3. The dialog starts with the default AI provider and model from AI settings. You can choose another enabled provider or model before starting.
+4. Wait for fetch, analysis, candidate generation and local validation to finish. The preview shows the article count, score and sample titles.
+5. Save only after confirming that the titles, links and count are correct. A candidate that fails local validation is not saved automatically.
+
+If a page depends on JavaScript, requires login, shows a CAPTCHA or uses a paywall, a normal request may not provide usable samples. The app does not bypass access controls. In that case, try dynamic source discovery, a public API or a hand-written rule. Desktop AI rule generation validates the article list first; article bodies continue to use normal content extraction and the built-in original-page view as fallback.
+
+### Read the result before saving
+
+- **Local validation passed** means the list rule ran successfully against the target sample and can be saved as a candidate.
+- If the article count or sample titles are wrong, do not save; change the target address or try another model.
+- If generation fails, read the reported stage and reason. Common causes include a non-public/non-JSON target, blocked access, or selectors that return no articles.
 
 ---
 
@@ -311,6 +325,8 @@ Use these when a website has no usable feed but exposes a relatively stable HTML
 ### JSON/API Rules
 
 Use these when a site exposes a stable REST/JSON or another structured endpoint. A stable API is usually less fragile than page CSS selectors.
+
+JSON/API Rules only read fields that are actually present in the list data. They do not invent article bodies or bypass login, signatures, CAPTCHAs or paywalls. If no reusable content field is available, opening an article continues to use normal extraction and the built-in original-page view.
 
 ### Article filters
 
