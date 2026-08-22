@@ -9,6 +9,7 @@ Language: English. The Chinese version is `USER_GUIDE-zh-CN.md`.
 - [Read articles](#read-articles)
 - [Use AI summaries](#use-ai-summaries)
 - [Translate articles](#translate-articles)
+- [Share articles as Markdown](#share-articles-as-markdown)
 - [Read articles aloud](#read-articles-aloud)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [What to do when a source cannot be added](#what-to-do-when-a-source-cannot-be-added)
@@ -185,6 +186,24 @@ Desktop supports Microsoft Translator, DeepL, Google Cloud Translation and DeepL
 4. After translation, view translated content or the available original/bilingual presentation.
 
 Traditional translation does not depend on AI summaries. DeepL or Microsoft translation works even if no summary model is configured.
+
+---
+
+## Share articles as Markdown
+
+The desktop Share button is for copying an article into a notes app. It does not open a third-party app for you: it puts the finished Markdown in the system clipboard, ready to paste.
+
+### Set it up the first time
+
+1. Open an article.
+2. Click **Share**.
+3. The first time, choose the default title-and-link option or customize the content.
+4. Choose whether to include the title, article body, translation currently open in the reader, and AI summary currently open in the reader.
+5. Save, then paste the copied Markdown into Obsidian, Notion or another notes app.
+
+After setup, a normal click copies the Markdown immediately. Right-click the Share button to change the choices later. The original article URL is always included. A cached translation or summary is not included unless it is currently open in the reader.
+
+The Markdown keeps headings, quotes, lists, links and external image URLs. Images are placed on their own lines so they do not run into surrounding text. Sharing from the article list keeps its existing behavior.
 
 ---
 

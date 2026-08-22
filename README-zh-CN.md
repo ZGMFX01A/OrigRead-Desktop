@@ -24,6 +24,7 @@
   <img alt="Electron" src="https://img.shields.io/badge/Electron-React-47848F?logo=electron&logoColor=white" />
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" /></a>
   <img alt="Latest release" src="https://img.shields.io/github/v/release/ZGMFX01A/OrigRead-Desktop?display_name=tag&sort=semver" />
+  <img alt="GitHub Release 总下载次数" src="https://img.shields.io/github/downloads/ZGMFX01A/OrigRead-Desktop/total?label=%E6%80%BB%E4%B8%8B%E8%BD%BD%E6%AC%A1%E6%95%B0&logo=github" />
   <img alt="GitHub stars" src="https://img.shields.io/github/stars/ZGMFX01A/OrigRead-Desktop?style=flat" />
 </div>
 
@@ -143,6 +144,12 @@ Website、JSON/API 和 RSSHub 是原读自己的来源类型，因此只属于 L
 - DeepLX / DLX 兼容服务
 
 也可以把 OpenAI Compatible 模型作为全文翻译方式。阅读时可以切换原文、译文或双语内容，长文章会自动分段处理。
+
+## 把文章分享为 Markdown
+
+在文章阅读页点击 **分享**，原读会把完整的 Markdown 内容复制到系统剪贴板。第一次使用时，可以选择要包含的内容：文章标题、正文、当前阅读页已经打开的翻译，以及当前阅读页已经打开的 AI 摘要。之后短按分享会直接按已保存的选择复制；右键分享按钮可以随时修改。原文 URL 始终会保留。
+
+生成的 Markdown 会保留标题、引用、列表、链接和图片外链，图片会单独占一行，不会和正文文字挤在一起。历史上生成过的翻译或摘要，如果当前阅读页没有打开，就不会被分享。复制后可以直接粘贴到 Obsidian、Notion 或其他支持 Markdown 的笔记软件中。列表页的原有分享方式不变。
 
 ## AI 阅读辅助
 

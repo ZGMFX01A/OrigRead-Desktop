@@ -22,6 +22,11 @@ export interface DesktopSettings {
   ttsVoiceURI: string
   aiSummaryPlacement: AiSummaryPlacement
   aiSummaryPanelSize: number
+  readingShareConfigured: boolean
+  readingShareIncludeTitle: boolean
+  readingShareIncludeBody: boolean
+  readingShareIncludeTranslation: boolean
+  readingShareIncludeSummary: boolean
   syncIntervalMinutes: SyncIntervalMinutes
   syncOnStart: boolean
   autoCheckUpdates: boolean
@@ -43,6 +48,11 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   ttsVoiceURI: '',
   aiSummaryPlacement: 'replace',
   aiSummaryPanelSize: 360,
+  readingShareConfigured: false,
+  readingShareIncludeTitle: true,
+  readingShareIncludeBody: false,
+  readingShareIncludeTranslation: false,
+  readingShareIncludeSummary: false,
   syncIntervalMinutes: 30,
   syncOnStart: false,
   autoCheckUpdates: true
@@ -64,6 +74,11 @@ export function normalizeDesktopSettings(value: unknown): DesktopSettings {
     ttsVoiceURI: normalizeStringSetting(input.ttsVoiceURI, '', 2_000),
     aiSummaryPlacement: normalizeAiSummaryPlacement(input.aiSummaryPlacement),
     aiSummaryPanelSize: normalizeAiSummaryPanelSize(input.aiSummaryPanelSize),
+    readingShareConfigured: input.readingShareConfigured === true,
+    readingShareIncludeTitle: input.readingShareIncludeTitle === undefined ? true : input.readingShareIncludeTitle === true,
+    readingShareIncludeBody: input.readingShareIncludeBody === true,
+    readingShareIncludeTranslation: input.readingShareIncludeTranslation === true,
+    readingShareIncludeSummary: input.readingShareIncludeSummary === true,
     syncIntervalMinutes: normalizeSyncInterval(input.syncIntervalMinutes),
     syncOnStart: input.syncOnStart === true,
     autoCheckUpdates: input.autoCheckUpdates === undefined ? true : input.autoCheckUpdates === true
@@ -92,6 +107,26 @@ export function normalizeDesktopSettingsPatch(value: unknown): DesktopSettingsPa
   if ('ttsVoiceURI' in value) patch.ttsVoiceURI = normalizeStringSetting(value.ttsVoiceURI, '', 2_000)
   if ('aiSummaryPlacement' in value) patch.aiSummaryPlacement = normalizeAiSummaryPlacement(value.aiSummaryPlacement)
   if ('aiSummaryPanelSize' in value) patch.aiSummaryPanelSize = normalizeAiSummaryPanelSize(value.aiSummaryPanelSize)
+  if ('readingShareConfigured' in value) {
+    if (typeof value.readingShareConfigured !== 'boolean') throw new TypeError('readingShareConfigured must be a boolean')
+    patch.readingShareConfigured = value.readingShareConfigured
+  }
+  if ('readingShareIncludeTitle' in value) {
+    if (typeof value.readingShareIncludeTitle !== 'boolean') throw new TypeError('readingShareIncludeTitle must be a boolean')
+    patch.readingShareIncludeTitle = value.readingShareIncludeTitle
+  }
+  if ('readingShareIncludeBody' in value) {
+    if (typeof value.readingShareIncludeBody !== 'boolean') throw new TypeError('readingShareIncludeBody must be a boolean')
+    patch.readingShareIncludeBody = value.readingShareIncludeBody
+  }
+  if ('readingShareIncludeTranslation' in value) {
+    if (typeof value.readingShareIncludeTranslation !== 'boolean') throw new TypeError('readingShareIncludeTranslation must be a boolean')
+    patch.readingShareIncludeTranslation = value.readingShareIncludeTranslation
+  }
+  if ('readingShareIncludeSummary' in value) {
+    if (typeof value.readingShareIncludeSummary !== 'boolean') throw new TypeError('readingShareIncludeSummary must be a boolean')
+    patch.readingShareIncludeSummary = value.readingShareIncludeSummary
+  }
   if ('syncIntervalMinutes' in value) {
     if (!isSyncInterval(value.syncIntervalMinutes)) {
       throw new TypeError('syncIntervalMinutes must be a supported interval')

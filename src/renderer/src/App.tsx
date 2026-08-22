@@ -20,7 +20,9 @@ import {
   Pause,
   Play,
   RefreshCw,
+  Share2,
   Settings,
+  SquareArrowOutUpRight,
   SlidersHorizontal,
   Square,
   Trash2,
@@ -53,6 +55,12 @@ import type { UpdateCheckResult } from '../../shared/update'
 import { selectMainSpeechSource, speechTextFromHtml, speechTextFromMarkdown, useReaderSpeech } from './useReaderSpeech'
 import { readerToolFeedback, type ReaderToolFeedback } from './reader-tool-feedback'
 import { isOrigReadDesktopReleaseFeed, toOrigReadDesktopReleaseLinks } from '../../shared/origread-release'
+import { ReadingShareDialog, type ReadingShareDialogMode } from './ReadingShareDialog'
+import {
+  buildReadingShareMarkdown,
+  DEFAULT_READING_SHARE_PREFERENCE,
+  type ReadingSharePreference
+} from './reading-share'
 
 type Destination = 'all' | 'unread' | 'starred'
 type ReaderMode = 'article' | 'ai' | 'translation'
@@ -132,6 +140,8 @@ export default function App(): React.JSX.Element {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [aiOptionsOpen, setAiOptionsOpen] = useState(false)
   const [translationTargetOpen, setTranslationTargetOpen] = useState(false)
+  const [readingShareDialog, setReadingShareDialog] = useState<ReadingShareDialogMode | null>(null)
+  const [readingShareStatus, setReadingShareStatus] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
   const [readerSearchOpen, setReaderSearchOpen] = useState(false)
   const [readerSearchQuery, setReaderSearchQuery] = useState('')
   const [readerSearchCount, setReaderSearchCount] = useState(0)
@@ -494,6 +504,13 @@ export default function App(): React.JSX.Element {
     ? (librarySnapshot?.starred ?? scopedArticles.filter((article) => article.isStarred).length)
     : scopedArticles.filter((article) => article.isStarred).length
   const originalUrl = normalizeHttpUrl(selectedArticle?.url)
+  const readingSharePreference: ReadingSharePreference = {
+    configured: settings?.readingShareConfigured ?? DEFAULT_READING_SHARE_PREFERENCE.configured,
+    includeTitle: settings?.readingShareIncludeTitle ?? DEFAULT_READING_SHARE_PREFERENCE.includeTitle,
+    includeBody: settings?.readingShareIncludeBody ?? DEFAULT_READING_SHARE_PREFERENCE.includeBody,
+    includeTranslation: settings?.readingShareIncludeTranslation ?? DEFAULT_READING_SHARE_PREFERENCE.includeTranslation,
+    includeSummary: settings?.readingShareIncludeSummary ?? DEFAULT_READING_SHARE_PREFERENCE.includeSummary
+  }
   const origReadReleaseLinks = useMemo(
     () => toOrigReadDesktopReleaseLinks(selectedArticle?.url, appInfo?.platform, appInfo?.arch),
     [appInfo?.arch, appInfo?.platform, selectedArticle?.url]
@@ -676,6 +693,81 @@ export default function App(): React.JSX.Element {
     } catch (error) {
       setSettingsError(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  const showReadingShareStatus = (kind: 'success' | 'error', message: string): void => {
+    setReadingShareStatus({ kind, message })
+    window.setTimeout(() => setReadingShareStatus(null), 3_000)
+  }
+
+  const copyReadingMarkdown = async (preference: ReadingSharePreference): Promise<boolean> => {
+    if (!selectedArticle) return false
+
+    const markdown = buildReadingShareMarkdown({
+      title: selectedArticle.title,
+      sourceUrl: originalUrl,
+      bodyHtml: readerContent?.html || selectedArticle.description,
+      // 与 Android 一致：只有当前阅读模式正在显示的翻译才参与分享。
+      translatedHtml: readerMode === 'translation' ? translationDocument?.translatedContent ?? null : null,
+      translatedDisplayMode: readerMode === 'translation' ? translationDocument?.displayMode : undefined,
+      // 与 Android 一致：摘要面板关闭后，即使有历史生成结果也不参与分享。
+      summaryMarkdown: aiSummaryVisible && aiSummary?.status === 'GENERATED' ? aiSummary.summary : null,
+      sourceUrlLabel: t('readingShareSourceUrl'),
+      summaryLabel: t('readingShareSummaryLabel'),
+      preference
+    })
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(markdown)
+      } else {
+        const textarea = document.createElement('textarea')
+        textarea.value = markdown
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.appendChild(textarea)
+        textarea.select()
+        const copied = document.execCommand('copy')
+        textarea.remove()
+        if (!copied) throw new Error('clipboard unavailable')
+      }
+      showReadingShareStatus('success', t('readingShareCopied'))
+      return true
+    } catch {
+      showReadingShareStatus('error', t('readingShareCopyFailed'))
+      return false
+    }
+  }
+
+  const saveReadingSharePreference = async (preference: ReadingSharePreference, shareAfterSave = false): Promise<void> => {
+    try {
+      const next = await window.origread.updateSettings({
+        readingShareConfigured: true,
+        readingShareIncludeTitle: preference.includeTitle,
+        readingShareIncludeBody: preference.includeBody,
+        readingShareIncludeTranslation: preference.includeTranslation,
+        readingShareIncludeSummary: preference.includeSummary
+      })
+      setSettings(next)
+      setReadingShareDialog(null)
+      if (shareAfterSave) await copyReadingMarkdown(preference)
+    } catch (error) {
+      showReadingShareStatus('error', error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const handleReadingShareClick = (): void => {
+    if (!selectedArticle) return
+    if (!readingSharePreference.configured) {
+      setReadingShareDialog('first-use')
+      return
+    }
+    void copyReadingMarkdown(readingSharePreference)
+  }
+
+  const handleReadingShareContextMenu = (event: React.MouseEvent<HTMLButtonElement>): void => {
+    event.preventDefault()
+    if (selectedArticle) setReadingShareDialog('config')
   }
 
   const showSettings = async (page: SettingsPage = 'general'): Promise<void> => {
@@ -1539,11 +1631,24 @@ export default function App(): React.JSX.Element {
                 </button>
                 <button
                   type="button"
-                  className="original-button"
+                  className="icon-button original-button"
                   disabled={!originalUrl}
                   onClick={() => void showOriginalArticle()}
+                  title={t('original')}
+                  aria-label={t('original')}
                 >
-                  <ExternalLink size={17} /><span>{t('original')}</span>
+                  <SquareArrowOutUpRight size={17} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button reading-share-button"
+                  disabled={!selectedArticle}
+                  title={t('share')}
+                  aria-label={t('share')}
+                  onClick={handleReadingShareClick}
+                  onContextMenu={handleReadingShareContextMenu}
+                >
+                  <Share2 size={17} />
                 </button>
                 <button type="button" className="icon-button settings-button" aria-label={t('settings')} title={t('settings')} onClick={() => void showSettings()}>
                   <Settings size={17} />
@@ -1551,6 +1656,11 @@ export default function App(): React.JSX.Element {
               </>
             )}
           </div>
+          {readingShareStatus && (
+            <div className={`reading-share-status ${readingShareStatus.kind}`} role="status" aria-live="polite">
+              {readingShareStatus.message}
+            </div>
+          )}
         </header>
 
         <div className={`reader-stage ${originalViewState.open ? 'original-active' : ''}`} ref={readerStageRef}>
@@ -2001,6 +2111,20 @@ export default function App(): React.JSX.Element {
           onClose={()=>setAiOptionsOpen(false)}
           onOpenSettings={()=>{setAiOptionsOpen(false);void showSettings('ai')}}
           onGenerate={(options)=>{void generateAiSummary(true,options)}}
+        />
+      )}
+      {readingShareDialog && (
+        <ReadingShareDialog
+          mode={readingShareDialog}
+          preference={readingSharePreference}
+          onClose={() => setReadingShareDialog(null)}
+          onUseDefault={() => {
+            void saveReadingSharePreference({ ...DEFAULT_READING_SHARE_PREFERENCE, configured: true }, true)
+          }}
+          onCustomize={() => setReadingShareDialog('config')}
+          onSave={(preference) => {
+            void saveReadingSharePreference(preference)
+          }}
         />
       )}
       {translationTargetOpen && selectedArticle && (

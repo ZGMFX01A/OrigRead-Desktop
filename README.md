@@ -24,6 +24,7 @@
   <img alt="Electron" src="https://img.shields.io/badge/Electron-React-47848F?logo=electron&logoColor=white" />
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" /></a>
   <img alt="Latest release" src="https://img.shields.io/github/v/release/ZGMFX01A/OrigRead-Desktop?display_name=tag&sort=semver" />
+  <img alt="Total GitHub release downloads" src="https://img.shields.io/github/downloads/ZGMFX01A/OrigRead-Desktop/total?label=total%20downloads&logo=github" />
   <img alt="GitHub stars" src="https://img.shields.io/github/stars/ZGMFX01A/OrigRead-Desktop?style=flat" />
 </div>
 
@@ -143,6 +144,12 @@ You can use traditional translation providers without configuring an LLM:
 - DeepLX / DLX-compatible services
 
 OpenAI-compatible models can also be used for full-article translation. The reader can switch between original, translated or bilingual content, and long articles are processed in bounded chunks.
+
+## Share articles as Markdown
+
+On the article reading page, **Share** copies a complete Markdown version to the system clipboard. The first use asks what to include: title, article body, the translation currently open in the reader, and/or the AI summary currently open in the reader. A normal click uses the saved choices; right-click the Share button to change them later. The original article URL is always included.
+
+The Markdown keeps headings, quotes, lists, links and external image URLs readable. Images are placed on their own lines instead of being mixed into surrounding text. A cached translation or summary is not included unless it is currently open in the reader. Paste the result into Obsidian, Notion, or another Markdown-capable notes app. Sharing from the article list keeps its existing behavior.
 
 ## AI reading features
 
