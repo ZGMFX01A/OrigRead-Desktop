@@ -16,7 +16,6 @@
 <div align="center">
   RSS / Atom · RSSHub · Website parsing · JSON/API · Full-text reading · Translation · AI summaries · OPML
 </div>
-
 <div align="center">
   <img alt="Windows" src="https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows11&logoColor=white" />
   <img alt="macOS" src="https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&logoColor=white" />
@@ -24,9 +23,10 @@
   <img alt="Electron" src="https://img.shields.io/badge/Electron-React-47848F?logo=electron&logoColor=white" />
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" /></a>
   <img alt="Latest release" src="https://img.shields.io/github/v/release/ZGMFX01A/OrigRead-Desktop?display_name=tag&sort=semver" />
-  <img alt="Total GitHub release downloads" src="https://img.shields.io/github/downloads/ZGMFX01A/OrigRead-Desktop/total?label=total%20downloads&logo=github" />
+  <img alt="Total GitHub release downloads" src="https://img.shields.io/github/downloads/ZGMFX01A/OrigRead-Desktop/total?label=%20downloads&logo=github" />
   <img alt="GitHub stars" src="https://img.shields.io/github/stars/ZGMFX01A/OrigRead-Desktop?style=flat" />
 </div>
+
 
 ## What is OrigRead Desktop?
 
