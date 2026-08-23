@@ -6,14 +6,15 @@ import {
   ORIGREAD_DESKTOP_RELEASES_URL
 } from '../../shared/origread-release'
 
-export const CURRENT_SCHEMA_VERSION = 6
-export const DEFAULT_GROUP_ID = 'local-default'
+export const CURRENT_SCHEMA_VERSION = 7
 export const DEFAULT_LOCAL_ACCOUNT_ID = 1
 export const CURRENT_ACCOUNT_SETTING_KEY = 'account.current_id'
 
 export function defaultGroupId(accountId: number): string {
-  return `${accountId}$read_you_app_default_group`
+  return `${accountId}$origread_app_default_group`
 }
+
+export const DEFAULT_GROUP_ID = defaultGroupId(DEFAULT_LOCAL_ACCOUNT_ID)
 
 interface Migration {
   version: number
@@ -283,6 +284,31 @@ const migrations: Migration[] = [
         Date.now(),
         ORIGREAD_DESKTOP_RELEASE_FEED_URL
       )
+    }
+  },
+  {
+    version: 7,
+    up(database) {
+      const defaultGroups = database
+        .prepare('SELECT id, account_id, name, sort_order FROM groups WHERE is_default = 1')
+        .all() as Array<{ id: string; account_id: number | bigint; name: string; sort_order: number | bigint }>
+
+      const insertGroup = database.prepare(`
+        INSERT OR IGNORE INTO groups (id, account_id, name, sort_order, is_default)
+        VALUES (?, ?, ?, ?, 1)
+      `)
+      const moveFeeds = database.prepare('UPDATE feeds SET group_id = ? WHERE account_id = ? AND group_id = ?')
+      const deleteGroup = database.prepare('DELETE FROM groups WHERE account_id = ? AND id = ?')
+
+      for (const group of defaultGroups) {
+        const accountId = Number(group.account_id)
+        const targetId = defaultGroupId(accountId)
+        if (group.id === targetId) continue
+
+        insertGroup.run(targetId, accountId, group.name, Number(group.sort_order))
+        moveFeeds.run(targetId, accountId, group.id)
+        deleteGroup.run(accountId, group.id)
+      }
     }
   }
 ]

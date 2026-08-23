@@ -19,7 +19,7 @@ describe('GoogleReaderApi Android protocol parity', () => {
     expect(login.url).toBe('https://reader.example/accounts/ClientLogin')
     expect(login.method).toBe('POST')
     expect(Object.fromEntries(new URLSearchParams(login.body))).toEqual(Object.fromEntries(new URLSearchParams({
-      output:'json',Email:'alice',Passwd:'secret',client:'ReadYou',accountType:'HOSTED_OR_GOOGLE',service:'reader'
+      output:'json',Email:'alice',Passwd:'secret',client:'OrigRead',accountType:'HOSTED_OR_GOOGLE',service:'reader'
     })))
     expect(calls[1]?.headers.authorization).toBe('GoogleLogin auth=login-token')
     expect(calls[2]?.headers.authorization).toBe('GoogleLogin auth=login-token')

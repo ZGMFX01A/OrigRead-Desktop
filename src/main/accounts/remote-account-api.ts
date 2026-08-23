@@ -42,7 +42,7 @@ export class GoogleReaderApi {
 
   async authenticate():Promise<void>{
     const form=new URLSearchParams({
-      output:'json',Email:this.username,Passwd:this.password,client:'ReadYou',
+      output:'json',Email:this.username,Passwd:this.password,client:'OrigRead',
       accountType:'HOSTED_OR_GOOGLE',service:'reader'
     })
     const response=await this.fetcher(`${this.serverUrl}accounts/ClientLogin`,{

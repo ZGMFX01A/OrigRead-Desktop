@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
-import { applyMigrations, CURRENT_ACCOUNT_SETTING_KEY, CURRENT_SCHEMA_VERSION } from './migrations'
+import { applyMigrations, CURRENT_ACCOUNT_SETTING_KEY, CURRENT_SCHEMA_VERSION, DEFAULT_GROUP_ID } from './migrations'
 import { ORIGREAD_DESKTOP_RELEASE_FEED_URL } from '../../shared/origread-release'
 
 describe('database migration v2 -> current schema', () => {
@@ -37,7 +37,7 @@ describe('database migration v2 -> current schema', () => {
       WHERE f.url=? AND g.is_default=1
     `).get(ORIGREAD_DESKTOP_RELEASE_FEED_URL)).toEqual({
       account_id:1,
-      group_id:'local-default',
+      group_id:DEFAULT_GROUP_ID,
       name:'OrigRead Desktop Releases',
       url:ORIGREAD_DESKTOP_RELEASE_FEED_URL,
       source_page_url:'https://github.com/ZGMFX01A/OrigRead-Desktop/releases',
