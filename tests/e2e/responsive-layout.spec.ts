@@ -98,7 +98,7 @@ test('responsive layout hides Source adaptively without overwriting manual pane 
     await expect(page.locator('.source-pane')).toBeVisible()
     await expect(page.locator('.article-pane')).toHaveCount(0)
     await expectPaneSettings(page, { sourcePaneWidth: 300, articlePaneWidth: 480, sourcePaneCollapsed: false, articlePaneCollapsed: true })
-    await page.locator('.collapsed-pane-restore').click()
+    await page.locator('.pane-split-expand-article').click()
     await expect(page.locator('.article-pane')).toBeVisible()
 
     // 手动 Source collapse 也必须跨 adaptive 往返保留；窄屏统一恢复按钮显式点击才恢复并打开 overlay。

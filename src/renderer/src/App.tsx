@@ -1412,13 +1412,12 @@ export default function App(): React.JSX.Element {
   const effectiveSourcePaneCollapsed = focusReading || sourcePaneCollapsed || adaptiveSourceHidden
   const effectiveArticlePaneCollapsed = focusReading || articlePaneCollapsed
   const collapsedPaneCount = Number(effectiveSourcePaneCollapsed) + Number(effectiveArticlePaneCollapsed)
+  const showArticleBoundarySplit = !effectiveSourcePaneCollapsed && effectiveArticlePaneCollapsed
   const collapsedPaneRestoreLabel = focusReading
     ? t('exitFocusReading')
     : collapsedPaneCount > 1
       ? t('restoreCollapsedPanes')
-      : effectiveArticlePaneCollapsed
-        ? t('expandArticlePane')
-        : t('expandSourcePane')
+      : t('expandSourcePane')
   const readerStyle = {
     '--source-pane-track': effectiveSourcePaneCollapsed ? '0px' : `${settings?.sourcePaneWidth ?? 260}px`,
     '--source-divider-track': effectiveSourcePaneCollapsed ? '0px' : '5px',
@@ -1526,7 +1525,7 @@ export default function App(): React.JSX.Element {
         onResize={previewSourcePaneWidth}
         onResizeEnd={(width) => void updateDesktopSettings({ sourcePaneWidth: width })}
       >
-        {!effectiveSourcePaneCollapsed && (
+        {!effectiveSourcePaneCollapsed && !showArticleBoundarySplit && (
           <button
             className="collapse-handle"
             type="button"
@@ -1591,17 +1590,40 @@ export default function App(): React.JSX.Element {
         )}
       </PaneDivider>
 
-      {collapsedPaneCount > 0 && (
+      {showArticleBoundarySplit && (
+        <div className="pane-split-handle" data-pane-boundary="source-article">
+          <button
+            className="pane-split-action pane-split-collapse-source"
+            type="button"
+            aria-label={t('collapseSourcePane')}
+            title={t('collapseSourcePane')}
+            onClick={toggleSourcePane}
+          >
+            <ChevronLeft size={13} />
+          </button>
+          <button
+            className="pane-split-action pane-split-expand-article"
+            type="button"
+            aria-label={t('expandArticlePane')}
+            title={t('expandArticlePane')}
+            onClick={toggleArticlePane}
+          >
+            <ChevronRight size={13} />
+          </button>
+        </div>
+      )}
+
+      {effectiveSourcePaneCollapsed && (
         <button
-          className={`collapsed-pane-restore ${effectiveSourcePaneCollapsed ? 'restore-at-start' : 'restore-after-source'} ${collapsedPaneCount > 1 ? 'double' : ''}`}
+          className={`collapsed-pane-restore restore-at-start ${collapsedPaneCount > 1 ? 'double' : ''}`}
           type="button"
           data-hidden-count={collapsedPaneCount}
           aria-label={collapsedPaneRestoreLabel}
           title={collapsedPaneRestoreLabel}
           onClick={restoreCollapsedPaneLayer}
         >
-          <ChevronLeft size={15} />
-          {collapsedPaneCount > 1 && <ChevronLeft size={15} />}
+          <ChevronRight size={14} />
+          {collapsedPaneCount > 1 && <ChevronRight size={14} />}
         </button>
       )}
 

@@ -16,6 +16,9 @@ test('source and article panes collapse independently while focus reading stays 
     const sourceToggle = sourceDivider.locator('.collapse-handle')
     const articleToggle = articleDivider.locator('.collapse-handle')
     const restoreToggle = page.locator('.collapsed-pane-restore')
+    const splitHandle = page.locator('.pane-split-handle')
+    const splitCollapseSource = splitHandle.locator('.pane-split-collapse-source')
+    const splitExpandArticle = splitHandle.locator('.pane-split-expand-article')
 
     await expect(page.locator('.app-shell')).toBeVisible()
     await expectManualPaneState(page, false, false)
@@ -48,15 +51,23 @@ test('source and article panes collapse independently while focus reading stays 
     await expect(sourceDivider).toHaveAttribute('data-collapsed', 'false')
     await expect(articleDivider).toHaveAttribute('data-collapsed', 'true')
     await expectManualPaneState(page, false, true)
-    const sourceHandleBox = await sourceToggle.boundingBox()
-    const restoreHandleBox = await restoreToggle.boundingBox()
-    expect(sourceHandleBox).not.toBeNull()
-    expect(restoreHandleBox).not.toBeNull()
+    await expect(sourceToggle).toHaveCount(0)
     await expect(articleToggle).toHaveCount(0)
-    await expect(restoreToggle).toHaveAttribute('data-hidden-count', '1')
+    await expect(restoreToggle).toHaveCount(0)
+    await expect(splitHandle).toHaveCount(1)
+    await expect(splitCollapseSource).toHaveAttribute('aria-label', /收起来源栏|Collapse source pane/)
+    await expect(splitExpandArticle).toHaveAttribute('aria-label', /展开文章列表栏|Expand article pane/)
     expect(await articleDivider.evaluate((element) => element.getBoundingClientRect().width)).toBe(0)
-    // Source 仍可继续独立收起；Article 的恢复入口与它共用边界但不重叠，也不再占一列。
-    expect(sourceHandleBox!.x + sourceHandleBox!.width).toBeLessThanOrEqual(restoreHandleBox!.x + 0.5)
+    const splitBox = await splitHandle.boundingBox()
+    const splitCollapseBox = await splitCollapseSource.boundingBox()
+    const splitExpandBox = await splitExpandArticle.boundingBox()
+    expect(splitBox).not.toBeNull()
+    expect(splitCollapseBox).not.toBeNull()
+    expect(splitExpandBox).not.toBeNull()
+    expect(splitBox!.width).toBeCloseTo(26, 0)
+    expect(splitBox!.height).toBeCloseTo(54, 0)
+    // 两个动作共用一个胶囊，但点击区域上下完全分离，不再出现横向双白块。
+    expect(splitCollapseBox!.y + splitCollapseBox!.height).toBeLessThanOrEqual(splitExpandBox!.y + 0.5)
 
     // Focus 只做临时覆盖：进入时两个 Pane 都不可见，但手动状态仍是 Source 展开 / Article 收起。
     await page.locator('.focus-reading-button').click()
@@ -75,8 +86,8 @@ test('source and article panes collapse independently while focus reading stays 
     await expect(articlePane).toHaveCount(0)
     await expectManualPaneState(page, false, true)
 
-    // 恢复 Article 后，再分别收起两栏，形成组合 4；隐藏两栏时只保留一个“<<”恢复按钮。
-    await restoreToggle.click()
+    // Split Handle 下半区恢复 Article；之后再分别收起两栏形成组合 4。
+    await splitExpandArticle.click()
     await sourceToggle.click()
     await articleToggle.click()
     await expect(sourcePane).toHaveCount(0)
@@ -110,7 +121,7 @@ test('source and article panes collapse independently while focus reading stays 
     await expect(page.locator('.collapsed-pane-restore')).toHaveAttribute('data-hidden-count', '2')
     await expectManualPaneState(page, true, true)
 
-    // “<<”每次只恢复一层：先恢复更靠近 Reader 的 Article，再以“<”恢复 Source。
+    // 双 Chevron 每次只恢复一层：先恢复更靠近 Reader 的 Article，再以单 Chevron 恢复 Source。
     await page.locator('.collapsed-pane-restore').click()
     await expect(page.locator('.source-pane')).toHaveCount(0)
     await expect(page.locator('.article-pane')).toBeVisible()

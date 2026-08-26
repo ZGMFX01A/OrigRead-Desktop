@@ -523,46 +523,95 @@ button { color: inherit; }
 
 .collapse-handle:hover { color: #5648c3; border-color: #c8c4eb; background: white; }
 .focus-reading-button.active { background: var(--accent-soft); color: var(--accent-strong); }
-/* Article 折叠后恢复按钮与 Source Divider 共用同一边界；Source 收起入口略向栏内收，避免重叠。 */
-.app-shell.article-pane-collapsed:not(.source-pane-collapsed) .pane-divider-source .collapse-handle {
-  left: -22px;
+
+/*
+ * Source 展开而 Article 收起时，两个相反方向的动作共享同一条边界。
+ * 使用一个纵向双区 Split Handle：上半收 Source，下半恢复 Article，避免两个独立白块并排。
+ */
+.pane-split-handle {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--source-pane-track, 260px) + var(--source-divider-track, 5px));
+  z-index: 13;
+  width: 26px;
+  height: 54px;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
   transform: translate(-50%, -50%);
+  border: 1px solid color-mix(in srgb, var(--border) 86%, #c9c5dd);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: 0 6px 20px rgba(31, 32, 40, 0.10), inset 0 1px 0 rgba(255,255,255,.72);
+  backdrop-filter: blur(10px) saturate(1.04);
+}
+.pane-split-action {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #7f818b;
+  cursor: pointer;
+  transition: background 110ms ease, color 110ms ease;
+}
+.pane-split-action + .pane-split-action {
+  border-top: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+}
+.pane-split-action:hover {
+  background: color-mix(in srgb, var(--accent-soft) 82%, transparent);
+  color: var(--accent-strong);
+}
+.pane-split-action:active {
+  background: color-mix(in srgb, var(--accent-soft) 94%, transparent);
+}
+.pane-split-action:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid #aaa2ec;
+  outline-offset: -2px;
 }
 
 /*
- * 收起状态不再保留 30px rail。所有隐藏 Pane 共享一个浮在内容边界上的恢复按钮：
- * 隐藏一栏显示“<”，隐藏两栏显示“<<”，每次点击只恢复一层。
+ * 收起状态不再保留 30px rail。Source 隐藏时只留一个轻量边缘 Tab；
+ * 两栏全隐藏时在同一控件中显示双 Chevron，并按 Article -> Source 逐层恢复。
  */
 .collapsed-pane-restore {
   position: absolute;
   top: 50%;
   z-index: 12;
-  width: 28px;
-  height: 44px;
+  width: 22px;
+  height: 40px;
   padding: 0;
-  border: 1px solid #d5d5df;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 4px 14px rgba(36, 37, 42, 0.09);
-  color: #777983;
+  border: 1px solid color-mix(in srgb, var(--border) 88%, #cbc8da);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: 0 5px 16px rgba(31, 32, 40, 0.08), inset 0 1px 0 rgba(255,255,255,.72);
+  backdrop-filter: blur(10px) saturate(1.04);
+  color: #858791;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  opacity: .9;
+  transition: width 110ms ease, background 110ms ease, border-color 110ms ease, color 110ms ease, opacity 110ms ease;
 }
 .collapsed-pane-restore.restore-at-start {
   left: 0;
   transform: translateY(-50%);
   border-left: 0;
-  border-radius: 0 8px 8px 0;
+  border-radius: 0 9px 9px 0;
 }
-.collapsed-pane-restore.restore-after-source {
-  left: calc(var(--source-pane-track, 260px) + var(--source-divider-track, 5px));
-  transform: translate(-50%, -50%);
+.collapsed-pane-restore.double { width: 30px; }
+.collapsed-pane-restore.double svg + svg { margin-left: -8px; }
+.collapsed-pane-restore:hover {
+  opacity: 1;
+  color: var(--accent-strong);
+  border-color: #c8c4eb;
+  background: color-mix(in srgb, var(--surface) 96%, var(--accent-soft));
 }
-.collapsed-pane-restore.double { width: 34px; }
-.collapsed-pane-restore.double svg + svg { margin-left: -9px; }
-.collapsed-pane-restore:hover { color: #5648c3; border-color: #c8c4eb; background: #fff; }
 .collapsed-pane-restore:focus-visible { outline: 2px solid #aaa2ec; outline-offset: 2px; }
 
 .reader-pane { grid-column: 5; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: 56px minmax(0, 1fr); background: #f6f6f8; }
@@ -1596,6 +1645,14 @@ mark.reader-search-match.current { background: #ffc96b; outline: 2px solid #d9a2
 [data-theme='dark'] .pane-divider.collapsed { background: transparent; border-color: transparent; box-shadow: none; }
 [data-theme='dark'] .collapse-handle { border-color: #454852; background: rgba(32,34,40,.96); color: #a8abb5; }
 [data-theme='dark'] .collapse-handle:hover { border-color: #68628d; background: #292b33; color: #b9b1ff; }
+[data-theme='dark'] .pane-split-handle {
+  border-color: #454852;
+  background: rgba(37,39,46,.94);
+  box-shadow: 0 7px 22px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.035);
+}
+[data-theme='dark'] .pane-split-action { color: #a4a8b3; }
+[data-theme='dark'] .pane-split-action + .pane-split-action { border-color: #41444e; }
+[data-theme='dark'] .pane-split-action:hover { background: #302d4b; color: #c2bbff; }
 [data-theme='dark'] .collapsed-pane-restore { border-color: #454852; background: #25272e; color: #a8abb5; box-shadow: 0 4px 14px rgba(0,0,0,.24); }
 [data-theme='dark'] .collapsed-pane-restore:hover { border-color: #68628d; background: #292b33; color: #b9b1ff; }
 [data-theme='dark'] .reader-pane { background: #1b1d22; }
