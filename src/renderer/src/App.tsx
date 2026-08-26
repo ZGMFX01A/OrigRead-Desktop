@@ -771,6 +771,26 @@ export default function App(): React.JSX.Element {
     void updateDesktopSettings({ articlePaneCollapsed: true })
   }
 
+  /**
+   * 统一恢复按钮每次只恢复一层：Focus -> Article -> Source。
+   *
+   * 这样两栏都收起时只保留一个“<<”入口；点击一次恢复 Article 后变成“<”，
+   * 再点击恢复 Source。窄窗口下 Source 仍沿用原来的 overlay 语义，不改写响应式状态模型。
+   */
+  const restoreCollapsedPaneLayer = (): void => {
+    if (focusReading) {
+      setFocusReading(false)
+      return
+    }
+    if (articlePaneCollapsed) {
+      toggleArticlePane()
+      return
+    }
+    if (sourcePaneCollapsed || adaptiveSourceHidden) {
+      toggleSourcePane()
+    }
+  }
+
   const showReadingShareStatus = (kind: 'success' | 'error', message: string): void => {
     setReadingShareStatus({ kind, message })
     window.setTimeout(() => setReadingShareStatus(null), 3_000)
@@ -1391,12 +1411,20 @@ export default function App(): React.JSX.Element {
   const { adaptiveSourceHidden, compactLayout, articlePaneWidth: effectiveArticlePaneWidth } = responsiveLayout
   const effectiveSourcePaneCollapsed = focusReading || sourcePaneCollapsed || adaptiveSourceHidden
   const effectiveArticlePaneCollapsed = focusReading || articlePaneCollapsed
+  const collapsedPaneCount = Number(effectiveSourcePaneCollapsed) + Number(effectiveArticlePaneCollapsed)
+  const collapsedPaneRestoreLabel = focusReading
+    ? t('exitFocusReading')
+    : collapsedPaneCount > 1
+      ? t('restoreCollapsedPanes')
+      : effectiveArticlePaneCollapsed
+        ? t('expandArticlePane')
+        : t('expandSourcePane')
   const readerStyle = {
     '--source-pane-track': effectiveSourcePaneCollapsed ? '0px' : `${settings?.sourcePaneWidth ?? 260}px`,
-    '--source-divider-track': effectiveSourcePaneCollapsed ? '30px' : '5px',
+    '--source-divider-track': effectiveSourcePaneCollapsed ? '0px' : '5px',
     '--source-pane-overlay-width': `${settings?.sourcePaneWidth ?? 260}px`,
     '--article-pane-track': effectiveArticlePaneCollapsed ? '0px' : `${effectiveArticlePaneWidth}px`,
-    '--article-divider-track': effectiveArticlePaneCollapsed ? '30px' : '5px',
+    '--article-divider-track': effectiveArticlePaneCollapsed ? '0px' : '5px',
     '--reader-font-size': `${settings?.readerFontSize ?? 17}px`,
     '--reader-line-height': String(settings?.readerLineHeight ?? 1.85),
     '--reader-content-width': `${settings?.readerContentWidth ?? 760}px`,
@@ -1498,15 +1526,17 @@ export default function App(): React.JSX.Element {
         onResize={previewSourcePaneWidth}
         onResizeEnd={(width) => void updateDesktopSettings({ sourcePaneWidth: width })}
       >
-        <button
-          className="collapse-handle"
-          type="button"
-          aria-label={effectiveSourcePaneCollapsed ? t('expandSourcePane') : t('collapseSourcePane')}
-          title={effectiveSourcePaneCollapsed ? t('expandSourcePane') : t('collapseSourcePane')}
-          onClick={toggleSourcePane}
-        >
-          {effectiveSourcePaneCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
-        </button>
+        {!effectiveSourcePaneCollapsed && (
+          <button
+            className="collapse-handle"
+            type="button"
+            aria-label={t('collapseSourcePane')}
+            title={t('collapseSourcePane')}
+            onClick={toggleSourcePane}
+          >
+            <ChevronLeft size={15} />
+          </button>
+        )}
       </PaneDivider>
 
       {!effectiveArticlePaneCollapsed && (
@@ -1548,16 +1578,32 @@ export default function App(): React.JSX.Element {
         onResize={previewArticlePaneWidth}
         onResizeEnd={(width) => void updateDesktopSettings({ articlePaneWidth: width })}
       >
-        <button
-          className="collapse-handle"
-          type="button"
-          aria-label={effectiveArticlePaneCollapsed ? t('expandArticlePane') : t('collapseArticlePane')}
-          title={effectiveArticlePaneCollapsed ? t('expandArticlePane') : t('collapseArticlePane')}
-          onClick={toggleArticlePane}
-        >
-          {effectiveArticlePaneCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
-        </button>
+        {!effectiveArticlePaneCollapsed && (
+          <button
+            className="collapse-handle"
+            type="button"
+            aria-label={t('collapseArticlePane')}
+            title={t('collapseArticlePane')}
+            onClick={toggleArticlePane}
+          >
+            <ChevronLeft size={15} />
+          </button>
+        )}
       </PaneDivider>
+
+      {collapsedPaneCount > 0 && (
+        <button
+          className={`collapsed-pane-restore ${effectiveSourcePaneCollapsed ? 'restore-at-start' : 'restore-after-source'} ${collapsedPaneCount > 1 ? 'double' : ''}`}
+          type="button"
+          data-hidden-count={collapsedPaneCount}
+          aria-label={collapsedPaneRestoreLabel}
+          title={collapsedPaneRestoreLabel}
+          onClick={restoreCollapsedPaneLayer}
+        >
+          <ChevronLeft size={15} />
+          {collapsedPaneCount > 1 && <ChevronLeft size={15} />}
+        </button>
+      )}
 
       <section className="reader-pane">
         <header className="reader-toolbar">

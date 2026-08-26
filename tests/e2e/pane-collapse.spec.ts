@@ -15,6 +15,7 @@ test('source and article panes collapse independently while focus reading stays 
     const articleDivider = page.locator('.pane-divider-article')
     const sourceToggle = sourceDivider.locator('.collapse-handle')
     const articleToggle = articleDivider.locator('.collapse-handle')
+    const restoreToggle = page.locator('.collapsed-pane-restore')
 
     await expect(page.locator('.app-shell')).toBeVisible()
     await expectManualPaneState(page, false, false)
@@ -28,11 +29,16 @@ test('source and article panes collapse independently while focus reading stays 
     await expect(sourceDivider).toHaveAttribute('data-collapsed', 'true')
     await expect(articleDivider).toHaveAttribute('data-collapsed', 'false')
     await expectManualPaneState(page, true, false)
+    await expect(sourceToggle).toHaveCount(0)
+    await expect(restoreToggle).toHaveCount(1)
+    await expect(restoreToggle).toHaveAttribute('data-hidden-count', '1')
+    expect(await sourceDivider.evaluate((element) => element.getBoundingClientRect().width)).toBe(0)
 
-    // Source rail 可以独立恢复，不影响 Article。
-    await sourceToggle.click()
+    // 单一恢复按钮恢复 Source，不额外保留一条 collapsed rail。
+    await restoreToggle.click()
     await expect(sourcePane).toBeVisible()
     await expect(articlePane).toBeVisible()
+    await expect(restoreToggle).toHaveCount(0)
     await expectManualPaneState(page, false, false)
 
     // 组合 1 -> 组合 3：只收 Article。
@@ -43,11 +49,14 @@ test('source and article panes collapse independently while focus reading stays 
     await expect(articleDivider).toHaveAttribute('data-collapsed', 'true')
     await expectManualPaneState(page, false, true)
     const sourceHandleBox = await sourceToggle.boundingBox()
-    const articleHandleBox = await articleToggle.boundingBox()
+    const restoreHandleBox = await restoreToggle.boundingBox()
     expect(sourceHandleBox).not.toBeNull()
-    expect(articleHandleBox).not.toBeNull()
-    // Source 收起与 Article 恢复是两个独立入口；相邻 Divider 下按钮不能再像 UI-3P.10 后用户截图那样互相覆盖。
-    expect(sourceHandleBox!.x + sourceHandleBox!.width).toBeLessThanOrEqual(articleHandleBox!.x + 0.5)
+    expect(restoreHandleBox).not.toBeNull()
+    await expect(articleToggle).toHaveCount(0)
+    await expect(restoreToggle).toHaveAttribute('data-hidden-count', '1')
+    expect(await articleDivider.evaluate((element) => element.getBoundingClientRect().width)).toBe(0)
+    // Source 仍可继续独立收起；Article 的恢复入口与它共用边界但不重叠，也不再占一列。
+    expect(sourceHandleBox!.x + sourceHandleBox!.width).toBeLessThanOrEqual(restoreHandleBox!.x + 0.5)
 
     // Focus 只做临时覆盖：进入时两个 Pane 都不可见，但手动状态仍是 Source 展开 / Article 收起。
     await page.locator('.focus-reading-button').click()
@@ -57,6 +66,7 @@ test('source and article panes collapse independently while focus reading stays 
     await expect(sourceDivider).toHaveAttribute('data-collapsed', 'true')
     await expect(articleDivider).toHaveAttribute('data-collapsed', 'true')
     await expectManualPaneState(page, false, true)
+    await expect(restoreToggle).toHaveAttribute('data-hidden-count', '2')
 
     // 退出 Focus 必须恢复进入前的手动组合，而不是强制恢复双展开。
     await page.locator('.focus-reading-button').click()
@@ -65,44 +75,48 @@ test('source and article panes collapse independently while focus reading stays 
     await expect(articlePane).toHaveCount(0)
     await expectManualPaneState(page, false, true)
 
-    // 恢复 Article 后，再分别收起两栏，形成组合 4；两个 restore rail 必须同时存在。
-    await articleToggle.click()
+    // 恢复 Article 后，再分别收起两栏，形成组合 4；隐藏两栏时只保留一个“<<”恢复按钮。
+    await restoreToggle.click()
     await sourceToggle.click()
     await articleToggle.click()
     await expect(sourcePane).toHaveCount(0)
     await expect(articlePane).toHaveCount(0)
     await expect(sourceDivider).toHaveAttribute('data-collapsed', 'true')
     await expect(articleDivider).toHaveAttribute('data-collapsed', 'true')
-    await expect(sourceToggle).toBeVisible()
-    await expect(articleToggle).toBeVisible()
+    await expect(sourceToggle).toHaveCount(0)
+    await expect(articleToggle).toHaveCount(0)
+    await expect(restoreToggle).toHaveCount(1)
+    await expect(restoreToggle).toHaveAttribute('data-hidden-count', '2')
+    await expect(restoreToggle.locator('svg')).toHaveCount(2)
     await expectManualPaneState(page, true, true)
     const readerBox = await page.locator('.reader-pane').boundingBox()
     const viewportWidth = await page.evaluate(() => window.innerWidth)
     expect(readerBox).not.toBeNull()
-    expect(readerBox!.width).toBeGreaterThan(viewportWidth * 0.9)
+    expect(readerBox!.width).toBeGreaterThan(viewportWidth * 0.98)
 
     await page.emulateMedia({ colorScheme: 'dark' })
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
-    const darkRailBackground = await sourceDivider.evaluate((element) => getComputedStyle(element).backgroundColor)
-    expect(darkRailBackground).not.toBe('rgb(247, 247, 250)')
-    expect(darkRailBackground).not.toBe('rgb(255, 255, 255)')
+    const darkRestoreBackground = await restoreToggle.evaluate((element) => getComputedStyle(element).backgroundColor)
+    expect(darkRestoreBackground).not.toBe('rgb(255, 255, 255)')
     await page.emulateMedia({ colorScheme: 'light' })
 
-    // 手动折叠必须持久化；reload 后仍是双收起，两个恢复入口都保留。
+    // 手动折叠必须持久化；reload 后仍是双收起，但只有一个统一恢复入口。
     await page.reload()
     await expect(page.locator('.app-shell')).toBeVisible()
     await expect(page.locator('.source-pane')).toHaveCount(0)
     await expect(page.locator('.article-pane')).toHaveCount(0)
-    await expect(page.locator('.pane-divider-source .collapse-handle')).toBeVisible()
-    await expect(page.locator('.pane-divider-article .collapse-handle')).toBeVisible()
+    await expect(page.locator('.pane-divider-source .collapse-handle')).toHaveCount(0)
+    await expect(page.locator('.pane-divider-article .collapse-handle')).toHaveCount(0)
+    await expect(page.locator('.collapsed-pane-restore')).toHaveAttribute('data-hidden-count', '2')
     await expectManualPaneState(page, true, true)
 
-    // 两个 restore rail 互不串扰。
-    await page.locator('.pane-divider-source .collapse-handle').click()
-    await expect(page.locator('.source-pane')).toBeVisible()
-    await expect(page.locator('.article-pane')).toHaveCount(0)
-    await expectManualPaneState(page, false, true)
-    await page.locator('.pane-divider-article .collapse-handle').click()
+    // “<<”每次只恢复一层：先恢复更靠近 Reader 的 Article，再以“<”恢复 Source。
+    await page.locator('.collapsed-pane-restore').click()
+    await expect(page.locator('.source-pane')).toHaveCount(0)
+    await expect(page.locator('.article-pane')).toBeVisible()
+    await expect(page.locator('.collapsed-pane-restore')).toHaveAttribute('data-hidden-count', '1')
+    await expectManualPaneState(page, true, false)
+    await page.locator('.collapsed-pane-restore').click()
     await expect(page.locator('.source-pane')).toBeVisible()
     await expect(page.locator('.article-pane')).toBeVisible()
     await expectManualPaneState(page, false, false)
@@ -119,9 +133,10 @@ test('source and article panes collapse independently while focus reading stays 
     await expect(page.locator('.article-pane')).toBeVisible()
     await expectManualPaneState(page, false, false)
 
-    // Focus 中点击某个 restore rail 必须安全退出 Focus；当前手动组合仍按其真实偏好恢复。
+    // Focus 中统一“<<”恢复按钮先退出 Focus；手动偏好仍保持原值。
     await page.keyboard.press('[')
-    await page.locator('.pane-divider-source .collapse-handle').click()
+    await expect(page.locator('.collapsed-pane-restore')).toHaveAttribute('data-hidden-count', '2')
+    await page.locator('.collapsed-pane-restore').click()
     await expect(page.locator('.app-shell')).not.toHaveClass(/focus-reading/)
     await expect(page.locator('.source-pane')).toBeVisible()
     await expect(page.locator('.article-pane')).toBeVisible()

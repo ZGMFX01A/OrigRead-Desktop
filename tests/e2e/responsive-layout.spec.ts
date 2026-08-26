@@ -46,8 +46,8 @@ test('responsive layout hides Source adaptively without overwriting manual pane 
     expect((await requiredBox(page.locator('.reader-pane'))).width).toBeGreaterThan(550)
     await expectPaneSettings(page, { sourcePaneWidth: 300, articlePaneWidth: 480, sourcePaneCollapsed: false, articlePaneCollapsed: false })
 
-    // Adaptive Source 通过明确 overlay 临时打开；焦点进入可见关闭按钮，Escape 可关闭。
-    await page.locator('.pane-divider-source .collapse-handle').click()
+    // Adaptive Source 通过统一恢复按钮临时打开；焦点进入可见关闭按钮，Escape 可关闭。
+    await page.locator('.collapsed-pane-restore').click()
     await expect(page.locator('.adaptive-source-overlay')).toBeVisible()
     await expect(page.locator('.adaptive-source-overlay .source-pane')).toBeVisible()
     await expect(page.locator('.adaptive-source-overlay-close')).toBeFocused()
@@ -57,7 +57,7 @@ test('responsive layout hides Source adaptively without overwriting manual pane 
     await expect(page.locator('.adaptive-source-overlay .subscription-menu')).toBeVisible()
     await page.locator('.adaptive-source-overlay-close').click()
     await expect(page.locator('.adaptive-source-overlay')).toHaveCount(0)
-    await page.locator('.pane-divider-source .collapse-handle').click()
+    await page.locator('.collapsed-pane-restore').click()
     await expect(page.locator('.adaptive-source-overlay')).toBeVisible()
     await expect(page.locator('.adaptive-source-overlay .subscription-menu')).toHaveCount(0)
     await page.keyboard.press('Escape')
@@ -98,15 +98,15 @@ test('responsive layout hides Source adaptively without overwriting manual pane 
     await expect(page.locator('.source-pane')).toBeVisible()
     await expect(page.locator('.article-pane')).toHaveCount(0)
     await expectPaneSettings(page, { sourcePaneWidth: 300, articlePaneWidth: 480, sourcePaneCollapsed: false, articlePaneCollapsed: true })
-    await page.locator('.pane-divider-article .collapse-handle').click()
+    await page.locator('.collapsed-pane-restore').click()
     await expect(page.locator('.article-pane')).toBeVisible()
 
-    // 手动 Source collapse 也必须跨 adaptive 往返保留；窄屏 rail 显式点击才恢复并打开 overlay。
+    // 手动 Source collapse 也必须跨 adaptive 往返保留；窄屏统一恢复按钮显式点击才恢复并打开 overlay。
     await page.locator('.pane-divider-source .collapse-handle').click()
     await expectPaneSettings(page, { sourcePaneWidth: 300, articlePaneWidth: 480, sourcePaneCollapsed: true, articlePaneCollapsed: false })
     await resizeContent(testApp.app, page, 1100, 760)
     await expect(page.locator('.source-pane')).toHaveCount(0)
-    await page.locator('.pane-divider-source .collapse-handle').click()
+    await page.locator('.collapsed-pane-restore').click()
     await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).sourcePaneCollapsed)).toBe(false)
     await expect(page.locator('.adaptive-source-overlay')).toBeVisible()
     await page.locator('.adaptive-source-overlay-close').click()

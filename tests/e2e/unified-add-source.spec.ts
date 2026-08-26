@@ -269,9 +269,11 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await expect.poll(originalViewMatchesReaderStage).toBe(true)
     await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
 
-    // 先恢复手动组合，再验证 Focus 仅临时隐藏两栏且不写入手动偏好。
-    await page.locator('.pane-divider-source .collapse-handle').click()
-    await page.locator('.pane-divider-article .collapse-handle').click()
+    // 两栏全收起后只保留统一“<<”入口；逐层恢复后再验证 Focus 不写入手动偏好。
+    await expect(page.locator('.collapsed-pane-restore')).toHaveAttribute('data-hidden-count', '2')
+    await page.locator('.collapsed-pane-restore').click()
+    await expect(page.locator('.collapsed-pane-restore')).toHaveAttribute('data-hidden-count', '1')
+    await page.locator('.collapsed-pane-restore').click()
     await expect.poll(async () => page.evaluate(async () => {
       const current = await window.origread.getSettings()
       return [current.sourcePaneCollapsed, current.articlePaneCollapsed]
