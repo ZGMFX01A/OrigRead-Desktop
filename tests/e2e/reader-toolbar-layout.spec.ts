@@ -37,12 +37,14 @@ test('reader toolbar responds to Reader pane width and keeps Settings visible', 
     await page.locator('.settings-close-button').click()
     await expect(page.locator('.reader-title')).toHaveCount(0)
 
-    // Reader >1000px 时恢复完整文字和完整 Voice selector；判断依据仍是 Reader 自身而非 window breakpoint。
+    // Reader 再宽也只保留图标；文字仅通过 title / aria-label 提示，避免双栏宽屏重新撑满工具栏。
     await page.setViewportSize({ width: 1800, height: 900 })
     expect((await requiredBox(readerPane)).width).toBeGreaterThan(1000)
-    await expect(aiLabel).not.toHaveCSS('display', 'none')
-    await expect(voiceSelect).toHaveCSS('opacity', '1')
-    expect((await requiredBox(voiceControl)).width).toBeGreaterThan(60)
+    await expect(aiLabel).toHaveCSS('display', 'none')
+    await expect(page.locator('.ai-summary-button')).toHaveAttribute('title', /AI 摘要|AI Summary/)
+    await expect(page.locator('.translation-button')).toHaveAttribute('title', /翻译|Translation/)
+    await expect(voiceSelect).toHaveCSS('opacity', '0')
+    expect((await requiredBox(voiceControl)).width).toBeLessThanOrEqual(36)
     await expectInside(settingsButton, readerToolbar)
 
     // 切双栏并压到最小支持窗口：<650px 的 Reader 只把低频操作收入 More，Settings 仍固定可见。

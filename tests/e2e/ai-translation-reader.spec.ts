@@ -94,8 +94,16 @@ test('reader generates AI summary and full-article translation through main-proc
     await page.keyboard.up('Shift')
     await expect.poll(async () => (await page.evaluate(() => window.origread.getSettings())).aiSummaryPlacement).toBe('replace')
 
+    // 真实深色模式下摘要选项弹窗不能重新出现白色 select / 白色摘要长度卡片。
+    await page.locator('.settings-button').click()
+    await page.locator('.theme-select').selectOption('dark')
+    await page.locator('.settings-close-button').click()
+    await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
     await page.locator('.reader-tool-options').first().click()
     await expect(page.locator('.reader-tool-dialog')).toBeVisible()
+    await expectDarkSurface(page.locator('.reader-tool-dialog'))
+    await expectDarkSurface(page.locator('.reader-tool-dialog .dialog-field select').first())
+    await expectDarkSurface(page.locator('.summary-mode-option').first())
     await page.locator('.summary-mode-option').filter({hasText:'深入'}).click()
     await page.locator('.reader-tool-dialog .dialog-submit').click()
     await expect(page.locator('.reader-tool-dialog')).toBeHidden({ timeout: 1_000 })
@@ -356,6 +364,13 @@ async function readBody(request: IncomingMessage): Promise<string> {
   let body = ''
   for await (const chunk of request) body += chunk.toString()
   return body
+}
+
+async function expectDarkSurface(locator: import('@playwright/test').Locator): Promise<void> {
+  const rgb = await locator.evaluate((element) => getComputedStyle(element).backgroundColor)
+  const channels = rgb.match(/\d+(?:\.\d+)?/g)?.slice(0, 3).map(Number) ?? []
+  expect(channels).toHaveLength(3)
+  expect(Math.max(...channels)).toBeLessThan(100)
 }
 
 function json(response: ServerResponse, value: unknown): void {

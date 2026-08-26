@@ -1,4 +1,4 @@
-import { ChevronRight, Inbox, Plus, RefreshCw, Rss, Search, SearchX, Star, X } from 'lucide-react'
+import { ChevronDown, Inbox, Plus, RefreshCw, Rss, Search, SearchX, Star, X } from 'lucide-react'
 import type { RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ArticleRecord, FeedRecord } from '../../shared/library'
@@ -82,28 +82,36 @@ export function ArticleListPane({
   return (
     <section className="article-pane" aria-label={t(destinationLabelKey)} aria-busy={refreshing}>
       <header className="article-scope-bar">
-        <div className="article-scope-current">
-          {activeScopeFeed ? <FeedIcon feed={activeScopeFeed} /> : <div className="scope-icon"><Rss size={15}/></div>}
-          <div className="article-scope-copy">
-            <span>{t(destinationLabelKey)}</span>
-            <strong>{scopeLabel}</strong>
+        {onChooseSourceScope ? (
+          <button
+            ref={sourcePickerTriggerRef}
+            type="button"
+            className={`article-scope-current two-pane-source-picker-button ${sourcePickerOpen ? 'active' : ''}`}
+            aria-haspopup="dialog"
+            aria-expanded={sourcePickerOpen}
+            aria-label={`${t('chooseSourceScope')}: ${scopeLabel}`}
+            title={t('chooseSourceScope')}
+            onClick={onChooseSourceScope}
+          >
+            {activeScopeFeed ? <FeedIcon feed={activeScopeFeed} /> : <div className="scope-icon"><Rss size={15}/></div>}
+            <div className="article-scope-copy">
+              <span>{t(destinationLabelKey)}</span>
+              <strong>{scopeLabel}</strong>
+            </div>
+            <ChevronDown className="two-pane-source-picker-chevron" size={14}/>
+          </button>
+        ) : (
+          <div className="article-scope-current">
+            {activeScopeFeed ? <FeedIcon feed={activeScopeFeed} /> : <div className="scope-icon"><Rss size={15}/></div>}
+            <div className="article-scope-copy">
+              <span>{t(destinationLabelKey)}</span>
+              <strong>{scopeLabel}</strong>
+            </div>
           </div>
-        </div>
+        )}
         <div className="article-scope-actions">
           {articleScope.kind !== 'all' && (
             <button type="button" className="icon-button" title={t('clearSourceFilter')} aria-label={t('clearSourceFilter')} onClick={onClearScope}><X size={14}/></button>
-          )}
-          {onChooseSourceScope && (
-            <button
-              ref={sourcePickerTriggerRef}
-              type="button"
-              className={`two-pane-source-picker-button ${sourcePickerOpen ? 'active' : ''}`}
-              aria-haspopup="dialog"
-              aria-expanded={sourcePickerOpen}
-              onClick={onChooseSourceScope}
-            >
-              <Rss size={14}/><span>{t('chooseSourceScope')}</span><ChevronRight size={13}/>
-            </button>
           )}
         </div>
         <div className="article-scope-stats" aria-label={t('readingScope')}>

@@ -94,7 +94,7 @@ export default function App(): React.JSX.Element {
   const [focusReading, setFocusReading] = useState(false)
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const [adaptiveSourceOverlayOpen, setAdaptiveSourceOverlayOpen] = useState(false)
-  // 双栏旧式“文章 / 来源”视图切换仅属于当前会话；DL-3 会把该入口升级为 Overlay。
+  // 双栏 Source Picker Overlay 只属于当前会话；Article Workspace 始终保留在底层，不写入持久化设置。
   const [twoPaneSourcePickerOpen, setTwoPaneSourcePickerOpen] = useState(false)
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [librarySnapshot, setLibrarySnapshot] = useState<LibrarySnapshot | null>(null)
@@ -1839,13 +1839,13 @@ export default function App(): React.JSX.Element {
               </button>
             ) : originalViewState.open ? (
               <>
-                <button type="button" className="icon-button" disabled={!originalViewState.canGoBack} aria-label={t('back')} onClick={() => void navigateOriginalArticle('back')}>
+                <button type="button" className="icon-button" disabled={!originalViewState.canGoBack} aria-label={t('back')} title={t('back')} onClick={() => void navigateOriginalArticle('back')}>
                   <ArrowLeft size={17} />
                 </button>
-                <button type="button" className="icon-button" disabled={!originalViewState.canGoForward} aria-label={t('forward')} onClick={() => void navigateOriginalArticle('forward')}>
+                <button type="button" className="icon-button" disabled={!originalViewState.canGoForward} aria-label={t('forward')} title={t('forward')} onClick={() => void navigateOriginalArticle('forward')}>
                   <ArrowRight size={17} />
                 </button>
-                <button type="button" className="icon-button" aria-label={t('refresh')} onClick={() => void navigateOriginalArticle('reload')}>
+                <button type="button" className="icon-button" aria-label={t('refresh')} title={t('refresh')} onClick={() => void navigateOriginalArticle('reload')}>
                   <RefreshCw size={16} className={originalViewState.loading ? 'spinning' : ''} />
                 </button>
                 <button type="button" disabled={!originalViewState.url} aria-label={t('externalBrowser')} title={t('externalBrowser')} onClick={() => originalViewState.url && void openExternal(originalViewState.url)}>
@@ -1861,6 +1861,8 @@ export default function App(): React.JSX.Element {
                   type="button"
                   className={`ai-summary-button ${(readerMode === 'ai' || aiSummaryDocked) && aiSummaryVisible ? 'active' : ''}`}
                   disabled={!selectedArticle || readerToolLoading !== null}
+                  title={t('aiSummary')}
+                  aria-label={t('aiSummary')}
                   onClick={toggleAiSummaryDisplay}
                 >
                   <AiSummaryAccentIcon variant="toolbar" loading={readerToolLoading === 'ai'} />
@@ -1871,6 +1873,8 @@ export default function App(): React.JSX.Element {
                   type="button"
                   className={`translation-button ${readerMode === 'translation' ? 'active' : ''}`}
                   disabled={!selectedArticle || readerToolLoading !== null}
+                  title={t('translation')}
+                  aria-label={t('translation')}
                   onClick={() => readerMode === 'translation' ? setReaderMode('article') : translationDocument ? setReaderMode('translation') : void translateSelectedArticle()}
                 >
                   {readerToolLoading === 'translation' ? <RefreshCw size={17} className="spinning" /> : <Languages size={17} />}
@@ -1913,6 +1917,8 @@ export default function App(): React.JSX.Element {
                     type="button"
                     className={`full-content-button reader-secondary-action ${readerContent?.mode === 'full' ? 'active' : ''}`}
                     disabled={!selectedArticle || !originalUrl || readerContentLoading}
+                    title={readerContent?.mode === 'full' ? t('feedContent') : t('fullContent')}
+                    aria-label={readerContent?.mode === 'full' ? t('feedContent') : t('fullContent')}
                     onClick={() => {setReaderMoreOpen(false);void toggleFullContent()}}
                   >
                     <BookOpenText size={17} /><span>{readerContent?.mode === 'full' ? t('feedContent') : t('fullContent')}</span>
