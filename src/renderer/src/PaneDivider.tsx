@@ -6,6 +6,7 @@ interface PaneDividerProps {
   minWidth: number
   maxWidth: number
   resizable?: boolean
+  collapsed?: boolean
   children?: ReactNode
   onResize: (width: number) => void
   onResizeEnd: (width: number) => void
@@ -30,6 +31,7 @@ export function PaneDivider({
   minWidth,
   maxWidth,
   resizable = true,
+  collapsed = false,
   children,
   onResize,
   onResizeEnd
@@ -57,8 +59,9 @@ export function PaneDivider({
 
   return (
     <div
-      className={`pane-divider pane-divider-${kind} ${dragging ? 'dragging' : ''} ${resizable ? 'resizable' : ''}`}
+      className={`pane-divider pane-divider-${kind} ${dragging ? 'dragging' : ''} ${resizable ? 'resizable' : ''} ${collapsed ? 'collapsed' : ''}`}
       data-pane={kind}
+      data-collapsed={collapsed ? 'true' : 'false'}
       role={resizable ? 'separator' : undefined}
       aria-orientation={resizable ? 'vertical' : undefined}
       aria-valuemin={resizable ? minWidth : undefined}

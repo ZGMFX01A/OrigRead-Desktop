@@ -7,6 +7,8 @@ import {
   ChevronDown,
   Compass,
   Download,
+  Maximize2,
+  Minimize2,
   Languages,
   Plus,
   Sparkles,
@@ -82,7 +84,7 @@ const AI_SUMMARY_PANEL_KEYBOARD_STEP = 20
 export default function App(): React.JSX.Element {
   const { t, i18n } = useTranslation()
   const [destination, setDestination] = useState<Destination>('all')
-  const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false)
+  const [focusReading, setFocusReading] = useState(false)
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [librarySnapshot, setLibrarySnapshot] = useState<LibrarySnapshot | null>(null)
   const [feeds, setFeeds] = useState<FeedRecord[]>([])
@@ -217,8 +219,6 @@ export default function App(): React.JSX.Element {
       setSyncRuntimeState(loadedSyncState)
       setOriginalViewState(loadedOriginalState)
       lastObservedSyncFinish.current = loadedSyncState.lastFinishedAt
-      // 旧 workspaceCollapsed 只保留兼容读取；旧双栏 UI 在三栏切换完成前仍以当前会话展开状态启动。
-      setWorkspaceCollapsed(false)
       const language = loadedSettings.language === 'system'
         ? resolveDesktopLanguage(info.locale)
         : loadedSettings.language
@@ -373,7 +373,7 @@ export default function App(): React.JSX.Element {
       observer.disconnect()
       window.removeEventListener('resize', updateBounds)
     }
-  }, [originalViewState.open, workspaceCollapsed])
+  }, [originalViewState.open])
 
   useEffect(() => {
     let cancelled = false
@@ -574,11 +574,13 @@ export default function App(): React.JSX.Element {
     if (next !== current) void updateDesktopSettings({ aiSummaryPanelSize: next })
   }
 
-  const toggleWorkspace = (): void => {
-    const next = !workspaceCollapsed
-    setWorkspaceCollapsed(next)
-    setSettings((current) => current ? { ...current, workspaceCollapsed: next } : current)
-  }
+  /**
+   * Focus Reading 只临时覆盖 Pane 可见性，不写入持久化折叠偏好。
+   * 退出后自然恢复进入 Focus 前的 Source / Article 手动组合。
+   */
+  const toggleFocusReading = useCallback((): void => {
+    setFocusReading((current) => !current)
+  }, [])
 
   const generateAiSummary = async (forceRefresh = false, options?: AiSummaryRequestOptions): Promise<void> => {
     if (!selectedArticleId || readerToolLoading) return
@@ -648,8 +650,8 @@ export default function App(): React.JSX.Element {
     const [nextSettings, nextSync] = await Promise.all([window.origread.getSettings(), window.origread.getSyncRuntimeState()])
     setSettings(nextSettings)
     setSyncRuntimeState(nextSync)
-    // 恢复旧备份时不再改写 workspaceCollapsed；新 Pane 折叠字段由 Settings normalize/restore 独立处理。
-    setWorkspaceCollapsed(false)
+    // 配置恢复后的持久化 Pane 状态应立即可见；临时 Focus 不应遮住恢复结果。
+    setFocusReading(false)
     const language = nextSettings.language === 'system' ? resolveDesktopLanguage(appInfo?.locale ?? navigator.language) : nextSettings.language
     await i18n.changeLanguage(language)
     await reloadLibrary()
@@ -690,6 +692,30 @@ export default function App(): React.JSX.Element {
   /** Article Divider 拖动时只更新 Renderer 快照，避免 pointermove 高频 Settings IPC。 */
   const previewArticlePaneWidth = (width: number): void => {
     setSettings((current) => current ? { ...current, articlePaneWidth: width } : current)
+  }
+
+  /** Source Pane 的手动折叠状态持久化；从 Focus restore 时先退出 Focus。 */
+  const toggleSourcePane = (): void => {
+    const manuallyCollapsed = settings?.sourcePaneCollapsed ?? false
+    const effectivelyCollapsed = focusReading || manuallyCollapsed
+    if (effectivelyCollapsed) {
+      setFocusReading(false)
+      if (manuallyCollapsed) void updateDesktopSettings({ sourcePaneCollapsed: false })
+      return
+    }
+    void updateDesktopSettings({ sourcePaneCollapsed: true })
+  }
+
+  /** Article Pane 的手动折叠状态持久化；与 Source Pane 完全独立。 */
+  const toggleArticlePane = (): void => {
+    const manuallyCollapsed = settings?.articlePaneCollapsed ?? false
+    const effectivelyCollapsed = focusReading || manuallyCollapsed
+    if (effectivelyCollapsed) {
+      setFocusReading(false)
+      if (manuallyCollapsed) void updateDesktopSettings({ articlePaneCollapsed: false })
+      return
+    }
+    void updateDesktopSettings({ articlePaneCollapsed: true })
   }
 
   const showReadingShareStatus = (kind: 'success' | 'error', message: string): void => {
@@ -963,6 +989,7 @@ export default function App(): React.JSX.Element {
       const key = event.key.toLowerCase()
       const target = event.target instanceof HTMLElement ? event.target : null
       const interactiveTarget = Boolean(target?.closest('input, textarea, select, button, a, [contenteditable="true"]'))
+      const typingTarget = Boolean(target?.closest('input, textarea, select, [contenteditable="true"]'))
 
       if ((event.ctrlKey || event.metaKey) && event.shiftKey && key === 'f' && !globalSearchOpen && !settingsOpen && !sourceCatalogOpen && !originalViewState.open && !document.querySelector('[role="dialog"]')) {
         if (interactiveTarget) return
@@ -985,13 +1012,13 @@ export default function App(): React.JSX.Element {
         setReaderSearchIndex(0)
         return
       }
-      if (interactiveTarget || event.ctrlKey || event.metaKey || event.altKey || settingsOpen || sourceCatalogOpen || subscriptionMenuOpen || document.querySelector('[role="dialog"]')) return
-
-      if (key === '[') {
+      // Focus Reading 是全局布局快捷键；按钮/链接持焦点时仍可触发，只在真实输入控件中避让。
+      if (key === '[' && !typingTarget && !event.ctrlKey && !event.metaKey && !event.altKey && !settingsOpen && !sourceCatalogOpen && !subscriptionMenuOpen && !document.querySelector('[role="dialog"]')) {
         event.preventDefault()
-        toggleWorkspace()
+        toggleFocusReading()
         return
       }
+      if (interactiveTarget || event.ctrlKey || event.metaKey || event.altKey || settingsOpen || sourceCatalogOpen || subscriptionMenuOpen || document.querySelector('[role="dialog"]')) return
       if (originalViewState.open) {
         if (key === 'u' && selectedArticle) {
           event.preventDefault()
@@ -1055,7 +1082,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settingsOpen, sourceCatalogOpen, subscriptionMenuOpen, visibleArticles, workspaceCollapsed])
+  }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settingsOpen, sourceCatalogOpen, subscriptionMenuOpen, toggleFocusReading, visibleArticles])
 
   const openAddSource = (): void => {
     setSubscriptionMenuOpen(false)
@@ -1297,9 +1324,15 @@ export default function App(): React.JSX.Element {
     settings?.readerBackgroundCustom ?? '#eef7ee'
   )
   const readerColors = resolveReaderColors(readerBackground)
+  const sourcePaneCollapsed = settings?.sourcePaneCollapsed ?? false
+  const articlePaneCollapsed = settings?.articlePaneCollapsed ?? false
+  const effectiveSourcePaneCollapsed = focusReading || sourcePaneCollapsed
+  const effectiveArticlePaneCollapsed = focusReading || articlePaneCollapsed
   const readerStyle = {
-    '--source-pane-width': `${settings?.sourcePaneWidth ?? 260}px`,
-    '--article-pane-width': `${settings?.articlePaneWidth ?? 380}px`,
+    '--source-pane-track': effectiveSourcePaneCollapsed ? '0px' : `${settings?.sourcePaneWidth ?? 260}px`,
+    '--source-divider-track': effectiveSourcePaneCollapsed ? '30px' : '5px',
+    '--article-pane-track': effectiveArticlePaneCollapsed ? '0px' : `${settings?.articlePaneWidth ?? 380}px`,
+    '--article-divider-track': effectiveArticlePaneCollapsed ? '30px' : '5px',
     '--reader-font-size': `${settings?.readerFontSize ?? 17}px`,
     '--reader-line-height': String(settings?.readerLineHeight ?? 1.85),
     '--reader-content-width': `${settings?.readerContentWidth ?? 760}px`,
@@ -1336,9 +1369,8 @@ export default function App(): React.JSX.Element {
   ) : null
 
   return (
-    <main className={`app-shell ${workspaceCollapsed ? 'workspace-collapsed' : ''}`} style={readerStyle}>
-      {!workspaceCollapsed && (
-        <>
+    <main className={`app-shell ${focusReading ? 'focus-reading' : ''}`} style={readerStyle}>
+      {!effectiveSourcePaneCollapsed && (
           <SourceSidebar
             destination={destination}
             articleScope={articleScope}
@@ -1373,14 +1405,30 @@ export default function App(): React.JSX.Element {
             onImportOpml={() => void importOpml()}
             onOpenOpmlExport={() => { setSubscriptionMenuOpen(false); setOpmlExportOpen(true) }}
           />
-          <PaneDivider
-            kind="source"
-            width={settings?.sourcePaneWidth ?? 260}
-            minWidth={SOURCE_PANE_WIDTH_MIN}
-            maxWidth={SOURCE_PANE_WIDTH_MAX}
-            onResize={previewSourcePaneWidth}
-            onResizeEnd={(width) => void updateDesktopSettings({ sourcePaneWidth: width })}
-          />
+      )}
+
+      <PaneDivider
+        kind="source"
+        width={settings?.sourcePaneWidth ?? 260}
+        minWidth={SOURCE_PANE_WIDTH_MIN}
+        maxWidth={SOURCE_PANE_WIDTH_MAX}
+        resizable={!effectiveSourcePaneCollapsed}
+        collapsed={effectiveSourcePaneCollapsed}
+        onResize={previewSourcePaneWidth}
+        onResizeEnd={(width) => void updateDesktopSettings({ sourcePaneWidth: width })}
+      >
+        <button
+          className="collapse-handle"
+          type="button"
+          aria-label={effectiveSourcePaneCollapsed ? t('expandSourcePane') : t('collapseSourcePane')}
+          title={effectiveSourcePaneCollapsed ? t('expandSourcePane') : t('collapseSourcePane')}
+          onClick={toggleSourcePane}
+        >
+          {effectiveSourcePaneCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
+        </button>
+      </PaneDivider>
+
+      {!effectiveArticlePaneCollapsed && (
           <ArticleListPane
             destination={destination}
             articleScope={articleScope}
@@ -1404,7 +1452,6 @@ export default function App(): React.JSX.Element {
             onArticleContextMenu={(article, x, y) => setContextMenu({ kind: 'article', x, y, articleId: article.id })}
             onAddSource={openAddSource}
           />
-        </>
       )}
 
       <PaneDivider
@@ -1412,18 +1459,19 @@ export default function App(): React.JSX.Element {
         width={settings?.articlePaneWidth ?? 380}
         minWidth={ARTICLE_PANE_WIDTH_MIN}
         maxWidth={ARTICLE_PANE_WIDTH_MAX}
-        resizable={!workspaceCollapsed}
+        resizable={!effectiveArticlePaneCollapsed}
+        collapsed={effectiveArticlePaneCollapsed}
         onResize={previewArticlePaneWidth}
         onResizeEnd={(width) => void updateDesktopSettings({ articlePaneWidth: width })}
       >
         <button
           className="collapse-handle"
           type="button"
-          aria-label={workspaceCollapsed ? t('expandWorkspace') : t('collapseWorkspace')}
-          title={workspaceCollapsed ? t('expandWorkspace') : t('collapseWorkspace')}
-          onClick={toggleWorkspace}
+          aria-label={effectiveArticlePaneCollapsed ? t('expandArticlePane') : t('collapseArticlePane')}
+          title={effectiveArticlePaneCollapsed ? t('expandArticlePane') : t('collapseArticlePane')}
+          onClick={toggleArticlePane}
         >
-          {workspaceCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
+          {effectiveArticlePaneCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
         </button>
       </PaneDivider>
 
@@ -1433,6 +1481,17 @@ export default function App(): React.JSX.Element {
             {settingsOpen ? t('settings') : sourceCatalogOpen ? t('sourceDiscoveryTitle') : originalViewState.open ? (originalViewState.title || t('original')) : t('reader')}
           </div>
           <div className="reader-actions">
+            {!settingsOpen && !sourceCatalogOpen && (
+              <button
+                type="button"
+                className={`icon-button focus-reading-button ${focusReading ? 'active' : ''}`}
+                aria-label={focusReading ? t('exitFocusReading') : t('focusReading')}
+                title={`${focusReading ? t('exitFocusReading') : t('focusReading')} ([)`}
+                onClick={toggleFocusReading}
+              >
+                {focusReading ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+              </button>
+            )}
             {settingsOpen ? (
               <button type="button" className="settings-close-button" onClick={() => setSettingsOpen(false)}>
                 <X size={17} /><span>{t('closeSettings')}</span>

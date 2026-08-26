@@ -15,9 +15,6 @@ test('website subscription persists discovered articles without a second source 
   try {
     const page = await testApp.app.firstWindow()
     await expect(page.locator('.app-shell')).toBeVisible()
-    if (await page.locator('.app-shell').evaluate((element) => element.classList.contains('workspace-collapsed'))) {
-      await page.locator('.collapse-handle').click()
-    }
 
     await page.locator('.subscription-menu-anchor .primary-action').click()
     await page.getByRole('menuitem', { name: '添加来源' }).click()
@@ -68,9 +65,6 @@ test('website article full content renders its external HTTP image in the reader
   try {
     const page = await testApp.app.firstWindow()
     await expect(page.locator('.app-shell')).toBeVisible()
-    if (await page.locator('.app-shell').evaluate((element) => element.classList.contains('workspace-collapsed'))) {
-      await page.locator('.collapse-handle').click()
-    }
 
     await page.locator('.subscription-menu-anchor .primary-action').click()
     await page.getByRole('menuitem', { name: '添加来源' }).click()

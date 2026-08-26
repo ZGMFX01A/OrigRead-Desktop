@@ -17,12 +17,6 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     const page = await electronApp.firstWindow()
     await expect(page.locator('.app-shell')).toBeVisible()
 
-    if (await page.locator('.app-shell').evaluate((element) => element.classList.contains('workspace-collapsed'))) {
-      await page.locator('.collapse-handle').click()
-      await expect(page.locator('.source-pane')).toBeVisible()
-      await expect(page.locator('.article-pane')).toBeVisible()
-    }
-
     await page.locator('.subscription-menu-anchor .primary-action').click()
     await page.getByRole('menuitem', { name: '添加来源' }).click()
     await expect(page.locator('.source-dialog')).toBeVisible()
@@ -173,9 +167,13 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await expect.poll(() => selectedStar.evaluate((element) => element.classList.contains('active'))).toBe(initiallyStarred)
 
     await page.keyboard.press('[')
-    await expect(page.locator('.app-shell')).toHaveClass(/workspace-collapsed/)
+    await expect(page.locator('.app-shell')).toHaveClass(/focus-reading/)
+    await expect(page.locator('.source-pane')).toHaveCount(0)
+    await expect(page.locator('.article-pane')).toHaveCount(0)
     await page.keyboard.press('[')
-    await expect(page.locator('.app-shell')).not.toHaveClass(/workspace-collapsed/)
+    await expect(page.locator('.app-shell')).not.toHaveClass(/focus-reading/)
+    await expect(page.locator('.source-pane')).toBeVisible()
+    await expect(page.locator('.article-pane')).toBeVisible()
 
     await article.click()
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
@@ -238,6 +236,57 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
       )
     }).toBe(true)
     await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
+
+    // UI-3P.7：独立 collapse / Focus 同样必须让原文 child WebContentsView 跟随 Reader stage，而不是残留旧 bounds。
+    const originalViewMatchesReaderStage = async (): Promise<boolean> => {
+      const stage = await page.locator('.reader-stage').boundingBox()
+      const viewBounds = await electronApp.evaluate(({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0]
+        const child = window?.contentView.children.at(-1)
+        return child?.getBounds() ?? null
+      })
+      if (!stage || !viewBounds) return false
+      return (
+        Math.abs(viewBounds.x - Math.round(stage.x)) <= 1 &&
+        Math.abs(viewBounds.y - Math.round(stage.y)) <= 1 &&
+        Math.abs(viewBounds.width - Math.round(stage.width)) <= 1 &&
+        Math.abs(viewBounds.height - Math.round(stage.height)) <= 1
+      )
+    }
+
+    await page.locator('.pane-divider-source .collapse-handle').click()
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).sourcePaneCollapsed)).toBe(true)
+    await expect.poll(originalViewMatchesReaderStage).toBe(true)
+    await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
+
+    await page.locator('.pane-divider-article .collapse-handle').click()
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).articlePaneCollapsed)).toBe(true)
+    await expect.poll(originalViewMatchesReaderStage).toBe(true)
+    await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
+
+    // 先恢复手动组合，再验证 Focus 仅临时隐藏两栏且不写入手动偏好。
+    await page.locator('.pane-divider-source .collapse-handle').click()
+    await page.locator('.pane-divider-article .collapse-handle').click()
+    await expect.poll(async () => page.evaluate(async () => {
+      const current = await window.origread.getSettings()
+      return [current.sourcePaneCollapsed, current.articlePaneCollapsed]
+    })).toEqual([false, false])
+    await expect.poll(originalViewMatchesReaderStage).toBe(true)
+
+    await page.locator('.focus-reading-button').click()
+    await expect(page.locator('.app-shell')).toHaveClass(/focus-reading/)
+    await expect.poll(originalViewMatchesReaderStage).toBe(true)
+    await expect.poll(async () => page.evaluate(async () => {
+      const current = await window.origread.getSettings()
+      return [current.sourcePaneCollapsed, current.articlePaneCollapsed]
+    })).toEqual([false, false])
+    await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
+
+    await page.locator('.focus-reading-button').click()
+    await expect(page.locator('.app-shell')).not.toHaveClass(/focus-reading/)
+    await expect(page.locator('.source-pane')).toBeVisible()
+    await expect(page.locator('.article-pane')).toBeVisible()
+    await expect.poll(originalViewMatchesReaderStage).toBe(true)
 
     await expect(page.locator('.reader-mode-button')).toBeVisible()
     await page.locator('.reader-mode-button').click()

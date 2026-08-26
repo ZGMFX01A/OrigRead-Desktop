@@ -730,8 +730,12 @@ const resources = {
         UNKNOWN: '全文提取失败'
       },
       openExternalFailed: '打开外部链接失败',
-      collapseWorkspace: '收起工作区',
-      expandWorkspace: '展开工作区',
+      collapseSourcePane: '收起来源栏',
+      expandSourcePane: '展开来源栏',
+      collapseArticlePane: '收起文章列表栏',
+      expandArticlePane: '展开文章列表栏',
+      focusReading: '聚焦阅读',
+      exitFocusReading: '退出聚焦阅读',
     }
   },
   en: {
@@ -1461,8 +1465,12 @@ const resources = {
         UNKNOWN: 'Full-text extraction failed'
       },
       openExternalFailed: 'Failed to open external link',
-      collapseWorkspace: 'Collapse workspace',
-      expandWorkspace: 'Expand workspace',
+      collapseSourcePane: 'Collapse source pane',
+      expandSourcePane: 'Expand source pane',
+      collapseArticlePane: 'Collapse article pane',
+      expandArticlePane: 'Expand article pane',
+      focusReading: 'Focus reading',
+      exitFocusReading: 'Exit focus reading',
     }
   }
 } as const

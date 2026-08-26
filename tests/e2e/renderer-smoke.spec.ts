@@ -13,10 +13,11 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
 
     await expect(page.locator('.app-shell')).toBeVisible()
 
-    await expect(page.locator('.app-shell')).not.toHaveClass(/workspace-collapsed/)
     await expect(page.locator('.source-pane')).toBeVisible()
     await expect(page.locator('.article-pane')).toBeVisible()
     await expect(page.locator('.reader-pane')).toBeVisible()
+    await expect(page.locator('.pane-divider-source')).toHaveAttribute('data-collapsed', 'false')
+    await expect(page.locator('.pane-divider-article')).toHaveAttribute('data-collapsed', 'false')
 
     await expect(page.locator('.brand-name')).toBeVisible()
     await expect(page.locator('.source-destination-nav')).toBeVisible()
@@ -65,34 +66,15 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     expect(expandedReaderBox!.x).toBeGreaterThanOrEqual(articleDividerBox!.x + articleDividerBox!.width)
     expect(expandedReaderBox!.width).toBeGreaterThan(400)
 
-    await page.locator('.collapse-handle').click()
-    await expect(page.locator('.app-shell')).toHaveClass(/workspace-collapsed/)
-    await expect(page.locator('.collapse-handle')).toBeVisible()
-    const collapsedHandleBox = await page.locator('.collapse-handle').boundingBox()
-    expect(collapsedHandleBox).not.toBeNull()
-    expect(collapsedHandleBox!.x).toBeGreaterThanOrEqual(0)
-    expect(collapsedHandleBox!.width).toBeGreaterThanOrEqual(28)
-
-    const collapsedReaderBox = await page.locator('.reader-pane').boundingBox()
-    const viewportWidth = await page.evaluate(() => window.innerWidth)
-    expect(collapsedReaderBox).not.toBeNull()
-    expect(collapsedReaderBox!.width).toBeGreaterThan(viewportWidth * 0.9)
-
-    // 折叠只影响当前会话，不应持久化为下次启动时隐藏文章列表。
-    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).workspaceCollapsed)).toBe(false)
-
-    await page.locator('.collapse-handle').click()
-    await expect(page.locator('.source-pane')).toBeVisible()
-    await expect(page.locator('.article-pane')).toBeVisible()
-
+    // legacy workspaceCollapsed 仍允许旧配置被读取，但 UI-3P.7 起不能再驱动三栏布局。
     await page.evaluate(async () => {
       await window.origread.updateSettings({ workspaceCollapsed: true })
       window.location.reload()
     })
     await expect(page.locator('.source-pane')).toBeVisible()
     await expect(page.locator('.article-pane')).toBeVisible()
-    await expect(page.locator('.app-shell')).not.toHaveClass(/workspace-collapsed/)
-    // UI-3P.1 起旧 workspaceCollapsed 只做兼容读取：旧双栏暂时仍会话级展开，但不再篡改持久化旧字段。
+    await expect(page.locator('.pane-divider-source')).toHaveAttribute('data-collapsed', 'false')
+    await expect(page.locator('.pane-divider-article')).toHaveAttribute('data-collapsed', 'false')
     await expect.poll(async () => page.evaluate(async () => {
       const current = await window.origread.getSettings()
       return {
