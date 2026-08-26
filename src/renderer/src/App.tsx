@@ -98,10 +98,12 @@ export default function App(): React.JSX.Element {
   const [feedArticleStats, setFeedArticleStats] = useState<FeedArticleStats[]>([])
   const [settings, setSettings] = useState<DesktopSettings | null>(null)
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)
-  const [query, setQuery] = useState('')
+  const [sourceQuery, setSourceQuery] = useState('')
+  const [articleQuery, setArticleQuery] = useState('')
   const [articleScope, setArticleScope] = useState<ArticleScope>({ kind: 'all' })
   const [sourcePickerOpen, setSourcePickerOpen] = useState(false)
   const [selectedArticleId, setSelectedArticleId] = useState<string | null>(null)
+  const [selectedArticleRecord, setSelectedArticleRecord] = useState<ArticleRecord | null>(null)
   const [addSourceOpen, setAddSourceOpen] = useState(false)
   const [sourceUrl, setSourceUrl] = useState('')
   const [sourceError, setSourceError] = useState<string | null>(null)
@@ -264,6 +266,11 @@ export default function App(): React.JSX.Element {
   }, [])
 
   const resolvedTheme = settings?.theme === 'dark' ? 'dark' : settings?.theme === 'light' ? 'light' : systemDark ? 'dark' : 'light'
+  // Reader 选择必须独立于左侧 Article Scope。当前列表暂时找不到文章时也保留 Reader 自己的文章快照。
+  const selectedArticle = selectedArticleRecord?.id === selectedArticleId ? selectedArticleRecord : null
+  const selectedFeed = selectedArticle ? feeds.find((feed) => feed.id === selectedArticle.feedId) ?? null : null
+  const selectedArticleFeedId = selectedArticle?.feedId ?? null
+  const selectedFeedRequiresFullContent = selectedFeed?.sourceType === 'website' || selectedFeed?.isFullContent === true
   useEffect(() => {
     document.documentElement.dataset.theme = resolvedTheme
     document.documentElement.style.colorScheme = resolvedTheme
@@ -272,6 +279,17 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     selectedArticleIdRef.current = selectedArticleId
   }, [selectedArticleId])
+
+  useEffect(() => {
+    if (!selectedArticleId) {
+      setSelectedArticleRecord(null)
+      return
+    }
+    // 同步/刷新能找到当前文章时更新 Reader 快照；当前 scope 找不到时绝不清空 Reader。
+    const refreshed = scopeArticles?.find((article) => article.id === selectedArticleId)
+      ?? articles.find((article) => article.id === selectedArticleId)
+    if (refreshed) setSelectedArticleRecord(refreshed)
+  }, [articles, scopeArticles, selectedArticleId])
 
   useEffect(() => {
     const unsubscribeSync = window.origread.onSyncRuntimeStateChanged((state) => {
@@ -383,10 +401,7 @@ export default function App(): React.JSX.Element {
     void window.origread.getReaderContent(selectedArticleId)
       .then(async (content) => {
         if (cancelled) return
-        const article = scopeArticles?.find((item) => item.id === selectedArticleId)
-          ?? articles.find((item) => item.id === selectedArticleId)
-        const feed = article ? feeds.find((item) => item.id === article.feedId) : null
-        if ((feed?.sourceType === 'website' || feed?.isFullContent) && content.mode !== 'full') {
+        if (selectedFeedRequiresFullContent && content.mode !== 'full') {
           const result = await window.origread.fetchFullContent(selectedArticleId)
           if (cancelled) return
           if (result.ok && result.content) {
@@ -407,7 +422,7 @@ export default function App(): React.JSX.Element {
       })
 
     return () => { cancelled = true }
-  }, [articles, feeds, scopeArticles, selectedArticleId, t])
+  }, [selectedArticleFeedId, selectedArticleId, selectedFeedRequiresFullContent, t])
 
   useEffect(() => {
     setReaderSearchOpen(false)
@@ -446,21 +461,21 @@ export default function App(): React.JSX.Element {
     [destination, t]
   )
 
-  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const normalizedArticleQuery = articleQuery.trim().toLocaleLowerCase()
+  const normalizedSourceQuery = sourceQuery.trim().toLocaleLowerCase()
   const scopedArticles = articleScope.kind === 'all' ? articles : (scopeArticles ?? [])
   const visibleArticles = useMemo(() => {
     return scopedArticles.filter((article) => {
       if (destination === 'unread' && !article.isUnread) return false
       if (destination === 'starred' && !article.isStarred) return false
-      if (!normalizedQuery) return true
-      return `${article.title} ${article.author ?? ''}`.toLocaleLowerCase().includes(normalizedQuery)
+      if (!normalizedArticleQuery) return true
+      return `${article.title} ${article.author ?? ''}`.toLocaleLowerCase().includes(normalizedArticleQuery)
     })
-  }, [destination, normalizedQuery, scopedArticles])
+  }, [destination, normalizedArticleQuery, scopedArticles])
   const visibleFeeds = useMemo(() => {
-    if (!sourcePickerOpen) return feeds
-    if (!normalizedQuery) return feeds
-    return feeds.filter((feed) => `${feed.name} ${feed.url}`.toLocaleLowerCase().includes(normalizedQuery))
-  }, [feeds, normalizedQuery, sourcePickerOpen])
+    if (!normalizedSourceQuery) return feeds
+    return feeds.filter((feed) => `${feed.name} ${feed.url}`.toLocaleLowerCase().includes(normalizedSourceQuery))
+  }, [feeds, normalizedSourceQuery])
   const groupedVisibleFeeds = useMemo(() => {
     const sortedGroups = groups.slice().sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
     const knownIds = new Set(sortedGroups.map((group) => group.id))
@@ -487,10 +502,6 @@ export default function App(): React.JSX.Element {
         starred: summary.starred + stats.starred
       }
     }, { feedId: '__aggregate__', total: 0, unread: 0, starred: 0 })
-  const selectedArticle = scopedArticles.find((article) => article.id === selectedArticleId)
-    ?? articles.find((article) => article.id === selectedArticleId)
-    ?? null
-  const selectedFeed = selectedArticle ? feeds.find((feed) => feed.id === selectedArticle.feedId) ?? null : null
   const activeScopeFeed = articleScope.kind === 'feed' ? feeds.find((feed) => feed.id === articleScope.id) ?? null : null
   const activeScopeGroup = articleScope.kind === 'group' ? groups.find((group) => group.id === articleScope.id) ?? null : null
   const scopeLabel = activeScopeFeed?.name ?? activeScopeGroup?.name ?? t('allSources')
@@ -841,6 +852,7 @@ export default function App(): React.JSX.Element {
   }
 
   const selectArticle = (article: ArticleRecord): void => {
+    const readerArticle = article.isUnread ? { ...article, isUnread: false } : article
     if (article.isUnread) {
       setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isUnread: false } : item))
       setScopeArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isUnread: false } : item) ?? current)
@@ -858,6 +870,7 @@ export default function App(): React.JSX.Element {
     }
     if (settingsOpen) setSettingsOpen(false)
     if (originalViewState.open) void closeOriginalArticle()
+    setSelectedArticleRecord(readerArticle)
     setSelectedArticleId(article.id)
   }
 
@@ -903,6 +916,7 @@ export default function App(): React.JSX.Element {
     const next = !article.isStarred
     setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isStarred: next } : item))
     setScopeArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isStarred: next } : item) ?? current)
+    setSelectedArticleRecord((current) => current?.id === article.id ? { ...current, isStarred: next } : current)
     setFeedArticleStats((current) => current.map((stats) => stats.feedId === article.feedId
       ? { ...stats, starred: Math.max(0, stats.starred + (next ? 1 : -1)) }
       : stats))
@@ -917,6 +931,7 @@ export default function App(): React.JSX.Element {
     const next = !article.isUnread
     setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isUnread: next } : item))
     setScopeArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isUnread: next } : item) ?? current)
+    setSelectedArticleRecord((current) => current?.id === article.id ? { ...current, isUnread: next } : current)
     setFeedArticleStats((current) => current.map((stats) => stats.feedId === article.feedId
       ? { ...stats, unread: Math.max(0, stats.unread + (next ? 1 : -1)) }
       : stats))
@@ -1226,8 +1241,7 @@ export default function App(): React.JSX.Element {
     const scope: ArticleScope = { kind: 'feed', id: feed.id }
     setArticleScope(scope)
     setSourcePickerOpen(false)
-    setSelectedArticleId(null)
-    setQuery('')
+    setArticleQuery('')
     if (isOrigReadDesktopReleaseFeed(feed.url) && feedStats(feed.id).total === 0) {
       void refreshFeed(feed, scope)
     }
@@ -1367,8 +1381,7 @@ export default function App(): React.JSX.Element {
                 type="button"
                 className={`destination-tab ${destination === id ? 'active' : ''}`}
                 onClick={() => {
-                  setSelectedArticleId(null)
-                  setQuery('')
+                  setArticleQuery('')
                   setDestination(id)
                   setSourcePickerOpen(false)
                 }}
@@ -1391,9 +1404,9 @@ export default function App(): React.JSX.Element {
             </div>
             <div className="article-scope-actions">
               {articleScope.kind !== 'all' && (
-                <button type="button" className="icon-button" title={t('clearSourceFilter')} aria-label={t('clearSourceFilter')} onClick={()=>{setArticleScope({kind:'all'});setSelectedArticleId(null)}}><X size={14}/></button>
+                <button type="button" className="icon-button" title={t('clearSourceFilter')} aria-label={t('clearSourceFilter')} onClick={()=>{setArticleScope({kind:'all'});setArticleQuery('')}}><X size={14}/></button>
               )}
-              <button type="button" className={`scope-picker-button ${sourcePickerOpen?'active':''}`} aria-expanded={sourcePickerOpen} onClick={()=>{setSourcePickerOpen((open)=>!open);setSelectedArticleId(null);setQuery('')}}>
+              <button type="button" className={`scope-picker-button ${sourcePickerOpen?'active':''}`} aria-expanded={sourcePickerOpen} onClick={()=>setSourcePickerOpen((open)=>!open)}>
                 <Rss size={14}/><span>{sourcePickerOpen?t('backToArticles'):t('chooseSourceScope')}</span><ChevronDown size={13}/>
               </button>
             </div>
@@ -1403,8 +1416,8 @@ export default function App(): React.JSX.Element {
             <div className="search-field">
               <Search size={16} />
               <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                value={sourcePickerOpen ? sourceQuery : articleQuery}
+                onChange={(event) => sourcePickerOpen ? setSourceQuery(event.target.value) : setArticleQuery(event.target.value)}
                 aria-label={sourcePickerOpen ? t('searchSources') : t('searchArticles')}
                 placeholder={sourcePickerOpen ? t('searchSources') : t('searchArticles')}
               />
@@ -1442,13 +1455,13 @@ export default function App(): React.JSX.Element {
 
             {sourcePickerOpen ? (
               <div className="list-content source-list source-scope-picker">
-                <button className={`source-scope-all ${articleScope.kind==='all'?'selected':''}`} type="button" onClick={()=>{setArticleScope({kind:'all'});setSourcePickerOpen(false);setSelectedArticleId(null);setQuery('')}}>
+                <button className={`source-scope-all ${articleScope.kind==='all'?'selected':''}`} type="button" onClick={()=>{setArticleScope({kind:'all'});setSourcePickerOpen(false);setArticleQuery('')}}>
                   <div className="scope-icon"><Inbox size={15}/></div>
                   <div><strong>{t('allSources')}</strong><span>{t('articleCount',{count:librarySnapshot?.articles ?? articles.length})}</span></div>
                   <span className="scope-unread-count">{t('unreadCountShort',{count:librarySnapshot?.unread ?? articles.filter((article)=>article.isUnread).length})}</span>
                 </button>
                 {groupedVisibleFeeds.map(({group,feeds:groupFeeds})=><section className="source-group-section" key={group.id}>
-                  <button className={`source-group-header source-group-scope ${articleScope.kind==='group'&&articleScope.id===group.id?'selected':''}`} type="button" onClick={()=>{setArticleScope({kind:'group',id:group.id});setSourcePickerOpen(false);setSelectedArticleId(null);setQuery('')}}>
+                  <button className={`source-group-header source-group-scope ${articleScope.kind==='group'&&articleScope.id===group.id?'selected':''}`} type="button" onClick={()=>{setArticleScope({kind:'group',id:group.id});setSourcePickerOpen(false);setArticleQuery('')}}>
                     <span className="source-group-name"><strong>{group.name}</strong><small>{t('sourceCount',{count:groupFeeds.length})}</small></span>
                     <span>{t('unreadCountShort',{count:statsForFeeds(groupFeeds).unread})}</span>
                   </button>

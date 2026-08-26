@@ -253,6 +253,65 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
   }
 })
 
+test('reader selection survives source and article filter changes', async () => {
+  test.setTimeout(45_000)
+  const fixture = await startFeedServer()
+  const { server } = fixture
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('Fixture server did not expose a TCP port')
+  const feedUrl = `http://127.0.0.1:${address.port}/feed.xml`
+  const testApp = await launchIsolatedOrigRead()
+
+  try {
+    const page = await testApp.app.firstWindow()
+    await expect(page.locator('.app-shell')).toBeVisible()
+
+    await page.locator('.subscription-menu-anchor .primary-action').click()
+    await page.getByRole('menuitem', { name: '添加来源' }).click()
+    await page.locator('.dialog-field input').fill(feedUrl)
+    await page.locator('.dialog-submit').click()
+    await expect(page.locator('.source-candidate').first()).toBeVisible({ timeout: 15_000 })
+    await page.locator('.dialog-submit').click()
+    await expect(page.locator('.source-dialog')).toBeHidden({ timeout: 10_000 })
+
+    const article = page.locator('.article-item').filter({ hasText: 'OrigRead E2E Article 1' }).first()
+    await expect(article).toBeVisible()
+    const selectedArticleId = await article.getAttribute('data-article-id')
+    expect(selectedArticleId).not.toBeNull()
+    await article.click()
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+
+    // Article Search 与 Source Search 独立保存，切换旧 Picker 只改变左侧内容。
+    const workspaceSearch = page.locator('.search-field input')
+    await workspaceSearch.fill('Article 1')
+    await page.locator('.scope-picker-button').click()
+    await expect(page.locator('.source-scope-picker')).toBeVisible()
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+    await expect(workspaceSearch).toHaveValue('')
+    await workspaceSearch.fill('OrigRead E2E Feed')
+    await page.locator('.scope-picker-button').click()
+    await expect(page.locator('.article-list')).toBeVisible()
+    await expect(workspaceSearch).toHaveValue('Article 1')
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+
+    // Destination 只过滤 Article Pane；已读文章从未读列表消失时 Reader 继续保持。
+    await page.locator('.destination-tabs .destination-tab').filter({ hasText: '未读' }).click()
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+    await expect(page.locator(`.article-item[data-article-id="${selectedArticleId!}"]`)).toHaveCount(0)
+    await page.locator('.destination-tabs .destination-tab').filter({ hasText: '全部文章' }).click()
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+
+    // Feed Scope 只替换 Article Pane 的数据范围，不替换 Reader 当前文章。
+    await page.locator('.scope-picker-button').click()
+    await page.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' }).click()
+    await expect(page.locator('.article-scope-bar')).toContainText('OrigRead E2E Feed')
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+  } finally {
+    await testApp.close()
+    await closeServer(server)
+  }
+})
+
 async function startFeedServer(): Promise<{ server: Server; feedRequests: () => number; articleRequests: () => number }> {
   let feedRequests = 0
   let articleRequests = 0
