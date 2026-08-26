@@ -177,6 +177,7 @@ describe('SourceDiscoveryService parity', () => {
     })
     const result = await service.discover('https://example.com/')
     expect(result.candidates.map((item) => item.kind).slice(0, 4)).toEqual(['RSS_DIRECT', 'JSON', 'RSSHUB', 'WEBSITE'])
+    expect(result.selectedCandidateId).toBe(result.candidates.find((item) => item.kind === 'RSS_DIRECT')?.id)
     expect(result.rssHubRoutes).toHaveLength(1)
     expect(result.rssHubRoutes[0]).toMatchObject({ name: 'Example Hub', state: 'available', articleCount: 20 })
   })

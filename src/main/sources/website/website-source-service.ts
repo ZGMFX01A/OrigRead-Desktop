@@ -19,6 +19,7 @@ import { WebsiteParsePreferenceRepository, type WebsiteParsePreference } from '.
 import { WebsiteRuleRepository } from './website-rule-repository'
 import type { DynamicWebsiteRenderer } from './dynamic-website-render-policy'
 import { DESKTOP_BROWSER_USER_AGENT } from '../../network/user-agent-policy'
+import { decodeHttpText } from '../../network/http-text-decoder'
 
 const MAX_AUTOMATIC_HTML_CHARS = 750_000
 
@@ -321,7 +322,12 @@ async function defaultWebsiteFetcher(url: string): Promise<WebsiteFetchPayload> 
       accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
     }
   })
-  return { status: response.status, finalUrl: response.url || url, html: await response.text() }
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  return {
+    status: response.status,
+    finalUrl: response.url || url,
+    html: decodeHttpText(bytes, response.headers.get('content-type'), 'html')
+  }
 }
 
 function probeFeedRecord(url: string, now: number): FeedRecord {

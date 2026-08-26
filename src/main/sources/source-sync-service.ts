@@ -80,22 +80,35 @@ export class SourceSyncService {
           const refreshed = await this.jsonService.refresh(feed.id, fetchedAt)
           return { ...refreshed, deletedArticles: 0 }
         }
-        case 'website':
-          return this.websiteService.refresh(feed.id, fetchedAt)
+        case 'website': {
+          try {
+            return await this.websiteService.refresh(feed.id, fetchedAt)
+          } catch (error) {
+            // 旧版可能把 direct RSS URL 错存成 Website。仅在 Website 刷新已经失败后尝试空来源恢复；
+            // 若 URL 并不是真实 RSS，则保留原 Website 错误，不改变正常网站的失败语义。
+            const recovered = await this.rssService.tryRecoverMisclassifiedEmptyWebsite(feed.id, fetchedAt)
+            if (!recovered) throw error
+            return { ...recovered, deletedArticles: 0 }
+          }
+        }
       }
     })()
 
-    if (feed.isNotification && result.insertedArticles > 0 && existingArticleIds && this.onNewArticles) {
+    // 恢复旧脏数据时 sourceType/name 可能已在同一轮从 Website 改成 RSS；后续通知与 UI 结果
+    // 必须读取落库后的 Feed，不能继续返回刷新前的旧快照。
+    const refreshedFeed = this.repository.getFeedById(feed.id) ?? feed
+
+    if (refreshedFeed.isNotification && result.insertedArticles > 0 && existingArticleIds && this.onNewArticles) {
       const inserted = this.repository
         .listArticlesByFeed(feed.id)
         .filter((article) => !existingArticleIds.has(article.id))
-      if (inserted.length > 0) await this.onNewArticles(feed, inserted)
+      if (inserted.length > 0) await this.onNewArticles(refreshedFeed, inserted)
     }
 
     return {
       feedId: feed.id,
-      feedName: feed.name,
-      sourceType: feed.sourceType,
+      feedName: refreshedFeed.name,
+      sourceType: refreshedFeed.sourceType,
       status: 'success',
       fetchedArticles: result.fetchedArticles,
       insertedArticles: result.insertedArticles,

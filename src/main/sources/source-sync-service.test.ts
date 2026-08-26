@@ -96,6 +96,37 @@ describe('SourceSyncService', () => {
     })
   })
 
+  it('repairs an empty legacy Website source as RSS after Website refresh fails', async () => {
+    const repository = createRepository()
+    repository.upsertFeed({
+      ...createFeed('legacy-website-rss', 'website'),
+      name: 'Legacy Website',
+      url: 'https://www.52pojie.cn/forum.php?mod=rss',
+      sourcePageUrl: 'https://www.52pojie.cn/forum.php?mod=rss'
+    })
+    const fetchedAt = 1_786_000_000_123
+    const websiteRefresh = vi.fn(async () => { throw new Error('当前网站的解析规则均未通过健康检查') })
+    const rssRecovery = vi.fn(async (feedId: string, at: number) => {
+      const current = repository.getFeedById(feedId)!
+      repository.upsertFeed({ ...current, name: '吾爱破解 - 52pojie.cn', sourceType: 'rss', updatedAt: at })
+      repository.upsertArticle(createArticle('recovered-rss-article', feedId))
+      return { feedId, fetchedArticles: 1, insertedArticles: 1 }
+    })
+    const service = createService(repository, vi.fn(), vi.fn(), websiteRefresh, undefined, rssRecovery)
+
+    const result = await service.refreshSource('legacy-website-rss', fetchedAt)
+
+    expect(websiteRefresh).toHaveBeenCalledWith('legacy-website-rss', fetchedAt)
+    expect(rssRecovery).toHaveBeenCalledWith('legacy-website-rss', fetchedAt)
+    expect(result).toMatchObject({
+      status: 'success',
+      sourceType: 'rss',
+      feedName: '吾爱破解 - 52pojie.cn',
+      fetchedArticles: 1,
+      insertedArticles: 1
+    })
+  })
+
   it('never exceeds the Android parity limit of 16 concurrent source refreshes', async () => {
     const repository = createRepository()
     for (let index = 0; index < 24; index += 1) {
@@ -198,11 +229,12 @@ function createService(
   rssRefresh: ReturnType<typeof vi.fn>,
   jsonRefresh: ReturnType<typeof vi.fn>,
   websiteRefresh: ReturnType<typeof vi.fn>,
-  listener?: SourceNewArticlesListener
+  listener?: SourceNewArticlesListener,
+  rssRecovery: ReturnType<typeof vi.fn> = vi.fn(async () => null)
 ): SourceSyncService {
   return new SourceSyncService(
     repository,
-    { refresh: rssRefresh } as unknown as RssSubscriptionService,
+    { refresh: rssRefresh, tryRecoverMisclassifiedEmptyWebsite: rssRecovery } as unknown as RssSubscriptionService,
     { refresh: jsonRefresh } as unknown as JsonSubscriptionService,
     { refresh: websiteRefresh } as unknown as WebsiteSubscriptionService,
     listener

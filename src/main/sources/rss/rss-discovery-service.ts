@@ -3,6 +3,7 @@ import Parser from 'rss-parser'
 import type { DiscoveredRssFeed, RssFeedItem } from '../../../shared/rss'
 import { BestIconFinder, extractIconDomain, type RssIconFinder } from './best-icon-finder'
 import { DESKTOP_BROWSER_USER_AGENT } from '../../network/user-agent-policy'
+import { decodeHttpText } from '../../network/http-text-decoder'
 
 interface CustomRssItem {
   contentEncoded?: string
@@ -222,18 +223,7 @@ export function extractAlternateFeedUrls(html: string, inputUrl: string): string
 }
 
 function decodePayload(payload: RssFetchPayload): string {
-  const charset = extractCharset(payload.contentType) ?? 'utf-8'
-  try {
-    return new TextDecoder(charset).decode(payload.bytes)
-  } catch {
-    return new TextDecoder('utf-8').decode(payload.bytes)
-  }
-}
-
-function extractCharset(contentType: string | null): string | null {
-  if (!contentType) return null
-  const match = /charset\s*=\s*["']?([^;"'\s]+)/i.exec(contentType)
-  return match?.[1]?.trim() || null
+  return decodeHttpText(payload.bytes, payload.contentType, 'auto')
 }
 
 function toRssFeedItem(item: CustomRssItem & Parser.Item, index: number): RssFeedItem {

@@ -1,4 +1,5 @@
 import { DESKTOP_BROWSER_USER_AGENT } from '../network/user-agent-policy'
+import { decodeHttpText } from '../network/http-text-decoder'
 import type { FullContentFetchResult, FullContentFailureReason } from '../../shared/reader'
 import { LibraryRepository } from '../database/library-repository'
 import { ContentExtractionService } from './content-extraction-service'
@@ -94,7 +95,8 @@ export async function defaultArticlePageFetcher(url: string): Promise<ArticlePag
       accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8'
     }
   })
-  const html = (await response.text()).slice(0, MAX_STATIC_HTML_CHARS)
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  const html = decodeHttpText(bytes, response.headers.get('content-type'), 'html').slice(0, MAX_STATIC_HTML_CHARS)
   return { status: response.status, finalUrl: response.url || url, html }
 }
 

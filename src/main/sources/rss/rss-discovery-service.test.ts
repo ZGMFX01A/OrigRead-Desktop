@@ -70,6 +70,24 @@ describe('RssDiscoveryService Android behavior parity', () => {
     expect(result.items[0]?.imageUrl).toBeNull()
   })
 
+  it('decodes legacy GBK RSS from its XML declaration when HTTP Content-Type has no charset', async () => {
+    const service = new RssDiscoveryService(createFetcher({
+      'https://www.52pojie.cn/forum.php?mod=rss': {
+        finalUrl: 'https://www.52pojie.cn/forum.php?mod=rss',
+        contentType: 'application/xml',
+        bytes: gbk52PojieRssBytes()
+      }
+    }, []), noIconFinder)
+
+    const result = await service.parseDirect('https://www.52pojie.cn/forum.php?mod=rss')
+
+    expect(result.discoveredFromPage).toBe(false)
+    expect(result.title).toBe('吾爱破解 - 52pojie.cn')
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0]?.title).toBe('求助')
+    expect(result.items[0]?.link).toBe('https://www.52pojie.cn/thread-1-1-1.html')
+  })
+
   it('discovers rel alternate after direct parse fails and resolves relative href against input URL', async () => {
     const requests: string[] = []
     const page = `<!doctype html><html><head>
@@ -158,6 +176,26 @@ function rss(content: string): RssFetchPayload {
 
 function html(content: string): RssFetchPayload {
   return payload(content, 'text/html; charset=UTF-8')
+}
+
+function gbk52PojieRssBytes(): Uint8Array {
+  return concatBytes(
+    new TextEncoder().encode('<?xml version="1.0" encoding="gbk"?><rss version="2.0"><channel><title>'),
+    Uint8Array.from([0xce, 0xe1, 0xb0, 0xae, 0xc6, 0xc6, 0xbd, 0xe2]),
+    new TextEncoder().encode(' - 52pojie.cn</title><link>https://www.52pojie.cn/forum.php</link><item><title>'),
+    Uint8Array.from([0xc7, 0xf3, 0xd6, 0xfa]),
+    new TextEncoder().encode('</title><link>https://www.52pojie.cn/thread-1-1-1.html</link><pubDate>Tue, 25 Aug 2026 16:29:35 +0000</pubDate></item></channel></rss>')
+  )
+}
+
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const result = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0))
+  let offset = 0
+  for (const part of parts) {
+    result.set(part, offset)
+    offset += part.length
+  }
+  return result
 }
 
 function payload(content: string, contentType: string): RssFetchPayload {

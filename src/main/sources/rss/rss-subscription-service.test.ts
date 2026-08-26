@@ -60,6 +60,66 @@ describe('RssSubscriptionService', () => {
     database.close()
   })
 
+  it('repairs an empty legacy Website source when its URL is actually a direct RSS feed', async () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const now = 1_786_000_000_000
+    const legacy = {
+      ...createFeed('legacy-website-rss', 'https://example.com/feed.xml', 'https://example.com/feed.xml', now),
+      name: 'Legacy website source',
+      sourceType: 'website' as const,
+      dynamicRendering: true
+    }
+    repository.upsertFeed(legacy)
+    const service = createService(repository, RSS_ONE)
+
+    const recovered = await service.tryRecoverMisclassifiedEmptyWebsite(legacy.id, now + 1)
+
+    expect(recovered).toMatchObject({ feedId: legacy.id, fetchedArticles: 1, insertedArticles: 1 })
+    expect(repository.getFeedById(legacy.id)).toMatchObject({
+      id: legacy.id,
+      name: 'Example',
+      sourceType: 'rss',
+      url: 'https://example.com/feed.xml',
+      dynamicRendering: false
+    })
+    expect(repository.listArticlesByFeed(legacy.id)).toHaveLength(1)
+    database.close()
+  })
+
+  it('does not reclassify a Website source that already contains articles', async () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const now = 1_786_000_000_000
+    const legacy = {
+      ...createFeed('website-with-content', 'https://example.com/feed.xml', 'https://example.com/feed.xml', now),
+      sourceType: 'website' as const
+    }
+    repository.upsertFeed(legacy)
+    repository.upsertArticle({
+      id: 'legacy-article',
+      feedId: legacy.id,
+      title: 'Existing website article',
+      url: 'https://example.com/old',
+      author: null,
+      publishedAt: now,
+      description: '',
+      contentHtml: null,
+      fullContentHtml: null,
+      imageUrl: null,
+      isUnread: true,
+      isStarred: false,
+      createdAt: now,
+      updatedAt: now
+    })
+    const service = createService(repository, RSS_ONE)
+
+    expect(await service.tryRecoverMisclassifiedEmptyWebsite(legacy.id, now + 1)).toBeNull()
+    expect(repository.getFeedById(legacy.id)?.sourceType).toBe('website')
+    expect(repository.listArticlesByFeed(legacy.id)).toHaveLength(1)
+    database.close()
+  })
+
   it('does not reinsert a Local RSS article whose link was archived by keepArchived', async () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)

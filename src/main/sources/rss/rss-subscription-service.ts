@@ -123,6 +123,59 @@ export class RssSubscriptionService {
     return { feedId, fetchedArticles: articles.length, insertedArticles }
   }
 
+  /**
+   * 修复旧版 Desktop 把真实 RSS/Atom URL 错存成 Website 的空来源。
+   *
+   * 这里只允许“Website + 当前 0 篇文章”进入恢复，并且同一 URL 必须仍能直接解析出
+   * 非空结构化 Feed；已有文章的 Website 来源绝不会被自动改类型。
+   */
+  async tryRecoverMisclassifiedEmptyWebsite(feedId: string, now = Date.now()): Promise<RssRefreshResult | null> {
+    const existing = this.repository.getFeedById(feedId)
+    if (!existing || existing.sourceType !== 'website') return null
+    if (this.repository.listArticlesByFeed(feedId).length > 0) return null
+
+    let direct: Awaited<ReturnType<RssDiscoveryService['parseDirectConditional']>>
+    try {
+      direct = await this.discovery.parseDirectConditional(
+        existing.url,
+        existing.sourcePageUrl ?? existing.url
+      )
+    } catch {
+      return null
+    }
+    if (direct.notModified || !direct.feed || direct.feed.items.length === 0) return null
+
+    const discovered = direct.feed
+    const candidates = discovered.items
+      .map((item) => toArticleRecord(existing.id, item, now, existing.accountId))
+    const archivedLinks = this.repository.archivedLinks(existing.id, candidates.map((article) => article.url))
+    const candidateArticles = candidates.filter((article) => !article.url || !archivedLinks.has(article.url))
+    const articles = this.articleFilters?.filterArticles(existing.id, candidateArticles).kept ?? candidateArticles
+    const recoveredFeed: FeedRecord = {
+      ...existing,
+      url: discovered.feedUrl,
+      sourcePageUrl: discovered.sourcePageUrl || existing.sourcePageUrl,
+      sourceType: 'rss',
+      name: discovered.title || existing.name,
+      icon: discovered.iconUrl ?? existing.icon,
+      isBrowser: false,
+      dynamicRendering: false,
+      updatedAt: now
+    }
+    this.repository.upsertFeedWithArticles(
+      recoveredFeed,
+      articles,
+      {
+        feedId,
+        feedUrl: recoveredFeed.url,
+        etag: direct.etag,
+        lastModified: direct.lastModified,
+        updatedAt: now
+      }
+    )
+    return { feedId, fetchedArticles: articles.length, insertedArticles: articles.length }
+  }
+
   private async recoverRssHubFeed(existing: FeedRecord, fallback: DiscoveredRssFeed): Promise<DiscoveredRssFeed> {
     return (await this.tryRecoverRssHubFeed(existing)) ?? fallback
   }
