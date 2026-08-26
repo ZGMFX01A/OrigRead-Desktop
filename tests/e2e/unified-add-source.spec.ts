@@ -19,7 +19,8 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
 
     if (await page.locator('.app-shell').evaluate((element) => element.classList.contains('workspace-collapsed'))) {
       await page.locator('.collapse-handle').click()
-      await expect(page.locator('.workspace-pane')).toBeVisible()
+      await expect(page.locator('.source-pane')).toBeVisible()
+      await expect(page.locator('.article-pane')).toBeVisible()
     }
 
     await page.locator('.subscription-menu-anchor .primary-action').click()
@@ -63,9 +64,8 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     }, feedUrl)
     expect(currentFixture).not.toBeNull()
 
-    await page.locator('.scope-picker-button').click()
     await expect(page.locator('.source-scope-picker')).toBeVisible()
-    await page.locator('.source-settings-button').first().click()
+    await page.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' }).locator('.source-settings-button').click()
     const sourceSettings = page.locator('.source-settings-dialog')
     await expect(sourceSettings).toBeVisible()
     await expect(sourceSettings.locator('.source-type-badge')).toHaveText('RSS / Atom')
@@ -81,7 +81,6 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await expect(sourceSettings).toContainText('重新获取图标')
     await sourceSettings.locator('.dialog-close').click()
     await expect(sourceSettings).toBeHidden()
-    await page.locator('.scope-picker-button').click()
     await expect(page.locator('.article-list')).toBeVisible()
 
     const article = page.locator(`.article-item[data-article-id="${currentFixture!.articleId}"]`)
@@ -212,7 +211,6 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     }, currentFixture!.feedId)
     await page.reload()
     await expect(page.locator('.app-shell')).toBeVisible()
-    await page.locator('.scope-picker-button').click()
     await expect(page.locator('.source-group-header').filter({ hasText: 'E2E 分组' })).toBeVisible()
     const sourceItem = page.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' })
     await sourceItem.click()
@@ -233,7 +231,6 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await expect(page.locator('.article-scope-bar')).toContainText('OrigRead E2E Feed')
     await expect.poll(async () => page.locator('.article-item').evaluateAll((items, feedId) => items.length > 0 && items.every((item) => item.getAttribute('data-feed-id') === feedId), currentFixture!.feedId)).toBe(true)
 
-    await page.locator('.scope-picker-button').click()
     const sourceRefresh = page
       .locator('.source-item')
       .filter({ hasText: 'OrigRead E2E Feed' })
@@ -281,17 +278,16 @@ test('reader selection survives source and article filter changes', async () => 
     await article.click()
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
 
-    // Article Search 与 Source Search 独立保存，切换旧 Picker 只改变左侧内容。
-    const workspaceSearch = page.locator('.search-field input')
-    await workspaceSearch.fill('Article 1')
-    await page.locator('.scope-picker-button').click()
-    await expect(page.locator('.source-scope-picker')).toBeVisible()
+    // UI-3P.3：Source / Article 搜索框同时存在且状态独立，操作任一左侧 Pane 都不能清空 Reader。
+    const articleSearch = page.locator('.article-pane .search-field input')
+    const sourceSearch = page.locator('.source-pane .search-field input')
+    await articleSearch.fill('Article 1')
+    await expect(sourceSearch).toHaveValue('')
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
-    await expect(workspaceSearch).toHaveValue('')
-    await workspaceSearch.fill('OrigRead E2E Feed')
-    await page.locator('.scope-picker-button').click()
+    await sourceSearch.fill('OrigRead E2E Feed')
     await expect(page.locator('.article-list')).toBeVisible()
-    await expect(workspaceSearch).toHaveValue('Article 1')
+    await expect(articleSearch).toHaveValue('Article 1')
+    await expect(sourceSearch).toHaveValue('OrigRead E2E Feed')
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
 
     // Destination 只过滤 Article Pane；已读文章从未读列表消失时 Reader 继续保持。
@@ -302,7 +298,6 @@ test('reader selection survives source and article filter changes', async () => 
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
 
     // Feed Scope 只替换 Article Pane 的数据范围，不替换 Reader 当前文章。
-    await page.locator('.scope-picker-button').click()
     await page.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' }).click()
     await expect(page.locator('.article-scope-bar')).toContainText('OrigRead E2E Feed')
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')

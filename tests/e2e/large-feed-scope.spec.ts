@@ -37,13 +37,12 @@ test('a 470-item RSS remains fully visible in feed scope even though the global 
       stats: { total: 470, unread: 470, starred: 0 }
     })
 
-    await page.locator('.scope-picker-button').click()
     const sourceRow = page.locator('.source-item').filter({ hasText: 'Large Scope Feed' })
     await expect(sourceRow).toContainText('470')
     await sourceRow.click()
 
     await expect.poll(() => page.locator('.article-item').count()).toBe(470)
-    await expect(page.locator('.list-meta')).toContainText('470')
+    await expect(page.locator('.article-pane .list-meta')).toContainText('470')
     await expect(page.locator('.article-scope-bar')).toContainText('Large Scope Feed')
 
     const requestsBeforeRefresh = fixture.feedRequests()

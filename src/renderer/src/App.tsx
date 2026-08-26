@@ -8,13 +8,9 @@ import {
   Compass,
   Download,
   Languages,
-  MoreHorizontal,
   Plus,
-  Search,
   Sparkles,
   Star,
-  Rss,
-  Inbox,
   ExternalLink,
   Headphones,
   Pause,
@@ -26,7 +22,6 @@ import {
   SlidersHorizontal,
   Square,
   Trash2,
-  Upload,
   X
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
@@ -61,23 +56,14 @@ import {
   DEFAULT_READING_SHARE_PREFERENCE,
   type ReadingSharePreference
 } from './reading-share'
+import { SourceSidebar, type ArticleScope } from './SourceSidebar'
+import { ArticleListPane, type Destination } from './ArticleListPane'
 
-type Destination = 'all' | 'unread' | 'starred'
 type ReaderMode = 'article' | 'ai' | 'translation'
-type ArticleScope =
-  | { kind: 'all' }
-  | { kind: 'group'; id: string }
-  | { kind: 'feed'; id: string }
 
 type ContextMenuState =
   | { kind: 'feed'; x: number; y: number; feedId: string }
   | { kind: 'article'; x: number; y: number; articleId: string }
-
-const destinations: Array<{ id: Destination; icon: typeof Inbox; labelKey: string }> = [
-  { id: 'all', icon: Inbox, labelKey: 'allArticles' },
-  { id: 'unread', icon: BookOpenText, labelKey: 'unread' },
-  { id: 'starred', icon: Star, labelKey: 'starred' }
-]
 
 const sourceDiscoveryStageOrder: SourceDiscoveryStage[] = ['rss', 'rsshub', 'json', 'website', 'dynamic_website', 'ranking']
 const aiSummaryPlacementOrder: AiSummaryPlacement[] = ['replace', 'left', 'right', 'top', 'bottom']
@@ -101,7 +87,6 @@ export default function App(): React.JSX.Element {
   const [sourceQuery, setSourceQuery] = useState('')
   const [articleQuery, setArticleQuery] = useState('')
   const [articleScope, setArticleScope] = useState<ArticleScope>({ kind: 'all' })
-  const [sourcePickerOpen, setSourcePickerOpen] = useState(false)
   const [selectedArticleId, setSelectedArticleId] = useState<string | null>(null)
   const [selectedArticleRecord, setSelectedArticleRecord] = useState<ArticleRecord | null>(null)
   const [addSourceOpen, setAddSourceOpen] = useState(false)
@@ -456,11 +441,6 @@ export default function App(): React.JSX.Element {
     setGlobalSearchError(null)
   }, [])
 
-  const activeLabel = useMemo(
-    () => t(destinations.find((item) => item.id === destination)?.labelKey ?? 'allArticles'),
-    [destination, t]
-  )
-
   const normalizedArticleQuery = articleQuery.trim().toLocaleLowerCase()
   const normalizedSourceQuery = sourceQuery.trim().toLocaleLowerCase()
   const scopedArticles = articleScope.kind === 'all' ? articles : (scopeArticles ?? [])
@@ -492,16 +472,6 @@ export default function App(): React.JSX.Element {
   )
   const feedStats = (feedId: string): FeedArticleStats =>
     feedStatsById.get(feedId) ?? { feedId, total: 0, unread: 0, starred: 0 }
-  const statsForFeeds = (targetFeeds: FeedRecord[]): FeedArticleStats =>
-    targetFeeds.reduce<FeedArticleStats>((summary, feed) => {
-      const stats = feedStats(feed.id)
-      return {
-        feedId: summary.feedId,
-        total: summary.total + stats.total,
-        unread: summary.unread + stats.unread,
-        starred: summary.starred + stats.starred
-      }
-    }, { feedId: '__aggregate__', total: 0, unread: 0, starred: 0 })
   const activeScopeFeed = articleScope.kind === 'feed' ? feeds.find((feed) => feed.id === articleScope.id) ?? null : null
   const activeScopeGroup = articleScope.kind === 'group' ? groups.find((group) => group.id === articleScope.id) ?? null : null
   const scopeLabel = activeScopeFeed?.name ?? activeScopeGroup?.name ?? t('allSources')
@@ -994,7 +964,7 @@ export default function App(): React.JSX.Element {
         setReaderSearchIndex(0)
         return
       }
-      if (interactiveTarget || event.ctrlKey || event.metaKey || event.altKey || settingsOpen || sourceCatalogOpen || sourcePickerOpen || subscriptionMenuOpen || document.querySelector('[role="dialog"]')) return
+      if (interactiveTarget || event.ctrlKey || event.metaKey || event.altKey || settingsOpen || sourceCatalogOpen || subscriptionMenuOpen || document.querySelector('[role="dialog"]')) return
 
       if (key === '[') {
         event.preventDefault()
@@ -1064,7 +1034,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settingsOpen, sourceCatalogOpen, sourcePickerOpen, subscriptionMenuOpen, visibleArticles, workspaceCollapsed])
+  }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settingsOpen, sourceCatalogOpen, subscriptionMenuOpen, visibleArticles, workspaceCollapsed])
 
   const openAddSource = (): void => {
     setSubscriptionMenuOpen(false)
@@ -1240,7 +1210,6 @@ export default function App(): React.JSX.Element {
   const selectFeedScope = (feed: FeedRecord): void => {
     const scope: ArticleScope = { kind: 'feed', id: feed.id }
     setArticleScope(scope)
-    setSourcePickerOpen(false)
     setArticleQuery('')
     if (isOrigReadDesktopReleaseFeed(feed.url) && feedStats(feed.id).total === 0) {
       void refreshFeed(feed, scope)
@@ -1341,210 +1310,59 @@ export default function App(): React.JSX.Element {
   return (
     <main className={`app-shell ${workspaceCollapsed ? 'workspace-collapsed' : ''}`} style={readerStyle}>
       {!workspaceCollapsed && (
-        <section className="workspace-pane" aria-label={activeLabel}>
-          <header className="brand-row">
-            <div className="brand-lockup">
-              <img className="brand-logo" src="./logo.png" alt="" />
-              <div>
-                <div className="brand-name">{t('brand')}</div>
-                <div className="brand-tagline">{t('tagline')}</div>
-              </div>
-            </div>
-            <div className="brand-actions">
-              <button className="icon-button source-discovery-button" type="button" title={t('sourceDiscoveryTitle')} aria-label={t('sourceDiscoveryTitle')} onClick={()=>void showSourceCatalog()}>
-                <Compass size={17}/>
-              </button>
-              <div className="subscription-menu-anchor">
-                <button className="primary-action subscription-trigger" type="button" title={t('addSubscription')} aria-label={t('addSubscription')} onClick={()=>setSubscriptionMenuOpen((open)=>!open)} disabled={opmlBusy} aria-expanded={subscriptionMenuOpen}>
-                  <Plus size={14} strokeWidth={2.2} />
-                  {t('add')}
-                  <ChevronDown size={12}/>
-                </button>
-                {subscriptionMenuOpen && (
-                  <>
-                    <button className="subscription-menu-backdrop" type="button" aria-label={t('cancel')} onClick={()=>setSubscriptionMenuOpen(false)}/>
-                    <div className="subscription-menu" role="menu">
-                      <button type="button" role="menuitem" onClick={openAddSource}><Rss size={16}/><span>{t('addSourceTitle')}</span></button>
-                      <button type="button" role="menuitem" onClick={()=>void importOpml()}><Upload size={16}/><span>{t('importOpml')}</span></button>
-                      <button type="button" role="menuitem" onClick={()=>{setSubscriptionMenuOpen(false);setOpmlExportOpen(true)}}><Download size={16}/><span>{t('exportOpml')}</span></button>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          </header>
-
-          <nav className="destination-tabs" aria-label="Article filters">
-            {destinations.map(({ id, icon: Icon, labelKey }) => (
-              <button
-                key={id}
-                type="button"
-                className={`destination-tab ${destination === id ? 'active' : ''}`}
-                onClick={() => {
-                  setArticleQuery('')
-                  setDestination(id)
-                  setSourcePickerOpen(false)
-                }}
-              >
-                <Icon size={16} />
-                <span>{t(labelKey)}</span>
-                {id === 'unread' && <span className="count-badge">{scopedUnreadCount}</span>}
-                {id === 'starred' && scopedStarredCount > 0 && <span className="count-badge">{scopedStarredCount}</span>}
-              </button>
-            ))}
-          </nav>
-
-          <div className="article-scope-bar">
-            <div className="article-scope-current">
-              {activeScopeFeed ? <FeedIcon feed={activeScopeFeed} /> : <div className="scope-icon"><Rss size={15}/></div>}
-              <div>
-                <span>{t('readingScope')}</span>
-                <strong>{scopeLabel}</strong>
-              </div>
-            </div>
-            <div className="article-scope-actions">
-              {articleScope.kind !== 'all' && (
-                <button type="button" className="icon-button" title={t('clearSourceFilter')} aria-label={t('clearSourceFilter')} onClick={()=>{setArticleScope({kind:'all'});setArticleQuery('')}}><X size={14}/></button>
-              )}
-              <button type="button" className={`scope-picker-button ${sourcePickerOpen?'active':''}`} aria-expanded={sourcePickerOpen} onClick={()=>setSourcePickerOpen((open)=>!open)}>
-                <Rss size={14}/><span>{sourcePickerOpen?t('backToArticles'):t('chooseSourceScope')}</span><ChevronDown size={13}/>
-              </button>
-            </div>
-          </div>
-
-          <div className="list-toolbar">
-            <div className="search-field">
-              <Search size={16} />
-              <input
-                value={sourcePickerOpen ? sourceQuery : articleQuery}
-                onChange={(event) => sourcePickerOpen ? setSourceQuery(event.target.value) : setArticleQuery(event.target.value)}
-                aria-label={sourcePickerOpen ? t('searchSources') : t('searchArticles')}
-                placeholder={sourcePickerOpen ? t('searchSources') : t('searchArticles')}
-              />
-              <kbd>Ctrl K</kbd>
-            </div>
-            <div className="list-meta">
-              <span>
-                {sourcePickerOpen
-                  ? t('sourceCount', { count: visibleFeeds.length })
-                  : t('articleCount', { count: visibleArticles.length })}
-              </span>
-              <button
-                type="button"
-                className="icon-button refresh-all-button"
-                aria-label={activeScopeFeed ? t('refresh') : t('refreshAll')}
-                title={activeScopeFeed ? t('reloadSourceArticles') : t('refreshAll')}
-                disabled={feeds.length === 0 || isRefreshingAll || refreshingFeedId !== null}
-                onClick={() => activeScopeFeed ? void refreshFeed(activeScopeFeed) : void refreshAllSources()}
-              >
-                <RefreshCw size={16} className={isRefreshingAll || refreshingFeedId === activeScopeFeed?.id ? 'spinning' : ''} />
-              </button>
-              <button type="button" className="icon-button" aria-label={t('more')}>
-                <MoreHorizontal size={17} />
-              </button>
-            </div>
-          </div>
-
-          <div className="workspace-list-stage">
-            {opmlStatus && !addSourceOpen && (
-              <div className="workspace-notice">{opmlStatus}</div>
-            )}
-            {sourceError && !addSourceOpen && (
-              <div className="workspace-error">{sourceError}</div>
-            )}
-
-            {sourcePickerOpen ? (
-              <div className="list-content source-list source-scope-picker">
-                <button className={`source-scope-all ${articleScope.kind==='all'?'selected':''}`} type="button" onClick={()=>{setArticleScope({kind:'all'});setSourcePickerOpen(false);setArticleQuery('')}}>
-                  <div className="scope-icon"><Inbox size={15}/></div>
-                  <div><strong>{t('allSources')}</strong><span>{t('articleCount',{count:librarySnapshot?.articles ?? articles.length})}</span></div>
-                  <span className="scope-unread-count">{t('unreadCountShort',{count:librarySnapshot?.unread ?? articles.filter((article)=>article.isUnread).length})}</span>
-                </button>
-                {groupedVisibleFeeds.map(({group,feeds:groupFeeds})=><section className="source-group-section" key={group.id}>
-                  <button className={`source-group-header source-group-scope ${articleScope.kind==='group'&&articleScope.id===group.id?'selected':''}`} type="button" onClick={()=>{setArticleScope({kind:'group',id:group.id});setSourcePickerOpen(false);setArticleQuery('')}}>
-                    <span className="source-group-name"><strong>{group.name}</strong><small>{t('sourceCount',{count:groupFeeds.length})}</small></span>
-                    <span>{t('unreadCountShort',{count:statsForFeeds(groupFeeds).unread})}</span>
-                  </button>
-                  <div className="source-group-items">{groupFeeds.map((feed) => (
-                    <article className={`source-item ${articleScope.kind==='feed'&&articleScope.id===feed.id?'selected':''}`} key={feed.id} tabIndex={0} role="button" onClick={()=>selectFeedScope(feed)} onContextMenu={(event)=>{event.preventDefault();event.stopPropagation();setContextMenu({kind:'feed',x:event.clientX,y:event.clientY,feedId:feed.id})}} onKeyDown={(event)=>{if(event.target!==event.currentTarget)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();selectFeedScope(feed)}}}>
-                      <FeedIcon feed={feed} />
-                      <div className="source-copy">
-                        <strong>{feed.name}</strong>
-                        <span>{t('sourceArticleStats',{total:feedStats(feed.id).total,unread:feedStats(feed.id).unread})}</span>
-                      </div>
-                      <div className="source-actions">
-                        <span className="source-type">{feed.sourceType.toUpperCase()}</span>
-                        <button
-                          type="button"
-                          className="source-refresh-button"
-                          title={t('refresh')}
-                          aria-label={t('refresh')}
-                          disabled={refreshingFeedId !== null || isRefreshingAll}
-                          onClick={(event) => {event.stopPropagation();void refreshFeed(feed)}}
-                        >
-                          <RefreshCw size={13} className={refreshingFeedId === feed.id ? 'spinning' : ''} />
-                        </button>
-                        <button
-                          type="button"
-                          className="source-settings-button"
-                          title={t('sourceSettings')}
-                          aria-label={t('sourceSettings')}
-                          onClick={(event) => {event.stopPropagation();setSourceSettingsFeed(feed)}}
-                        >
-                          <MoreHorizontal size={14} />
-                        </button>
-                      </div>
-                    </article>
-                  ))}</div>
-                </section>)}
-              </div>
-            ) : visibleArticles.length > 0 ? (
-              <div className="list-content article-list">
-                {visibleArticles.map((article) => (
-                  <article
-                    className={`article-item ${article.isUnread?'unread':'read'} ${selectedArticleId === article.id ? 'selected' : ''}`}
-                    key={article.id}
-                    data-article-id={article.id}
-                    data-feed-id={article.feedId}
-                    onClick={() => selectArticle(article)}
-                    onContextMenu={(event)=>{event.preventDefault();event.stopPropagation();setContextMenu({kind:'article',x:event.clientX,y:event.clientY,articleId:article.id})}}
-                  >
-                    <div className="article-topline">
-                      <span className={`unread-dot ${article.isUnread ? 'visible' : ''}`} />
-                      <strong>{article.title}</strong>
-                      <button
-                        className={`star-button ${article.isStarred ? 'active' : ''}`}
-                        type="button"
-                        aria-label={t('starred')}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          toggleStarred(article)
-                        }}
-                      >
-                        <Star size={15} fill={article.isStarred ? 'currentColor' : 'none'} />
-                      </button>
-                    </div>
-                    <p>{article.description || t('sourcePreviewUnavailable')}</p>
-                    <div className="article-meta">
-                      <span>{feeds.find((feed) => feed.id === article.feedId)?.name ?? ''}</span>
-                      <span>{article.isUnread ? t('unreadStatus') : t('readStatus')}</span>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="empty-list-state">
-                <div className="empty-icon"><Rss size={22} /></div>
-                <h1>{t('timelineEmpty')}</h1>
-                <p>{t('timelineEmptyDesc')}</p>
-                <button className="secondary-action" type="button" onClick={openAddSource}>
-                  <Plus size={16} />
-                  {t('addSourceNow')}
-                </button>
-              </div>
-            )}
-          </div>
-        </section>
+        <>
+          <SourceSidebar
+            articleScope={articleScope}
+            sourceQuery={sourceQuery}
+            visibleFeedCount={visibleFeeds.length}
+            groupedFeeds={groupedVisibleFeeds}
+            feedStatsById={feedStatsById}
+            allArticleCount={librarySnapshot?.articles ?? articles.length}
+            allUnreadCount={librarySnapshot?.unread ?? articles.filter((article) => article.isUnread).length}
+            refreshingFeedId={refreshingFeedId}
+            isRefreshingAll={isRefreshingAll}
+            subscriptionMenuOpen={subscriptionMenuOpen}
+            opmlBusy={opmlBusy}
+            opmlStatus={opmlStatus}
+            sourceError={sourceError}
+            showNotices={!addSourceOpen}
+            onSourceQueryChange={setSourceQuery}
+            onSelectAll={() => { setArticleScope({ kind: 'all' }); setArticleQuery('') }}
+            onSelectGroup={(group) => { setArticleScope({ kind: 'group', id: group.id }); setArticleQuery('') }}
+            onSelectFeed={selectFeedScope}
+            onRefreshFeed={(feed) => void refreshFeed(feed)}
+            onOpenFeedSettings={setSourceSettingsFeed}
+            onFeedContextMenu={(feed, x, y) => setContextMenu({ kind: 'feed', x, y, feedId: feed.id })}
+            onShowSourceCatalog={() => void showSourceCatalog()}
+            onToggleSubscriptionMenu={() => setSubscriptionMenuOpen((open) => !open)}
+            onCloseSubscriptionMenu={() => setSubscriptionMenuOpen(false)}
+            onAddSource={openAddSource}
+            onImportOpml={() => void importOpml()}
+            onOpenOpmlExport={() => { setSubscriptionMenuOpen(false); setOpmlExportOpen(true) }}
+          />
+          <ArticleListPane
+            destination={destination}
+            articleScope={articleScope}
+            activeScopeFeed={activeScopeFeed}
+            scopeLabel={scopeLabel}
+            scopedUnreadCount={scopedUnreadCount}
+            scopedStarredCount={scopedStarredCount}
+            articleQuery={articleQuery}
+            visibleArticles={visibleArticles}
+            feeds={feeds}
+            selectedArticleId={selectedArticleId}
+            refreshing={isRefreshingAll || refreshingFeedId === activeScopeFeed?.id}
+            refreshDisabled={feeds.length === 0 || isRefreshingAll || refreshingFeedId !== null}
+            onDestinationChange={(id) => { setArticleQuery(''); setDestination(id) }}
+            onClearScope={() => { setArticleScope({ kind: 'all' }); setArticleQuery('') }}
+            onArticleQueryChange={setArticleQuery}
+            onRefresh={() => activeScopeFeed ? void refreshFeed(activeScopeFeed) : void refreshAllSources()}
+            onSelectArticle={selectArticle}
+            onToggleStarred={toggleStarred}
+            onArticleContextMenu={(article, x, y) => setContextMenu({ kind: 'article', x, y, articleId: article.id })}
+            onAddSource={openAddSource}
+          />
+        </>
       )}
 
       <div className="pane-divider" aria-hidden="true">
@@ -2147,13 +1965,6 @@ export default function App(): React.JSX.Element {
       )}
     </main>
   )
-}
-
-function FeedIcon({ feed }: { feed: FeedRecord }): React.JSX.Element {
-  const [failed, setFailed] = useState(false)
-  useEffect(()=>setFailed(false),[feed.icon])
-  const icon = failed ? null : normalizeHttpUrl(feed.icon)
-  return <div className="source-icon">{icon?<img src={icon} alt="" onError={()=>setFailed(true)}/>:<Rss size={16}/>}</div>
 }
 
 function AiSummaryAccentIcon({

@@ -41,7 +41,6 @@ test('website subscription persists discovered articles without a second source 
     }, sourceUrl)
     expect(websiteFeedName).not.toBe('')
     await expect(page.locator('.article-item').filter({ hasText: '原读完成正文提取能力升级' })).toBeVisible({ timeout: 10_000 })
-    await page.locator('.scope-picker-button').click()
     const sourceItem = page.locator('.source-item').filter({ hasText: websiteFeedName })
     await expect(sourceItem).toBeVisible()
     await expect(sourceItem).toContainText('WEBSITE')
