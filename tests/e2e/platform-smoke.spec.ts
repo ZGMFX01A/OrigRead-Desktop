@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test'
 import { launchIsolatedOrigRead } from './electron-test-app'
 
 test('packaging platform smoke: Electron, preload, database and renderer start normally', async () => {
+  const packagedExecutable = process.env.ORIGREAD_E2E_EXECUTABLE_PATH?.trim() || null
   const testApp = await launchIsolatedOrigRead()
   const page = await testApp.app.firstWindow()
   const pageErrors: string[] = []
@@ -16,6 +17,12 @@ test('packaging platform smoke: Electron, preload, database and renderer start n
     const appInfo = await page.evaluate(() => window.origread.getAppInfo())
     expect(appInfo.version).toMatch(/^\d+\.\d+\.\d+/)
     expect(['win32', 'darwin', 'linux']).toContain(appInfo.platform)
+    if (packagedExecutable) {
+      // UI-3P.10：传入真实打包 executable 时，本 smoke 必须验证的是 packaged app，而不是 node_modules/electron。
+      expect(process.platform).toBe('win32')
+      expect(appInfo.platform).toBe('win32')
+      await expect(page.locator('.brand-name')).toBeVisible()
+    }
 
     await page.locator('.settings-button').click()
     await expect(page.locator('.settings-layout')).toBeVisible()

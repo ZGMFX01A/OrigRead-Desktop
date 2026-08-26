@@ -454,10 +454,87 @@ test('reader selection survives source and article filter changes', async () => 
     await page.locator('.source-destination-item').filter({ hasText: '全部文章' }).click()
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
 
+    // Group Scope 与 Feed Scope 一样，只替换 Article Pane 数据范围；当前 Reader 不应被清空。
+    const groupScope = page.locator('.source-group-scope').first()
+    await expect(groupScope).toBeVisible()
+    await groupScope.click()
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+
     // Feed Scope 只替换 Article Pane 的数据范围，不替换 Reader 当前文章。
     await page.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' }).click()
     await expect(page.locator('.article-scope-bar')).toContainText('OrigRead E2E Feed')
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+
+    // Starred Destination 也必须只过滤 Article Pane。先收藏当前文章，确保切入星标后它仍可见且 Reader 保持。
+    const selectedArticle = page.locator(`.article-item[data-article-id="${selectedArticleId!}"]`)
+    await selectedArticle.locator('.star-button').click()
+    await page.locator('.source-destination-item').filter({ hasText: '星标' }).click()
+    await expect(selectedArticle).toBeVisible()
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+    await page.locator('.source-destination-item').filter({ hasText: '全部文章' }).click()
+
+    // 只有显式点击另一篇文章才允许替换 Reader。
+    const nextArticle = page.locator('.article-item').filter({ hasText: 'OrigRead E2E Article 2' }).first()
+    await expect(nextArticle).toBeVisible()
+    await nextArticle.click()
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 2')
+  } finally {
+    await testApp.close()
+    await closeServer(server)
+  }
+})
+
+test('reader share copies Markdown and account change clears the previous reader', async () => {
+  test.setTimeout(45_000)
+  const fixture = await startFeedServer()
+  const { server } = fixture
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('Fixture server did not expose a TCP port')
+  const feedUrl = `http://127.0.0.1:${address.port}/feed.xml`
+  const testApp = await launchIsolatedOrigRead()
+
+  try {
+    const page = await testApp.app.firstWindow()
+    await expect(page.locator('.app-shell')).toBeVisible()
+
+    await page.locator('.subscription-menu-anchor .primary-action').click()
+    await page.getByRole('menuitem', { name: '添加来源' }).click()
+    await page.locator('.dialog-field input').fill(feedUrl)
+    await page.locator('.dialog-submit').click()
+    await expect(page.locator('.source-candidate').first()).toBeVisible({ timeout: 15_000 })
+    await page.locator('.dialog-submit').click()
+    await expect(page.locator('.source-dialog')).toBeHidden({ timeout: 10_000 })
+
+    const article = page.locator('.article-item').filter({ hasText: 'OrigRead E2E Article 1' }).first()
+    await expect(article).toBeVisible()
+    await article.click()
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+
+    // UI-3P.10：首次分享走真实 Renderer -> clipboard 链路，默认格式至少包含标题与原文 URL。
+    await page.locator('.reading-share-button').click()
+    const shareDialog = page.locator('.reading-share-dialog')
+    await expect(shareDialog).toBeVisible()
+    await shareDialog.locator('.dialog-submit').click()
+    await expect(page.locator('.reading-share-status')).toBeVisible()
+    const copiedMarkdown = await testApp.app.evaluate(({ clipboard }) => clipboard.readText())
+    expect(copiedMarkdown).toContain('# OrigRead E2E Article 1')
+    expect(copiedMarkdown).toContain('/article/1')
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).readingShareConfigured)).toBe(true)
+
+    // 添加第二个 Local 会切换当前账户，并通过 SettingsPanel.onChanged 驱动 App 清理旧 Reader。
+    await page.locator('.settings-button').click()
+    await page.getByRole('button', { name: '账户' }).click()
+    const addAccountSection = page.locator('.settings-section').filter({ hasText: '添加账户' }).last()
+    await expect(addAccountSection).toBeVisible()
+    await addAccountSection.locator('input').first().fill('UI-3P.10 Second Local')
+    await addAccountSection.getByRole('button', { name: '添加账户' }).click()
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getAccounts()).accounts.length)).toBe(2)
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getAccounts()).accounts.find((item) => item.name === 'UI-3P.10 Second Local')?.id === (await window.origread.getAccounts()).currentAccountId)).toBe(true)
+
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.reader-empty-state')).toBeVisible()
+    await expect(page.locator('.article-heading')).toHaveCount(0)
+    await expect(page.locator('.article-item')).toHaveCount(0)
   } finally {
     await testApp.close()
     await closeServer(server)

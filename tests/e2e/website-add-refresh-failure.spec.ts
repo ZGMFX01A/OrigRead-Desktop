@@ -42,7 +42,11 @@ test('website subscription persists discovered articles without a second source 
     await expect(sourceItem).toBeVisible()
     await expect(sourceItem).toContainText('WEBSITE')
 
-    // UI-3P.5：Article Pane 发起的同步失败属于文章列表反馈，不重复占用 Source Sidebar。
+    // UI-3P.5：先进入该 Website 的 Feed Scope，再由 Article Pane 做单来源刷新。
+    // 不用“全部来源”刷新，因为隔离库还包含内置 Release Feed，整批刷新会被外网请求时长影响，
+    // 而本用例真正要验证的是 Website 418 是否落到 Article Pane 的错误反馈。
+    await sourceItem.click()
+    await expect(page.locator('.article-scope-bar')).toContainText(websiteFeedName)
     await page.locator('.refresh-all-button').click()
     await expect(page.locator('.article-list-error')).toContainText('HTTP 418')
     await expect(page.locator('.source-pane .workspace-error')).toHaveCount(0)

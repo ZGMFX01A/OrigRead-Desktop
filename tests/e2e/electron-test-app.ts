@@ -21,9 +21,10 @@ export async function launchIsolatedOrigRead(
   env.ORIGREAD_E2E_USER_DATA_DIR = userDataDir
   env.ORIGREAD_DISABLE_AUTO_UPDATE_CHECK = '1'
   Object.assign(env, envOverrides)
+  const executablePath = process.env.ORIGREAD_E2E_EXECUTABLE_PATH?.trim() || undefined
   const app = await electron.launch({
     args: [
-      '.',
+      ...(executablePath ? [] : ['.']),
       '--disable-gpu',
       '--disable-software-rasterizer',
       '--no-sandbox',
@@ -32,7 +33,8 @@ export async function launchIsolatedOrigRead(
       ...extraArgs
     ],
     cwd: process.cwd(),
-    env
+    env,
+    ...(executablePath ? { executablePath } : {})
   })
   return {
     app,
