@@ -158,6 +158,7 @@ export default function App(): React.JSX.Element {
   const readerStageRef = useRef<HTMLDivElement>(null)
   const readerContentRef = useRef<HTMLDivElement>(null)
   const readerSearchInputRef = useRef<HTMLInputElement>(null)
+  const articleSearchInputRef = useRef<HTMLInputElement>(null)
   const adaptiveSourceOverlayCloseRef = useRef<HTMLButtonElement>(null)
   const selectedArticleIdRef = useRef<string | null>(null)
   const sourceDiscoveryRequestIdRef = useRef<string | null>(null)
@@ -1055,6 +1056,13 @@ export default function App(): React.JSX.Element {
         window.setTimeout(() => readerSearchInputRef.current?.focus(), 0)
         return
       }
+      if ((event.ctrlKey || event.metaKey) && key === 'k' && !settingsOpen && !sourceCatalogOpen && !subscriptionMenuOpen && !document.querySelector('[role="dialog"]')) {
+        if (!articleSearchInputRef.current) return
+        event.preventDefault()
+        articleSearchInputRef.current.focus()
+        articleSearchInputRef.current.select()
+        return
+      }
       if (event.key === 'Escape' && readerSearchOpen) {
         setReaderSearchOpen(false)
         setReaderSearchQuery('')
@@ -1480,6 +1488,7 @@ export default function App(): React.JSX.Element {
         width={settings?.sourcePaneWidth ?? 260}
         minWidth={SOURCE_PANE_WIDTH_MIN}
         maxWidth={SOURCE_PANE_WIDTH_MAX}
+        ariaLabel={t('resizeSourcePane')}
         resizable={!effectiveSourcePaneCollapsed}
         collapsed={effectiveSourcePaneCollapsed}
         onResize={previewSourcePaneWidth}
@@ -1510,6 +1519,7 @@ export default function App(): React.JSX.Element {
             feeds={feeds}
             selectedArticleId={selectedArticleId}
             articleListError={articleListError}
+            searchInputRef={articleSearchInputRef}
             refreshing={isRefreshingAll || refreshingFeedId === activeScopeFeed?.id}
             refreshDisabled={feeds.length === 0 || isRefreshingAll || refreshingFeedId !== null}
             onClearScope={() => { setArticleScope({ kind: 'all' }); setArticleQuery('') }}
@@ -1527,6 +1537,7 @@ export default function App(): React.JSX.Element {
         width={settings?.articlePaneWidth ?? 380}
         minWidth={ARTICLE_PANE_WIDTH_MIN}
         maxWidth={ARTICLE_PANE_WIDTH_MAX}
+        ariaLabel={t('resizeArticlePane')}
         resizable={!effectiveArticlePaneCollapsed && !compactLayout}
         collapsed={effectiveArticlePaneCollapsed}
         onResize={previewArticlePaneWidth}

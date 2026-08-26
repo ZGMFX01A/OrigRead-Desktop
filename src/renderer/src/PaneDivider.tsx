@@ -1,10 +1,11 @@
-import { useRef, useState, type PointerEvent, type ReactNode } from 'react'
+import { useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 
 interface PaneDividerProps {
   kind: 'source' | 'article'
   width: number
   minWidth: number
   maxWidth: number
+  ariaLabel: string
   resizable?: boolean
   collapsed?: boolean
   children?: ReactNode
@@ -30,6 +31,7 @@ export function PaneDivider({
   width,
   minWidth,
   maxWidth,
+  ariaLabel,
   resizable = true,
   collapsed = false,
   children,
@@ -43,6 +45,21 @@ export function PaneDivider({
 
   const widthForPointer = (event: PointerEvent<HTMLDivElement>, drag: DragState): number =>
     clampWidth(drag.startWidth + event.clientX - drag.startX)
+
+  /** 键盘调整与鼠标拖拽共用同一套宽度约束，并在一次按键后立即持久化。 */
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (!resizable) return
+    const step = event.shiftKey ? 32 : 16
+    let next: number | null = null
+    if (event.key === 'ArrowLeft') next = clampWidth(width - step)
+    if (event.key === 'ArrowRight') next = clampWidth(width + step)
+    if (event.key === 'Home') next = minWidth
+    if (event.key === 'End') next = maxWidth
+    if (next === null) return
+    event.preventDefault()
+    onResize(next)
+    onResizeEnd(next)
+  }
 
   const finishDrag = (event: PointerEvent<HTMLDivElement>, useLastWidth = false): void => {
     const drag = dragRef.current
@@ -63,10 +80,13 @@ export function PaneDivider({
       data-pane={kind}
       data-collapsed={collapsed ? 'true' : 'false'}
       role={resizable ? 'separator' : undefined}
+      tabIndex={resizable ? 0 : undefined}
+      aria-label={resizable ? ariaLabel : undefined}
       aria-orientation={resizable ? 'vertical' : undefined}
       aria-valuemin={resizable ? minWidth : undefined}
       aria-valuemax={resizable ? maxWidth : undefined}
       aria-valuenow={resizable ? width : undefined}
+      onKeyDown={handleKeyDown}
       onPointerDown={(event) => {
         if (!resizable || event.button !== 0 || event.target !== event.currentTarget) return
         event.preventDefault()

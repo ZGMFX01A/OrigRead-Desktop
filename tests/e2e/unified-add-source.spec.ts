@@ -90,7 +90,9 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
 
     const article = page.locator(`.article-item[data-article-id="${currentFixture!.articleId}"]`)
     await expect(article).toBeVisible()
-    await article.click()
+    await article.focus()
+    await expect(article).toBeFocused()
+    await page.keyboard.press('Enter')
     await expect(page.locator('.article-body')).toContainText('Article 1 summary')
     await expect(page.locator('.original-button')).toBeEnabled()
     await expect(page.locator('.full-content-button')).toBeEnabled()
@@ -161,10 +163,13 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
 
     const selectedStar = page.locator('.article-item.selected .star-button')
     const initiallyStarred = await selectedStar.evaluate((element) => element.classList.contains('active'))
+    await expect(selectedStar).toHaveAttribute('aria-label', initiallyStarred ? '取消星标' : '添加星标')
     await page.keyboard.press('s')
     await expect.poll(() => selectedStar.evaluate((element) => element.classList.contains('active'))).toBe(!initiallyStarred)
+    await expect(selectedStar).toHaveAttribute('aria-label', initiallyStarred ? '添加星标' : '取消星标')
     await page.keyboard.press('s')
     await expect.poll(() => selectedStar.evaluate((element) => element.classList.contains('active'))).toBe(initiallyStarred)
+    await expect(selectedStar).toHaveAttribute('aria-label', initiallyStarred ? '取消星标' : '添加星标')
 
     await page.keyboard.press('[')
     await expect(page.locator('.app-shell')).toHaveClass(/focus-reading/)

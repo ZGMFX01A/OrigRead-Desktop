@@ -45,6 +45,7 @@ test('source and article dividers resize independently and persist only after dr
     await dragDivider(page, sourceDivider, -500)
     expect((await requiredBox(sourcePane)).width).toBeCloseTo(220, 0)
     await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).sourcePaneWidth)).toBe(220)
+    await expect.poll(async () => page.locator('.brand-row').evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
 
     // Article 最小 320；向左拖过边界不会压坏文章列表或 Reader。
     await dragDivider(page, articleDivider, -500)
@@ -85,6 +86,27 @@ test('source and article dividers resize independently and persist only after dr
     expect(articleDividerAfterWindowResize.x).toBeGreaterThanOrEqual(articleAfterWindowResize.x + articleAfterWindowResize.width)
     expect(readerAfterWindowResize.x).toBeGreaterThanOrEqual(articleDividerAfterWindowResize.x + articleDividerAfterWindowResize.width)
     expect(readerAfterWindowResize.width).toBeGreaterThan(550)
+
+    // UI-3P.9：Divider 可通过键盘调整并沿用同一 clamp / persistence 语义。
+    await expect(sourceDivider).toHaveAttribute('aria-label', /来源栏|source pane/i)
+    await sourceDivider.focus()
+    await page.keyboard.press('ArrowRight')
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).sourcePaneWidth)).toBe(236)
+    await page.keyboard.press('Shift+ArrowRight')
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).sourcePaneWidth)).toBe(268)
+    await page.keyboard.press('Home')
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).sourcePaneWidth)).toBe(220)
+    await page.keyboard.press('End')
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).sourcePaneWidth)).toBe(320)
+
+    await expect(articleDivider).toHaveAttribute('aria-label', /文章列表栏|article pane/i)
+    await articleDivider.focus()
+    await page.keyboard.press('ArrowLeft')
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).articlePaneWidth)).toBe(464)
+    await page.keyboard.press('Home')
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).articlePaneWidth)).toBe(320)
+    await page.keyboard.press('End')
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).articlePaneWidth)).toBe(480)
   } finally {
     await testApp.close()
   }

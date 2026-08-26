@@ -1,4 +1,5 @@
 import { Inbox, Plus, RefreshCw, Rss, Search, SearchX, Star, X } from 'lucide-react'
+import type { RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ArticleRecord, FeedRecord } from '../../shared/library'
 import { FeedIcon, type ArticleScope, type Destination } from './SourceSidebar'
@@ -16,6 +17,7 @@ interface ArticleListPaneProps {
   feeds: FeedRecord[]
   selectedArticleId: string | null
   articleListError: string | null
+  searchInputRef: RefObject<HTMLInputElement | null>
   refreshing: boolean
   refreshDisabled: boolean
   onClearScope: () => void
@@ -45,6 +47,7 @@ export function ArticleListPane({
   feeds,
   selectedArticleId,
   articleListError,
+  searchInputRef,
   refreshing,
   refreshDisabled,
   onClearScope,
@@ -64,9 +67,10 @@ export function ArticleListPane({
       : scopeStarredCount
   const hasArticleQuery = articleQuery.trim().length > 0
   const hasSubscriptions = feeds.length > 0
+  const searchShortcut = /Mac|iPhone|iPad|iPod/i.test(navigator.platform) ? '⌘K' : 'Ctrl K'
 
   return (
-    <section className="article-pane" aria-label={t(destinationLabelKey)}>
+    <section className="article-pane" aria-label={t(destinationLabelKey)} aria-busy={refreshing}>
       <header className="article-scope-bar">
         <div className="article-scope-current">
           {activeScopeFeed ? <FeedIcon feed={activeScopeFeed} /> : <div className="scope-icon"><Rss size={15}/></div>}
@@ -91,12 +95,13 @@ export function ArticleListPane({
         <div className="search-field">
           <Search size={16} />
           <input
+            ref={searchInputRef}
             value={articleQuery}
             onChange={(event) => onArticleQueryChange(event.target.value)}
             aria-label={t('searchArticles')}
             placeholder={t('searchArticles')}
           />
-          <kbd>Ctrl K</kbd>
+          <kbd>{searchShortcut}</kbd>
         </div>
         <div className="list-meta">
           <span>{hasArticleQuery
@@ -118,7 +123,7 @@ export function ArticleListPane({
       </div>
 
       <div className="workspace-list-stage">
-        {articleListError && <div className="workspace-error article-list-error">{articleListError}</div>}
+        {articleListError && <div className="workspace-error article-list-error" role="alert">{articleListError}</div>}
         {visibleArticles.length > 0 ? (
           <div className="list-content article-list">
             {visibleArticles.map((article) => (
@@ -127,7 +132,17 @@ export function ArticleListPane({
                 key={article.id}
                 data-article-id={article.id}
                 data-feed-id={article.feedId}
+                tabIndex={0}
+                role="button"
+                aria-current={selectedArticleId === article.id ? 'true' : undefined}
                 onClick={() => onSelectArticle(article)}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) return
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    onSelectArticle(article)
+                  }
+                }}
                 onContextMenu={(event) => {
                   event.preventDefault()
                   event.stopPropagation()
@@ -140,7 +155,8 @@ export function ArticleListPane({
                   <button
                     className={`star-button ${article.isStarred ? 'active' : ''}`}
                     type="button"
-                    aria-label={t('starred')}
+                    aria-label={article.isStarred ? t('removeStar') : t('addStar')}
+                    title={article.isStarred ? t('removeStar') : t('addStar')}
                     onClick={(event) => {
                       event.stopPropagation()
                       onToggleStarred(article)

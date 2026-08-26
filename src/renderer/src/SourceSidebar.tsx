@@ -116,9 +116,9 @@ export function SourceSidebar({
             <Compass size={17}/>
           </button>
           <div className="subscription-menu-anchor">
-            <button className="primary-action subscription-trigger" type="button" title={t('addSubscription')} aria-label={t('addSubscription')} onClick={onToggleSubscriptionMenu} disabled={opmlBusy} aria-expanded={subscriptionMenuOpen}>
+            <button className="primary-action subscription-trigger" type="button" title={t('addSubscription')} aria-label={t('addSubscription')} aria-haspopup="menu" onClick={onToggleSubscriptionMenu} disabled={opmlBusy} aria-expanded={subscriptionMenuOpen}>
               <Plus size={14} strokeWidth={2.2} />
-              {t('add')}
+              <span className="subscription-trigger-label">{t('add')}</span>
               <ChevronDown size={12}/>
             </button>
             {subscriptionMenuOpen && (
@@ -170,11 +170,11 @@ export function SourceSidebar({
       </div>
 
       <div className="workspace-list-stage">
-        {showNotices && opmlStatus && <div className="workspace-notice">{opmlStatus}</div>}
-        {showNotices && sourceError && <div className="workspace-error">{sourceError}</div>}
+        {showNotices && opmlStatus && <div className="workspace-notice" role="status" aria-live="polite">{opmlStatus}</div>}
+        {showNotices && sourceError && <div className="workspace-error" role="alert">{sourceError}</div>}
 
         <div className="list-content source-list source-scope-picker">
-          <button className={`source-scope-all ${articleScope.kind === 'all' ? 'selected' : ''}`} type="button" onClick={onSelectAll}>
+          <button className={`source-scope-all ${articleScope.kind === 'all' ? 'selected' : ''}`} type="button" aria-current={articleScope.kind === 'all' ? 'true' : undefined} onClick={onSelectAll}>
             <div className="scope-icon"><Inbox size={15}/></div>
             <div><strong>{t('allSources')}</strong><span>{t('articleCount', { count: allArticleCount })}</span></div>
             <span className="scope-unread-count">{t('unreadCountShort', { count: allUnreadCount })}</span>
@@ -184,7 +184,7 @@ export function SourceSidebar({
             const groupUnread = feeds.reduce((sum, feed) => sum + feedStats(feed.id).unread, 0)
             return (
               <section className="source-group-section" key={group.id}>
-                <button className={`source-group-header source-group-scope ${articleScope.kind === 'group' && articleScope.id === group.id ? 'selected' : ''}`} type="button" onClick={() => onSelectGroup(group)}>
+                <button className={`source-group-header source-group-scope ${articleScope.kind === 'group' && articleScope.id === group.id ? 'selected' : ''}`} type="button" aria-current={articleScope.kind === 'group' && articleScope.id === group.id ? 'true' : undefined} title={group.name} onClick={() => onSelectGroup(group)}>
                   <span className="source-group-name"><strong>{group.name}</strong><small>{t('sourceCount', { count: feeds.length })}</small></span>
                   <span>{t('unreadCountShort', { count: groupUnread })}</span>
                 </button>
@@ -195,6 +195,8 @@ export function SourceSidebar({
                       key={feed.id}
                       tabIndex={0}
                       role="button"
+                      aria-current={articleScope.kind === 'feed' && articleScope.id === feed.id ? 'true' : undefined}
+                      title={feed.name}
                       onClick={() => onSelectFeed(feed)}
                       onContextMenu={(event) => handleFeedContextMenu(event, feed, onFeedContextMenu)}
                       onKeyDown={(event) => {

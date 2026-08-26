@@ -734,6 +734,10 @@ const resources = {
       expandSourcePane: '展开来源栏',
       collapseArticlePane: '收起文章列表栏',
       expandArticlePane: '展开文章列表栏',
+      resizeSourcePane: '调整来源栏宽度',
+      resizeArticlePane: '调整文章列表栏宽度',
+      addStar: '添加星标',
+      removeStar: '取消星标',
       focusReading: '聚焦阅读',
       exitFocusReading: '退出聚焦阅读',
     }
@@ -1469,6 +1473,10 @@ const resources = {
       expandSourcePane: 'Expand source pane',
       collapseArticlePane: 'Collapse article pane',
       expandArticlePane: 'Expand article pane',
+      resizeSourcePane: 'Resize source pane',
+      resizeArticlePane: 'Resize article pane',
+      addStar: 'Add star',
+      removeStar: 'Remove star',
       focusReading: 'Focus reading',
       exitFocusReading: 'Exit focus reading',
     }

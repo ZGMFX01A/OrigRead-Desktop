@@ -38,6 +38,14 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
 
     await page.emulateMedia({ colorScheme: 'dark' })
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
+    const darkPaneSemantics = await page.evaluate(() => ({
+      source: getComputedStyle(document.querySelector('.source-pane')!).backgroundColor,
+      article: getComputedStyle(document.querySelector('.article-pane')!).backgroundColor,
+      destinationSelected: getComputedStyle(document.querySelector('.source-destination-item.active')!).backgroundColor,
+      scopeSelected: getComputedStyle(document.querySelector('.source-scope-all.selected')!).backgroundColor
+    }))
+    expect(darkPaneSemantics.source).not.toBe(darkPaneSemantics.article)
+    expect(darkPaneSemantics.destinationSelected).toBe(darkPaneSemantics.scopeSelected)
     await page.emulateMedia({ colorScheme: 'light' })
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('light')
 
@@ -65,6 +73,18 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     expect(articleDividerBox!.x).toBeGreaterThanOrEqual(articlePaneBox!.x + articlePaneBox!.width)
     expect(expandedReaderBox!.x).toBeGreaterThanOrEqual(articleDividerBox!.x + articleDividerBox!.width)
     expect(expandedReaderBox!.width).toBeGreaterThan(400)
+
+    // UI-3P.9：Article Pane 显示的 Ctrl/Cmd+K 提示必须是真实可用快捷键。
+    const articleSearchInput = page.locator('.article-pane .search-field input')
+    await page.keyboard.press('Control+k')
+    await expect(articleSearchInput).toBeFocused()
+
+    // Source 是导航表面、Article 是内容表面；两者在浅色模式下应保持可感知但克制的层级差异。
+    const lightPaneSurfaces = await page.evaluate(() => ({
+      source: getComputedStyle(document.querySelector('.source-pane')!).backgroundColor,
+      article: getComputedStyle(document.querySelector('.article-pane')!).backgroundColor
+    }))
+    expect(lightPaneSurfaces.source).not.toBe(lightPaneSurfaces.article)
 
     // legacy workspaceCollapsed 仍允许旧配置被读取，但 UI-3P.7 起不能再驱动三栏布局。
     await page.evaluate(async () => {
