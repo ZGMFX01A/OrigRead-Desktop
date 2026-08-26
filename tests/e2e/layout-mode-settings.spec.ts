@@ -10,6 +10,12 @@ test('two-pane layout restores a resizable Workspace + Reader while keeping thre
 
     expect(await page.evaluate(() => window.origread.getSettings())).toMatchObject({ layoutMode: 'three-pane' })
     await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'three-pane')
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-source-switcher-open', 'false')
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-source-switcher-recent-count', '0')
+
+    // SS-1：三栏 Source Pane 与双栏 Source Switcher 必须使用独立搜索状态。
+    const threePaneSourceSearch = page.locator('.source-pane .search-field input')
+    await threePaneSourceSearch.fill('three-pane-query')
 
     await page.locator('.settings-button').click()
     const layoutControl = page.locator('.layout-mode-segmented')
@@ -49,12 +55,16 @@ test('two-pane layout restores a resizable Workspace + Reader while keeping thre
     await expect(sourcePickerTrigger).not.toContainText(/选择来源|Choose source/)
     await expect(sourcePickerTrigger.locator('.article-scope-copy strong')).toBeVisible()
     await sourcePickerTrigger.click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-source-switcher-open', 'true')
     await expect(sourcePickerOverlay).toBeVisible()
     await expect(page.locator('.source-pane.embedded-source-pane')).toBeVisible()
     await expect(page.locator('.two-pane-workspace-base .article-pane')).toHaveCount(1)
     await expect(page.locator('.two-pane-workspace-base')).toHaveAttribute('aria-hidden', 'true')
     await expect(sourcePickerTrigger).toHaveAttribute('aria-expanded', 'true')
     await expect(sourcePickerSearch).toBeFocused()
+    await expect(sourcePickerSearch).toHaveValue('')
+    await sourcePickerSearch.fill('switcher-query')
+    await expect(sourcePickerSearch).toHaveValue('switcher-query')
 
     const overlayGeometry = await page.evaluate(() => {
       const workspace = document.querySelector('.workspace-pane')!.getBoundingClientRect()
@@ -75,6 +85,7 @@ test('two-pane layout restores a resizable Workspace + Reader while keeping thre
     // Escape / X / 范围选择都关闭 Overlay，并把焦点还给来源 Trigger。
     await page.keyboard.press('Escape')
     await expect(sourcePickerOverlay).toHaveCount(0)
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-source-switcher-open', 'false')
     await expect(sourcePickerTrigger).toBeFocused()
     await expect(page.locator('.two-pane-workspace-base')).not.toHaveAttribute('aria-hidden', 'true')
 
@@ -88,6 +99,19 @@ test('two-pane layout restores a resizable Workspace + Reader while keeping thre
     await page.locator('.two-pane-source-picker-overlay .source-scope-all').click()
     await expect(sourcePickerOverlay).toHaveCount(0)
     await expect(sourcePickerTrigger).toBeFocused()
+
+    // 双栏搜索关闭时只清理 Switcher Query；三栏 Source Query 在布局往返后必须原样恢复。
+    await page.locator('.settings-button').click()
+    await page.locator('.layout-mode-option[data-layout-mode="three-pane"]').click()
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.source-pane .search-field input')).toHaveValue('three-pane-query')
+
+    await page.locator('.settings-button').click()
+    await page.locator('.layout-mode-option[data-layout-mode="two-pane"]').click()
+    await page.locator('.settings-close-button').click()
+    await sourcePickerTrigger.click()
+    await expect(sourcePickerSearch).toHaveValue('')
+    await page.keyboard.press('Escape')
 
     // 离开普通阅读上下文时强制关闭 Overlay，不把焦点拉回已经不应成为当前操作目标的 Trigger。
     await sourcePickerTrigger.click()
