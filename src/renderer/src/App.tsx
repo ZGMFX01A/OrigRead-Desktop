@@ -9,6 +9,7 @@ import {
   Download,
   Maximize2,
   Minimize2,
+  MoreHorizontal,
   Languages,
   Plus,
   Sparkles,
@@ -24,6 +25,7 @@ import {
   SlidersHorizontal,
   Square,
   Trash2,
+  Volume2,
   X
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
@@ -151,6 +153,7 @@ export default function App(): React.JSX.Element {
   const [translationTargetOpen, setTranslationTargetOpen] = useState(false)
   const [readingShareDialog, setReadingShareDialog] = useState<ReadingShareDialogMode | null>(null)
   const [readingShareStatus, setReadingShareStatus] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
+  const [readerMoreOpen, setReaderMoreOpen] = useState(false)
   const [readerSearchOpen, setReaderSearchOpen] = useState(false)
   const [readerSearchQuery, setReaderSearchQuery] = useState('')
   const [readerSearchCount, setReaderSearchCount] = useState(0)
@@ -163,6 +166,7 @@ export default function App(): React.JSX.Element {
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [syncRuntimeState, setSyncRuntimeState] = useState<SyncRuntimeState | null>(null)
   const [originalViewState, setOriginalViewState] = useState<OriginalArticleViewState>(closedOriginalState())
+  const readerPaneRef = useRef<HTMLElement>(null)
   const readerStageRef = useRef<HTMLDivElement>(null)
   const readerContentRef = useRef<HTMLDivElement>(null)
   const readerSearchInputRef = useRef<HTMLInputElement>(null)
@@ -170,6 +174,8 @@ export default function App(): React.JSX.Element {
   const adaptiveSourceOverlayCloseRef = useRef<HTMLButtonElement>(null)
   const twoPaneSourcePickerTriggerRef = useRef<HTMLButtonElement>(null)
   const twoPaneSourcePickerSearchInputRef = useRef<HTMLInputElement>(null)
+  const readerMoreButtonRef = useRef<HTMLButtonElement>(null)
+  const readerSecondaryActionsRef = useRef<HTMLDivElement>(null)
   const selectedArticleIdRef = useRef<string | null>(null)
   const sourceDiscoveryRequestIdRef = useRef<string | null>(null)
   const aiSummaryRunRef = useRef(0)
@@ -322,6 +328,37 @@ export default function App(): React.JSX.Element {
       window.removeEventListener('keydown', onKeyDown)
     }
   }, [closeTwoPaneSourcePicker, focusReading, settings?.layoutMode, settings?.workspaceCollapsed, twoPaneSourcePickerOpen])
+
+  useEffect(() => {
+    if (!readerMoreOpen) return
+    const focusFrame = window.requestAnimationFrame(() => {
+      readerSecondaryActionsRef.current
+        ?.querySelector<HTMLElement>('button:not(:disabled), select:not(:disabled)')
+        ?.focus()
+    })
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setReaderMoreOpen(false)
+      window.requestAnimationFrame(() => readerMoreButtonRef.current?.focus())
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.cancelAnimationFrame(focusFrame)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [readerMoreOpen])
+
+  useEffect(() => {
+    const readerPane = readerPaneRef.current
+    if (!readerPane || typeof ResizeObserver === 'undefined') return
+    // More 只属于 <650px 的 Reader 容器；Pane resize / 布局切换变宽后立即清掉临时菜单状态。
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry && entry.contentRect.width >= 650) setReaderMoreOpen(false)
+    })
+    observer.observe(readerPane)
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     const closeContextMenu = (): void => setContextMenu(null)
@@ -661,6 +698,7 @@ export default function App(): React.JSX.Element {
     setAdaptiveSourceOverlayOpen(false)
     closeTwoPaneSourcePicker(false)
     setSubscriptionMenuOpen(false)
+    setReaderMoreOpen(false)
     setFocusReading((current) => !current)
   }, [closeTwoPaneSourcePicker])
 
@@ -763,6 +801,7 @@ export default function App(): React.JSX.Element {
         setAdaptiveSourceOverlayOpen(false)
         closeTwoPaneSourcePicker(false)
         setSubscriptionMenuOpen(false)
+        setReaderMoreOpen(false)
       }
       if (patch.language !== undefined) {
         const language = next.language === 'system'
@@ -935,6 +974,7 @@ export default function App(): React.JSX.Element {
   const showSettings = async (page: SettingsPage = 'general'): Promise<void> => {
     if (originalViewState.open) await closeOriginalArticle()
     closeTwoPaneSourcePicker(false)
+    setReaderMoreOpen(false)
     setSourceCatalogOpen(false)
     setSettingsInitialPage(page)
     setSettingsOpen(true)
@@ -953,6 +993,7 @@ export default function App(): React.JSX.Element {
 
   const showOriginalArticle = async (): Promise<void> => {
     if (!originalUrl || !readerStageRef.current) return
+    setReaderMoreOpen(false)
     setSettingsOpen(false)
     setReaderContentError(null)
     try {
@@ -1296,6 +1337,7 @@ export default function App(): React.JSX.Element {
   const showSourceCatalog = async (): Promise<void> => {
     if (originalViewState.open) await closeOriginalArticle()
     closeTwoPaneSourcePicker(false)
+    setReaderMoreOpen(false)
     setSettingsOpen(false)
     setSourceCatalogOpen(true)
   }
@@ -1761,11 +1803,13 @@ export default function App(): React.JSX.Element {
         </>
       )}
 
-      <section className="reader-pane">
+      <section className="reader-pane" ref={readerPaneRef}>
         <header className="reader-toolbar">
-          <div className="reader-title">
-            {settingsOpen ? t('settings') : sourceCatalogOpen ? t('sourceDiscoveryTitle') : originalViewState.open ? (originalViewState.title || t('original')) : t('reader')}
-          </div>
+          {(settingsOpen || sourceCatalogOpen || originalViewState.open) && (
+            <div className="reader-title">
+              {settingsOpen ? t('settings') : sourceCatalogOpen ? t('sourceDiscoveryTitle') : (originalViewState.title || t('original'))}
+            </div>
+          )}
           <div className="reader-actions">
             {!settingsOpen && !sourceCatalogOpen && (
               <button
@@ -1779,11 +1823,11 @@ export default function App(): React.JSX.Element {
               </button>
             )}
             {settingsOpen ? (
-              <button type="button" className="settings-close-button" onClick={() => setSettingsOpen(false)}>
+              <button type="button" className="settings-close-button" aria-label={t('closeSettings')} title={t('closeSettings')} onClick={() => setSettingsOpen(false)}>
                 <X size={17} /><span>{t('closeSettings')}</span>
               </button>
             ) : sourceCatalogOpen ? (
-              <button type="button" className="settings-close-button" onClick={() => setSourceCatalogOpen(false)}>
+              <button type="button" className="settings-close-button" aria-label={t('back')} title={t('back')} onClick={() => setSourceCatalogOpen(false)}>
                 <X size={17} /><span>{t('back')}</span>
               </button>
             ) : originalViewState.open ? (
@@ -1797,10 +1841,10 @@ export default function App(): React.JSX.Element {
                 <button type="button" className="icon-button" aria-label={t('refresh')} onClick={() => void navigateOriginalArticle('reload')}>
                   <RefreshCw size={16} className={originalViewState.loading ? 'spinning' : ''} />
                 </button>
-                <button type="button" disabled={!originalViewState.url} onClick={() => originalViewState.url && void openExternal(originalViewState.url)}>
+                <button type="button" disabled={!originalViewState.url} aria-label={t('externalBrowser')} title={t('externalBrowser')} onClick={() => originalViewState.url && void openExternal(originalViewState.url)}>
                   <ExternalLink size={17} /><span>{t('externalBrowser')}</span>
                 </button>
-                <button type="button" className="reader-mode-button" onClick={() => void closeOriginalArticle()}>
+                <button type="button" className="reader-mode-button" aria-label={t('backToReader')} title={t('backToReader')} onClick={() => void closeOriginalArticle()}>
                   <BookOpenText size={17} /><span>{t('backToReader')}</span>
                 </button>
               </>
@@ -1826,30 +1870,58 @@ export default function App(): React.JSX.Element {
                   <span>{t('translation')}</span>
                 </button>
                 <button type="button" className="icon-button reader-tool-options" disabled={!selectedArticle || readerToolLoading !== null} title={t('translationTarget')} aria-label={t('translationTarget')} onClick={()=>setTranslationTargetOpen(true)}><ChevronDown size={15}/></button>
-                <button type="button" className={`icon-button ${selectedArticle?.isUnread ? 'active' : ''}`} disabled={!selectedArticle} title={selectedArticle?.isUnread?t('markRead'):t('markUnread')} aria-label={selectedArticle?.isUnread?t('markRead'):t('markUnread')} onClick={()=>selectedArticle&&toggleUnread(selectedArticle)}><BookOpenText size={16}/></button>
                 <button type="button" className={`icon-button ${selectedArticle?.isStarred ? 'active' : ''}`} disabled={!selectedArticle} title={selectedArticle?.isStarred?t('unstar'):t('starArticle')} aria-label={selectedArticle?.isStarred?t('unstar'):t('starArticle')} onClick={()=>selectedArticle&&toggleStarred(selectedArticle)}><Star size={16} fill={selectedArticle?.isStarred?'currentColor':'none'}/></button>
-                <button type="button" className="icon-button" disabled={!nextArticle} title={t('nextArticle')} aria-label={t('nextArticle')} onClick={()=>nextArticle&&selectArticle(nextArticle)}><ChevronRight size={17}/></button>
-                <button type="button" className={`icon-button reader-tts-button ${speech.state.domain==='main'?'active':''}`} disabled={!selectedArticle||!mainSpeechText} title={speech.state.domain==='main'&&speech.state.status==='speaking'?t('pauseReading'):speech.state.domain==='main'&&speech.state.status==='paused'?t('resumeReading'):t('readArticle')} aria-label={t('readArticle')} onClick={toggleMainSpeech}>
-                  {speech.state.domain==='main'&&speech.state.status==='speaking'
-                    ? <Pause size={16}/>
-                    : speech.state.domain==='main'&&speech.state.status==='paused'
-                      ? <Play size={16}/>
-                      : <Headphones size={16}/>
-                  }
-                </button>
-                {speech.state.status!=='idle'&&<button type="button" className="icon-button reader-tts-stop" title={t('stopReading')} aria-label={t('stopReading')} onClick={speech.stop}><Square size={14}/></button>}
-                <select className="reader-voice-select" value={settings?.ttsVoiceURI??''} title={t('readingVoice')} aria-label={t('readingVoice')} onChange={(event)=>void updateDesktopSettings({ttsVoiceURI:event.target.value})}>
-                  <option value="">{t('systemDefaultVoice')}</option>
-                  {speech.voices.map((voice)=><option key={voice.voiceURI} value={voice.voiceURI}>{voice.name} · {voice.lang}</option>)}
-                </select>
-                <button
-                  type="button"
-                  className={`full-content-button ${readerContent?.mode === 'full' ? 'active' : ''}`}
-                  disabled={!selectedArticle || !originalUrl || readerContentLoading}
-                  onClick={() => void toggleFullContent()}
-                >
-                  <BookOpenText size={17} /><span>{readerContent?.mode === 'full' ? t('feedContent') : t('fullContent')}</span>
-                </button>
+                {readerMoreOpen && (
+                  <button
+                    type="button"
+                    className="reader-more-backdrop"
+                    aria-label={t('close')}
+                    onClick={() => {
+                      setReaderMoreOpen(false)
+                      window.requestAnimationFrame(() => readerMoreButtonRef.current?.focus())
+                    }}
+                  />
+                )}
+                <div ref={readerSecondaryActionsRef} id="reader-secondary-actions" className={`reader-secondary-actions ${readerMoreOpen ? 'open' : ''}`} aria-label={t('more')}>
+                  <button type="button" className={`icon-button reader-secondary-action ${selectedArticle?.isUnread ? 'active' : ''}`} disabled={!selectedArticle} title={selectedArticle?.isUnread?t('markRead'):t('markUnread')} aria-label={selectedArticle?.isUnread?t('markRead'):t('markUnread')} onClick={()=>{setReaderMoreOpen(false);selectedArticle&&toggleUnread(selectedArticle)}}><BookOpenText size={16}/><span>{selectedArticle?.isUnread?t('markRead'):t('markUnread')}</span></button>
+                  <button type="button" className="icon-button reader-secondary-action" disabled={!nextArticle} title={t('nextArticle')} aria-label={t('nextArticle')} onClick={()=>{setReaderMoreOpen(false);nextArticle&&selectArticle(nextArticle)}}><ChevronRight size={17}/><span>{t('nextArticle')}</span></button>
+                  <button type="button" className={`icon-button reader-secondary-action reader-tts-button ${speech.state.domain==='main'?'active':''}`} disabled={!selectedArticle||!mainSpeechText} title={speech.state.domain==='main'&&speech.state.status==='speaking'?t('pauseReading'):speech.state.domain==='main'&&speech.state.status==='paused'?t('resumeReading'):t('readArticle')} aria-label={t('readArticle')} onClick={()=>{setReaderMoreOpen(false);toggleMainSpeech()}}>
+                    {speech.state.domain==='main'&&speech.state.status==='speaking'
+                      ? <Pause size={16}/>
+                      : speech.state.domain==='main'&&speech.state.status==='paused'
+                        ? <Play size={16}/>
+                        : <Headphones size={16}/>
+                    }
+                    <span>{speech.state.domain==='main'&&speech.state.status==='speaking'?t('pauseReading'):speech.state.domain==='main'&&speech.state.status==='paused'?t('resumeReading'):t('readArticle')}</span>
+                  </button>
+                  {speech.state.status!=='idle'&&<button type="button" className="icon-button reader-secondary-action reader-tts-stop" title={t('stopReading')} aria-label={t('stopReading')} onClick={()=>{setReaderMoreOpen(false);speech.stop()}}><Square size={14}/><span>{t('stopReading')}</span></button>}
+                  <label className="reader-voice-control" title={t('readingVoice')}>
+                    <span className="reader-voice-compact"><Volume2 size={16}/><span>{t('readingVoice')}</span></span>
+                    <select className="reader-voice-select" value={settings?.ttsVoiceURI??''} aria-label={t('readingVoice')} onChange={(event)=>{setReaderMoreOpen(false);void updateDesktopSettings({ttsVoiceURI:event.target.value})}}>
+                      <option value="">{t('systemDefaultVoice')}</option>
+                      {speech.voices.map((voice)=><option key={voice.voiceURI} value={voice.voiceURI}>{voice.name} · {voice.lang}</option>)}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className={`full-content-button reader-secondary-action ${readerContent?.mode === 'full' ? 'active' : ''}`}
+                    disabled={!selectedArticle || !originalUrl || readerContentLoading}
+                    onClick={() => {setReaderMoreOpen(false);void toggleFullContent()}}
+                  >
+                    <BookOpenText size={17} /><span>{readerContent?.mode === 'full' ? t('feedContent') : t('fullContent')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button reading-share-button reader-secondary-action"
+                    disabled={!selectedArticle}
+                    title={t('share')}
+                    aria-label={t('share')}
+                    onClick={()=>{setReaderMoreOpen(false);handleReadingShareClick()}}
+                    onContextMenu={handleReadingShareContextMenu}
+                  >
+                    <Share2 size={17} /><span>{t('share')}</span>
+                  </button>
+                </div>
                 <button
                   type="button"
                   className="icon-button original-button"
@@ -1862,21 +1934,26 @@ export default function App(): React.JSX.Element {
                 </button>
                 <button
                   type="button"
-                  className="icon-button reading-share-button"
-                  disabled={!selectedArticle}
-                  title={t('share')}
-                  aria-label={t('share')}
-                  onClick={handleReadingShareClick}
-                  onContextMenu={handleReadingShareContextMenu}
+                  ref={readerMoreButtonRef}
+                  className={`icon-button reader-more-button ${readerMoreOpen ? 'active' : ''}`}
+                  aria-label={t('more')}
+                  title={t('more')}
+                  aria-controls="reader-secondary-actions"
+                  aria-expanded={readerMoreOpen}
+                  onClick={() => setReaderMoreOpen((open)=>!open)}
                 >
-                  <Share2 size={17} />
-                </button>
-                <button type="button" className="icon-button settings-button" aria-label={t('settings')} title={t('settings')} onClick={() => void showSettings()}>
-                  <Settings size={17} />
+                  <MoreHorizontal size={17}/>
                 </button>
               </>
             )}
           </div>
+          {!settingsOpen && !sourceCatalogOpen && !originalViewState.open && (
+            <div className="reader-fixed-actions">
+              <button type="button" className="icon-button settings-button" aria-label={t('settings')} title={t('settings')} onClick={() => void showSettings()}>
+                <Settings size={17} />
+              </button>
+            </div>
+          )}
           {readingShareStatus && (
             <div className={`reading-share-status ${readingShareStatus.kind}`} role="status" aria-live="polite">
               {readingShareStatus.message}

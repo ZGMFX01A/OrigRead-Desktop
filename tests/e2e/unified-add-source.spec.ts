@@ -209,6 +209,8 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await page.locator('.original-button').click()
     await expect.poll(() => fixture.articleRequests()).toBeGreaterThan(articleRequestsBeforeOriginal)
     await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
+    await expect(page.locator('.reader-title')).toBeVisible()
+    await expect(page.locator('.reader-title')).not.toHaveText(/^(阅读|Reader)$/)
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
     await expect.poll(() => page.locator('.reader-toolbar').evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(darkToolbarBackground)
 

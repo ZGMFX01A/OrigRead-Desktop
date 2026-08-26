@@ -729,7 +729,7 @@ button { color: inherit; }
 }
 .collapsed-pane-restore:focus-visible { outline: 2px solid #aaa2ec; outline-offset: 2px; }
 
-.reader-pane { grid-column: 5; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: 56px minmax(0, 1fr); background: #f6f6f8; }
+.reader-pane { grid-column: 5; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: 56px minmax(0, 1fr); background: #f6f6f8; container-type: inline-size; container-name: reader-pane; }
 .two-pane-layout .reader-pane { grid-column: 3; }
 .reader-toolbar {
   position: relative;
@@ -737,20 +737,24 @@ button { color: inherit; }
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 0 18px 0 22px;
+  gap: 8px;
+  padding: 0 14px 0 18px;
 }
 
-.reader-title { font-size: 13px; font-weight: 650; }
-.reader-actions { min-width: 0; display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
-.reader-actions::-webkit-scrollbar { display: none; }
+.reader-title { min-width: 0; max-width: 38%; flex: 0 1 auto; overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.reader-actions { min-width: 0; flex: 1 1 auto; display: flex; align-items: center; justify-content: flex-end; gap: 4px; overflow: hidden; }
 .reader-actions button { height: 34px; padding: 0 10px; color: #9a9ca5; font-size: 11.5px; }
 .reader-actions button:disabled { opacity: 0.58; }
 .reader-actions button:not(:disabled) { cursor: pointer; color: #686a74; }
 .reader-actions button:not(:disabled):hover { background: #f1f0f7; color: #5448b9; }
 .reader-actions .reading-share-button:not(:disabled):hover,
 .reader-actions .original-button:not(:disabled):hover { color: #5448b9; }
+.reader-fixed-actions { flex: 0 0 auto; display: flex; align-items: center; padding-left: 7px; border-left: 1px solid color-mix(in srgb,var(--border) 82%,transparent); }
+.reader-secondary-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; }
+.reader-actions .reader-more-button,
+.reader-actions .reader-more-backdrop { display: none; }
+.reader-voice-control { min-width: 0; display: flex; align-items: center; }
+.reader-voice-compact { display: none; }
 .reading-share-status {
   position: absolute;
   right: 18px;
@@ -1138,6 +1142,76 @@ button { color: inherit; }
 .reader-tool-options { width: 24px !important; padding: 0 !important; margin-left: -4px; }
 .reader-voice-select { max-width: 155px; height: 30px; border: 1px solid #dfdfe6; border-radius: 8px; background: #fafafd; color: #666872; font-size: 9.5px; padding: 0 7px; outline: 0; }
 .reader-voice-select:focus { border-color: #b9b3e7; }
+
+@container reader-pane (max-width: 1000px) {
+  .reader-toolbar { padding-inline: 10px; gap: 6px; }
+  .reader-title { max-width: 34%; }
+  .reader-actions button > span:not(.ai-summary-accent-icon) { display: none; }
+  .reader-actions button { width: 34px; padding: 0; justify-content: center; }
+  .reader-tool-options { width: 24px !important; }
+  .reader-voice-control { position: relative; width: 34px; height: 34px; flex: 0 0 34px; }
+  .reader-voice-compact { width: 34px; height: 34px; display: grid; place-items: center; color: #747680; }
+  .reader-voice-compact > span { display: none; }
+  .reader-voice-select { position: absolute; inset: 0; width: 34px; max-width: 34px; height: 34px; opacity: 0; cursor: pointer; }
+}
+
+@container reader-pane (max-width: 649px) {
+  .reader-toolbar { padding-inline: 8px; }
+  .reader-title { max-width: min(42%, 180px); }
+  .reader-fixed-actions { padding-left: 5px; }
+  .reader-secondary-actions {
+    display: none;
+    position: absolute;
+    top: 48px;
+    right: 47px;
+    z-index: 32;
+    width: min(238px, calc(100% - 24px));
+    max-height: min(420px, calc(100vh - 86px));
+    overflow-y: auto;
+    padding: 7px;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: color-mix(in srgb,var(--surface) 98%,transparent);
+    box-shadow: 0 14px 34px rgba(31,32,39,.16);
+  }
+  .reader-secondary-actions.open { display: grid; gap: 3px; }
+  .reader-secondary-actions button,
+  .reader-secondary-actions .icon-button {
+    width: 100% !important;
+    min-height: 34px;
+    justify-content: flex-start !important;
+    gap: 9px;
+    padding: 0 9px !important;
+    text-align: left;
+  }
+  .reader-secondary-actions button span { display: inline; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .reader-actions .reader-more-button { display: inline-flex; }
+  .reader-actions .reader-more-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 31;
+    width: auto !important;
+    height: auto !important;
+    padding: 0 !important;
+    border: 0;
+    border-radius: 0;
+    background: transparent !important;
+  }
+  .reader-voice-control {
+    position: static;
+    width: 100%;
+    height: auto;
+    display: grid;
+    grid-template-columns: auto minmax(0,1fr);
+    align-items: center;
+    gap: 8px;
+    padding: 6px 7px 7px 9px;
+    border-radius: 8px;
+  }
+  .reader-voice-compact { width: auto; height: auto; display: inline-flex; align-items: center; gap: 8px; color: #686a74; font-size: 11px; font-weight: 600; }
+  .reader-voice-compact > span { display: inline; }
+  .reader-voice-select { position: static; grid-column: 1 / -1; width: 100%; max-width: none; height: 30px; opacity: 1; cursor: pointer; }
+}
 .reader-tool-notice { max-width: var(--reader-content-width); margin: 22px auto -8px; padding: 10px 10px 10px 12px; border: 1px solid #ddd9f4; border-radius: 11px; background: #f7f5ff; color: #545160; display: flex; align-items: center; gap: 10px; font-size: 11px; line-height: 1.5; }
 .reader-tool-notice-copy { flex: 1; min-width: 0; }
 .reader-tool-notice-copy strong { font-weight: 550; color: #454250; }
@@ -1522,8 +1596,6 @@ mark.reader-search-match.current { background: #ffc96b; outline: 2px solid #d9a2
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1120px) {
-  .reader-actions button span { display: none; }
-  .reader-actions button { width: 34px; padding: 0; justify-content: center; }
   .settings-layout { grid-template-columns: 52px minmax(0, 1fr); }
   .settings-nav { padding-left: 8px; padding-right: 8px; }
   .settings-nav-title span,
