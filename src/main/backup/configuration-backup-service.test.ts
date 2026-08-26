@@ -63,6 +63,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     expect(fixture.settings.current()).toMatchObject({
       syncIntervalMinutes: 60,
       syncOnStart: true,
+      layoutMode: 'three-pane',
       sourcePaneWidth: 260,
       articlePaneWidth: 380,
       sourcePaneCollapsed: false,
@@ -74,7 +75,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     const fixture = createFixture()
     fixture.ai.updateProvider({ id: 'default', endpoint: 'https://api.example/v1', defaultModel: 'model', apiKey: 'secret-ai' })
     fixture.translation.updateProvider({ type: 'DEEPL', enabled: true, endpoint: 'https://api-free.deepl.com/v2/translate', apiKey: 'secret-deepl' })
-    fixture.settings.update({ sourcePaneWidth: 300, articlePaneWidth: 440, sourcePaneCollapsed: true })
+    fixture.settings.update({ layoutMode: 'two-pane', sourcePaneWidth: 300, articlePaneWidth: 440, sourcePaneCollapsed: true })
 
     const plainContent = fixture.backup.exportBackup('')
     const plain = JSON.parse(plainContent) as ConfigurationBackup
@@ -83,6 +84,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       'origread.desktop.readerFontSize': 17,
       'origread.desktop.readerLineHeight': 1.85,
       'origread.desktop.readerContentWidth': 760,
+      'origread.desktop.layoutMode': 'two-pane',
       'origread.desktop.sourcePaneWidth': 300,
       'origread.desktop.articlePaneWidth': 440,
       'origread.desktop.sourcePaneCollapsed': true,
@@ -90,9 +92,10 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     })
     expect(plain.encryptedSecrets).toBeNull()
 
-    fixture.settings.update({ sourcePaneWidth: 220, articlePaneWidth: 320, sourcePaneCollapsed: false, articlePaneCollapsed: true })
+    fixture.settings.update({ layoutMode: 'three-pane', sourcePaneWidth: 220, articlePaneWidth: 320, sourcePaneCollapsed: false, articlePaneCollapsed: true })
     fixture.backup.restoreBackup(plainContent)
     expect(fixture.settings.current()).toMatchObject({
+      layoutMode: 'two-pane',
       sourcePaneWidth: 300,
       articlePaneWidth: 440,
       sourcePaneCollapsed: true,

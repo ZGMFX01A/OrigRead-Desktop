@@ -110,6 +110,7 @@ function toAiBackup(value:ReturnType<AiSettingsRepository['current']>):AiBackup{
 function desktopPreferences(settings:ReturnType<SettingsRepository['current']>):Record<string,unknown>{return{
   'origread.desktop.language':settings.language,
   'origread.desktop.theme':settings.theme,
+  'origread.desktop.layoutMode':settings.layoutMode,
   'origread.desktop.workspaceCollapsed':settings.workspaceCollapsed,
   'origread.desktop.workspaceWidth':settings.workspaceWidth,
   'origread.desktop.sourcePaneWidth':settings.sourcePaneWidth,
@@ -127,8 +128,9 @@ function desktopPreferences(settings:ReturnType<SettingsRepository['current']>):
 }}
 function readDesktopPreferences(value:Record<string,unknown>|null|undefined):Partial<ReturnType<SettingsRepository['current']>>{
   if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('备份中的 preferences 必须是 JSON 对象')
-  // 旧备份没有三栏字段时必须回到新版本默认值，不能继承恢复目标机器当前的布局偏好。
+  // 旧备份没有布局/三栏字段时必须回到新版本默认值，不能继承恢复目标机器当前的布局偏好。
   const result:Record<string,unknown>={
+    layoutMode:DEFAULT_DESKTOP_SETTINGS.layoutMode,
     sourcePaneWidth:DEFAULT_DESKTOP_SETTINGS.sourcePaneWidth,
     articlePaneWidth:DEFAULT_DESKTOP_SETTINGS.articlePaneWidth,
     sourcePaneCollapsed:DEFAULT_DESKTOP_SETTINGS.sourcePaneCollapsed,
@@ -136,6 +138,7 @@ function readDesktopPreferences(value:Record<string,unknown>|null|undefined):Par
   }
   const language=value['origread.desktop.language'];if(language!==undefined){if(language!=='system'&&language!=='zh'&&language!=='en')throw new Error('备份中的 Desktop 语言设置无效');result.language=language}
   const theme=value['origread.desktop.theme'];if(theme!==undefined){if(!['system','light','dark'].includes(String(theme)))throw new Error('备份中的 Desktop 主题设置无效');result.theme=theme}
+  const layoutMode=value['origread.desktop.layoutMode'];if(layoutMode!==undefined){if(layoutMode!=='two-pane'&&layoutMode!=='three-pane')throw new Error('备份中的 Desktop 布局设置无效');result.layoutMode=layoutMode}
   const collapsed=value['origread.desktop.workspaceCollapsed'];if(collapsed!==undefined){if(typeof collapsed!=='boolean')throw new Error('备份中的 Desktop 侧栏设置类型无效');result.workspaceCollapsed=collapsed}
   const sourceCollapsed=value['origread.desktop.sourcePaneCollapsed'];if(sourceCollapsed!==undefined){if(typeof sourceCollapsed!=='boolean')throw new Error('备份中的 Desktop Source Pane 折叠设置类型无效');result.sourcePaneCollapsed=sourceCollapsed}
   const articleCollapsed=value['origread.desktop.articlePaneCollapsed'];if(articleCollapsed!==undefined){if(typeof articleCollapsed!=='boolean')throw new Error('备份中的 Desktop Article Pane 折叠设置类型无效');result.articlePaneCollapsed=articleCollapsed}

@@ -13,6 +13,7 @@ describe('SettingsRepository', () => {
     expect(repository.update({
       language: 'zh',
       theme: 'dark',
+      layoutMode: 'two-pane',
       workspaceCollapsed: true,
       workspaceWidth: 999,
       sourcePaneWidth: 999,
@@ -35,6 +36,7 @@ describe('SettingsRepository', () => {
       ...DEFAULT_DESKTOP_SETTINGS,
       language: 'zh',
       theme: 'dark',
+      layoutMode: 'two-pane',
       workspaceCollapsed: true,
       workspaceWidth: 560,
       sourcePaneWidth: 320,
@@ -56,6 +58,7 @@ describe('SettingsRepository', () => {
     })
     expect(repository.current().workspaceCollapsed).toBe(true)
     expect(repository.current().theme).toBe('dark')
+    expect(repository.current().layoutMode).toBe('two-pane')
     expect(repository.current().readerBackground).toBe('custom')
     expect(repository.current().readerBackgroundCustom).toBe('#e4f6ea')
     expect(repository.current().autoCheckUpdates).toBe(false)
@@ -76,6 +79,7 @@ describe('SettingsRepository', () => {
 
     expect(repository.current()).toMatchObject({
       language: 'zh',
+      layoutMode: 'three-pane',
       workspaceCollapsed: true,
       workspaceWidth: 500,
       sourcePaneWidth: 260,
@@ -110,6 +114,7 @@ describe('SettingsRepository', () => {
     const repository = new SettingsRepository(database.connection)
 
     expect(() => repository.update({ workspaceCollapsed: 'yes' } as never)).toThrow(TypeError)
+    expect(() => repository.update({ layoutMode: 'invalid' } as never)).toThrow(TypeError)
     expect(() => repository.update({ sourcePaneCollapsed: 'yes' } as never)).toThrow(TypeError)
     expect(() => repository.update({ articlePaneCollapsed: 1 } as never)).toThrow(TypeError)
     expect(() => repository.update({ syncIntervalMinutes: 10 } as never)).toThrow(TypeError)

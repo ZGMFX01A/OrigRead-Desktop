@@ -1406,6 +1406,7 @@ export default function App(): React.JSX.Element {
   const readerColors = resolveReaderColors(readerBackground)
   const sourcePaneCollapsed = settings?.sourcePaneCollapsed ?? false
   const articlePaneCollapsed = settings?.articlePaneCollapsed ?? false
+  const layoutMode = settings?.layoutMode ?? 'three-pane'
   const persistedArticlePaneWidth = settings?.articlePaneWidth ?? 380
   const responsiveLayout = resolveResponsivePaneLayout(viewportWidth, persistedArticlePaneWidth)
   const { adaptiveSourceHidden, compactLayout, articlePaneWidth: effectiveArticlePaneWidth } = responsiveLayout
@@ -1511,6 +1512,7 @@ export default function App(): React.JSX.Element {
       className={`app-shell ${focusReading ? 'focus-reading' : ''} ${adaptiveSourceHidden ? 'adaptive-source-hidden' : ''} ${compactLayout ? 'compact-layout' : ''} ${effectiveSourcePaneCollapsed ? 'source-pane-collapsed' : ''} ${effectiveArticlePaneCollapsed ? 'article-pane-collapsed' : ''}`}
       style={readerStyle}
       data-viewport-width={viewportWidth}
+      data-layout-mode={layoutMode}
     >
       {!effectiveSourcePaneCollapsed && renderSourceSidebar()}
 

@@ -81,6 +81,26 @@ function GeneralSettings({settings,onChange}:{settings:DesktopSettings;onChange:
     <SettingsSection icon={<Globe2 size={17}/>} title={t('settingsGeneral')}>
       <SettingRow title={t('language')} description={t('languageDescription')}><select className="language-select" value={settings.language} onChange={(e)=>onChange({language:e.target.value as DesktopSettings['language']})}><option value="system">{t('languageSystem')}</option><option value="zh">简体中文</option><option value="en">English</option></select></SettingRow>
       <SettingRow title={t('appearanceTheme')} description={t('appearanceThemeDescription')}><select className="theme-select" value={settings.theme} onChange={(e)=>onChange({theme:e.target.value as DesktopSettings['theme']})}><option value="system">{t('themeSystem')}</option><option value="light">{t('themeLight')}</option><option value="dark">{t('themeDark')}</option></select></SettingRow>
+      <SettingRow className="layout-mode-setting-row" title={t('layoutMode')} description={t('layoutModeDescription')}>
+        <div className="layout-mode-segmented" role="group" aria-label={t('layoutMode')}>
+          {([
+            ['two-pane', 'layoutModeTwoPane'],
+            ['three-pane', 'layoutModeThreePane']
+          ] as const).map(([mode, labelKey]) => (
+            <button
+              key={mode}
+              type="button"
+              className={`layout-mode-option ${settings.layoutMode === mode ? 'selected' : ''}`}
+              data-layout-mode={mode}
+              aria-pressed={settings.layoutMode === mode}
+              onClick={() => onChange({ layoutMode: mode })}
+            >
+              <span className={`layout-mode-preview ${mode}`} aria-hidden="true"><span/><span/><span/></span>
+              <span>{t(labelKey)}</span>
+            </button>
+          ))}
+        </div>
+      </SettingRow>
     </SettingsSection>
     <SettingsSection icon={<BookOpenText size={17}/>} title={t('settingsReading')}>
       <SettingRow title={t('readerFont')} description={t('readerFontDescription')}><div className="reader-font-setting"><select className="reader-font-select" value={settings.readerFontId} onChange={(e)=>onChange({readerFontId:e.target.value})}>{BUILTIN_READER_FONTS.map((font)=><option key={font.id} value={font.id}>{t(font.nameKey)}</option>)}{customFonts.map((font)=><option key={font.id} value={font.id}>{font.name}</option>)}</select><button type="button" className="mini-action" onClick={()=>void importFont()}><Upload size={13}/>{t('importFont')}</button>{settings.readerFontId.startsWith('custom:')&&<button type="button" className="mini-action danger" onClick={()=>void deleteSelectedFont()}><Trash2 size={13}/>{t('delete')}</button>}</div>{fontStatus&&<div className="setting-inline-status">{fontStatus}</div>}</SettingRow>

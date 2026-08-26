@@ -4,6 +4,8 @@ export type DesktopLanguagePreference = 'system' | DesktopLanguage
 export type AiSummaryPlacement = 'replace' | 'left' | 'right' | 'top' | 'bottom'
 export type ThemePreference = 'system' | 'light' | 'dark'
 export type ReaderBackgroundPreference = 'theme' | 'paper' | 'warm' | 'sepia' | 'mint' | 'custom'
+/** Desktop 阅读主界面的用户布局偏好；与窗口响应式临时隐藏状态严格分离。 */
+export type DesktopLayoutMode = 'two-pane' | 'three-pane'
 
 export const SYNC_INTERVAL_OPTIONS = [0, 15, 30, 60, 120, 180, 360, 720, 1440] as const
 export type SyncIntervalMinutes = typeof SYNC_INTERVAL_OPTIONS[number]
@@ -18,6 +20,7 @@ export const ARTICLE_PANE_WIDTH_MAX = 480
 export interface DesktopSettings {
   language: DesktopLanguagePreference
   theme: ThemePreference
+  layoutMode: DesktopLayoutMode
   workspaceCollapsed: boolean
   workspaceWidth: number
   sourcePaneWidth: number
@@ -48,6 +51,7 @@ export type DesktopSettingsPatch = Partial<DesktopSettings>
 export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   language: 'system',
   theme: 'system',
+  layoutMode: 'three-pane',
   workspaceCollapsed: false,
   workspaceWidth: 420,
   sourcePaneWidth: 260,
@@ -78,6 +82,7 @@ export function normalizeDesktopSettings(value: unknown): DesktopSettings {
   return {
     language: normalizeLanguage(input.language),
     theme: normalizeTheme(input.theme),
+    layoutMode: normalizeLayoutMode(input.layoutMode),
     workspaceCollapsed: input.workspaceCollapsed === true,
     workspaceWidth: normalizeWorkspaceWidth(input.workspaceWidth),
     sourcePaneWidth: normalizeSourcePaneWidth(input.sourcePaneWidth),
@@ -110,6 +115,12 @@ export function normalizeDesktopSettingsPatch(value: unknown): DesktopSettingsPa
   const patch: DesktopSettingsPatch = {}
   if ('language' in value) patch.language = normalizeLanguage(value.language)
   if ('theme' in value) patch.theme = normalizeTheme(value.theme)
+  if ('layoutMode' in value) {
+    if (value.layoutMode !== 'two-pane' && value.layoutMode !== 'three-pane') {
+      throw new TypeError('layoutMode must be two-pane or three-pane')
+    }
+    patch.layoutMode = value.layoutMode
+  }
   if ('workspaceCollapsed' in value) {
     if (typeof value.workspaceCollapsed !== 'boolean') {
       throw new TypeError('workspaceCollapsed must be a boolean')
@@ -183,6 +194,10 @@ function normalizeLanguage(value: unknown): DesktopLanguagePreference {
 
 function normalizeTheme(value: unknown): ThemePreference {
   return value === 'light' || value === 'dark' || value === 'system' ? value : DEFAULT_DESKTOP_SETTINGS.theme
+}
+
+function normalizeLayoutMode(value: unknown): DesktopLayoutMode {
+  return value === 'two-pane' || value === 'three-pane' ? value : DEFAULT_DESKTOP_SETTINGS.layoutMode
 }
 
 function normalizeReaderBackground(value: unknown): ReaderBackgroundPreference {
