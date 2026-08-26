@@ -44,6 +44,8 @@ test('a 470-item RSS remains fully visible in feed scope even though the global 
     await expect.poll(() => page.locator('.article-item').count()).toBe(470)
     await expect(page.locator('.article-pane .list-meta')).toContainText('470')
     await expect(page.locator('.article-scope-bar')).toContainText('Large Scope Feed')
+    await expect(page.locator('.source-destination-item').filter({ hasText: '全部文章' }).locator('.source-destination-count')).toHaveText('470')
+    await expect(page.locator('.source-destination-item').filter({ hasText: '未读' }).locator('.source-destination-count')).toHaveText('470')
 
     const requestsBeforeRefresh = fixture.feedRequests()
     await page.locator('.refresh-all-button').click()

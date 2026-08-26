@@ -56,8 +56,8 @@ import {
   DEFAULT_READING_SHARE_PREFERENCE,
   type ReadingSharePreference
 } from './reading-share'
-import { SourceSidebar, type ArticleScope } from './SourceSidebar'
-import { ArticleListPane, type Destination } from './ArticleListPane'
+import { SourceSidebar, type ArticleScope, type Destination } from './SourceSidebar'
+import { ArticleListPane } from './ArticleListPane'
 
 type ReaderMode = 'article' | 'ai' | 'translation'
 
@@ -1312,6 +1312,7 @@ export default function App(): React.JSX.Element {
       {!workspaceCollapsed && (
         <>
           <SourceSidebar
+            destination={destination}
             articleScope={articleScope}
             sourceQuery={sourceQuery}
             visibleFeedCount={visibleFeeds.length}
@@ -1319,6 +1320,9 @@ export default function App(): React.JSX.Element {
             feedStatsById={feedStatsById}
             allArticleCount={librarySnapshot?.articles ?? articles.length}
             allUnreadCount={librarySnapshot?.unread ?? articles.filter((article) => article.isUnread).length}
+            scopedArticleCount={articleScope.kind === 'all' ? (librarySnapshot?.articles ?? scopedArticles.length) : scopedArticles.length}
+            scopedUnreadCount={scopedUnreadCount}
+            scopedStarredCount={scopedStarredCount}
             refreshingFeedId={refreshingFeedId}
             isRefreshingAll={isRefreshingAll}
             subscriptionMenuOpen={subscriptionMenuOpen}
@@ -1326,6 +1330,7 @@ export default function App(): React.JSX.Element {
             opmlStatus={opmlStatus}
             sourceError={sourceError}
             showNotices={!addSourceOpen}
+            onDestinationChange={(id) => { setArticleQuery(''); setDestination(id) }}
             onSourceQueryChange={setSourceQuery}
             onSelectAll={() => { setArticleScope({ kind: 'all' }); setArticleQuery('') }}
             onSelectGroup={(group) => { setArticleScope({ kind: 'group', id: group.id }); setArticleQuery('') }}
@@ -1345,15 +1350,12 @@ export default function App(): React.JSX.Element {
             articleScope={articleScope}
             activeScopeFeed={activeScopeFeed}
             scopeLabel={scopeLabel}
-            scopedUnreadCount={scopedUnreadCount}
-            scopedStarredCount={scopedStarredCount}
             articleQuery={articleQuery}
             visibleArticles={visibleArticles}
             feeds={feeds}
             selectedArticleId={selectedArticleId}
             refreshing={isRefreshingAll || refreshingFeedId === activeScopeFeed?.id}
             refreshDisabled={feeds.length === 0 || isRefreshingAll || refreshingFeedId !== null}
-            onDestinationChange={(id) => { setArticleQuery(''); setDestination(id) }}
             onClearScope={() => { setArticleScope({ kind: 'all' }); setArticleQuery('') }}
             onArticleQueryChange={setArticleQuery}
             onRefresh={() => activeScopeFeed ? void refreshFeed(activeScopeFeed) : void refreshAllSources()}

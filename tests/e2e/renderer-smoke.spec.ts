@@ -19,7 +19,9 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await expect(page.locator('.reader-pane')).toBeVisible()
 
     await expect(page.locator('.brand-name')).toBeVisible()
-    await expect(page.locator('.destination-tabs')).toBeVisible()
+    await expect(page.locator('.source-destination-nav')).toBeVisible()
+    await expect(page.locator('.source-destination-item')).toHaveCount(3)
+    await expect(page.locator('.article-pane .source-destination-nav')).toHaveCount(0)
     await expect(page.locator('.reader-pane')).toBeVisible()
     await expect(page.locator('.reader-empty-state')).toContainText('开始建立你的阅读列表')
     await expect(page.locator('.reader-empty-state')).not.toContainText('Electron 重构进行中')

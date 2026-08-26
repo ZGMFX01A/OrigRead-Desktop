@@ -83,6 +83,17 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await expect(sourceSettings).toBeHidden()
     await expect(page.locator('.article-list')).toBeVisible()
 
+    const sourceRow = page.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' })
+    await sourceRow.click({ button: 'right' })
+    const sourceContextMenu = page.locator('.desktop-context-menu')
+    await expect(sourceContextMenu).toBeVisible()
+    await expect(sourceContextMenu).toContainText('重新加载文章')
+    await expect(sourceContextMenu).toContainText('来源设置')
+    await expect(sourceContextMenu).toContainText('移动到分组')
+    await expect(sourceContextMenu).toContainText('删除来源')
+    await page.locator('.article-scope-bar').click()
+    await expect(sourceContextMenu).toBeHidden()
+
     const article = page.locator(`.article-item[data-article-id="${currentFixture!.articleId}"]`)
     await expect(article).toBeVisible()
     await article.click()
@@ -221,13 +232,13 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await expect(page.locator(`.article-item[data-article-id="${currentFixture!.articleId}"]`)).toHaveClass(/read/)
     await expect(page.locator('.article-item.unread').first()).toBeVisible()
 
-    await page.locator('.destination-tabs .destination-tab').filter({ hasText: '未读' }).click()
+    await page.locator('.source-destination-item').filter({ hasText: '未读' }).click()
     await expect(page.locator('.article-scope-bar')).toContainText('OrigRead E2E Feed')
     await expect.poll(async () => page.locator('.article-item').evaluateAll((items, feedId) => items.length > 0 && items.every((item) => item.getAttribute('data-feed-id') === feedId && item.classList.contains('unread')), currentFixture!.feedId)).toBe(true)
 
     const unreadToStar = page.locator('.article-item.unread').first()
     await unreadToStar.locator('.star-button').click()
-    await page.locator('.destination-tabs .destination-tab').filter({ hasText: '星标' }).click()
+    await page.locator('.source-destination-item').filter({ hasText: '星标' }).click()
     await expect(page.locator('.article-scope-bar')).toContainText('OrigRead E2E Feed')
     await expect.poll(async () => page.locator('.article-item').evaluateAll((items, feedId) => items.length > 0 && items.every((item) => item.getAttribute('data-feed-id') === feedId), currentFixture!.feedId)).toBe(true)
 
@@ -290,11 +301,11 @@ test('reader selection survives source and article filter changes', async () => 
     await expect(sourceSearch).toHaveValue('OrigRead E2E Feed')
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
 
-    // Destination 只过滤 Article Pane；已读文章从未读列表消失时 Reader 继续保持。
-    await page.locator('.destination-tabs .destination-tab').filter({ hasText: '未读' }).click()
+    // Destination 现在固定在 Source Sidebar，但仍只过滤 Article Pane；Reader 生命周期保持独立。
+    await page.locator('.source-destination-item').filter({ hasText: '未读' }).click()
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
     await expect(page.locator(`.article-item[data-article-id="${selectedArticleId!}"]`)).toHaveCount(0)
-    await page.locator('.destination-tabs .destination-tab').filter({ hasText: '全部文章' }).click()
+    await page.locator('.source-destination-item').filter({ hasText: '全部文章' }).click()
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
 
     // Feed Scope 只替换 Article Pane 的数据范围，不替换 Reader 当前文章。

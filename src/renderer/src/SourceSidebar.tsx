@@ -1,4 +1,4 @@
-import { ChevronDown, Compass, Download, Inbox, MoreHorizontal, Plus, RefreshCw, Rss, Search, Upload } from 'lucide-react'
+import { BookOpenText, ChevronDown, Compass, Download, Inbox, MoreHorizontal, Plus, RefreshCw, Rss, Search, Star, Upload } from 'lucide-react'
 import { useEffect, useState, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { FeedArticleStats, FeedRecord, GroupRecord } from '../../shared/library'
@@ -8,12 +8,22 @@ export type ArticleScope =
   | { kind: 'group'; id: string }
   | { kind: 'feed'; id: string }
 
+/** 左栏一级文章集合导航；与来源范围 ArticleScope 正交。 */
+export type Destination = 'all' | 'unread' | 'starred'
+
+const destinations: Array<{ id: Destination; icon: typeof Inbox; labelKey: string }> = [
+  { id: 'all', icon: Inbox, labelKey: 'allArticles' },
+  { id: 'unread', icon: BookOpenText, labelKey: 'unread' },
+  { id: 'starred', icon: Star, labelKey: 'starred' }
+]
+
 interface SourceGroupEntry {
   group: GroupRecord
   feeds: FeedRecord[]
 }
 
 interface SourceSidebarProps {
+  destination: Destination
   articleScope: ArticleScope
   sourceQuery: string
   visibleFeedCount: number
@@ -21,6 +31,9 @@ interface SourceSidebarProps {
   feedStatsById: ReadonlyMap<string, FeedArticleStats>
   allArticleCount: number
   allUnreadCount: number
+  scopedArticleCount: number
+  scopedUnreadCount: number
+  scopedStarredCount: number
   refreshingFeedId: string | null
   isRefreshingAll: boolean
   subscriptionMenuOpen: boolean
@@ -28,6 +41,7 @@ interface SourceSidebarProps {
   opmlStatus: string | null
   sourceError: string | null
   showNotices: boolean
+  onDestinationChange: (destination: Destination) => void
   onSourceQueryChange: (value: string) => void
   onSelectAll: () => void
   onSelectGroup: (group: GroupRecord) => void
@@ -49,6 +63,7 @@ interface SourceSidebarProps {
  * 这里只负责来源范围选择和来源级操作；文章筛选与文章列表由 ArticleListPane 独立承担。
  */
 export function SourceSidebar({
+  destination,
   articleScope,
   sourceQuery,
   visibleFeedCount,
@@ -56,6 +71,9 @@ export function SourceSidebar({
   feedStatsById,
   allArticleCount,
   allUnreadCount,
+  scopedArticleCount,
+  scopedUnreadCount,
+  scopedStarredCount,
   refreshingFeedId,
   isRefreshingAll,
   subscriptionMenuOpen,
@@ -63,6 +81,7 @@ export function SourceSidebar({
   opmlStatus,
   sourceError,
   showNotices,
+  onDestinationChange,
   onSourceQueryChange,
   onSelectAll,
   onSelectGroup,
@@ -115,6 +134,25 @@ export function SourceSidebar({
           </div>
         </div>
       </header>
+
+      <nav className="source-destination-nav" aria-label={t('allArticles')}>
+        {destinations.map(({ id, icon: Icon, labelKey }) => {
+          const count = id === 'all' ? scopedArticleCount : id === 'unread' ? scopedUnreadCount : scopedStarredCount
+          return (
+            <button
+              key={id}
+              type="button"
+              className={`source-destination-item ${destination === id ? 'active' : ''}`}
+              aria-current={destination === id ? 'page' : undefined}
+              onClick={() => onDestinationChange(id)}
+            >
+              <Icon size={16} />
+              <span>{t(labelKey)}</span>
+              <span className="source-destination-count">{count}</span>
+            </button>
+          )
+        })}
+      </nav>
 
       <div className="list-toolbar source-list-toolbar">
         <div className="search-field">
@@ -170,10 +208,12 @@ export function SourceSidebar({
                       <FeedIcon feed={feed} />
                       <div className="source-copy">
                         <strong>{feed.name}</strong>
-                        <span>{t('sourceArticleStats', { total: feedStats(feed.id).total, unread: feedStats(feed.id).unread })}</span>
+                        <span>
+                          <span className="source-type-inline">{feed.sourceType.toUpperCase()}</span>
+                          {t('sourceArticleStats', { total: feedStats(feed.id).total, unread: feedStats(feed.id).unread })}
+                        </span>
                       </div>
                       <div className="source-actions">
-                        <span className="source-type">{feed.sourceType.toUpperCase()}</span>
                         <button
                           type="button"
                           className="source-refresh-button"

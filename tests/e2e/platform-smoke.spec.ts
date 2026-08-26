@@ -10,7 +10,7 @@ test('packaging platform smoke: Electron, preload, database and renderer start n
   try {
     await expect(page.locator('.app-shell')).toBeVisible()
     await expect(page.locator('.brand-name')).toContainText(/OrigRead|原读/)
-    await expect(page.locator('.destination-tabs')).toBeVisible()
+    await expect(page.locator('.source-destination-nav')).toBeVisible()
     await expect(page.locator('.reader-pane')).toBeVisible()
 
     const appInfo = await page.evaluate(() => window.origread.getAppInfo())

@@ -1,30 +1,19 @@
-import { BookOpenText, Inbox, MoreHorizontal, Plus, RefreshCw, Rss, Search, Star, X } from 'lucide-react'
+import { MoreHorizontal, Plus, RefreshCw, Rss, Search, Star, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { ArticleRecord, FeedRecord } from '../../shared/library'
-import { FeedIcon, type ArticleScope } from './SourceSidebar'
-
-export type Destination = 'all' | 'unread' | 'starred'
-
-const destinations: Array<{ id: Destination; icon: typeof Inbox; labelKey: string }> = [
-  { id: 'all', icon: Inbox, labelKey: 'allArticles' },
-  { id: 'unread', icon: BookOpenText, labelKey: 'unread' },
-  { id: 'starred', icon: Star, labelKey: 'starred' }
-]
+import { FeedIcon, type ArticleScope, type Destination } from './SourceSidebar'
 
 interface ArticleListPaneProps {
   destination: Destination
   articleScope: ArticleScope
   activeScopeFeed: FeedRecord | null
   scopeLabel: string
-  scopedUnreadCount: number
-  scopedStarredCount: number
   articleQuery: string
   visibleArticles: ArticleRecord[]
   feeds: FeedRecord[]
   selectedArticleId: string | null
   refreshing: boolean
   refreshDisabled: boolean
-  onDestinationChange: (destination: Destination) => void
   onClearScope: () => void
   onArticleQueryChange: (value: string) => void
   onRefresh: () => void
@@ -37,22 +26,19 @@ interface ArticleListPaneProps {
 /**
  * 三栏模式中的文章列表栏。
  *
- * UI-3P.3 仍保留横向 destination 导航；纵向迁移会在 UI-3P.4 单独完成。
+ * UI-3P.4 起只负责当前来源范围、搜索与文章列表；一级 Destination 导航固定由 SourceSidebar 承担。
  */
 export function ArticleListPane({
   destination,
   articleScope,
   activeScopeFeed,
   scopeLabel,
-  scopedUnreadCount,
-  scopedStarredCount,
   articleQuery,
   visibleArticles,
   feeds,
   selectedArticleId,
   refreshing,
   refreshDisabled,
-  onDestinationChange,
   onClearScope,
   onArticleQueryChange,
   onRefresh,
@@ -64,23 +50,7 @@ export function ArticleListPane({
   const { t } = useTranslation()
 
   return (
-    <section className="article-pane" aria-label={t(destinations.find((item) => item.id === destination)?.labelKey ?? 'allArticles')}>
-      <nav className="destination-tabs" aria-label="Article filters">
-        {destinations.map(({ id, icon: Icon, labelKey }) => (
-          <button
-            key={id}
-            type="button"
-            className={`destination-tab ${destination === id ? 'active' : ''}`}
-            onClick={() => onDestinationChange(id)}
-          >
-            <Icon size={16} />
-            <span>{t(labelKey)}</span>
-            {id === 'unread' && <span className="count-badge">{scopedUnreadCount}</span>}
-            {id === 'starred' && scopedStarredCount > 0 && <span className="count-badge">{scopedStarredCount}</span>}
-          </button>
-        ))}
-      </nav>
-
+    <section className="article-pane" aria-label={t(destination === 'all' ? 'allArticles' : destination)}>
       <div className="article-scope-bar">
         <div className="article-scope-current">
           {activeScopeFeed ? <FeedIcon feed={activeScopeFeed} /> : <div className="scope-icon"><Rss size={15}/></div>}
