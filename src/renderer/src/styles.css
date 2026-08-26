@@ -1188,11 +1188,6 @@ button { color: inherit; }
 .reader-tool-split-options svg { transition: transform 130ms ease; }
 .reader-tool-split.options-open .reader-tool-split-options svg { transform: rotate(180deg); }
 .reader-tool-options { width: 21px !important; padding: 0 !important; margin-left: 0; }
-.localized-translation-icon {
-  flex: 0 0 auto;
-  display: block;
-  color: currentColor;
-}
 .reader-voice-select { position: absolute; inset: 0; width: 34px; max-width: 34px; height: 34px; border: 0; border-radius: 8px; background: transparent; color: transparent; font-size: 9.5px; padding: 0; outline: 0; opacity: 0; cursor: pointer; }
 .reader-voice-select:focus { border-color: #b9b3e7; }
 

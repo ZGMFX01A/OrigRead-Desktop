@@ -13,6 +13,7 @@ import {
   Plus,
   Sparkles,
   Star,
+  Languages,
   StepForward,
   ExternalLink,
   Headphones,
@@ -48,7 +49,6 @@ import type { ReaderArticleContent } from '../../shared/reader'
 import type { SyncRuntimeState } from '../../shared/sync-runtime'
 import type { OriginalArticleViewState, OriginalViewBounds } from '../../shared/original-view'
 import { SettingsPanel, type SettingsPage } from './SettingsPanel'
-import { LocalizedTranslationIcon } from './LocalizedTranslationIcon'
 import { UpdateAvailableDialog } from './UpdateAvailableDialog'
 import type { AiSummaryDocument, AiSummaryProgress, AiSummaryProgressStage } from '../../shared/ai'
 import type { TranslationDocument, TranslationTarget } from '../../shared/translation'
@@ -1892,7 +1892,7 @@ export default function App(): React.JSX.Element {
                     aria-label={t('translation')}
                     onClick={() => readerMode === 'translation' ? setReaderMode('article') : translationDocument ? setReaderMode('translation') : void translateSelectedArticle()}
                   >
-                    {readerToolLoading === 'translation' ? <RefreshCw size={17} className="spinning" /> : <LocalizedTranslationIcon size={18} />}
+                    {readerToolLoading === 'translation' ? <RefreshCw size={17} className="spinning" /> : <Languages size={18} />}
                     <span>{t('translation')}</span>
                   </button>
                   <button

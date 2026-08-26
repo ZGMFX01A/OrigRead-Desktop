@@ -7,7 +7,7 @@ test('reader toolbar responds to Reader pane width and keeps Settings visible', 
     const page = await testApp.app.firstWindow()
     await page.setViewportSize({ width: 1440, height: 900 })
     await expect(page.locator('.app-shell')).toBeVisible()
-    // 图标本地化测试必须脱离 Runner 系统语言，先固定中文作为基线。
+    // 先固定中文作为基线；翻译动作图标本身必须保持系统级固定 glyph，不再本地化变形。
     await page.evaluate(async () => { await window.origread.updateSettings({ language: 'zh' }) })
     await page.reload()
     await expect(page.locator('.app-shell')).toBeVisible()
@@ -18,7 +18,7 @@ test('reader toolbar responds to Reader pane width and keeps Settings visible', 
     const aiLabel = page.locator('.ai-summary-button > span:not(.ai-summary-accent-icon)')
     const aiSplit = page.locator('.reader-tool-split-ai')
     const translationSplit = page.locator('.reader-tool-split-translation')
-    const translationIcon = page.locator('.localized-translation-icon')
+    const translationIcon = page.locator('.translation-button .lucide-languages')
     const voiceControl = page.locator('.reader-voice-control')
     const voiceSelect = page.locator('.reader-voice-select')
     const moreButton = page.locator('.reader-more-button')
@@ -44,10 +44,10 @@ test('reader toolbar responds to Reader pane width and keeps Settings visible', 
     await expect(aiSplit.locator('.reader-tool-split-options')).toHaveAttribute('title', /摘要选项|Summary options/)
     await expect(translationSplit.locator('.reader-tool-split-options')).toHaveAttribute('title', /翻译目标|Translation target/)
 
-    // 翻译图标包含真实文字字形：中文界面“文”为主、A 为辅。
-    await expect(translationIcon).toHaveAttribute('data-primary-language', 'zh')
-    await expect(translationIcon.locator('[data-glyph="zh"]')).toHaveAttribute('data-prominence', 'primary')
-    await expect(translationIcon.locator('[data-glyph="en"]')).toHaveAttribute('data-prominence', 'secondary')
+    // 翻译恢复项目最初使用的 Lucide Languages 中英文翻译图标，并保持固定，不随 UI 语言变形。
+    await expect(translationIcon).toHaveCount(1)
+    await expect(page.locator('.localized-translation-icon')).toHaveCount(0)
+    await expect(page.locator('.reader-translate-icon')).toHaveCount(0)
 
     // “下一篇”使用明确的 step-forward 语义，不再退化为普通 ChevronRight。
     await expect(page.locator('.reader-next-article-button .lucide-step-forward')).toHaveCount(1)
@@ -62,27 +62,12 @@ test('reader toolbar responds to Reader pane width and keeps Settings visible', 
     await page.locator('.settings-close-button').click()
     await expect(page.locator('.reader-title')).toHaveCount(0)
 
-    // 切成英文后无需重启，翻译 glyph 主次实时切换为 A 主、“文”辅。
+    // 切成英文后无需重启，翻译动作仍保持同一枚 Lucide Languages 图标。
     await settingsButton.click()
     await page.locator('.language-select').selectOption('en')
     await expect(page.locator('.reader-title')).toContainText('Settings')
     await page.locator('.settings-close-button').click()
-    await expect(translationIcon).toHaveAttribute('data-primary-language', 'en')
-    await expect(translationIcon.locator('[data-glyph="en"]')).toHaveAttribute('data-prominence', 'primary')
-    await expect(translationIcon.locator('[data-glyph="zh"]')).toHaveAttribute('data-prominence', 'secondary')
-    await expect(translationIcon.locator('[data-glyph="en"]')).not.toHaveAttribute('transform', /.+/)
-    await expect(translationIcon.locator('[data-glyph="zh"]')).toHaveAttribute('transform', 'translate(10 10)')
-    const [translationIconBox, englishGlyphBox, chineseGlyphBox] = await Promise.all([
-      requiredBox(translationIcon),
-      requiredBox(translationIcon.locator('[data-glyph="en"]')),
-      requiredBox(translationIcon.locator('[data-glyph="zh"]'))
-    ])
-    // 真实 Toolbar 使用 18px 图标；两组语言笔画都必须在这个尺寸下保持可辨认面积，
-    // 禁止再通过 scale() 把辅助语言压缩成约 6px 的不可辨认小块。
-    expect(translationIconBox.width).toBeCloseTo(18, 0)
-    expect(translationIconBox.height).toBeCloseTo(18, 0)
-    expect(englishGlyphBox.width).toBeGreaterThanOrEqual(6)
-    expect(chineseGlyphBox.width).toBeGreaterThanOrEqual(7)
+    await expect(translationIcon).toHaveCount(1)
 
     // Reader 再宽也只保留图标；文字仅通过 title / aria-label 提示，避免双栏宽屏重新撑满工具栏。
     await page.setViewportSize({ width: 1800, height: 900 })
