@@ -70,7 +70,23 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     })
     await expect(page.locator('.workspace-pane')).toBeVisible()
     await expect(page.locator('.app-shell')).not.toHaveClass(/workspace-collapsed/)
-    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).workspaceCollapsed)).toBe(false)
+    // UI-3P.1 起旧 workspaceCollapsed 只做兼容读取：旧双栏暂时仍会话级展开，但不再篡改持久化旧字段。
+    await expect.poll(async () => page.evaluate(async () => {
+      const current = await window.origread.getSettings()
+      return {
+        workspaceCollapsed: current.workspaceCollapsed,
+        sourcePaneWidth: current.sourcePaneWidth,
+        articlePaneWidth: current.articlePaneWidth,
+        sourcePaneCollapsed: current.sourcePaneCollapsed,
+        articlePaneCollapsed: current.articlePaneCollapsed
+      }
+    })).toEqual({
+      workspaceCollapsed: true,
+      sourcePaneWidth: 260,
+      articlePaneWidth: 380,
+      sourcePaneCollapsed: false,
+      articlePaneCollapsed: false
+    })
 
     const bridgeReady = await page.evaluate(() => {
       return (

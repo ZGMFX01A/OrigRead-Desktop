@@ -15,6 +15,10 @@ describe('SettingsRepository', () => {
       theme: 'dark',
       workspaceCollapsed: true,
       workspaceWidth: 999,
+      sourcePaneWidth: 999,
+      articlePaneWidth: 100,
+      sourcePaneCollapsed: true,
+      articlePaneCollapsed: true,
       readerFontSize: 25,
       readerFontId: 'serif',
       readerLineHeight: 1.72,
@@ -33,6 +37,10 @@ describe('SettingsRepository', () => {
       theme: 'dark',
       workspaceCollapsed: true,
       workspaceWidth: 560,
+      sourcePaneWidth: 320,
+      articlePaneWidth: 320,
+      sourcePaneCollapsed: true,
+      articlePaneCollapsed: true,
       readerFontSize: 22,
       readerFontId: 'serif',
       readerLineHeight: 1.72,
@@ -54,11 +62,56 @@ describe('SettingsRepository', () => {
     database.close()
   })
 
+  it('loads old settings with new pane defaults instead of migrating legacy workspace collapse', () => {
+    const database = new DesktopDatabase(':memory:')
+    database.connection.prepare(`
+      INSERT INTO app_settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+    `).run('desktop.settings', JSON.stringify({
+      language: 'zh',
+      workspaceCollapsed: true,
+      workspaceWidth: 500
+    }), Date.now())
+    const repository = new SettingsRepository(database.connection)
+
+    expect(repository.current()).toMatchObject({
+      language: 'zh',
+      workspaceCollapsed: true,
+      workspaceWidth: 500,
+      sourcePaneWidth: 260,
+      articlePaneWidth: 380,
+      sourcePaneCollapsed: false,
+      articlePaneCollapsed: false
+    })
+    database.close()
+  })
+
+  it('falls back for invalid pane widths and clamps finite out-of-range values', () => {
+    const database = new DesktopDatabase(':memory:')
+    database.connection.prepare(`
+      INSERT INTO app_settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+    `).run('desktop.settings', JSON.stringify({
+      sourcePaneWidth: 'invalid',
+      articlePaneWidth: null
+    }), Date.now())
+    const repository = new SettingsRepository(database.connection)
+
+    expect(repository.current()).toMatchObject({ sourcePaneWidth: 260, articlePaneWidth: 380 })
+    expect(repository.update({ sourcePaneWidth: 100, articlePaneWidth: 999 })).toMatchObject({
+      sourcePaneWidth: 220,
+      articlePaneWidth: 480
+    })
+    database.close()
+  })
+
   it('rejects invalid boolean patches instead of silently coercing IPC input', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new SettingsRepository(database.connection)
 
     expect(() => repository.update({ workspaceCollapsed: 'yes' } as never)).toThrow(TypeError)
+    expect(() => repository.update({ sourcePaneCollapsed: 'yes' } as never)).toThrow(TypeError)
+    expect(() => repository.update({ articlePaneCollapsed: 1 } as never)).toThrow(TypeError)
     expect(() => repository.update({ syncIntervalMinutes: 10 } as never)).toThrow(TypeError)
     expect(() => repository.update({ autoCheckUpdates: 'yes' } as never)).toThrow(TypeError)
     database.close()

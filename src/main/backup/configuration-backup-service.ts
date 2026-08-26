@@ -15,6 +15,7 @@ import type { TranslationProviderType } from '../../shared/translation'
 import { TRANSLATION_PROVIDER_TYPES } from '../../shared/translation'
 import { decryptConfigurationSecrets,encryptConfigurationSecrets } from './configuration-backup-crypto'
 import type { AccountRepository } from '../accounts/account-repository'
+import { DEFAULT_DESKTOP_SETTINGS } from '../../shared/settings'
 
 export class ConfigurationBackupService {
   constructor(
@@ -111,6 +112,10 @@ function desktopPreferences(settings:ReturnType<SettingsRepository['current']>):
   'origread.desktop.theme':settings.theme,
   'origread.desktop.workspaceCollapsed':settings.workspaceCollapsed,
   'origread.desktop.workspaceWidth':settings.workspaceWidth,
+  'origread.desktop.sourcePaneWidth':settings.sourcePaneWidth,
+  'origread.desktop.articlePaneWidth':settings.articlePaneWidth,
+  'origread.desktop.sourcePaneCollapsed':settings.sourcePaneCollapsed,
+  'origread.desktop.articlePaneCollapsed':settings.articlePaneCollapsed,
   'origread.desktop.readerFontSize':settings.readerFontSize,
   'origread.desktop.readerLineHeight':settings.readerLineHeight,
   'origread.desktop.readerContentWidth':settings.readerContentWidth,
@@ -122,15 +127,23 @@ function desktopPreferences(settings:ReturnType<SettingsRepository['current']>):
 }}
 function readDesktopPreferences(value:Record<string,unknown>|null|undefined):Partial<ReturnType<SettingsRepository['current']>>{
   if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('备份中的 preferences 必须是 JSON 对象')
-  const result:Record<string,unknown>={}
+  // 旧备份没有三栏字段时必须回到新版本默认值，不能继承恢复目标机器当前的布局偏好。
+  const result:Record<string,unknown>={
+    sourcePaneWidth:DEFAULT_DESKTOP_SETTINGS.sourcePaneWidth,
+    articlePaneWidth:DEFAULT_DESKTOP_SETTINGS.articlePaneWidth,
+    sourcePaneCollapsed:DEFAULT_DESKTOP_SETTINGS.sourcePaneCollapsed,
+    articlePaneCollapsed:DEFAULT_DESKTOP_SETTINGS.articlePaneCollapsed
+  }
   const language=value['origread.desktop.language'];if(language!==undefined){if(language!=='system'&&language!=='zh'&&language!=='en')throw new Error('备份中的 Desktop 语言设置无效');result.language=language}
   const theme=value['origread.desktop.theme'];if(theme!==undefined){if(!['system','light','dark'].includes(String(theme)))throw new Error('备份中的 Desktop 主题设置无效');result.theme=theme}
   const collapsed=value['origread.desktop.workspaceCollapsed'];if(collapsed!==undefined){if(typeof collapsed!=='boolean')throw new Error('备份中的 Desktop 侧栏设置类型无效');result.workspaceCollapsed=collapsed}
+  const sourceCollapsed=value['origread.desktop.sourcePaneCollapsed'];if(sourceCollapsed!==undefined){if(typeof sourceCollapsed!=='boolean')throw new Error('备份中的 Desktop Source Pane 折叠设置类型无效');result.sourcePaneCollapsed=sourceCollapsed}
+  const articleCollapsed=value['origread.desktop.articlePaneCollapsed'];if(articleCollapsed!==undefined){if(typeof articleCollapsed!=='boolean')throw new Error('备份中的 Desktop Article Pane 折叠设置类型无效');result.articlePaneCollapsed=articleCollapsed}
   const readerBackground=value['origread.desktop.readerBackground'];if(readerBackground!==undefined){if(!['theme','paper','warm','sepia','mint','custom'].includes(String(readerBackground)))throw new Error('备份中的阅读背景设置无效');result.readerBackground=readerBackground}
   const readerBackgroundCustom=value['origread.desktop.readerBackgroundCustom'];if(readerBackgroundCustom!==undefined){if(typeof readerBackgroundCustom!=='string'||!/^#[0-9a-fA-F]{6}$/.test(readerBackgroundCustom))throw new Error('备份中的自定义阅读背景颜色无效');result.readerBackgroundCustom=readerBackgroundCustom.toLowerCase()}
   const placement=value['origread.desktop.aiSummaryPlacement'];if(placement!==undefined){if(!['replace','left','right','top','bottom'].includes(String(placement)))throw new Error('备份中的 AI 摘要位置无效');result.aiSummaryPlacement=placement}
   const autoCheckUpdates=value['origread.desktop.autoCheckUpdates'];if(autoCheckUpdates!==undefined){if(typeof autoCheckUpdates!=='boolean')throw new Error('备份中的自动检查更新设置类型无效');result.autoCheckUpdates=autoCheckUpdates}
-  for(const [key,target] of [['origread.desktop.workspaceWidth','workspaceWidth'],['origread.desktop.readerFontSize','readerFontSize'],['origread.desktop.readerLineHeight','readerLineHeight'],['origread.desktop.readerContentWidth','readerContentWidth'],['origread.desktop.aiSummaryPanelSize','aiSummaryPanelSize']] as const){const candidate=value[key];if(candidate!==undefined){if(typeof candidate!=='number'||!Number.isFinite(candidate))throw new Error(`备份中的 ${key} 类型无效`);result[target]=candidate}}
+  for(const [key,target] of [['origread.desktop.workspaceWidth','workspaceWidth'],['origread.desktop.sourcePaneWidth','sourcePaneWidth'],['origread.desktop.articlePaneWidth','articlePaneWidth'],['origread.desktop.readerFontSize','readerFontSize'],['origread.desktop.readerLineHeight','readerLineHeight'],['origread.desktop.readerContentWidth','readerContentWidth'],['origread.desktop.aiSummaryPanelSize','aiSummaryPanelSize']] as const){const candidate=value[key];if(candidate!==undefined){if(typeof candidate!=='number'||!Number.isFinite(candidate))throw new Error(`备份中的 ${key} 类型无效`);result[target]=candidate}}
   return result as Partial<ReturnType<SettingsRepository['current']>>
 }
 function validateRssHubBackup(value:RssHubBackup):void{

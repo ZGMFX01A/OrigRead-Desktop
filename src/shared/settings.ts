@@ -8,11 +8,22 @@ export type ReaderBackgroundPreference = 'theme' | 'paper' | 'warm' | 'sepia' | 
 export const SYNC_INTERVAL_OPTIONS = [0, 15, 30, 60, 120, 180, 360, 720, 1440] as const
 export type SyncIntervalMinutes = typeof SYNC_INTERVAL_OPTIONS[number]
 
+/** Source Pane 的持久化宽度边界，后续拖拽与 Settings normalize 共用同一组约束。 */
+export const SOURCE_PANE_WIDTH_MIN = 220
+export const SOURCE_PANE_WIDTH_MAX = 320
+/** Article Pane 的持久化宽度边界，避免列表过窄或长期侵占 Reader。 */
+export const ARTICLE_PANE_WIDTH_MIN = 320
+export const ARTICLE_PANE_WIDTH_MAX = 480
+
 export interface DesktopSettings {
   language: DesktopLanguagePreference
   theme: ThemePreference
   workspaceCollapsed: boolean
   workspaceWidth: number
+  sourcePaneWidth: number
+  articlePaneWidth: number
+  sourcePaneCollapsed: boolean
+  articlePaneCollapsed: boolean
   readerFontSize: number
   readerFontId: string
   readerLineHeight: number
@@ -39,6 +50,10 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   theme: 'system',
   workspaceCollapsed: false,
   workspaceWidth: 420,
+  sourcePaneWidth: 260,
+  articlePaneWidth: 380,
+  sourcePaneCollapsed: false,
+  articlePaneCollapsed: false,
   readerFontSize: 17,
   readerFontId: 'system',
   readerLineHeight: 1.85,
@@ -65,6 +80,10 @@ export function normalizeDesktopSettings(value: unknown): DesktopSettings {
     theme: normalizeTheme(input.theme),
     workspaceCollapsed: input.workspaceCollapsed === true,
     workspaceWidth: normalizeWorkspaceWidth(input.workspaceWidth),
+    sourcePaneWidth: normalizeSourcePaneWidth(input.sourcePaneWidth),
+    articlePaneWidth: normalizeArticlePaneWidth(input.articlePaneWidth),
+    sourcePaneCollapsed: input.sourcePaneCollapsed === true,
+    articlePaneCollapsed: input.articlePaneCollapsed === true,
     readerFontSize: normalizeReaderFontSize(input.readerFontSize),
     readerFontId: normalizeStringSetting(input.readerFontId, DEFAULT_DESKTOP_SETTINGS.readerFontId, 500),
     readerLineHeight: normalizeReaderLineHeight(input.readerLineHeight),
@@ -98,6 +117,20 @@ export function normalizeDesktopSettingsPatch(value: unknown): DesktopSettingsPa
     patch.workspaceCollapsed = value.workspaceCollapsed
   }
   if ('workspaceWidth' in value) patch.workspaceWidth = normalizeWorkspaceWidth(value.workspaceWidth)
+  if ('sourcePaneWidth' in value) patch.sourcePaneWidth = normalizeSourcePaneWidth(value.sourcePaneWidth)
+  if ('articlePaneWidth' in value) patch.articlePaneWidth = normalizeArticlePaneWidth(value.articlePaneWidth)
+  if ('sourcePaneCollapsed' in value) {
+    if (typeof value.sourcePaneCollapsed !== 'boolean') {
+      throw new TypeError('sourcePaneCollapsed must be a boolean')
+    }
+    patch.sourcePaneCollapsed = value.sourcePaneCollapsed
+  }
+  if ('articlePaneCollapsed' in value) {
+    if (typeof value.articlePaneCollapsed !== 'boolean') {
+      throw new TypeError('articlePaneCollapsed must be a boolean')
+    }
+    patch.articlePaneCollapsed = value.articlePaneCollapsed
+  }
   if ('readerFontSize' in value) patch.readerFontSize = normalizeReaderFontSize(value.readerFontSize)
   if ('readerFontId' in value) patch.readerFontId = normalizeStringSetting(value.readerFontId, DEFAULT_DESKTOP_SETTINGS.readerFontId, 500)
   if ('readerLineHeight' in value) patch.readerLineHeight = normalizeReaderLineHeight(value.readerLineHeight)
@@ -167,6 +200,24 @@ function normalizeHexColor(value: unknown, fallback: string): string {
 function normalizeWorkspaceWidth(value: unknown): number {
   const numberValue = typeof value === 'number' && Number.isFinite(value) ? value : DEFAULT_DESKTOP_SETTINGS.workspaceWidth
   return Math.round(Math.min(Math.max(numberValue, 320), 560))
+}
+
+/**
+ * 规范化 Source Pane 宽度。
+ * 旧配置或非法值回退默认宽度；有限数值则限制在设计允许的拖拽区间。
+ */
+function normalizeSourcePaneWidth(value: unknown): number {
+  const numberValue = typeof value === 'number' && Number.isFinite(value) ? value : DEFAULT_DESKTOP_SETTINGS.sourcePaneWidth
+  return Math.round(Math.min(Math.max(numberValue, SOURCE_PANE_WIDTH_MIN), SOURCE_PANE_WIDTH_MAX))
+}
+
+/**
+ * 规范化 Article Pane 宽度。
+ * 旧配置或非法值回退默认宽度；有限数值则限制在设计允许的拖拽区间。
+ */
+function normalizeArticlePaneWidth(value: unknown): number {
+  const numberValue = typeof value === 'number' && Number.isFinite(value) ? value : DEFAULT_DESKTOP_SETTINGS.articlePaneWidth
+  return Math.round(Math.min(Math.max(numberValue, ARTICLE_PANE_WIDTH_MIN), ARTICLE_PANE_WIDTH_MAX))
 }
 
 function normalizeReaderFontSize(value: unknown): number {

@@ -213,20 +213,17 @@ export default function App(): React.JSX.Element {
       window.origread.getSettings(),
       window.origread.getSyncRuntimeState(),
       window.origread.getOriginalArticleState()
-    ]).then(async ([info, loadedSettings, loadedSyncState, loadedOriginalState]) => {
+    ]).then(([info, loadedSettings, loadedSyncState, loadedOriginalState]) => {
       setAppInfo(info)
-      const startupSettings = loadedSettings.workspaceCollapsed
-        ? await window.origread.updateSettings({ workspaceCollapsed: false })
-        : loadedSettings
-      setSettings(startupSettings)
+      setSettings(loadedSettings)
       setSyncRuntimeState(loadedSyncState)
       setOriginalViewState(loadedOriginalState)
       lastObservedSyncFinish.current = loadedSyncState.lastFinishedAt
-      // 左侧工作区折叠只属于当前会话。应用启动时始终展开，避免用户下次打开时误以为文章列表丢失。
+      // 旧 workspaceCollapsed 只保留兼容读取；旧双栏 UI 在三栏切换完成前仍以当前会话展开状态启动。
       setWorkspaceCollapsed(false)
-      const language = startupSettings.language === 'system'
+      const language = loadedSettings.language === 'system'
         ? resolveDesktopLanguage(info.locale)
-        : startupSettings.language
+        : loadedSettings.language
       void i18n.changeLanguage(language)
     })
     void reloadLibrary()
@@ -657,13 +654,11 @@ export default function App(): React.JSX.Element {
 
   const handleConfigurationRestored = async (): Promise<void> => {
     const [nextSettings, nextSync] = await Promise.all([window.origread.getSettings(), window.origread.getSyncRuntimeState()])
-    const visibleSettings = nextSettings.workspaceCollapsed
-      ? await window.origread.updateSettings({ workspaceCollapsed: false })
-      : nextSettings
-    setSettings(visibleSettings)
+    setSettings(nextSettings)
     setSyncRuntimeState(nextSync)
+    // 恢复旧备份时不再改写 workspaceCollapsed；新 Pane 折叠字段由 Settings normalize/restore 独立处理。
     setWorkspaceCollapsed(false)
-    const language = visibleSettings.language === 'system' ? resolveDesktopLanguage(appInfo?.locale ?? navigator.language) : visibleSettings.language
+    const language = nextSettings.language === 'system' ? resolveDesktopLanguage(appInfo?.locale ?? navigator.language) : nextSettings.language
     await i18n.changeLanguage(language)
     await reloadLibrary()
   }

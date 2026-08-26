@@ -40,6 +40,12 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       publishedAt: now, description: 'Existing article', contentHtml: null, fullContentHtml: null, imageUrl: null,
       isUnread: false, isStarred: true, createdAt: now, updatedAt: now
     })
+    fixture.settings.update({
+      sourcePaneWidth: 310,
+      articlePaneWidth: 460,
+      sourcePaneCollapsed: true,
+      articlePaneCollapsed: true
+    })
 
     const backup = androidBackup(fixture)
     const result = fixture.backup.restoreBackup(JSON.stringify(backup), 'backup-pass')
@@ -54,22 +60,44 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     expect(fixture.filters.getByFeed(newFeed!.id).map((rule) => rule.keyword)).toContain('Promo')
     expect(fixture.translation.getApiKey('DEEPL')).toBe('android-deepl-key')
     expect(fixture.ai.getApiKey('android-ai')).toBe('android-ai-key')
-    expect(fixture.settings.current()).toMatchObject({ syncIntervalMinutes: 60, syncOnStart: true })
+    expect(fixture.settings.current()).toMatchObject({
+      syncIntervalMinutes: 60,
+      syncOnStart: true,
+      sourcePaneWidth: 260,
+      articlePaneWidth: 380,
+      sourcePaneCollapsed: false,
+      articlePaneCollapsed: false
+    })
   })
 
   it('exports the Android envelope and can omit or include encrypted secrets', () => {
     const fixture = createFixture()
     fixture.ai.updateProvider({ id: 'default', endpoint: 'https://api.example/v1', defaultModel: 'model', apiKey: 'secret-ai' })
     fixture.translation.updateProvider({ type: 'DEEPL', enabled: true, endpoint: 'https://api-free.deepl.com/v2/translate', apiKey: 'secret-deepl' })
+    fixture.settings.update({ sourcePaneWidth: 300, articlePaneWidth: 440, sourcePaneCollapsed: true })
 
-    const plain = JSON.parse(fixture.backup.exportBackup('')) as ConfigurationBackup
+    const plainContent = fixture.backup.exportBackup('')
+    const plain = JSON.parse(plainContent) as ConfigurationBackup
     expect(plain).toMatchObject({ schemaVersion: 1, appName: 'OrigRead', sourceVersion: '0.1.0' })
     expect(plain.preferences).toMatchObject({
       'origread.desktop.readerFontSize': 17,
       'origread.desktop.readerLineHeight': 1.85,
-      'origread.desktop.readerContentWidth': 760
+      'origread.desktop.readerContentWidth': 760,
+      'origread.desktop.sourcePaneWidth': 300,
+      'origread.desktop.articlePaneWidth': 440,
+      'origread.desktop.sourcePaneCollapsed': true,
+      'origread.desktop.articlePaneCollapsed': false
     })
     expect(plain.encryptedSecrets).toBeNull()
+
+    fixture.settings.update({ sourcePaneWidth: 220, articlePaneWidth: 320, sourcePaneCollapsed: false, articlePaneCollapsed: true })
+    fixture.backup.restoreBackup(plainContent)
+    expect(fixture.settings.current()).toMatchObject({
+      sourcePaneWidth: 300,
+      articlePaneWidth: 440,
+      sourcePaneCollapsed: true,
+      articlePaneCollapsed: false
+    })
 
     const encrypted = JSON.parse(fixture.backup.exportBackup('backup-pass')) as ConfigurationBackup
     expect(encrypted.encryptedSecrets).toMatchObject({ kdf: 'PBKDF2WithHmacSHA256', cipher: 'AES-256-GCM', iterations: 210_000 })
