@@ -41,14 +41,64 @@ test('two-pane layout restores a resizable Workspace + Reader while keeping thre
     expect(initialGeometry.workspace).toBeLessThanOrEqual(421)
     expect(initialGeometry.reader).toBeGreaterThan(700)
 
-    // DL-2 先恢复旧式文章 / 来源视图切换；DL-3 再把来源视图替换为 Overlay。
-    await page.locator('.two-pane-source-picker-button').click()
+    // DL-3：来源选择覆盖 Workspace 内容区，底层 Article Pane 常驻，不覆盖 Reader。
+    const sourcePickerTrigger = page.locator('.two-pane-source-picker-button')
+    const sourcePickerOverlay = page.locator('.two-pane-source-picker-overlay')
+    const sourcePickerSearch = sourcePickerOverlay.locator('.search-field input')
+    await sourcePickerTrigger.click()
+    await expect(sourcePickerOverlay).toBeVisible()
     await expect(page.locator('.source-pane.embedded-source-pane')).toBeVisible()
-    await expect(page.locator('.article-pane')).toHaveCount(0)
-    await expect(page.locator('.two-pane-source-back')).toBeVisible()
-    await page.locator('.two-pane-source-back').click()
-    await expect(page.locator('.article-pane')).toBeVisible()
-    await expect(page.locator('.source-pane')).toHaveCount(0)
+    await expect(page.locator('.two-pane-workspace-base .article-pane')).toHaveCount(1)
+    await expect(page.locator('.two-pane-workspace-base')).toHaveAttribute('aria-hidden', 'true')
+    await expect(sourcePickerTrigger).toHaveAttribute('aria-expanded', 'true')
+    await expect(sourcePickerSearch).toBeFocused()
+
+    const overlayGeometry = await page.evaluate(() => {
+      const workspace = document.querySelector('.workspace-pane')!.getBoundingClientRect()
+      const overlay = document.querySelector('.two-pane-source-picker-overlay')!.getBoundingClientRect()
+      const reader = document.querySelector('.reader-pane')!.getBoundingClientRect()
+      return {
+        workspaceLeft: workspace.left,
+        workspaceRight: workspace.right,
+        overlayLeft: overlay.left,
+        overlayRight: overlay.right,
+        readerLeft: reader.left
+      }
+    })
+    expect(overlayGeometry.overlayLeft).toBeGreaterThanOrEqual(overlayGeometry.workspaceLeft)
+    expect(overlayGeometry.overlayRight).toBeLessThanOrEqual(overlayGeometry.workspaceRight + 1)
+    expect(overlayGeometry.overlayRight).toBeLessThanOrEqual(overlayGeometry.readerLeft + 1)
+
+    // Escape / X / 范围选择都关闭 Overlay，并把焦点还给来源 Trigger。
+    await page.keyboard.press('Escape')
+    await expect(sourcePickerOverlay).toHaveCount(0)
+    await expect(sourcePickerTrigger).toBeFocused()
+    await expect(page.locator('.two-pane-workspace-base')).not.toHaveAttribute('aria-hidden', 'true')
+
+    await sourcePickerTrigger.click()
+    await expect(sourcePickerSearch).toBeFocused()
+    await page.locator('.two-pane-source-picker-close').click()
+    await expect(sourcePickerOverlay).toHaveCount(0)
+    await expect(sourcePickerTrigger).toBeFocused()
+
+    await sourcePickerTrigger.click()
+    await page.locator('.two-pane-source-picker-overlay .source-scope-all').click()
+    await expect(sourcePickerOverlay).toHaveCount(0)
+    await expect(sourcePickerTrigger).toBeFocused()
+
+    // 离开普通阅读上下文时强制关闭 Overlay，不把焦点拉回已经不应成为当前操作目标的 Trigger。
+    await sourcePickerTrigger.click()
+    await page.locator('.source-discovery-button').click()
+    await expect(sourcePickerOverlay).toHaveCount(0)
+    await expect(page.locator('.source-discovery-page, .source-discovery-state')).toBeVisible()
+    await page.locator('.settings-close-button').click()
+
+    await sourcePickerTrigger.click()
+    await page.locator('.settings-button').click()
+    await expect(sourcePickerOverlay).toHaveCount(0)
+    await expect(page.locator('.settings-layout')).toBeVisible()
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.two-pane-workspace-base .article-pane')).toBeVisible()
 
     // Workspace 使用独立的 workspaceWidth；键盘 End 直接走与拖拽相同的最大宽度约束并持久化。
     const workspaceDivider = page.locator('.pane-divider-workspace')

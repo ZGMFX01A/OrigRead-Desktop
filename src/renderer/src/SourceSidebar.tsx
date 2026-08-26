@@ -1,5 +1,5 @@
-import { ArrowLeft, ChevronDown, ChevronRight, Compass, Download, Inbox, MoreHorizontal, Plus, RefreshCw, Rss, Search, Upload } from 'lucide-react'
-import { useEffect, useState, type MouseEvent } from 'react'
+import { ChevronDown, ChevronRight, Compass, Download, Inbox, MoreHorizontal, Plus, RefreshCw, Rss, Search, Upload } from 'lucide-react'
+import { useEffect, useState, type MouseEvent, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { FeedArticleStats, FeedRecord, GroupRecord } from '../../shared/library'
 
@@ -47,7 +47,7 @@ interface SourceSidebarProps {
   onImportOpml: () => void
   onOpenOpmlExport: () => void
   showHeader?: boolean
-  onBackToArticles?: () => void
+  searchInputRef?: RefObject<HTMLInputElement | null>
 }
 
 interface SourceBrandHeaderProps {
@@ -145,7 +145,7 @@ export function SourceSidebar({
   onImportOpml,
   onOpenOpmlExport,
   showHeader = true,
-  onBackToArticles
+  searchInputRef
 }: SourceSidebarProps): React.JSX.Element {
   const { t } = useTranslation()
   const sourceSearchActive = sourceQuery.trim().length > 0
@@ -168,19 +168,11 @@ export function SourceSidebar({
         />
       )}
 
-      {onBackToArticles && (
-        <div className="two-pane-source-mode-bar">
-          <div><span>{t('twoPaneSourceView')}</span><strong>{t('allSources')}</strong></div>
-          <button type="button" className="two-pane-source-back" onClick={onBackToArticles}>
-            <ArrowLeft size={14}/><span>{t('backToArticles')}</span>
-          </button>
-        </div>
-      )}
-
       <div className="list-toolbar source-list-toolbar">
         <div className="search-field">
           <Search size={16} />
           <input
+            ref={searchInputRef}
             value={sourceQuery}
             onChange={(event) => onSourceQueryChange(event.target.value)}
             aria-label={t('searchSources')}

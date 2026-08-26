@@ -29,6 +29,8 @@ interface ArticleListPaneProps {
   onArticleContextMenu: (article: ArticleRecord, x: number, y: number) => void
   onAddSource: () => void
   onChooseSourceScope?: () => void
+  sourcePickerTriggerRef?: RefObject<HTMLButtonElement | null>
+  sourcePickerOpen?: boolean
 }
 
 /**
@@ -62,7 +64,9 @@ export function ArticleListPane({
   onToggleStarred,
   onArticleContextMenu,
   onAddSource,
-  onChooseSourceScope
+  onChooseSourceScope,
+  sourcePickerTriggerRef,
+  sourcePickerOpen = false
 }: ArticleListPaneProps): React.JSX.Element {
   const { t } = useTranslation()
   const destinationLabelKey = destination === 'all' ? 'allArticles' : destination
@@ -90,7 +94,14 @@ export function ArticleListPane({
             <button type="button" className="icon-button" title={t('clearSourceFilter')} aria-label={t('clearSourceFilter')} onClick={onClearScope}><X size={14}/></button>
           )}
           {onChooseSourceScope && (
-            <button type="button" className="two-pane-source-picker-button" onClick={onChooseSourceScope}>
+            <button
+              ref={sourcePickerTriggerRef}
+              type="button"
+              className={`two-pane-source-picker-button ${sourcePickerOpen ? 'active' : ''}`}
+              aria-haspopup="dialog"
+              aria-expanded={sourcePickerOpen}
+              onClick={onChooseSourceScope}
+            >
               <Rss size={14}/><span>{t('chooseSourceScope')}</span><ChevronRight size={13}/>
             </button>
           )}

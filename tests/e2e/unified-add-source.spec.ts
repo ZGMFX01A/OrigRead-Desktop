@@ -439,6 +439,60 @@ test('reader selection survives source and article filter changes', async () => 
     await article.click()
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
 
+    // DL-3：真实数据下验证双栏 Source Picker Overlay 不重建 Article Workspace，也不替换 Reader。
+    await page.locator('.settings-button').click()
+    await page.locator('.layout-mode-option[data-layout-mode="two-pane"]').click()
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'two-pane')
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+
+    const twoPaneArticleSearch = page.locator('.two-pane-workspace-base .article-pane .search-field input')
+    await twoPaneArticleSearch.fill('Article 1')
+    await page.locator('.two-pane-source-picker-button').click()
+    const sourcePicker = page.locator('.two-pane-source-picker-overlay')
+    const sourcePickerSearch = sourcePicker.locator('.search-field input')
+    const sourcePickerGroupToggle = sourcePicker.locator('.source-group-collapse').first()
+    await expect(sourcePickerSearch).toBeFocused()
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+    await expect(twoPaneArticleSearch).toHaveValue('Article 1')
+
+    // 手动折叠分组后，来源搜索临时展开命中分组；清空搜索后恢复原折叠状态。
+    await sourcePickerGroupToggle.click()
+    await expect(sourcePickerGroupToggle).toHaveAttribute('aria-expanded', 'false')
+    await sourcePickerSearch.fill('OrigRead E2E Feed')
+    await expect(sourcePickerGroupToggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(sourcePickerGroupToggle).toBeDisabled()
+    await expect(sourcePicker.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' })).toBeVisible()
+    await expect(twoPaneArticleSearch).toHaveValue('Article 1')
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+
+    await sourcePickerSearch.fill('')
+    await expect(sourcePickerGroupToggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(sourcePicker.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' })).toHaveCount(0)
+    await sourcePickerGroupToggle.click()
+    await sourcePicker.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' }).click()
+    await expect(sourcePicker).toHaveCount(0)
+    await expect(page.locator('.article-scope-bar')).toContainText('OrigRead E2E Feed')
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+    await expect(twoPaneArticleSearch).toHaveValue('')
+
+    // Group / All 与 Feed 使用同一条关闭链；每次只改变 Article Scope，不替换 Reader。
+    await page.locator('.two-pane-source-picker-button').click()
+    await page.locator('.two-pane-source-picker-overlay .source-group-scope').first().click()
+    await expect(sourcePicker).toHaveCount(0)
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+    await page.locator('.two-pane-source-picker-button').click()
+    await page.locator('.two-pane-source-picker-overlay .source-scope-all').click()
+    await expect(sourcePicker).toHaveCount(0)
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+
+    // 回到三栏继续原有筛选回归；两种布局共享同一 Article / Reader 状态链。
+    await page.locator('.settings-button').click()
+    await page.locator('.layout-mode-option[data-layout-mode="three-pane"]').click()
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'three-pane')
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+
     // UI-3P.3：Source / Article 搜索框同时存在且状态独立，操作任一左侧 Pane 都不能清空 Reader。
     const articleSearch = page.locator('.article-pane .search-field input')
     const sourceSearch = page.locator('.source-pane .search-field input')

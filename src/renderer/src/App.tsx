@@ -71,6 +71,7 @@ import { SourceBrandHeader, SourceSidebar, type ArticleScope, type Destination }
 import { ArticleListPane } from './ArticleListPane'
 import { PaneDivider } from './PaneDivider'
 import { TwoPaneReadingLayout } from './TwoPaneReadingLayout'
+import { TwoPaneSourcePickerOverlay } from './TwoPaneSourcePickerOverlay'
 import { THREE_PANE_BREAKPOINT, resolveResponsivePaneLayout } from './responsive-layout'
 
 type ReaderMode = 'article' | 'ai' | 'translation'
@@ -167,12 +168,29 @@ export default function App(): React.JSX.Element {
   const readerSearchInputRef = useRef<HTMLInputElement>(null)
   const articleSearchInputRef = useRef<HTMLInputElement>(null)
   const adaptiveSourceOverlayCloseRef = useRef<HTMLButtonElement>(null)
+  const twoPaneSourcePickerTriggerRef = useRef<HTMLButtonElement>(null)
+  const twoPaneSourcePickerSearchInputRef = useRef<HTMLInputElement>(null)
   const selectedArticleIdRef = useRef<string | null>(null)
   const sourceDiscoveryRequestIdRef = useRef<string | null>(null)
   const aiSummaryRunRef = useRef(0)
   const lastObservedSyncFinish = useRef<number | null>(null)
   const autoUpdateCheckedRef = useRef(false)
   const speech = useReaderSpeech(settings?.ttsVoiceURI ?? '')
+
+  /** 关闭双栏来源选择浮层；普通关闭后把键盘焦点还给触发按钮。 */
+  const closeTwoPaneSourcePicker = useCallback((restoreFocus = true): void => {
+    setTwoPaneSourcePickerOpen(false)
+    setSourceQuery('')
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => twoPaneSourcePickerTriggerRef.current?.focus())
+    }
+  }, [])
+
+  /** 打开双栏来源选择浮层；实际搜索框聚焦由 Overlay 生命周期 effect 统一处理。 */
+  const openTwoPaneSourcePicker = useCallback((): void => {
+    setSourceQuery('')
+    setTwoPaneSourcePickerOpen(true)
+  }, [])
 
   const reloadLibrary = useCallback(async (): Promise<void> => {
     const [snapshot, loadedFeeds, loadedGroups, loadedArticles, loadedFeedStats] = await Promise.all([
@@ -283,6 +301,27 @@ export default function App(): React.JSX.Element {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [adaptiveSourceOverlayOpen, settings?.layoutMode, settings?.sourcePaneCollapsed])
+
+  useEffect(() => {
+    if (!twoPaneSourcePickerOpen) return
+    // Workspace 不可见或主布局已经切走时直接退场，不把焦点强行拉回已隐藏的 Trigger。
+    if (settings?.layoutMode !== 'two-pane' || settings?.workspaceCollapsed || focusReading) {
+      closeTwoPaneSourcePicker(false)
+      return
+    }
+    const focusFrame = window.requestAnimationFrame(() => twoPaneSourcePickerSearchInputRef.current?.focus())
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      closeTwoPaneSourcePicker(true)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.cancelAnimationFrame(focusFrame)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [closeTwoPaneSourcePicker, focusReading, settings?.layoutMode, settings?.workspaceCollapsed, twoPaneSourcePickerOpen])
 
   useEffect(() => {
     const closeContextMenu = (): void => setContextMenu(null)
@@ -620,9 +659,10 @@ export default function App(): React.JSX.Element {
    */
   const toggleFocusReading = useCallback((): void => {
     setAdaptiveSourceOverlayOpen(false)
+    closeTwoPaneSourcePicker(false)
     setSubscriptionMenuOpen(false)
     setFocusReading((current) => !current)
-  }, [])
+  }, [closeTwoPaneSourcePicker])
 
   const generateAiSummary = async (forceRefresh = false, options?: AiSummaryRequestOptions): Promise<void> => {
     if (!selectedArticleId || readerToolLoading) return
@@ -721,7 +761,7 @@ export default function App(): React.JSX.Element {
         // 主布局切换必须退出临时 Focus / overlay，但不能改写任一布局自己的持久化宽度与折叠偏好。
         setFocusReading(false)
         setAdaptiveSourceOverlayOpen(false)
-        setTwoPaneSourcePickerOpen(false)
+        closeTwoPaneSourcePicker(false)
         setSubscriptionMenuOpen(false)
       }
       if (patch.language !== undefined) {
@@ -894,6 +934,7 @@ export default function App(): React.JSX.Element {
 
   const showSettings = async (page: SettingsPage = 'general'): Promise<void> => {
     if (originalViewState.open) await closeOriginalArticle()
+    closeTwoPaneSourcePicker(false)
     setSourceCatalogOpen(false)
     setSettingsInitialPage(page)
     setSettingsOpen(true)
@@ -1105,10 +1146,13 @@ export default function App(): React.JSX.Element {
         return
       }
       if ((event.ctrlKey || event.metaKey) && key === 'k' && !settingsOpen && !sourceCatalogOpen && !subscriptionMenuOpen && !document.querySelector('[role="dialog"]')) {
-        if (!articleSearchInputRef.current) return
+        const targetSearchInput = twoPaneSourcePickerOpen
+          ? twoPaneSourcePickerSearchInputRef.current
+          : articleSearchInputRef.current
+        if (!targetSearchInput) return
         event.preventDefault()
-        articleSearchInputRef.current.focus()
-        articleSearchInputRef.current.select()
+        targetSearchInput.focus()
+        targetSearchInput.select()
         return
       }
       if (event.key === 'Escape' && readerSearchOpen) {
@@ -1191,6 +1235,7 @@ export default function App(): React.JSX.Element {
   }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settingsOpen, sourceCatalogOpen, subscriptionMenuOpen, toggleFocusReading, twoPaneSourcePickerOpen, visibleArticles])
 
   const openAddSource = (): void => {
+    closeTwoPaneSourcePicker(false)
     setSubscriptionMenuOpen(false)
     setSourceCatalogOpen(false)
     setSourceError(null)
@@ -1250,6 +1295,7 @@ export default function App(): React.JSX.Element {
 
   const showSourceCatalog = async (): Promise<void> => {
     if (originalViewState.open) await closeOriginalArticle()
+    closeTwoPaneSourcePicker(false)
     setSettingsOpen(false)
     setSourceCatalogOpen(true)
   }
@@ -1483,17 +1529,16 @@ export default function App(): React.JSX.Element {
     />
   )
 
-  const renderSourceSidebar = ({ overlay = false, embedded = false, closeAfterSelection = false }: {
+  const renderSourceSidebar = ({ overlay = false, sourcePicker = false }: {
     overlay?: boolean
-    embedded?: boolean
-    closeAfterSelection?: boolean
+    sourcePicker?: boolean
   } = {}): React.JSX.Element => {
-    const closeSourceView = (): void => {
+    const closeSourceView = (restoreFocus = true): void => {
       if (overlay) {
         setAdaptiveSourceOverlayOpen(false)
         setSubscriptionMenuOpen(false)
       }
-      if (closeAfterSelection) setTwoPaneSourcePickerOpen(false)
+      if (sourcePicker) closeTwoPaneSourcePicker(restoreFocus)
     }
     return (
       <SourceSidebar
@@ -1512,8 +1557,8 @@ export default function App(): React.JSX.Element {
         opmlStatus={opmlStatus}
         sourceError={sourceError}
         showNotices={!addSourceOpen}
-        showHeader={!embedded}
-        onBackToArticles={embedded ? () => setTwoPaneSourcePickerOpen(false) : undefined}
+        showHeader={!sourcePicker}
+        searchInputRef={sourcePicker ? twoPaneSourcePickerSearchInputRef : undefined}
         onSourceQueryChange={setSourceQuery}
         onSelectAll={() => { setArticleScope({ kind: 'all' }); setArticleQuery(''); closeSourceView() }}
         onSelectGroup={(group) => { setArticleScope({ kind: 'group', id: group.id }); setArticleQuery(''); closeSourceView() }}
@@ -1525,14 +1570,14 @@ export default function App(): React.JSX.Element {
         })}
         onSelectFeed={(feed) => { selectFeedScope(feed); closeSourceView() }}
         onRefreshFeed={(feed) => void refreshFeed(feed)}
-        onOpenFeedSettings={(feed) => { closeSourceView(); setSourceSettingsFeed(feed) }}
+        onOpenFeedSettings={(feed) => { closeSourceView(false); setSourceSettingsFeed(feed) }}
         onFeedContextMenu={(feed, x, y) => setContextMenu({ kind: 'feed', x, y, feedId: feed.id })}
-        onShowSourceCatalog={() => { closeSourceView(); void showSourceCatalog() }}
+        onShowSourceCatalog={() => { closeSourceView(false); void showSourceCatalog() }}
         onToggleSubscriptionMenu={() => setSubscriptionMenuOpen((open) => !open)}
         onCloseSubscriptionMenu={() => setSubscriptionMenuOpen(false)}
-        onAddSource={() => { closeSourceView(); openAddSource() }}
+        onAddSource={() => { closeSourceView(false); openAddSource() }}
         onImportOpml={() => void importOpml()}
-        onOpenOpmlExport={() => { closeSourceView(); setSubscriptionMenuOpen(false); setOpmlExportOpen(true) }}
+        onOpenOpmlExport={() => { closeSourceView(false); setSubscriptionMenuOpen(false); setOpmlExportOpen(true) }}
       />
     )
   }
@@ -1563,6 +1608,8 @@ export default function App(): React.JSX.Element {
       onArticleContextMenu={(article, x, y) => setContextMenu({ kind: 'article', x, y, articleId: article.id })}
       onAddSource={openAddSource}
       onChooseSourceScope={onChooseSourceScope}
+      sourcePickerTriggerRef={onChooseSourceScope ? twoPaneSourcePickerTriggerRef : undefined}
+      sourcePickerOpen={Boolean(onChooseSourceScope && twoPaneSourcePickerOpen)}
     />
   )
 
@@ -1597,9 +1644,16 @@ export default function App(): React.JSX.Element {
       {twoPaneLayout ? (
         <TwoPaneReadingLayout
           workspaceHeader={renderSourceBrandHeader()}
-          workspaceContent={twoPaneSourcePickerOpen
-            ? renderSourceSidebar({ embedded: true, closeAfterSelection: true })
-            : renderArticleListPane(() => { setSourceQuery(''); setTwoPaneSourcePickerOpen(true) })}
+          workspaceContent={renderArticleListPane(openTwoPaneSourcePicker)}
+          workspaceOverlay={twoPaneSourcePickerOpen ? (
+            <TwoPaneSourcePickerOverlay
+              title={t('chooseSourceScope')}
+              closeLabel={t('close')}
+              onClose={() => closeTwoPaneSourcePicker(true)}
+            >
+              {renderSourceSidebar({ sourcePicker: true })}
+            </TwoPaneSourcePickerOverlay>
+          ) : undefined}
           workspaceAriaLabel={t('layoutModeTwoPane')}
           width={settings?.workspaceWidth ?? 420}
           minWidth={WORKSPACE_PANE_WIDTH_MIN}

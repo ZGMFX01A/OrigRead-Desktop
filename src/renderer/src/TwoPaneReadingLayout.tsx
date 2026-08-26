@@ -6,6 +6,7 @@ import { TwoPaneWorkspace } from './TwoPaneWorkspace'
 interface TwoPaneReadingLayoutProps {
   workspaceHeader: ReactNode
   workspaceContent: ReactNode
+  workspaceOverlay?: ReactNode
   workspaceAriaLabel: string
   width: number
   minWidth: number
@@ -29,6 +30,7 @@ interface TwoPaneReadingLayoutProps {
 export function TwoPaneReadingLayout({
   workspaceHeader,
   workspaceContent,
+  workspaceOverlay,
   workspaceAriaLabel,
   width,
   minWidth,
@@ -49,6 +51,7 @@ export function TwoPaneReadingLayout({
         <TwoPaneWorkspace
           header={workspaceHeader}
           content={workspaceContent}
+          overlay={workspaceOverlay}
           ariaLabel={workspaceAriaLabel}
         />
       )}
