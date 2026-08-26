@@ -20,9 +20,8 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await expect(page.locator('.pane-divider-article')).toHaveAttribute('data-collapsed', 'false')
 
     await expect(page.locator('.brand-name')).toBeVisible()
-    await expect(page.locator('.source-destination-nav')).toBeVisible()
-    await expect(page.locator('.source-destination-item')).toHaveCount(3)
-    await expect(page.locator('.article-pane .source-destination-nav')).toHaveCount(0)
+    await expect(page.locator('.source-destination-nav')).toHaveCount(0)
+    await expect(page.locator('.article-scope-stats .article-destination-item')).toHaveCount(3)
     await expect(page.locator('.reader-pane')).toBeVisible()
     await expect(page.locator('.reader-empty-state')).toContainText('开始建立你的阅读列表')
     await expect(page.locator('.reader-empty-state')).not.toContainText('Electron 重构进行中')
@@ -41,7 +40,7 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     const darkPaneSemantics = await page.evaluate(() => ({
       source: getComputedStyle(document.querySelector('.source-pane')!).backgroundColor,
       article: getComputedStyle(document.querySelector('.article-pane')!).backgroundColor,
-      destinationSelected: getComputedStyle(document.querySelector('.source-destination-item.active')!).backgroundColor,
+      destinationSelected: getComputedStyle(document.querySelector('.article-destination-item.active')!).backgroundColor,
       scopeSelected: getComputedStyle(document.querySelector('.source-scope-all.selected')!).backgroundColor
     }))
     expect(darkPaneSemantics.source).not.toBe(darkPaneSemantics.article)

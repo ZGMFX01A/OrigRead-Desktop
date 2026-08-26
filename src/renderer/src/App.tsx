@@ -98,6 +98,8 @@ export default function App(): React.JSX.Element {
   const [settings, setSettings] = useState<DesktopSettings | null>(null)
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)
   const [sourceQuery, setSourceQuery] = useState('')
+  // 分组折叠属于会话级 UI 状态，提升到 App 后即使整个 Source Pane 临时折叠/卸载也不会丢失。
+  const [collapsedSourceGroupIds, setCollapsedSourceGroupIds] = useState<Set<string>>(() => new Set())
   const [articleQuery, setArticleQuery] = useState('')
   const [articleScope, setArticleScope] = useState<ArticleScope>({ kind: 'all' })
   const [selectedArticleId, setSelectedArticleId] = useState<string | null>(null)
@@ -1418,7 +1420,6 @@ export default function App(): React.JSX.Element {
     }
     return (
       <SourceSidebar
-        destination={destination}
         articleScope={articleScope}
         sourceQuery={sourceQuery}
         visibleFeedCount={visibleFeeds.length}
@@ -1426,9 +1427,7 @@ export default function App(): React.JSX.Element {
         feedStatsById={feedStatsById}
         allArticleCount={librarySnapshot?.articles ?? articles.length}
         allUnreadCount={librarySnapshot?.unread ?? articles.filter((article) => article.isUnread).length}
-        scopedArticleCount={articleScope.kind === 'all' ? (librarySnapshot?.articles ?? scopedArticles.length) : scopedArticles.length}
-        scopedUnreadCount={scopedUnreadCount}
-        scopedStarredCount={scopedStarredCount}
+        collapsedGroupIds={collapsedSourceGroupIds}
         refreshingFeedId={refreshingFeedId}
         isRefreshingAll={isRefreshingAll}
         subscriptionMenuOpen={subscriptionMenuOpen}
@@ -1436,10 +1435,15 @@ export default function App(): React.JSX.Element {
         opmlStatus={opmlStatus}
         sourceError={sourceError}
         showNotices={!addSourceOpen}
-        onDestinationChange={(id) => { setArticleQuery(''); setDestination(id); closeOverlay() }}
         onSourceQueryChange={setSourceQuery}
         onSelectAll={() => { setArticleScope({ kind: 'all' }); setArticleQuery(''); closeOverlay() }}
         onSelectGroup={(group) => { setArticleScope({ kind: 'group', id: group.id }); setArticleQuery(''); closeOverlay() }}
+        onToggleGroupCollapsed={(groupId) => setCollapsedSourceGroupIds((current) => {
+          const next = new Set(current)
+          if (next.has(groupId)) next.delete(groupId)
+          else next.add(groupId)
+          return next
+        })}
         onSelectFeed={(feed) => { selectFeedScope(feed); closeOverlay() }}
         onRefreshFeed={(feed) => void refreshFeed(feed)}
         onOpenFeedSettings={(feed) => { closeOverlay(); setSourceSettingsFeed(feed) }}
@@ -1477,7 +1481,7 @@ export default function App(): React.JSX.Element {
 
   return (
     <main
-      className={`app-shell ${focusReading ? 'focus-reading' : ''} ${adaptiveSourceHidden ? 'adaptive-source-hidden' : ''} ${compactLayout ? 'compact-layout' : ''}`}
+      className={`app-shell ${focusReading ? 'focus-reading' : ''} ${adaptiveSourceHidden ? 'adaptive-source-hidden' : ''} ${compactLayout ? 'compact-layout' : ''} ${effectiveSourcePaneCollapsed ? 'source-pane-collapsed' : ''} ${effectiveArticlePaneCollapsed ? 'article-pane-collapsed' : ''}`}
       style={readerStyle}
       data-viewport-width={viewportWidth}
     >
@@ -1522,6 +1526,7 @@ export default function App(): React.JSX.Element {
             searchInputRef={articleSearchInputRef}
             refreshing={isRefreshingAll || refreshingFeedId === activeScopeFeed?.id}
             refreshDisabled={feeds.length === 0 || isRefreshingAll || refreshingFeedId !== null}
+            onDestinationChange={(id) => { setArticleQuery(''); setDestination(id) }}
             onClearScope={() => { setArticleScope({ kind: 'all' }); setArticleQuery('') }}
             onArticleQueryChange={setArticleQuery}
             onRefresh={() => activeScopeFeed ? void refreshFeed(activeScopeFeed, undefined, 'article') : void refreshAllSources()}

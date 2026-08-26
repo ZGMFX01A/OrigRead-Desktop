@@ -42,6 +42,12 @@ test('source and article panes collapse independently while focus reading stays 
     await expect(sourceDivider).toHaveAttribute('data-collapsed', 'false')
     await expect(articleDivider).toHaveAttribute('data-collapsed', 'true')
     await expectManualPaneState(page, false, true)
+    const sourceHandleBox = await sourceToggle.boundingBox()
+    const articleHandleBox = await articleToggle.boundingBox()
+    expect(sourceHandleBox).not.toBeNull()
+    expect(articleHandleBox).not.toBeNull()
+    // Source 收起与 Article 恢复是两个独立入口；相邻 Divider 下按钮不能再像 UI-3P.10 后用户截图那样互相覆盖。
+    expect(sourceHandleBox!.x + sourceHandleBox!.width).toBeLessThanOrEqual(articleHandleBox!.x + 0.5)
 
     // Focus 只做临时覆盖：进入时两个 Pane 都不可见，但手动状态仍是 Source 展开 / Article 收起。
     await page.locator('.focus-reading-button').click()

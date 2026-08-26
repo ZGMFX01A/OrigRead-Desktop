@@ -20,6 +20,7 @@ interface ArticleListPaneProps {
   searchInputRef: RefObject<HTMLInputElement | null>
   refreshing: boolean
   refreshDisabled: boolean
+  onDestinationChange: (destination: Destination) => void
   onClearScope: () => void
   onArticleQueryChange: (value: string) => void
   onRefresh: () => void
@@ -32,7 +33,8 @@ interface ArticleListPaneProps {
 /**
  * 三栏模式中的文章列表栏。
  *
- * UI-3P.4 起只负责当前来源范围、搜索与文章列表；一级 Destination 导航固定由 SourceSidebar 承担。
+ * 只负责当前来源范围、文章集合过滤、搜索与文章列表。
+ * SourceSidebar 只管理来源范围，避免“来源”和“文章过滤”在两个 Pane 重复出现。
  */
 export function ArticleListPane({
   destination,
@@ -50,6 +52,7 @@ export function ArticleListPane({
   searchInputRef,
   refreshing,
   refreshDisabled,
+  onDestinationChange,
   onClearScope,
   onArticleQueryChange,
   onRefresh,
@@ -85,9 +88,24 @@ export function ArticleListPane({
           )}
         </div>
         <div className="article-scope-stats" aria-label={t('readingScope')}>
-          <span className={destination === 'all' ? 'active' : ''}><small>{t('allArticles')}</small><strong>{scopeArticleCount}</strong></span>
-          <span className={destination === 'unread' ? 'active' : ''}><small>{t('unread')}</small><strong>{scopeUnreadCount}</strong></span>
-          <span className={destination === 'starred' ? 'active' : ''}><small>{t('starred')}</small><strong>{scopeStarredCount}</strong></span>
+          <button
+            type="button"
+            className={`article-destination-item ${destination === 'all' ? 'active' : ''}`}
+            aria-current={destination === 'all' ? 'page' : undefined}
+            onClick={() => onDestinationChange('all')}
+          ><small>{t('allArticles')}</small><strong>{scopeArticleCount}</strong></button>
+          <button
+            type="button"
+            className={`article-destination-item ${destination === 'unread' ? 'active' : ''}`}
+            aria-current={destination === 'unread' ? 'page' : undefined}
+            onClick={() => onDestinationChange('unread')}
+          ><small>{t('unread')}</small><strong>{scopeUnreadCount}</strong></button>
+          <button
+            type="button"
+            className={`article-destination-item ${destination === 'starred' ? 'active' : ''}`}
+            aria-current={destination === 'starred' ? 'page' : undefined}
+            onClick={() => onDestinationChange('starred')}
+          ><small>{t('starred')}</small><strong>{scopeStarredCount}</strong></button>
         </div>
       </header>
 

@@ -341,6 +341,15 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await page.reload()
     await expect(page.locator('.app-shell')).toBeVisible()
     await expect(page.locator('.source-group-header').filter({ hasText: 'E2E 分组' })).toBeVisible()
+    await expect(page.locator('.source-destination-nav')).toHaveCount(0)
+    const e2eGroup = page.locator('.source-group-section').filter({ hasText: 'E2E 分组' })
+    const e2eGroupToggle = e2eGroup.locator('.source-group-collapse')
+    await expect(e2eGroupToggle).toHaveAttribute('aria-expanded', 'true')
+    await e2eGroupToggle.click()
+    await expect(e2eGroupToggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(e2eGroup.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' })).toHaveCount(0)
+    await e2eGroupToggle.click()
+    await expect(e2eGroupToggle).toHaveAttribute('aria-expanded', 'true')
     const sourceItem = page.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' })
     await sourceItem.click()
     await expect(page.locator('.article-scope-bar')).toContainText('OrigRead E2E Feed')
@@ -352,7 +361,7 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
         starred: feedArticles.filter((item) => item.isStarred).length
       }
     }, currentFixture!.feedId)
-    const scopeStats = page.locator('.article-scope-stats > span')
+    const scopeStats = page.locator('.article-scope-stats > button')
     await expect(scopeStats).toHaveCount(3)
     await expect(scopeStats.nth(0)).toContainText(String(expectedScopeStats.total))
     await expect(scopeStats.nth(1)).toContainText(String(expectedScopeStats.unread))
@@ -371,13 +380,13 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await expect(page.locator(`.article-item[data-article-id="${currentFixture!.articleId}"]`)).toHaveClass(/read/)
     await expect(page.locator('.article-item.unread').first()).toBeVisible()
 
-    await page.locator('.source-destination-item').filter({ hasText: '未读' }).click()
+    await page.locator('.article-destination-item').filter({ hasText: '未读' }).click()
     await expect(page.locator('.article-scope-bar')).toContainText('OrigRead E2E Feed')
     await expect.poll(async () => page.locator('.article-item').evaluateAll((items, feedId) => items.length > 0 && items.every((item) => item.getAttribute('data-feed-id') === feedId && item.classList.contains('unread')), currentFixture!.feedId)).toBe(true)
 
     const unreadToStar = page.locator('.article-item.unread').first()
     await unreadToStar.locator('.star-button').click()
-    await page.locator('.source-destination-item').filter({ hasText: '星标' }).click()
+    await page.locator('.article-destination-item').filter({ hasText: '星标' }).click()
     await expect(page.locator('.article-scope-bar')).toContainText('OrigRead E2E Feed')
     await expect.poll(async () => page.locator('.article-item').evaluateAll((items, feedId) => items.length > 0 && items.every((item) => item.getAttribute('data-feed-id') === feedId), currentFixture!.feedId)).toBe(true)
 
@@ -447,11 +456,11 @@ test('reader selection survives source and article filter changes', async () => 
     await expect(articleSearch).toHaveValue('')
     await expect(page.locator('.article-list')).toBeVisible()
 
-    // Destination 现在固定在 Source Sidebar，但仍只过滤 Article Pane；Reader 生命周期保持独立。
-    await page.locator('.source-destination-item').filter({ hasText: '未读' }).click()
+    // Destination 只存在于 Article Pane；切换过滤仍不能替换 Reader 当前文章。
+    await page.locator('.article-destination-item').filter({ hasText: '未读' }).click()
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
     await expect(page.locator(`.article-item[data-article-id="${selectedArticleId!}"]`)).toHaveCount(0)
-    await page.locator('.source-destination-item').filter({ hasText: '全部文章' }).click()
+    await page.locator('.article-destination-item').filter({ hasText: '全部文章' }).click()
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
 
     // Group Scope 与 Feed Scope 一样，只替换 Article Pane 数据范围；当前 Reader 不应被清空。
@@ -468,10 +477,10 @@ test('reader selection survives source and article filter changes', async () => 
     // Starred Destination 也必须只过滤 Article Pane。先收藏当前文章，确保切入星标后它仍可见且 Reader 保持。
     const selectedArticle = page.locator(`.article-item[data-article-id="${selectedArticleId!}"]`)
     await selectedArticle.locator('.star-button').click()
-    await page.locator('.source-destination-item').filter({ hasText: '星标' }).click()
+    await page.locator('.article-destination-item').filter({ hasText: '星标' }).click()
     await expect(selectedArticle).toBeVisible()
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
-    await page.locator('.source-destination-item').filter({ hasText: '全部文章' }).click()
+    await page.locator('.article-destination-item').filter({ hasText: '全部文章' }).click()
 
     // 只有显式点击另一篇文章才允许替换 Reader。
     const nextArticle = page.locator('.article-item').filter({ hasText: 'OrigRead E2E Article 2' }).first()

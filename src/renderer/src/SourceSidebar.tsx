@@ -1,4 +1,4 @@
-import { BookOpenText, ChevronDown, Compass, Download, Inbox, MoreHorizontal, Plus, RefreshCw, Rss, Search, Star, Upload } from 'lucide-react'
+import { ChevronDown, ChevronRight, Compass, Download, Inbox, MoreHorizontal, Plus, RefreshCw, Rss, Search, Upload } from 'lucide-react'
 import { useEffect, useState, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { FeedArticleStats, FeedRecord, GroupRecord } from '../../shared/library'
@@ -8,14 +8,8 @@ export type ArticleScope =
   | { kind: 'group'; id: string }
   | { kind: 'feed'; id: string }
 
-/** 左栏一级文章集合导航；与来源范围 ArticleScope 正交。 */
+/** Article Pane 使用的文章集合过滤状态；与来源范围 ArticleScope 正交。 */
 export type Destination = 'all' | 'unread' | 'starred'
-
-const destinations: Array<{ id: Destination; icon: typeof Inbox; labelKey: string }> = [
-  { id: 'all', icon: Inbox, labelKey: 'allArticles' },
-  { id: 'unread', icon: BookOpenText, labelKey: 'unread' },
-  { id: 'starred', icon: Star, labelKey: 'starred' }
-]
 
 interface SourceGroupEntry {
   group: GroupRecord
@@ -23,7 +17,6 @@ interface SourceGroupEntry {
 }
 
 interface SourceSidebarProps {
-  destination: Destination
   articleScope: ArticleScope
   sourceQuery: string
   visibleFeedCount: number
@@ -31,9 +24,7 @@ interface SourceSidebarProps {
   feedStatsById: ReadonlyMap<string, FeedArticleStats>
   allArticleCount: number
   allUnreadCount: number
-  scopedArticleCount: number
-  scopedUnreadCount: number
-  scopedStarredCount: number
+  collapsedGroupIds: ReadonlySet<string>
   refreshingFeedId: string | null
   isRefreshingAll: boolean
   subscriptionMenuOpen: boolean
@@ -41,10 +32,10 @@ interface SourceSidebarProps {
   opmlStatus: string | null
   sourceError: string | null
   showNotices: boolean
-  onDestinationChange: (destination: Destination) => void
   onSourceQueryChange: (value: string) => void
   onSelectAll: () => void
   onSelectGroup: (group: GroupRecord) => void
+  onToggleGroupCollapsed: (groupId: string) => void
   onSelectFeed: (feed: FeedRecord) => void
   onRefreshFeed: (feed: FeedRecord) => void
   onOpenFeedSettings: (feed: FeedRecord) => void
@@ -63,7 +54,6 @@ interface SourceSidebarProps {
  * 这里只负责来源范围选择和来源级操作；文章筛选与文章列表由 ArticleListPane 独立承担。
  */
 export function SourceSidebar({
-  destination,
   articleScope,
   sourceQuery,
   visibleFeedCount,
@@ -71,9 +61,7 @@ export function SourceSidebar({
   feedStatsById,
   allArticleCount,
   allUnreadCount,
-  scopedArticleCount,
-  scopedUnreadCount,
-  scopedStarredCount,
+  collapsedGroupIds,
   refreshingFeedId,
   isRefreshingAll,
   subscriptionMenuOpen,
@@ -81,10 +69,10 @@ export function SourceSidebar({
   opmlStatus,
   sourceError,
   showNotices,
-  onDestinationChange,
   onSourceQueryChange,
   onSelectAll,
   onSelectGroup,
+  onToggleGroupCollapsed,
   onSelectFeed,
   onRefreshFeed,
   onOpenFeedSettings,
@@ -97,6 +85,7 @@ export function SourceSidebar({
   onOpenOpmlExport
 }: SourceSidebarProps): React.JSX.Element {
   const { t } = useTranslation()
+  const sourceSearchActive = sourceQuery.trim().length > 0
 
   const feedStats = (feedId: string): FeedArticleStats =>
     feedStatsById.get(feedId) ?? { feedId, total: 0, unread: 0, starred: 0 }
@@ -135,25 +124,6 @@ export function SourceSidebar({
         </div>
       </header>
 
-      <nav className="source-destination-nav" aria-label={t('allArticles')}>
-        {destinations.map(({ id, icon: Icon, labelKey }) => {
-          const count = id === 'all' ? scopedArticleCount : id === 'unread' ? scopedUnreadCount : scopedStarredCount
-          return (
-            <button
-              key={id}
-              type="button"
-              className={`source-destination-item ${destination === id ? 'active' : ''}`}
-              aria-current={destination === id ? 'page' : undefined}
-              onClick={() => onDestinationChange(id)}
-            >
-              <Icon size={16} />
-              <span>{t(labelKey)}</span>
-              <span className="source-destination-count">{count}</span>
-            </button>
-          )
-        })}
-      </nav>
-
       <div className="list-toolbar source-list-toolbar">
         <div className="search-field">
           <Search size={16} />
@@ -182,13 +152,34 @@ export function SourceSidebar({
 
           {groupedFeeds.map(({ group, feeds }) => {
             const groupUnread = feeds.reduce((sum, feed) => sum + feedStats(feed.id).unread, 0)
+            // 搜索来源时临时展开所有命中分组，避免“搜索到了但被折叠隐藏”的假空结果。
+            // 分组的原始折叠状态仍保留，清空搜索后自动恢复。
+            const collapsed = !sourceSearchActive && collapsedGroupIds.has(group.id)
             return (
               <section className="source-group-section" key={group.id}>
-                <button className={`source-group-header source-group-scope ${articleScope.kind === 'group' && articleScope.id === group.id ? 'selected' : ''}`} type="button" aria-current={articleScope.kind === 'group' && articleScope.id === group.id ? 'true' : undefined} title={group.name} onClick={() => onSelectGroup(group)}>
-                  <span className="source-group-name"><strong>{group.name}</strong><small>{t('sourceCount', { count: feeds.length })}</small></span>
-                  <span>{t('unreadCountShort', { count: groupUnread })}</span>
-                </button>
-                <div className="source-group-items">
+                <div className="source-group-header">
+                  <button
+                    className="source-group-collapse"
+                    type="button"
+                    aria-label={t(collapsed ? 'expandSourceGroup' : 'collapseSourceGroup', { name: group.name })}
+                    aria-expanded={!collapsed}
+                    disabled={sourceSearchActive}
+                    onClick={() => onToggleGroupCollapsed(group.id)}
+                  >
+                    {collapsed ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}
+                  </button>
+                  <button
+                    className={`source-group-scope ${articleScope.kind === 'group' && articleScope.id === group.id ? 'selected' : ''}`}
+                    type="button"
+                    aria-current={articleScope.kind === 'group' && articleScope.id === group.id ? 'true' : undefined}
+                    title={group.name}
+                    onClick={() => onSelectGroup(group)}
+                  >
+                    <span className="source-group-name"><strong>{group.name}</strong><small>{t('sourceCount', { count: feeds.length })}</small></span>
+                    <span>{t('unreadCountShort', { count: groupUnread })}</span>
+                  </button>
+                </div>
+                {!collapsed && <div className="source-group-items">
                   {feeds.map((feed) => (
                     <article
                       className={`source-item ${articleScope.kind === 'feed' && articleScope.id === feed.id ? 'selected' : ''}`}
@@ -238,7 +229,7 @@ export function SourceSidebar({
                       </div>
                     </article>
                   ))}
-                </div>
+                </div>}
               </section>
             )
           })}
