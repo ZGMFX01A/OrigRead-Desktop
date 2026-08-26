@@ -197,7 +197,12 @@ button { color: inherit; }
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-columns: 260px 380px 1px minmax(0, 1fr);
+  grid-template-columns:
+    var(--source-pane-width, 260px)
+    5px
+    var(--article-pane-width, 380px)
+    5px
+    minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   background: #f4f4f6;
@@ -215,6 +220,9 @@ button { color: inherit; }
   background: var(--surface);
 }
 
+.source-pane { grid-column: 1; }
+.article-pane { grid-column: 3; }
+
 .source-pane {
   grid-column: 1;
   display: grid;
@@ -223,7 +231,7 @@ button { color: inherit; }
 }
 
 .article-pane {
-  grid-column: 2;
+  grid-column: 3;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
 }
@@ -429,18 +437,41 @@ button { color: inherit; }
 .secondary-action:hover { background: #e9e7fb; }
 
 .pane-divider {
-  grid-column: 3;
   position: relative;
-  z-index: 3;
-  background: var(--border);
+  z-index: 4;
+  min-width: 0;
+  touch-action: none;
+  background: transparent;
 }
 
-.workspace-collapsed .pane-divider {
+.pane-divider::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+  background: var(--border);
+  transition: background 100ms ease, box-shadow 100ms ease;
+}
+
+.pane-divider-source { grid-column: 2; }
+.pane-divider-article { grid-column: 4; }
+.pane-divider.resizable { cursor: col-resize; }
+.pane-divider.resizable:hover::before,
+.pane-divider.dragging::before {
+  background: color-mix(in srgb, var(--accent) 58%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.workspace-collapsed .pane-divider-article {
   grid-column: 1;
   background: #f7f7fa;
   border-right: 1px solid var(--border);
   box-shadow: 2px 0 10px rgba(36, 37, 42, 0.035);
 }
+
+.workspace-collapsed .pane-divider-article::before { display: none; }
 
 .collapse-handle {
   position: absolute;
@@ -468,7 +499,7 @@ button { color: inherit; }
   box-shadow: 0 4px 14px rgba(36, 37, 42, 0.09);
 }
 
-.reader-pane { grid-column: 4; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: 56px minmax(0, 1fr); background: #f6f6f8; }
+.reader-pane { grid-column: 5; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: 56px minmax(0, 1fr); background: #f6f6f8; }
 .workspace-collapsed .reader-pane { grid-column: 2; }
 .reader-toolbar {
   position: relative;

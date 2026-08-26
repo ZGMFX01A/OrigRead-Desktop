@@ -208,6 +208,37 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
     await expect.poll(() => page.locator('.reader-toolbar').evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(darkToolbarBackground)
+
+    // UI-3P.6：原文 WebContentsView 必须跟随 Article Divider 改变 Reader stage bounds。
+    const readerStageBeforeResize = await page.locator('.reader-stage').boundingBox()
+    if (!readerStageBeforeResize) throw new Error('Reader stage is not visible before divider resize')
+    const articleDividerBox = await page.locator('.pane-divider-article').boundingBox()
+    if (!articleDividerBox) throw new Error('Article divider is not visible')
+    const dividerX = articleDividerBox.x + articleDividerBox.width / 2
+    const dividerY = articleDividerBox.y + Math.min(80, articleDividerBox.height / 4)
+    await page.mouse.move(dividerX, dividerY)
+    await page.mouse.down()
+    await page.mouse.move(dividerX + 40, dividerY, { steps: 5 })
+    await page.mouse.up()
+    await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).articlePaneWidth)).toBe(420)
+    await expect.poll(async () => {
+      const stage = await page.locator('.reader-stage').boundingBox()
+      const viewBounds = await electronApp.evaluate(({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0]
+        const child = window?.contentView.children.at(-1)
+        return child?.getBounds() ?? null
+      })
+      if (!stage || !viewBounds) return false
+      return (
+        stage.width < readerStageBeforeResize.width - 30 &&
+        Math.abs(viewBounds.x - Math.round(stage.x)) <= 1 &&
+        Math.abs(viewBounds.y - Math.round(stage.y)) <= 1 &&
+        Math.abs(viewBounds.width - Math.round(stage.width)) <= 1 &&
+        Math.abs(viewBounds.height - Math.round(stage.height)) <= 1
+      )
+    }).toBe(true)
+    await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
+
     await expect(page.locator('.reader-mode-button')).toBeVisible()
     await page.locator('.reader-mode-button').click()
     await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(false)

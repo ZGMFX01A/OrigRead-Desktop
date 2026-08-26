@@ -29,7 +29,14 @@ import { useTranslation } from 'react-i18next'
 import type { AppInfo } from '../../shared/contracts'
 import { resolveDesktopLanguage } from '../../shared/locale'
 import type { ArticleRecord, ArticleSearchResult, FeedArticleStats, FeedRecord, GroupRecord, LibrarySnapshot } from '../../shared/library'
-import type { AiSummaryPlacement, DesktopSettings } from '../../shared/settings'
+import {
+  ARTICLE_PANE_WIDTH_MAX,
+  ARTICLE_PANE_WIDTH_MIN,
+  SOURCE_PANE_WIDTH_MAX,
+  SOURCE_PANE_WIDTH_MIN,
+  type AiSummaryPlacement,
+  type DesktopSettings
+} from '../../shared/settings'
 import type { SourceDiscoveryProgress, SourceDiscoveryResult, SourceDiscoveryStage } from '../../shared/source-discovery'
 import type { ReaderArticleContent } from '../../shared/reader'
 import type { SyncRuntimeState } from '../../shared/sync-runtime'
@@ -58,6 +65,7 @@ import {
 } from './reading-share'
 import { SourceSidebar, type ArticleScope, type Destination } from './SourceSidebar'
 import { ArticleListPane } from './ArticleListPane'
+import { PaneDivider } from './PaneDivider'
 
 type ReaderMode = 'article' | 'ai' | 'translation'
 
@@ -674,6 +682,16 @@ export default function App(): React.JSX.Element {
     }
   }
 
+  /** Source Divider 拖动时只更新 Renderer 快照，pointerup 再持久化。 */
+  const previewSourcePaneWidth = (width: number): void => {
+    setSettings((current) => current ? { ...current, sourcePaneWidth: width } : current)
+  }
+
+  /** Article Divider 拖动时只更新 Renderer 快照，避免 pointermove 高频 Settings IPC。 */
+  const previewArticlePaneWidth = (width: number): void => {
+    setSettings((current) => current ? { ...current, articlePaneWidth: width } : current)
+  }
+
   const showReadingShareStatus = (kind: 'success' | 'error', message: string): void => {
     setReadingShareStatus({ kind, message })
     window.setTimeout(() => setReadingShareStatus(null), 3_000)
@@ -1280,6 +1298,8 @@ export default function App(): React.JSX.Element {
   )
   const readerColors = resolveReaderColors(readerBackground)
   const readerStyle = {
+    '--source-pane-width': `${settings?.sourcePaneWidth ?? 260}px`,
+    '--article-pane-width': `${settings?.articlePaneWidth ?? 380}px`,
     '--reader-font-size': `${settings?.readerFontSize ?? 17}px`,
     '--reader-line-height': String(settings?.readerLineHeight ?? 1.85),
     '--reader-content-width': `${settings?.readerContentWidth ?? 760}px`,
@@ -1353,6 +1373,14 @@ export default function App(): React.JSX.Element {
             onImportOpml={() => void importOpml()}
             onOpenOpmlExport={() => { setSubscriptionMenuOpen(false); setOpmlExportOpen(true) }}
           />
+          <PaneDivider
+            kind="source"
+            width={settings?.sourcePaneWidth ?? 260}
+            minWidth={SOURCE_PANE_WIDTH_MIN}
+            maxWidth={SOURCE_PANE_WIDTH_MAX}
+            onResize={previewSourcePaneWidth}
+            onResizeEnd={(width) => void updateDesktopSettings({ sourcePaneWidth: width })}
+          />
           <ArticleListPane
             destination={destination}
             articleScope={articleScope}
@@ -1379,7 +1407,15 @@ export default function App(): React.JSX.Element {
         </>
       )}
 
-      <div className="pane-divider" aria-hidden="true">
+      <PaneDivider
+        kind="article"
+        width={settings?.articlePaneWidth ?? 380}
+        minWidth={ARTICLE_PANE_WIDTH_MIN}
+        maxWidth={ARTICLE_PANE_WIDTH_MAX}
+        resizable={!workspaceCollapsed}
+        onResize={previewArticlePaneWidth}
+        onResizeEnd={(width) => void updateDesktopSettings({ articlePaneWidth: width })}
+      >
         <button
           className="collapse-handle"
           type="button"
@@ -1389,7 +1425,7 @@ export default function App(): React.JSX.Element {
         >
           {workspaceCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
         </button>
-      </div>
+      </PaneDivider>
 
       <section className="reader-pane">
         <header className="reader-toolbar">
