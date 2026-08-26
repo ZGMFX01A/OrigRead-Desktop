@@ -10,9 +10,12 @@ test('packaging platform smoke: Electron, preload, database and renderer start n
 
   try {
     await expect(page.locator('.app-shell')).toBeVisible()
-    await expect(page.locator('.brand-name')).toContainText(/OrigRead|原读/)
+    // GitHub Runner 的可用桌面宽度可能小于 1200px，此时 Source 会按设计自适应隐藏，
+    // `.brand-name` 因而不会存在。平台 smoke 只断言不受响应式状态影响的应用身份与核心阅读骨架。
+    await expect(page).toHaveTitle(/OrigRead|原读/)
     await expect(page.locator('.source-destination-nav')).toHaveCount(0)
     await expect(page.locator('.article-scope-stats .article-destination-item')).toHaveCount(3)
+    await expect(page.locator('.article-pane')).toBeVisible()
     await expect(page.locator('.reader-pane')).toBeVisible()
 
     const appInfo = await page.evaluate(() => window.origread.getAppInfo())
@@ -22,7 +25,7 @@ test('packaging platform smoke: Electron, preload, database and renderer start n
       // UI-3P.10：传入真实打包 executable 时，本 smoke 必须验证的是 packaged app，而不是 node_modules/electron。
       expect(process.platform).toBe('win32')
       expect(appInfo.platform).toBe('win32')
-      await expect(page.locator('.brand-name')).toBeVisible()
+      await expect(page.locator('.settings-button')).toBeVisible()
     }
 
     await page.locator('.settings-button').click()
