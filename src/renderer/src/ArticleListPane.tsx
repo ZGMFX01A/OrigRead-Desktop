@@ -1,4 +1,4 @@
-import { Inbox, Plus, RefreshCw, Rss, Search, SearchX, Star, X } from 'lucide-react'
+import { ChevronRight, Inbox, Plus, RefreshCw, Rss, Search, SearchX, Star, X } from 'lucide-react'
 import type { RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ArticleRecord, FeedRecord } from '../../shared/library'
@@ -28,11 +28,13 @@ interface ArticleListPaneProps {
   onToggleStarred: (article: ArticleRecord) => void
   onArticleContextMenu: (article: ArticleRecord, x: number, y: number) => void
   onAddSource: () => void
+  onChooseSourceScope?: () => void
 }
 
 /**
- * 三栏模式中的文章列表栏。
+ * Desktop 共用的文章列表内容。
  *
+ * 三栏中作为独立 Article Pane；双栏中由 TwoPaneWorkspace 作为常态内容承载。
  * 只负责当前来源范围、文章集合过滤、搜索与文章列表。
  * SourceSidebar 只管理来源范围，避免“来源”和“文章过滤”在两个 Pane 重复出现。
  */
@@ -59,7 +61,8 @@ export function ArticleListPane({
   onSelectArticle,
   onToggleStarred,
   onArticleContextMenu,
-  onAddSource
+  onAddSource,
+  onChooseSourceScope
 }: ArticleListPaneProps): React.JSX.Element {
   const { t } = useTranslation()
   const destinationLabelKey = destination === 'all' ? 'allArticles' : destination
@@ -85,6 +88,11 @@ export function ArticleListPane({
         <div className="article-scope-actions">
           {articleScope.kind !== 'all' && (
             <button type="button" className="icon-button" title={t('clearSourceFilter')} aria-label={t('clearSourceFilter')} onClick={onClearScope}><X size={14}/></button>
+          )}
+          {onChooseSourceScope && (
+            <button type="button" className="two-pane-source-picker-button" onClick={onChooseSourceScope}>
+              <Rss size={14}/><span>{t('chooseSourceScope')}</span><ChevronRight size={13}/>
+            </button>
           )}
         </div>
         <div className="article-scope-stats" aria-label={t('readingScope')}>

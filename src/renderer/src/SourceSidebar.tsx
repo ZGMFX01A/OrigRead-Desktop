@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Compass, Download, Inbox, MoreHorizontal, Plus, RefreshCw, Rss, Search, Upload } from 'lucide-react'
+import { ArrowLeft, ChevronDown, ChevronRight, Compass, Download, Inbox, MoreHorizontal, Plus, RefreshCw, Rss, Search, Upload } from 'lucide-react'
 import { useEffect, useState, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { FeedArticleStats, FeedRecord, GroupRecord } from '../../shared/library'
@@ -46,11 +46,72 @@ interface SourceSidebarProps {
   onAddSource: () => void
   onImportOpml: () => void
   onOpenOpmlExport: () => void
+  showHeader?: boolean
+  onBackToArticles?: () => void
+}
+
+interface SourceBrandHeaderProps {
+  subscriptionMenuOpen: boolean
+  opmlBusy: boolean
+  onShowSourceCatalog: () => void
+  onToggleSubscriptionMenu: () => void
+  onCloseSubscriptionMenu: () => void
+  onAddSource: () => void
+  onImportOpml: () => void
+  onOpenOpmlExport: () => void
+}
+
+/** Source 与双栏 Workspace 共用的品牌和订阅操作区，避免两套布局复制入口行为。 */
+export function SourceBrandHeader({
+  subscriptionMenuOpen,
+  opmlBusy,
+  onShowSourceCatalog,
+  onToggleSubscriptionMenu,
+  onCloseSubscriptionMenu,
+  onAddSource,
+  onImportOpml,
+  onOpenOpmlExport
+}: SourceBrandHeaderProps): React.JSX.Element {
+  const { t } = useTranslation()
+  return (
+    <header className="brand-row">
+      <div className="brand-lockup">
+        <img className="brand-logo" src="./logo.png" alt="" />
+        <div>
+          <div className="brand-name">{t('brand')}</div>
+          <div className="brand-tagline">{t('tagline')}</div>
+        </div>
+      </div>
+      <div className="brand-actions">
+        <button className="icon-button source-discovery-button" type="button" title={t('sourceDiscoveryTitle')} aria-label={t('sourceDiscoveryTitle')} onClick={onShowSourceCatalog}>
+          <Compass size={17}/>
+        </button>
+        <div className="subscription-menu-anchor">
+          <button className="primary-action subscription-trigger" type="button" title={t('addSubscription')} aria-label={t('addSubscription')} aria-haspopup="menu" onClick={onToggleSubscriptionMenu} disabled={opmlBusy} aria-expanded={subscriptionMenuOpen}>
+            <Plus size={14} strokeWidth={2.2} />
+            <span className="subscription-trigger-label">{t('add')}</span>
+            <ChevronDown size={12}/>
+          </button>
+          {subscriptionMenuOpen && (
+            <>
+              <button className="subscription-menu-backdrop" type="button" aria-label={t('cancel')} onClick={onCloseSubscriptionMenu}/>
+              <div className="subscription-menu" role="menu">
+                <button type="button" role="menuitem" onClick={onAddSource}><Rss size={16}/><span>{t('addSourceTitle')}</span></button>
+                <button type="button" role="menuitem" onClick={onImportOpml}><Upload size={16}/><span>{t('importOpml')}</span></button>
+                <button type="button" role="menuitem" onClick={onOpenOpmlExport}><Download size={16}/><span>{t('exportOpml')}</span></button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </header>
+  )
 }
 
 /**
- * 三栏模式中的来源栏。
+ * Desktop 共用的来源范围内容。
  *
+ * 三栏中直接作为 Source Pane；双栏中由 TwoPaneWorkspace 以内嵌来源视图承载。
  * 这里只负责来源范围选择和来源级操作；文章筛选与文章列表由 ArticleListPane 独立承担。
  */
 export function SourceSidebar({
@@ -82,7 +143,9 @@ export function SourceSidebar({
   onCloseSubscriptionMenu,
   onAddSource,
   onImportOpml,
-  onOpenOpmlExport
+  onOpenOpmlExport,
+  showHeader = true,
+  onBackToArticles
 }: SourceSidebarProps): React.JSX.Element {
   const { t } = useTranslation()
   const sourceSearchActive = sourceQuery.trim().length > 0
@@ -91,38 +154,28 @@ export function SourceSidebar({
     feedStatsById.get(feedId) ?? { feedId, total: 0, unread: 0, starred: 0 }
 
   return (
-    <section className="source-pane" aria-label={t('allSources')}>
-      <header className="brand-row">
-        <div className="brand-lockup">
-          <img className="brand-logo" src="./logo.png" alt="" />
-          <div>
-            <div className="brand-name">{t('brand')}</div>
-            <div className="brand-tagline">{t('tagline')}</div>
-          </div>
-        </div>
-        <div className="brand-actions">
-          <button className="icon-button source-discovery-button" type="button" title={t('sourceDiscoveryTitle')} aria-label={t('sourceDiscoveryTitle')} onClick={onShowSourceCatalog}>
-            <Compass size={17}/>
+    <section className={`source-pane ${showHeader ? '' : 'embedded-source-pane'}`.trim()} aria-label={t('allSources')}>
+      {showHeader && (
+        <SourceBrandHeader
+          subscriptionMenuOpen={subscriptionMenuOpen}
+          opmlBusy={opmlBusy}
+          onShowSourceCatalog={onShowSourceCatalog}
+          onToggleSubscriptionMenu={onToggleSubscriptionMenu}
+          onCloseSubscriptionMenu={onCloseSubscriptionMenu}
+          onAddSource={onAddSource}
+          onImportOpml={onImportOpml}
+          onOpenOpmlExport={onOpenOpmlExport}
+        />
+      )}
+
+      {onBackToArticles && (
+        <div className="two-pane-source-mode-bar">
+          <div><span>{t('twoPaneSourceView')}</span><strong>{t('allSources')}</strong></div>
+          <button type="button" className="two-pane-source-back" onClick={onBackToArticles}>
+            <ArrowLeft size={14}/><span>{t('backToArticles')}</span>
           </button>
-          <div className="subscription-menu-anchor">
-            <button className="primary-action subscription-trigger" type="button" title={t('addSubscription')} aria-label={t('addSubscription')} aria-haspopup="menu" onClick={onToggleSubscriptionMenu} disabled={opmlBusy} aria-expanded={subscriptionMenuOpen}>
-              <Plus size={14} strokeWidth={2.2} />
-              <span className="subscription-trigger-label">{t('add')}</span>
-              <ChevronDown size={12}/>
-            </button>
-            {subscriptionMenuOpen && (
-              <>
-                <button className="subscription-menu-backdrop" type="button" aria-label={t('cancel')} onClick={onCloseSubscriptionMenu}/>
-                <div className="subscription-menu" role="menu">
-                  <button type="button" role="menuitem" onClick={onAddSource}><Rss size={16}/><span>{t('addSourceTitle')}</span></button>
-                  <button type="button" role="menuitem" onClick={onImportOpml}><Upload size={16}/><span>{t('importOpml')}</span></button>
-                  <button type="button" role="menuitem" onClick={onOpenOpmlExport}><Download size={16}/><span>{t('exportOpml')}</span></button>
-                </div>
-              </>
-            )}
-          </div>
         </div>
-      </header>
+      )}
 
       <div className="list-toolbar source-list-toolbar">
         <div className="search-field">

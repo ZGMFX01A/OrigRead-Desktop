@@ -16,6 +16,9 @@ export const SOURCE_PANE_WIDTH_MAX = 320
 /** Article Pane 的持久化宽度边界，避免列表过窄或长期侵占 Reader。 */
 export const ARTICLE_PANE_WIDTH_MIN = 320
 export const ARTICLE_PANE_WIDTH_MAX = 480
+/** 双栏 Workspace 的持久化宽度边界；与三栏 Source / Article 宽度完全独立。 */
+export const WORKSPACE_PANE_WIDTH_MIN = 320
+export const WORKSPACE_PANE_WIDTH_MAX = 560
 
 export interface DesktopSettings {
   language: DesktopLanguagePreference
@@ -214,7 +217,7 @@ function normalizeHexColor(value: unknown, fallback: string): string {
 
 function normalizeWorkspaceWidth(value: unknown): number {
   const numberValue = typeof value === 'number' && Number.isFinite(value) ? value : DEFAULT_DESKTOP_SETTINGS.workspaceWidth
-  return Math.round(Math.min(Math.max(numberValue, 320), 560))
+  return Math.round(Math.min(Math.max(numberValue, WORKSPACE_PANE_WIDTH_MIN), WORKSPACE_PANE_WIDTH_MAX))
 }
 
 /**

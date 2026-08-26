@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { launchIsolatedOrigRead } from './electron-test-app'
 
-test('general settings persist the desktop layout mode without changing the DL-1 three-pane renderer', async () => {
+test('two-pane layout restores a resizable Workspace + Reader while keeping three-pane state independent', async () => {
   const testApp = await launchIsolatedOrigRead()
   try {
     const page = await testApp.app.firstWindow()
@@ -24,15 +24,67 @@ test('general settings persist the desktop layout mode without changing the DL-1
     await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'two-pane')
     await expect(twoPane).toHaveAttribute('aria-pressed', 'true')
 
-    // DL-1 只建立设置与状态基础；真正的双栏 Renderer 从 DL-2 开始恢复。
+    // DL-2：切换后立即进入真正的 Workspace + Reader，不再同时挂载 Source / Article 两栏。
     await page.locator('.settings-close-button').click()
-    await expect(page.locator('.source-pane')).toBeVisible()
+    await expect(page.locator('.workspace-pane')).toBeVisible()
+    await expect(page.locator('.source-pane')).toHaveCount(0)
     await expect(page.locator('.article-pane')).toBeVisible()
     await expect(page.locator('.reader-pane')).toBeVisible()
+    await expect(page.locator('.pane-divider-workspace')).toBeVisible()
+
+    const initialGeometry = await page.evaluate(() => ({
+      workspace: document.querySelector('.workspace-pane')!.getBoundingClientRect().width,
+      reader: document.querySelector('.reader-pane')!.getBoundingClientRect().width,
+      viewport: window.innerWidth
+    }))
+    expect(initialGeometry.workspace).toBeGreaterThanOrEqual(419)
+    expect(initialGeometry.workspace).toBeLessThanOrEqual(421)
+    expect(initialGeometry.reader).toBeGreaterThan(700)
+
+    // DL-2 先恢复旧式文章 / 来源视图切换；DL-3 再把来源视图替换为 Overlay。
+    await page.locator('.two-pane-source-picker-button').click()
+    await expect(page.locator('.source-pane.embedded-source-pane')).toBeVisible()
+    await expect(page.locator('.article-pane')).toHaveCount(0)
+    await expect(page.locator('.two-pane-source-back')).toBeVisible()
+    await page.locator('.two-pane-source-back').click()
+    await expect(page.locator('.article-pane')).toBeVisible()
+    await expect(page.locator('.source-pane')).toHaveCount(0)
+
+    // Workspace 使用独立的 workspaceWidth；键盘 End 直接走与拖拽相同的最大宽度约束并持久化。
+    const workspaceDivider = page.locator('.pane-divider-workspace')
+    await workspaceDivider.focus()
+    await page.keyboard.press('End')
+    await expect.poll(async () => (await page.evaluate(() => window.origread.getSettings())).workspaceWidth).toBe(560)
+    const resizedWorkspace = await page.locator('.workspace-pane').boundingBox()
+    expect(resizedWorkspace).not.toBeNull()
+    expect(resizedWorkspace!.width).toBeGreaterThanOrEqual(559)
+    expect(resizedWorkspace!.width).toBeLessThanOrEqual(561)
+
+    // 收起 Workspace 不保留独立 rail；Reader 直接占满，仅留下边缘恢复按钮。
+    await page.locator('.workspace-collapse-handle').click()
+    await expect(page.locator('.workspace-pane')).toHaveCount(0)
+    await expect(page.locator('.workspace-restore')).toBeVisible()
+    await expect.poll(async () => (await page.evaluate(() => window.origread.getSettings())).workspaceCollapsed).toBe(true)
+    const collapsedReader = await page.locator('.reader-pane').boundingBox()
+    expect(collapsedReader).not.toBeNull()
+    expect(collapsedReader!.width).toBeGreaterThan(initialGeometry.viewport * 0.98)
+
+    await page.locator('.workspace-restore').click()
+    await expect(page.locator('.workspace-pane')).toBeVisible()
+    await expect.poll(async () => (await page.evaluate(() => window.origread.getSettings())).workspaceCollapsed).toBe(false)
 
     await page.reload()
     await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'two-pane')
-    expect(await page.evaluate(() => window.origread.getSettings())).toMatchObject({ layoutMode: 'two-pane' })
+    expect(await page.evaluate(() => window.origread.getSettings())).toMatchObject({
+      layoutMode: 'two-pane',
+      workspaceWidth: 560,
+      workspaceCollapsed: false,
+      sourcePaneWidth: 260,
+      articlePaneWidth: 380
+    })
+    await expect(page.locator('.workspace-pane')).toBeVisible()
+    await expect(page.locator('.article-pane')).toBeVisible()
+    await expect(page.locator('.source-pane')).toHaveCount(0)
 
     await page.locator('.settings-button').click()
     const reloadedThreePane = page.locator('.layout-mode-option[data-layout-mode="three-pane"]')
@@ -40,6 +92,15 @@ test('general settings persist the desktop layout mode without changing the DL-1
     await page.keyboard.press('Space')
     await expect.poll(async () => (await page.evaluate(() => window.origread.getSettings())).layoutMode).toBe('three-pane')
     await expect(reloadedThreePane).toHaveAttribute('aria-pressed', 'true')
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.workspace-pane')).toHaveCount(0)
+    await expect(page.locator('.source-pane')).toBeVisible()
+    await expect(page.locator('.article-pane')).toBeVisible()
+    expect(await page.evaluate(() => window.origread.getSettings())).toMatchObject({
+      workspaceWidth: 560,
+      sourcePaneWidth: 260,
+      articlePaneWidth: 380
+    })
   } finally {
     await testApp.close()
   }

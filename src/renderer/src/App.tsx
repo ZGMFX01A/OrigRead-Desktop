@@ -36,6 +36,8 @@ import {
   ARTICLE_PANE_WIDTH_MIN,
   SOURCE_PANE_WIDTH_MAX,
   SOURCE_PANE_WIDTH_MIN,
+  WORKSPACE_PANE_WIDTH_MAX,
+  WORKSPACE_PANE_WIDTH_MIN,
   type AiSummaryPlacement,
   type DesktopSettings
 } from '../../shared/settings'
@@ -65,9 +67,10 @@ import {
   DEFAULT_READING_SHARE_PREFERENCE,
   type ReadingSharePreference
 } from './reading-share'
-import { SourceSidebar, type ArticleScope, type Destination } from './SourceSidebar'
+import { SourceBrandHeader, SourceSidebar, type ArticleScope, type Destination } from './SourceSidebar'
 import { ArticleListPane } from './ArticleListPane'
 import { PaneDivider } from './PaneDivider'
+import { TwoPaneReadingLayout } from './TwoPaneReadingLayout'
 import { THREE_PANE_BREAKPOINT, resolveResponsivePaneLayout } from './responsive-layout'
 
 type ReaderMode = 'article' | 'ai' | 'translation'
@@ -88,6 +91,8 @@ export default function App(): React.JSX.Element {
   const [focusReading, setFocusReading] = useState(false)
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const [adaptiveSourceOverlayOpen, setAdaptiveSourceOverlayOpen] = useState(false)
+  // 双栏旧式“文章 / 来源”视图切换仅属于当前会话；DL-3 会把该入口升级为 Overlay。
+  const [twoPaneSourcePickerOpen, setTwoPaneSourcePickerOpen] = useState(false)
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [librarySnapshot, setLibrarySnapshot] = useState<LibrarySnapshot | null>(null)
   const [feeds, setFeeds] = useState<FeedRecord[]>([])
@@ -260,14 +265,14 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     // Adaptive overlay 只属于窄窗口当前会话；重新进入宽屏或 Focus 时必须自动退场。
-    if (viewportWidth >= THREE_PANE_BREAKPOINT || focusReading) {
+    if (settings?.layoutMode === 'two-pane' || viewportWidth >= THREE_PANE_BREAKPOINT || focusReading) {
       setAdaptiveSourceOverlayOpen(false)
       setSubscriptionMenuOpen(false)
     }
-  }, [focusReading, viewportWidth])
+  }, [focusReading, settings?.layoutMode, viewportWidth])
 
   useEffect(() => {
-    if (!adaptiveSourceOverlayOpen || settings?.sourcePaneCollapsed) return
+    if (settings?.layoutMode === 'two-pane' || !adaptiveSourceOverlayOpen || settings?.sourcePaneCollapsed) return
     window.requestAnimationFrame(() => adaptiveSourceOverlayCloseRef.current?.focus())
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
@@ -277,7 +282,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [adaptiveSourceOverlayOpen, settings?.sourcePaneCollapsed])
+  }, [adaptiveSourceOverlayOpen, settings?.layoutMode, settings?.sourcePaneCollapsed])
 
   useEffect(() => {
     const closeContextMenu = (): void => setContextMenu(null)
@@ -712,6 +717,13 @@ export default function App(): React.JSX.Element {
     try {
       const next = await window.origread.updateSettings(patch)
       setSettings(next)
+      if (patch.layoutMode !== undefined) {
+        // 主布局切换必须退出临时 Focus / overlay，但不能改写任一布局自己的持久化宽度与折叠偏好。
+        setFocusReading(false)
+        setAdaptiveSourceOverlayOpen(false)
+        setTwoPaneSourcePickerOpen(false)
+        setSubscriptionMenuOpen(false)
+      }
       if (patch.language !== undefined) {
         const language = next.language === 'system'
           ? resolveDesktopLanguage(appInfo?.locale ?? navigator.language)
@@ -723,6 +735,11 @@ export default function App(): React.JSX.Element {
     }
   }
 
+  /** 双栏 Workspace 拖动时只更新 Renderer 快照，pointerup 再持久化。 */
+  const previewWorkspaceWidth = (width: number): void => {
+    setSettings((current) => current ? { ...current, workspaceWidth: width } : current)
+  }
+
   /** Source Divider 拖动时只更新 Renderer 快照，pointerup 再持久化。 */
   const previewSourcePaneWidth = (width: number): void => {
     setSettings((current) => current ? { ...current, sourcePaneWidth: width } : current)
@@ -731,6 +748,15 @@ export default function App(): React.JSX.Element {
   /** Article Divider 拖动时只更新 Renderer 快照，避免 pointermove 高频 Settings IPC。 */
   const previewArticlePaneWidth = (width: number): void => {
     setSettings((current) => current ? { ...current, articlePaneWidth: width } : current)
+  }
+
+  /** 双栏 Workspace 的持久化折叠开关；Focus Reading 只临时覆盖可见性。 */
+  const toggleWorkspacePane = (): void => {
+    if (focusReading) {
+      setFocusReading(false)
+      return
+    }
+    void updateDesktopSettings({ workspaceCollapsed: !(settings?.workspaceCollapsed ?? false) })
   }
 
   /** Source Pane 的手动折叠状态持久化；从 Focus restore 时先退出 Focus。 */
@@ -1098,7 +1124,7 @@ export default function App(): React.JSX.Element {
         toggleFocusReading()
         return
       }
-      if (interactiveTarget || event.ctrlKey || event.metaKey || event.altKey || settingsOpen || sourceCatalogOpen || subscriptionMenuOpen || document.querySelector('[role="dialog"]')) return
+      if (interactiveTarget || event.ctrlKey || event.metaKey || event.altKey || settingsOpen || sourceCatalogOpen || twoPaneSourcePickerOpen || subscriptionMenuOpen || document.querySelector('[role="dialog"]')) return
       if (originalViewState.open) {
         if (key === 'u' && selectedArticle) {
           event.preventDefault()
@@ -1162,7 +1188,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settingsOpen, sourceCatalogOpen, subscriptionMenuOpen, toggleFocusReading, visibleArticles])
+  }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settingsOpen, sourceCatalogOpen, subscriptionMenuOpen, toggleFocusReading, twoPaneSourcePickerOpen, visibleArticles])
 
   const openAddSource = (): void => {
     setSubscriptionMenuOpen(false)
@@ -1407,11 +1433,14 @@ export default function App(): React.JSX.Element {
   const sourcePaneCollapsed = settings?.sourcePaneCollapsed ?? false
   const articlePaneCollapsed = settings?.articlePaneCollapsed ?? false
   const layoutMode = settings?.layoutMode ?? 'three-pane'
+  const twoPaneLayout = layoutMode === 'two-pane'
+  const workspaceCollapsed = settings?.workspaceCollapsed ?? false
+  const effectiveWorkspaceCollapsed = twoPaneLayout && (focusReading || workspaceCollapsed)
   const persistedArticlePaneWidth = settings?.articlePaneWidth ?? 380
   const responsiveLayout = resolveResponsivePaneLayout(viewportWidth, persistedArticlePaneWidth)
   const { adaptiveSourceHidden, compactLayout, articlePaneWidth: effectiveArticlePaneWidth } = responsiveLayout
-  const effectiveSourcePaneCollapsed = focusReading || sourcePaneCollapsed || adaptiveSourceHidden
-  const effectiveArticlePaneCollapsed = focusReading || articlePaneCollapsed
+  const effectiveSourcePaneCollapsed = !twoPaneLayout && (focusReading || sourcePaneCollapsed || adaptiveSourceHidden)
+  const effectiveArticlePaneCollapsed = !twoPaneLayout && (focusReading || articlePaneCollapsed)
   const collapsedPaneCount = Number(effectiveSourcePaneCollapsed) + Number(effectiveArticlePaneCollapsed)
   const showArticleBoundarySplit = !effectiveSourcePaneCollapsed && effectiveArticlePaneCollapsed
   const collapsedPaneRestoreLabel = focusReading
@@ -1420,6 +1449,8 @@ export default function App(): React.JSX.Element {
       ? t('restoreCollapsedPanes')
       : t('expandSourcePane')
   const readerStyle = {
+    '--workspace-pane-track': effectiveWorkspaceCollapsed ? '0px' : `${settings?.workspaceWidth ?? 420}px`,
+    '--workspace-divider-track': effectiveWorkspaceCollapsed ? '0px' : '5px',
     '--source-pane-track': effectiveSourcePaneCollapsed ? '0px' : `${settings?.sourcePaneWidth ?? 260}px`,
     '--source-divider-track': effectiveSourcePaneCollapsed ? '0px' : '5px',
     '--source-pane-overlay-width': `${settings?.sourcePaneWidth ?? 260}px`,
@@ -1439,12 +1470,30 @@ export default function App(): React.JSX.Element {
     '--ai-summary-panel-size': `${settings?.aiSummaryPanelSize ?? 360}px`
   } as CSSProperties
 
-  const renderSourceSidebar = (overlay = false): React.JSX.Element => {
-    const closeOverlay = (): void => {
+  const renderSourceBrandHeader = (): React.JSX.Element => (
+    <SourceBrandHeader
+      subscriptionMenuOpen={subscriptionMenuOpen}
+      opmlBusy={opmlBusy}
+      onShowSourceCatalog={() => void showSourceCatalog()}
+      onToggleSubscriptionMenu={() => setSubscriptionMenuOpen((open) => !open)}
+      onCloseSubscriptionMenu={() => setSubscriptionMenuOpen(false)}
+      onAddSource={openAddSource}
+      onImportOpml={() => void importOpml()}
+      onOpenOpmlExport={() => { setSubscriptionMenuOpen(false); setOpmlExportOpen(true) }}
+    />
+  )
+
+  const renderSourceSidebar = ({ overlay = false, embedded = false, closeAfterSelection = false }: {
+    overlay?: boolean
+    embedded?: boolean
+    closeAfterSelection?: boolean
+  } = {}): React.JSX.Element => {
+    const closeSourceView = (): void => {
       if (overlay) {
         setAdaptiveSourceOverlayOpen(false)
         setSubscriptionMenuOpen(false)
       }
+      if (closeAfterSelection) setTwoPaneSourcePickerOpen(false)
     }
     return (
       <SourceSidebar
@@ -1463,28 +1512,59 @@ export default function App(): React.JSX.Element {
         opmlStatus={opmlStatus}
         sourceError={sourceError}
         showNotices={!addSourceOpen}
+        showHeader={!embedded}
+        onBackToArticles={embedded ? () => setTwoPaneSourcePickerOpen(false) : undefined}
         onSourceQueryChange={setSourceQuery}
-        onSelectAll={() => { setArticleScope({ kind: 'all' }); setArticleQuery(''); closeOverlay() }}
-        onSelectGroup={(group) => { setArticleScope({ kind: 'group', id: group.id }); setArticleQuery(''); closeOverlay() }}
+        onSelectAll={() => { setArticleScope({ kind: 'all' }); setArticleQuery(''); closeSourceView() }}
+        onSelectGroup={(group) => { setArticleScope({ kind: 'group', id: group.id }); setArticleQuery(''); closeSourceView() }}
         onToggleGroupCollapsed={(groupId) => setCollapsedSourceGroupIds((current) => {
           const next = new Set(current)
           if (next.has(groupId)) next.delete(groupId)
           else next.add(groupId)
           return next
         })}
-        onSelectFeed={(feed) => { selectFeedScope(feed); closeOverlay() }}
+        onSelectFeed={(feed) => { selectFeedScope(feed); closeSourceView() }}
         onRefreshFeed={(feed) => void refreshFeed(feed)}
-        onOpenFeedSettings={(feed) => { closeOverlay(); setSourceSettingsFeed(feed) }}
+        onOpenFeedSettings={(feed) => { closeSourceView(); setSourceSettingsFeed(feed) }}
         onFeedContextMenu={(feed, x, y) => setContextMenu({ kind: 'feed', x, y, feedId: feed.id })}
-        onShowSourceCatalog={() => { closeOverlay(); void showSourceCatalog() }}
+        onShowSourceCatalog={() => { closeSourceView(); void showSourceCatalog() }}
         onToggleSubscriptionMenu={() => setSubscriptionMenuOpen((open) => !open)}
         onCloseSubscriptionMenu={() => setSubscriptionMenuOpen(false)}
-        onAddSource={() => { closeOverlay(); openAddSource() }}
+        onAddSource={() => { closeSourceView(); openAddSource() }}
         onImportOpml={() => void importOpml()}
-        onOpenOpmlExport={() => { closeOverlay(); setSubscriptionMenuOpen(false); setOpmlExportOpen(true) }}
+        onOpenOpmlExport={() => { closeSourceView(); setSubscriptionMenuOpen(false); setOpmlExportOpen(true) }}
       />
     )
   }
+
+  const renderArticleListPane = (onChooseSourceScope?: () => void): React.JSX.Element => (
+    <ArticleListPane
+      destination={destination}
+      articleScope={articleScope}
+      activeScopeFeed={activeScopeFeed}
+      scopeLabel={scopeLabel}
+      scopeArticleCount={articleScope.kind === 'all' ? (librarySnapshot?.articles ?? scopedArticles.length) : scopedArticles.length}
+      scopeUnreadCount={scopedUnreadCount}
+      scopeStarredCount={scopedStarredCount}
+      articleQuery={articleQuery}
+      visibleArticles={visibleArticles}
+      feeds={feeds}
+      selectedArticleId={selectedArticleId}
+      articleListError={articleListError}
+      searchInputRef={articleSearchInputRef}
+      refreshing={isRefreshingAll || refreshingFeedId === activeScopeFeed?.id}
+      refreshDisabled={feeds.length === 0 || isRefreshingAll || refreshingFeedId !== null}
+      onDestinationChange={(id) => { setArticleQuery(''); setDestination(id) }}
+      onClearScope={() => { setArticleScope({ kind: 'all' }); setArticleQuery('') }}
+      onArticleQueryChange={setArticleQuery}
+      onRefresh={() => activeScopeFeed ? void refreshFeed(activeScopeFeed, undefined, 'article') : void refreshAllSources()}
+      onSelectArticle={selectArticle}
+      onToggleStarred={toggleStarred}
+      onArticleContextMenu={(article, x, y) => setContextMenu({ kind: 'article', x, y, articleId: article.id })}
+      onAddSource={openAddSource}
+      onChooseSourceScope={onChooseSourceScope}
+    />
+  )
 
   const renderAiSummaryPanel = (replaceMode = false): React.JSX.Element | null => aiSummary || aiLoading ? (
     <AiSummaryPanel
@@ -1509,124 +1589,122 @@ export default function App(): React.JSX.Element {
 
   return (
     <main
-      className={`app-shell ${focusReading ? 'focus-reading' : ''} ${adaptiveSourceHidden ? 'adaptive-source-hidden' : ''} ${compactLayout ? 'compact-layout' : ''} ${effectiveSourcePaneCollapsed ? 'source-pane-collapsed' : ''} ${effectiveArticlePaneCollapsed ? 'article-pane-collapsed' : ''}`}
+      className={`app-shell ${twoPaneLayout ? 'two-pane-layout' : 'three-pane-layout'} ${focusReading ? 'focus-reading' : ''} ${!twoPaneLayout && adaptiveSourceHidden ? 'adaptive-source-hidden' : ''} ${!twoPaneLayout && compactLayout ? 'compact-layout' : ''} ${effectiveWorkspaceCollapsed ? 'workspace-pane-collapsed' : ''} ${effectiveSourcePaneCollapsed ? 'source-pane-collapsed' : ''} ${effectiveArticlePaneCollapsed ? 'article-pane-collapsed' : ''}`}
       style={readerStyle}
       data-viewport-width={viewportWidth}
       data-layout-mode={layoutMode}
     >
-      {!effectiveSourcePaneCollapsed && renderSourceSidebar()}
+      {twoPaneLayout ? (
+        <TwoPaneReadingLayout
+          workspaceHeader={renderSourceBrandHeader()}
+          workspaceContent={twoPaneSourcePickerOpen
+            ? renderSourceSidebar({ embedded: true, closeAfterSelection: true })
+            : renderArticleListPane(() => { setSourceQuery(''); setTwoPaneSourcePickerOpen(true) })}
+          workspaceAriaLabel={t('layoutModeTwoPane')}
+          width={settings?.workspaceWidth ?? 420}
+          minWidth={WORKSPACE_PANE_WIDTH_MIN}
+          maxWidth={WORKSPACE_PANE_WIDTH_MAX}
+          collapsed={effectiveWorkspaceCollapsed}
+          focusReading={focusReading}
+          resizeLabel={t('resizeWorkspace')}
+          collapseLabel={t('collapseWorkspace')}
+          expandLabel={t('expandWorkspace')}
+          exitFocusLabel={t('exitFocusReading')}
+          onResize={previewWorkspaceWidth}
+          onResizeEnd={(width) => void updateDesktopSettings({ workspaceWidth: width })}
+          onToggleCollapsed={toggleWorkspacePane}
+        />
+      ) : (
+        <>
+          {!effectiveSourcePaneCollapsed && renderSourceSidebar()}
 
-      <PaneDivider
-        kind="source"
-        width={settings?.sourcePaneWidth ?? 260}
-        minWidth={SOURCE_PANE_WIDTH_MIN}
-        maxWidth={SOURCE_PANE_WIDTH_MAX}
-        ariaLabel={t('resizeSourcePane')}
-        resizable={!effectiveSourcePaneCollapsed}
-        collapsed={effectiveSourcePaneCollapsed}
-        onResize={previewSourcePaneWidth}
-        onResizeEnd={(width) => void updateDesktopSettings({ sourcePaneWidth: width })}
-      >
-        {!effectiveSourcePaneCollapsed && !showArticleBoundarySplit && (
-          <button
-            className="collapse-handle"
-            type="button"
-            aria-label={t('collapseSourcePane')}
-            title={t('collapseSourcePane')}
-            onClick={toggleSourcePane}
+          <PaneDivider
+            kind="source"
+            width={settings?.sourcePaneWidth ?? 260}
+            minWidth={SOURCE_PANE_WIDTH_MIN}
+            maxWidth={SOURCE_PANE_WIDTH_MAX}
+            ariaLabel={t('resizeSourcePane')}
+            resizable={!effectiveSourcePaneCollapsed}
+            collapsed={effectiveSourcePaneCollapsed}
+            onResize={previewSourcePaneWidth}
+            onResizeEnd={(width) => void updateDesktopSettings({ sourcePaneWidth: width })}
           >
-            <ChevronLeft size={15} />
-          </button>
-        )}
-      </PaneDivider>
+            {!effectiveSourcePaneCollapsed && !showArticleBoundarySplit && (
+              <button
+                className="collapse-handle"
+                type="button"
+                aria-label={t('collapseSourcePane')}
+                title={t('collapseSourcePane')}
+                onClick={toggleSourcePane}
+              >
+                <ChevronLeft size={15} />
+              </button>
+            )}
+          </PaneDivider>
 
-      {!effectiveArticlePaneCollapsed && (
-          <ArticleListPane
-            destination={destination}
-            articleScope={articleScope}
-            activeScopeFeed={activeScopeFeed}
-            scopeLabel={scopeLabel}
-            scopeArticleCount={articleScope.kind === 'all' ? (librarySnapshot?.articles ?? scopedArticles.length) : scopedArticles.length}
-            scopeUnreadCount={scopedUnreadCount}
-            scopeStarredCount={scopedStarredCount}
-            articleQuery={articleQuery}
-            visibleArticles={visibleArticles}
-            feeds={feeds}
-            selectedArticleId={selectedArticleId}
-            articleListError={articleListError}
-            searchInputRef={articleSearchInputRef}
-            refreshing={isRefreshingAll || refreshingFeedId === activeScopeFeed?.id}
-            refreshDisabled={feeds.length === 0 || isRefreshingAll || refreshingFeedId !== null}
-            onDestinationChange={(id) => { setArticleQuery(''); setDestination(id) }}
-            onClearScope={() => { setArticleScope({ kind: 'all' }); setArticleQuery('') }}
-            onArticleQueryChange={setArticleQuery}
-            onRefresh={() => activeScopeFeed ? void refreshFeed(activeScopeFeed, undefined, 'article') : void refreshAllSources()}
-            onSelectArticle={selectArticle}
-            onToggleStarred={toggleStarred}
-            onArticleContextMenu={(article, x, y) => setContextMenu({ kind: 'article', x, y, articleId: article.id })}
-            onAddSource={openAddSource}
-          />
-      )}
+          {!effectiveArticlePaneCollapsed && renderArticleListPane()}
 
-      <PaneDivider
-        kind="article"
-        width={settings?.articlePaneWidth ?? 380}
-        minWidth={ARTICLE_PANE_WIDTH_MIN}
-        maxWidth={ARTICLE_PANE_WIDTH_MAX}
-        ariaLabel={t('resizeArticlePane')}
-        resizable={!effectiveArticlePaneCollapsed && !compactLayout}
-        collapsed={effectiveArticlePaneCollapsed}
-        onResize={previewArticlePaneWidth}
-        onResizeEnd={(width) => void updateDesktopSettings({ articlePaneWidth: width })}
-      >
-        {!effectiveArticlePaneCollapsed && (
-          <button
-            className="collapse-handle"
-            type="button"
-            aria-label={t('collapseArticlePane')}
-            title={t('collapseArticlePane')}
-            onClick={toggleArticlePane}
+          <PaneDivider
+            kind="article"
+            width={settings?.articlePaneWidth ?? 380}
+            minWidth={ARTICLE_PANE_WIDTH_MIN}
+            maxWidth={ARTICLE_PANE_WIDTH_MAX}
+            ariaLabel={t('resizeArticlePane')}
+            resizable={!effectiveArticlePaneCollapsed && !compactLayout}
+            collapsed={effectiveArticlePaneCollapsed}
+            onResize={previewArticlePaneWidth}
+            onResizeEnd={(width) => void updateDesktopSettings({ articlePaneWidth: width })}
           >
-            <ChevronLeft size={15} />
-          </button>
-        )}
-      </PaneDivider>
+            {!effectiveArticlePaneCollapsed && (
+              <button
+                className="collapse-handle"
+                type="button"
+                aria-label={t('collapseArticlePane')}
+                title={t('collapseArticlePane')}
+                onClick={toggleArticlePane}
+              >
+                <ChevronLeft size={15} />
+              </button>
+            )}
+          </PaneDivider>
 
-      {showArticleBoundarySplit && (
-        <div className="pane-split-handle" data-pane-boundary="source-article">
-          <button
-            className="pane-split-action pane-split-collapse-source"
-            type="button"
-            aria-label={t('collapseSourcePane')}
-            title={t('collapseSourcePane')}
-            onClick={toggleSourcePane}
-          >
-            <ChevronLeft size={13} />
-          </button>
-          <button
-            className="pane-split-action pane-split-expand-article"
-            type="button"
-            aria-label={t('expandArticlePane')}
-            title={t('expandArticlePane')}
-            onClick={toggleArticlePane}
-          >
-            <ChevronRight size={13} />
-          </button>
-        </div>
-      )}
+          {showArticleBoundarySplit && (
+            <div className="pane-split-handle" data-pane-boundary="source-article">
+              <button
+                className="pane-split-action pane-split-collapse-source"
+                type="button"
+                aria-label={t('collapseSourcePane')}
+                title={t('collapseSourcePane')}
+                onClick={toggleSourcePane}
+              >
+                <ChevronLeft size={13} />
+              </button>
+              <button
+                className="pane-split-action pane-split-expand-article"
+                type="button"
+                aria-label={t('expandArticlePane')}
+                title={t('expandArticlePane')}
+                onClick={toggleArticlePane}
+              >
+                <ChevronRight size={13} />
+              </button>
+            </div>
+          )}
 
-      {effectiveSourcePaneCollapsed && (
-        <button
-          className={`collapsed-pane-restore restore-at-start ${collapsedPaneCount > 1 ? 'double' : ''}`}
-          type="button"
-          data-hidden-count={collapsedPaneCount}
-          aria-label={collapsedPaneRestoreLabel}
-          title={collapsedPaneRestoreLabel}
-          onClick={restoreCollapsedPaneLayer}
-        >
-          <ChevronRight size={14} />
-          {collapsedPaneCount > 1 && <ChevronRight size={14} />}
-        </button>
+          {effectiveSourcePaneCollapsed && (
+            <button
+              className={`collapsed-pane-restore restore-at-start ${collapsedPaneCount > 1 ? 'double' : ''}`}
+              type="button"
+              data-hidden-count={collapsedPaneCount}
+              aria-label={collapsedPaneRestoreLabel}
+              title={collapsedPaneRestoreLabel}
+              onClick={restoreCollapsedPaneLayer}
+            >
+              <ChevronRight size={14} />
+              {collapsedPaneCount > 1 && <ChevronRight size={14} />}
+            </button>
+          )}
+        </>
       )}
 
       <section className="reader-pane">
@@ -2226,7 +2304,7 @@ export default function App(): React.JSX.Element {
           }}
         />
       )}
-      {adaptiveSourceHidden && adaptiveSourceOverlayOpen && !focusReading && !sourcePaneCollapsed && (
+      {!twoPaneLayout && adaptiveSourceHidden && adaptiveSourceOverlayOpen && !focusReading && !sourcePaneCollapsed && (
         <div
           className="adaptive-source-overlay-backdrop"
           role="presentation"
@@ -2249,7 +2327,7 @@ export default function App(): React.JSX.Element {
             >
               <X size={17} />
             </button>
-            {renderSourceSidebar(true)}
+            {renderSourceSidebar({ overlay: true })}
           </aside>
         </div>
       )}

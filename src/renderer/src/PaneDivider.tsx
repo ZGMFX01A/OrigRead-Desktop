@@ -1,7 +1,7 @@
 import { useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 
 interface PaneDividerProps {
-  kind: 'source' | 'article'
+  kind: 'workspace' | 'source' | 'article'
   width: number
   minWidth: number
   maxWidth: number
@@ -21,7 +21,7 @@ interface DragState {
 }
 
 /**
- * 三栏阅读器的纵向分隔条。
+ * Desktop 阅读布局共用的纵向分隔条。
  *
  * pointermove 只更新 Renderer 本地宽度，pointerup / pointercancel 才通知父层持久化，
  * 避免拖动过程中持续触发 Settings IPC 与磁盘写入。
