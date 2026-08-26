@@ -70,6 +70,19 @@ test('reader toolbar responds to Reader pane width and keeps Settings visible', 
     await expect(translationIcon).toHaveAttribute('data-primary-language', 'en')
     await expect(translationIcon.locator('[data-glyph="en"]')).toHaveAttribute('data-prominence', 'primary')
     await expect(translationIcon.locator('[data-glyph="zh"]')).toHaveAttribute('data-prominence', 'secondary')
+    await expect(translationIcon.locator('[data-glyph="en"]')).not.toHaveAttribute('transform', /.+/)
+    await expect(translationIcon.locator('[data-glyph="zh"]')).toHaveAttribute('transform', 'translate(10 10)')
+    const [translationIconBox, englishGlyphBox, chineseGlyphBox] = await Promise.all([
+      requiredBox(translationIcon),
+      requiredBox(translationIcon.locator('[data-glyph="en"]')),
+      requiredBox(translationIcon.locator('[data-glyph="zh"]'))
+    ])
+    // 真实 Toolbar 使用 18px 图标；两组语言笔画都必须在这个尺寸下保持可辨认面积，
+    // 禁止再通过 scale() 把辅助语言压缩成约 6px 的不可辨认小块。
+    expect(translationIconBox.width).toBeCloseTo(18, 0)
+    expect(translationIconBox.height).toBeCloseTo(18, 0)
+    expect(englishGlyphBox.width).toBeGreaterThanOrEqual(6)
+    expect(chineseGlyphBox.width).toBeGreaterThanOrEqual(7)
 
     // Reader 再宽也只保留图标；文字仅通过 title / aria-label 提示，避免双栏宽屏重新撑满工具栏。
     await page.setViewportSize({ width: 1800, height: 900 })
