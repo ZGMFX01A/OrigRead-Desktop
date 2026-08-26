@@ -36,6 +36,22 @@ test('packaging platform smoke: Electron, preload, database and renderer start n
     await expect(page.locator('.settings-nav-button').first()).toBeVisible()
     await expect(page.locator('.settings-nav-button.active')).toBeVisible()
     await expect(page.locator('.settings-page.settings-subpage .settings-intro')).toBeVisible()
+
+    // DL-6：平台 smoke 必须在同一真实 Electron/packaged executable 中实际往返两种正式布局。
+    await page.locator('.layout-mode-option[data-layout-mode="two-pane"]').click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'two-pane')
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.workspace-pane')).toBeVisible()
+    await expect(page.locator('.article-pane')).toBeVisible()
+    await expect(page.locator('.reader-pane')).toBeVisible()
+
+    await page.locator('.settings-button').click()
+    await page.locator('.layout-mode-option[data-layout-mode="three-pane"]').click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'three-pane')
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.workspace-pane')).toHaveCount(0)
+    await expect(page.locator('.article-pane')).toBeVisible()
+    await expect(page.locator('.reader-pane')).toBeVisible()
     expect(pageErrors).toEqual([])
   } finally {
     await testApp.close()

@@ -64,6 +64,19 @@ test('layout roundtrip preserves source scope, destination, reader selection and
     await expect(page.locator('.source-item').filter({ hasText: fixture.feedAName })).toHaveAttribute('aria-current', 'true')
     await expect(page.locator('.article-scope-copy strong')).toHaveText(fixture.feedAName)
 
+    // DL-6：三栏 Source / Article 搜索都走真实输入框，并且清空后不改写当前 Feed Scope。
+    const threePaneSourceSearch = page.locator('.source-pane .source-list-toolbar .search-field input')
+    await threePaneSourceSearch.fill(fixture.feedAName)
+    await expect(page.locator('.source-item').filter({ hasText: fixture.feedAName })).toBeVisible()
+    await expect(page.locator('.source-item').filter({ hasText: 'DL-5 Feed B' })).toHaveCount(0)
+    await threePaneSourceSearch.fill('')
+    await expect(page.locator('.article-scope-copy strong')).toHaveText(fixture.feedAName)
+
+    const threePaneArticleSearch = page.locator('.article-pane .list-toolbar .search-field input')
+    await threePaneArticleSearch.fill('Article 1')
+    await expect(page.locator(`.article-item[data-article-id="${fixture.articleId}"]`)).toBeVisible()
+    await threePaneArticleSearch.fill('')
+
     const starredDestination = page.locator('.article-destination-item').filter({ hasText: '星标' })
     await starredDestination.click()
     await expect(starredDestination).toHaveAttribute('aria-current', 'page')
@@ -110,8 +123,38 @@ test('layout roundtrip preserves source scope, destination, reader selection and
     const sourcePickerOverlay = page.locator('.two-pane-source-picker-overlay')
     await expect(sourcePickerOverlay).toBeVisible()
     await expect(sourcePickerOverlay.locator('.source-item').filter({ hasText: fixture.feedAName })).toHaveAttribute('aria-current', 'true')
-    await page.keyboard.press('Escape')
+
+    const twoPaneSourceSearch = sourcePickerOverlay.locator('.source-list-toolbar .search-field input')
+    await twoPaneSourceSearch.fill(fixture.feedAName)
+    await expect(sourcePickerOverlay.locator('.source-item').filter({ hasText: fixture.feedAName })).toBeVisible()
+    await expect(sourcePickerOverlay.locator('.source-item').filter({ hasText: 'DL-5 Feed B' })).toHaveCount(0)
+    await twoPaneSourceSearch.fill('')
+
+    // 双栏 Overlay 中 Group / Feed Scope 都必须是正式入口；切换范围不会清掉 Reader 选中的 Article A。
+    await sourcePickerOverlay.locator('.source-group-scope').filter({ hasText: fixture.groupName }).click()
     await expect(sourcePickerOverlay).toHaveCount(0)
+    await expect(page.locator('.article-scope-copy strong')).toHaveText(fixture.groupName)
+    await expect(page.locator('.article-heading h1')).toContainText(fixture.articleTitle)
+    await sourcePicker.click()
+    await sourcePickerOverlay.locator('.source-item').filter({ hasText: fixture.feedAName }).click()
+    await expect(sourcePickerOverlay).toHaveCount(0)
+    await expect(page.locator('.article-scope-copy strong')).toHaveText(fixture.feedAName)
+    await expect(page.locator('.article-heading h1')).toContainText(fixture.articleTitle)
+
+    const twoPaneArticleSearch = page.locator('.two-pane-workspace-base .article-pane .list-toolbar .search-field input')
+    await twoPaneArticleSearch.fill('Article 1')
+    await expect(page.locator(`.article-item[data-article-id="${fixture.articleId}"]`)).toBeVisible()
+    await twoPaneArticleSearch.fill('')
+
+    // Article A 被打开后已经标记为已读；用正式快捷键重新标记未读，验证双栏“未读”集合后再回到星标集合。
+    await page.locator('.article-heading h1').click()
+    await page.keyboard.press('m')
+    const unreadDestination = page.locator('.article-destination-item').filter({ hasText: '未读' })
+    await unreadDestination.click()
+    await expect(unreadDestination).toHaveAttribute('aria-current', 'page')
+    await expect(page.locator(`.article-item[data-article-id="${fixture.articleId}"]`)).toBeVisible()
+    await page.locator('.article-destination-item').filter({ hasText: '星标' }).click()
+    await expect(page.locator('.article-heading h1')).toContainText(fixture.articleTitle)
 
     await page.locator('.settings-button').click()
     await page.locator('.layout-mode-option[data-layout-mode="three-pane"]').click()

@@ -164,6 +164,10 @@ test('reader generates AI summary and full-article translation through main-proc
     await expect(page.locator('.translated-article-body')).toBeVisible()
     await expect(page.locator('.translated-article-body')).toContainText('译文：')
     await expect(page.locator('.article-heading h1')).toContainText('译文：OrigRead AI E2E Article 1')
+    // DL-6：TTS 不是三栏专属能力；双栏 Reader 仍必须保留正文与摘要朗读入口。
+    await expect(page.getByRole('button', { name: '朗读正文' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '朗读摘要' })).toBeVisible()
+    expect(await page.evaluate(() => typeof window.speechSynthesis?.speak === 'function')).toBe(true)
 
     await page.locator('.settings-button').click()
     await page.locator('.layout-mode-option[data-layout-mode="three-pane"]').click()
@@ -171,6 +175,8 @@ test('reader generates AI summary and full-article translation through main-proc
     await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'three-pane')
     await expect(page.locator('.translated-article-body')).toBeVisible()
     await expect(page.locator('.article-heading h1')).toContainText('译文：OrigRead AI E2E Article 1')
+    await expect(page.getByRole('button', { name: '朗读正文' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '朗读摘要' })).toBeVisible()
 
     const conciseArticleId = await page.evaluate(async () => {
       const article = (await window.origread.listArticles(100)).find((item) => item.title === 'OrigRead Concise Flash')
