@@ -7,11 +7,18 @@ test('reader toolbar responds to Reader pane width and keeps Settings visible', 
     const page = await testApp.app.firstWindow()
     await page.setViewportSize({ width: 1440, height: 900 })
     await expect(page.locator('.app-shell')).toBeVisible()
+    // 图标本地化测试必须脱离 Runner 系统语言，先固定中文作为基线。
+    await page.evaluate(async () => { await window.origread.updateSettings({ language: 'zh' }) })
+    await page.reload()
+    await expect(page.locator('.app-shell')).toBeVisible()
 
     const readerPane = page.locator('.reader-pane')
     const readerToolbar = page.locator('.reader-toolbar')
     const settingsButton = page.locator('.settings-button')
     const aiLabel = page.locator('.ai-summary-button > span:not(.ai-summary-accent-icon)')
+    const aiSplit = page.locator('.reader-tool-split-ai')
+    const translationSplit = page.locator('.reader-tool-split-translation')
+    const translationIcon = page.locator('.localized-translation-icon')
     const voiceControl = page.locator('.reader-voice-control')
     const voiceSelect = page.locator('.reader-voice-select')
     const moreButton = page.locator('.reader-more-button')
@@ -28,6 +35,24 @@ test('reader toolbar responds to Reader pane width and keeps Settings visible', 
     await expect(settingsButton).toBeVisible()
     await expectInside(settingsButton, readerToolbar)
 
+    // AI / 翻译主操作与扩展入口必须形成两套一致的 split-action，而不是四个独立图标。
+    await expect(aiSplit).toBeVisible()
+    await expect(translationSplit).toBeVisible()
+    await expectSplitAction(aiSplit)
+    await expectSplitAction(translationSplit)
+    expect(Math.abs((await requiredBox(aiSplit)).width - (await requiredBox(translationSplit)).width)).toBeLessThanOrEqual(1)
+    await expect(aiSplit.locator('.reader-tool-split-options')).toHaveAttribute('title', /摘要选项|Summary options/)
+    await expect(translationSplit.locator('.reader-tool-split-options')).toHaveAttribute('title', /翻译目标|Translation target/)
+
+    // 翻译图标包含真实文字字形：中文界面“文”为主、A 为辅。
+    await expect(translationIcon).toHaveAttribute('data-primary-language', 'zh')
+    await expect(translationIcon.locator('[data-glyph="zh"]')).toHaveAttribute('data-prominence', 'primary')
+    await expect(translationIcon.locator('[data-glyph="en"]')).toHaveAttribute('data-prominence', 'secondary')
+
+    // “下一篇”使用明确的 step-forward 语义，不再退化为普通 ChevronRight。
+    await expect(page.locator('.reader-next-article-button .lucide-step-forward')).toHaveCount(1)
+    await expect(page.locator('.reader-next-article-button .lucide-chevron-right')).toHaveCount(0)
+
     // Settings / Source Discovery 仍显示语义标题；普通阅读标题删除不影响这些特殊页面。
     await settingsButton.click()
     await expect(page.locator('.reader-title')).toContainText(/设置|Settings/)
@@ -37,12 +62,21 @@ test('reader toolbar responds to Reader pane width and keeps Settings visible', 
     await page.locator('.settings-close-button').click()
     await expect(page.locator('.reader-title')).toHaveCount(0)
 
+    // 切成英文后无需重启，翻译 glyph 主次实时切换为 A 主、“文”辅。
+    await settingsButton.click()
+    await page.locator('.language-select').selectOption('en')
+    await expect(page.locator('.reader-title')).toContainText('Settings')
+    await page.locator('.settings-close-button').click()
+    await expect(translationIcon).toHaveAttribute('data-primary-language', 'en')
+    await expect(translationIcon.locator('[data-glyph="en"]')).toHaveAttribute('data-prominence', 'primary')
+    await expect(translationIcon.locator('[data-glyph="zh"]')).toHaveAttribute('data-prominence', 'secondary')
+
     // Reader 再宽也只保留图标；文字仅通过 title / aria-label 提示，避免双栏宽屏重新撑满工具栏。
     await page.setViewportSize({ width: 1800, height: 900 })
     expect((await requiredBox(readerPane)).width).toBeGreaterThan(1000)
     await expect(aiLabel).toHaveCSS('display', 'none')
-    await expect(page.locator('.ai-summary-button')).toHaveAttribute('title', /AI 摘要|AI Summary/)
-    await expect(page.locator('.translation-button')).toHaveAttribute('title', /翻译|Translation/)
+    await expect(page.locator('.ai-summary-button')).toHaveAttribute('title', /AI 摘要|AI summary/i)
+    await expect(page.locator('.translation-button')).toHaveAttribute('title', /翻译|Translation|Translate/i)
     await expect(voiceSelect).toHaveCSS('opacity', '0')
     expect((await requiredBox(voiceControl)).width).toBeLessThanOrEqual(36)
     await expectInside(settingsButton, readerToolbar)
@@ -79,4 +113,18 @@ async function expectInside(child: Locator, parent: Locator): Promise<void> {
   const [childBox, parentBox] = await Promise.all([requiredBox(child), requiredBox(parent)])
   expect(childBox.x).toBeGreaterThanOrEqual(parentBox.x - 0.5)
   expect(childBox.x + childBox.width).toBeLessThanOrEqual(parentBox.x + parentBox.width + 0.5)
+}
+
+async function expectSplitAction(group: Locator): Promise<void> {
+  const main = group.locator('.reader-tool-split-main')
+  const options = group.locator('.reader-tool-split-options')
+  const [groupBox, mainBox, optionsBox] = await Promise.all([
+    requiredBox(group),
+    requiredBox(main),
+    requiredBox(options)
+  ])
+  expect(mainBox.x + mainBox.width).toBeCloseTo(optionsBox.x, 0)
+  expect(groupBox.width).toBeGreaterThanOrEqual(54)
+  expect(groupBox.width).toBeLessThanOrEqual(58)
+  expect(mainBox.height).toBeCloseTo(optionsBox.height, 0)
 }

@@ -10,10 +10,10 @@ import {
   Maximize2,
   Minimize2,
   MoreHorizontal,
-  Languages,
   Plus,
   Sparkles,
   Star,
+  StepForward,
   ExternalLink,
   Headphones,
   Pause,
@@ -48,6 +48,7 @@ import type { ReaderArticleContent } from '../../shared/reader'
 import type { SyncRuntimeState } from '../../shared/sync-runtime'
 import type { OriginalArticleViewState, OriginalViewBounds } from '../../shared/original-view'
 import { SettingsPanel, type SettingsPage } from './SettingsPanel'
+import { LocalizedTranslationIcon } from './LocalizedTranslationIcon'
 import { UpdateAvailableDialog } from './UpdateAvailableDialog'
 import type { AiSummaryDocument, AiSummaryProgress, AiSummaryProgressStage } from '../../shared/ai'
 import type { TranslationDocument, TranslationTarget } from '../../shared/translation'
@@ -1857,30 +1858,56 @@ export default function App(): React.JSX.Element {
               </>
             ) : (
               <>
-                <button
-                  type="button"
-                  className={`ai-summary-button ${(readerMode === 'ai' || aiSummaryDocked) && aiSummaryVisible ? 'active' : ''}`}
-                  disabled={!selectedArticle || readerToolLoading !== null}
-                  title={t('aiSummary')}
-                  aria-label={t('aiSummary')}
-                  onClick={toggleAiSummaryDisplay}
-                >
-                  <AiSummaryAccentIcon variant="toolbar" loading={readerToolLoading === 'ai'} />
-                  <span>{t('aiSummary')}</span>
-                </button>
-                <button type="button" className="icon-button reader-tool-options" disabled={!selectedArticle || readerToolLoading !== null} title={t('aiSummaryOptions')} aria-label={t('aiSummaryOptions')} onClick={()=>setAiOptionsOpen(true)}><ChevronDown size={15}/></button>
-                <button
-                  type="button"
-                  className={`translation-button ${readerMode === 'translation' ? 'active' : ''}`}
-                  disabled={!selectedArticle || readerToolLoading !== null}
-                  title={t('translation')}
-                  aria-label={t('translation')}
-                  onClick={() => readerMode === 'translation' ? setReaderMode('article') : translationDocument ? setReaderMode('translation') : void translateSelectedArticle()}
-                >
-                  {readerToolLoading === 'translation' ? <RefreshCw size={17} className="spinning" /> : <Languages size={17} />}
-                  <span>{t('translation')}</span>
-                </button>
-                <button type="button" className="icon-button reader-tool-options" disabled={!selectedArticle || readerToolLoading !== null} title={t('translationTarget')} aria-label={t('translationTarget')} onClick={()=>setTranslationTargetOpen(true)}><ChevronDown size={15}/></button>
+                <div className={`reader-tool-split reader-tool-split-ai ${aiOptionsOpen ? 'options-open' : ''}`}>
+                  <button
+                    type="button"
+                    className={`ai-summary-button reader-tool-split-main ${(readerMode === 'ai' || aiSummaryDocked) && aiSummaryVisible ? 'active' : ''}`}
+                    disabled={!selectedArticle || readerToolLoading !== null}
+                    title={t('aiSummary')}
+                    aria-label={t('aiSummary')}
+                    onClick={toggleAiSummaryDisplay}
+                  >
+                    <AiSummaryAccentIcon variant="toolbar" loading={readerToolLoading === 'ai'} />
+                    <span>{t('aiSummary')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button reader-tool-options reader-tool-split-options"
+                    disabled={!selectedArticle || readerToolLoading !== null}
+                    title={t('aiSummaryOptions')}
+                    aria-label={t('aiSummaryOptions')}
+                    aria-haspopup="dialog"
+                    aria-expanded={aiOptionsOpen}
+                    onClick={()=>setAiOptionsOpen(true)}
+                  >
+                    <ChevronDown size={13}/>
+                  </button>
+                </div>
+                <div className={`reader-tool-split reader-tool-split-translation ${translationTargetOpen ? 'options-open' : ''}`}>
+                  <button
+                    type="button"
+                    className={`translation-button reader-tool-split-main ${readerMode === 'translation' ? 'active' : ''}`}
+                    disabled={!selectedArticle || readerToolLoading !== null}
+                    title={t('translation')}
+                    aria-label={t('translation')}
+                    onClick={() => readerMode === 'translation' ? setReaderMode('article') : translationDocument ? setReaderMode('translation') : void translateSelectedArticle()}
+                  >
+                    {readerToolLoading === 'translation' ? <RefreshCw size={17} className="spinning" /> : <LocalizedTranslationIcon size={18} />}
+                    <span>{t('translation')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button reader-tool-options reader-tool-split-options"
+                    disabled={!selectedArticle || readerToolLoading !== null}
+                    title={t('translationTarget')}
+                    aria-label={t('translationTarget')}
+                    aria-haspopup="dialog"
+                    aria-expanded={translationTargetOpen}
+                    onClick={()=>setTranslationTargetOpen(true)}
+                  >
+                    <ChevronDown size={13}/>
+                  </button>
+                </div>
                 <button type="button" className={`icon-button ${selectedArticle?.isStarred ? 'active' : ''}`} disabled={!selectedArticle} title={selectedArticle?.isStarred?t('unstar'):t('starArticle')} aria-label={selectedArticle?.isStarred?t('unstar'):t('starArticle')} onClick={()=>selectedArticle&&toggleStarred(selectedArticle)}><Star size={16} fill={selectedArticle?.isStarred?'currentColor':'none'}/></button>
                 {readerMoreOpen && (
                   <button
@@ -1895,7 +1922,7 @@ export default function App(): React.JSX.Element {
                 )}
                 <div ref={readerSecondaryActionsRef} id="reader-secondary-actions" className={`reader-secondary-actions ${readerMoreOpen ? 'open' : ''}`} aria-label={t('more')}>
                   <button type="button" className={`icon-button reader-secondary-action ${selectedArticle?.isUnread ? 'active' : ''}`} disabled={!selectedArticle} title={selectedArticle?.isUnread?t('markRead'):t('markUnread')} aria-label={selectedArticle?.isUnread?t('markRead'):t('markUnread')} onClick={()=>{setReaderMoreOpen(false);selectedArticle&&toggleUnread(selectedArticle)}}><BookOpenText size={16}/><span>{selectedArticle?.isUnread?t('markRead'):t('markUnread')}</span></button>
-                  <button type="button" className="icon-button reader-secondary-action" disabled={!nextArticle} title={t('nextArticle')} aria-label={t('nextArticle')} onClick={()=>{setReaderMoreOpen(false);nextArticle&&selectArticle(nextArticle)}}><ChevronRight size={17}/><span>{t('nextArticle')}</span></button>
+                  <button type="button" className="icon-button reader-secondary-action reader-next-article-button" disabled={!nextArticle} title={t('nextArticle')} aria-label={t('nextArticle')} onClick={()=>{setReaderMoreOpen(false);nextArticle&&selectArticle(nextArticle)}}><StepForward size={17}/><span>{t('nextArticle')}</span></button>
                   <button type="button" className={`icon-button reader-secondary-action reader-tts-button ${speech.state.domain==='main'?'active':''}`} disabled={!selectedArticle||!mainSpeechText} title={speech.state.domain==='main'&&speech.state.status==='speaking'?t('pauseReading'):speech.state.domain==='main'&&speech.state.status==='paused'?t('resumeReading'):t('readArticle')} aria-label={t('readArticle')} onClick={()=>{setReaderMoreOpen(false);toggleMainSpeech()}}>
                     {speech.state.domain==='main'&&speech.state.status==='speaking'
                       ? <Pause size={16}/>
