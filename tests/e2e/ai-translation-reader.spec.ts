@@ -69,6 +69,22 @@ test('reader generates AI summary and full-article translation through main-proc
     expect(await page.evaluate(() => typeof window.speechSynthesis?.speak === 'function')).toBe(true)
     expect(fixture.aiRequests()).toBeGreaterThan(0)
 
+    // DL-5：已生成的 AI Summary 属于 Reader 会话状态，主布局切换不得清掉摘要或替换当前文章。
+    await page.locator('.settings-button').click()
+    await page.locator('.layout-mode-option[data-layout-mode="two-pane"]').click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'two-pane')
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.ai-summary-panel.replace')).toBeVisible()
+    await expect(page.locator('.ai-summary-markdown')).toContainText('核心结论')
+    await expect(page.locator('.article-item.selected')).toHaveAttribute('data-article-id', articleId)
+
+    await page.locator('.settings-button').click()
+    await page.locator('.layout-mode-option[data-layout-mode="three-pane"]').click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'three-pane')
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.ai-summary-panel.replace')).toBeVisible()
+    await expect(page.locator('.ai-summary-markdown')).toContainText('核心结论')
+
     await page.keyboard.down('Shift')
     await page.keyboard.press('Comma')
     await page.keyboard.up('Shift')
@@ -139,6 +155,22 @@ test('reader generates AI summary and full-article translation through main-proc
     await expect(page.getByRole('button', { name: '朗读正文' })).toBeVisible()
     await expect(page.getByRole('button', { name: '朗读摘要' })).toBeVisible()
     expect(fixture.translationRequests()).toBeGreaterThan(0)
+
+    // DL-5：Translation 与已缓存 Summary 同样必须跨布局保留，不能因为 Workspace 子树替换而回到正文模式。
+    await page.locator('.settings-button').click()
+    await page.locator('.layout-mode-option[data-layout-mode="two-pane"]').click()
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'two-pane')
+    await expect(page.locator('.translated-article-body')).toBeVisible()
+    await expect(page.locator('.translated-article-body')).toContainText('译文：')
+    await expect(page.locator('.article-heading h1')).toContainText('译文：OrigRead AI E2E Article 1')
+
+    await page.locator('.settings-button').click()
+    await page.locator('.layout-mode-option[data-layout-mode="three-pane"]').click()
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'three-pane')
+    await expect(page.locator('.translated-article-body')).toBeVisible()
+    await expect(page.locator('.article-heading h1')).toContainText('译文：OrigRead AI E2E Article 1')
 
     const conciseArticleId = await page.evaluate(async () => {
       const article = (await window.origread.listArticles(100)).find((item) => item.title === 'OrigRead Concise Flash')

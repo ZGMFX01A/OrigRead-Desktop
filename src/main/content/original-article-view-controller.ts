@@ -14,6 +14,7 @@ const ORIGINAL_PARTITION = 'persist:origread-original'
  */
 export class OriginalArticleViewController {
   private view: WebContentsView | null = null
+  private viewAttached = false
   private remoteCleanup: (() => void) | null = null
   private state: OriginalArticleViewState = closedState()
 
@@ -39,6 +40,7 @@ export class OriginalArticleViewController {
     this.view = view
     this.configureRemoteView(view)
     this.window.contentView.addChildView(view)
+    this.viewAttached = true
     view.setBounds(this.normalizeBounds(bounds))
     this.patchState({
       open: true,
@@ -55,8 +57,23 @@ export class OriginalArticleViewController {
   }
 
   updateBounds(bounds: OriginalViewBounds): void {
-    if (!this.view || this.view.webContents.isDestroyed()) return
-    this.view.setBounds(this.normalizeBounds(bounds))
+    const view = this.view
+    if (!view || view.webContents.isDestroyed()) return
+    // Renderer 用非正宽/高表示“保留原网页会话但暂时不显示”。
+    // WebContentsView 自身会把 0x0 钳到 1x1，因此这里通过 detach/reattach 真正隐藏，
+    // 同时避免销毁 WebContents 导致页面状态、历史栈和已加载内容丢失。
+    if (bounds.width <= 0 || bounds.height <= 0) {
+      if (this.viewAttached) {
+        this.window.contentView.removeChildView(view)
+        this.viewAttached = false
+      }
+      return
+    }
+    if (!this.viewAttached) {
+      this.window.contentView.addChildView(view)
+      this.viewAttached = true
+    }
+    view.setBounds(this.normalizeBounds(bounds))
   }
 
   navigate(action: OriginalNavigationAction): OriginalArticleViewState {
@@ -88,7 +105,8 @@ export class OriginalArticleViewController {
     this.remoteCleanup?.()
     this.remoteCleanup = null
     if (view) {
-      this.window.contentView.removeChildView(view)
+      if (this.viewAttached) this.window.contentView.removeChildView(view)
+      this.viewAttached = false
       if (!view.webContents.isDestroyed()) view.webContents.close()
     }
     this.state = closedState()
@@ -124,6 +142,7 @@ export class OriginalArticleViewController {
     contents.on('destroyed', () => {
       if (this.view !== view) return
       this.view = null
+      this.viewAttached = false
       this.remoteCleanup?.()
       this.remoteCleanup = null
       this.state = closedState()

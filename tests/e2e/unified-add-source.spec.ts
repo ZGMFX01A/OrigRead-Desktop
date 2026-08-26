@@ -205,6 +205,22 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     const darkToolbarBackground = await page.locator('.reader-toolbar').evaluate((element) => getComputedStyle(element).backgroundColor)
     expect(darkToolbarBackground).not.toBe('rgb(255, 255, 255)')
 
+    const originalViewMatchesReaderStage = async (): Promise<boolean> => {
+      const stage = await page.locator('.reader-stage').boundingBox()
+      const viewBounds = await electronApp.evaluate(({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0]
+        const child = window?.contentView.children.at(-1)
+        return child?.getBounds() ?? null
+      })
+      if (!stage || !viewBounds) return false
+      return (
+        Math.abs(viewBounds.x - Math.round(stage.x)) <= 1 &&
+        Math.abs(viewBounds.y - Math.round(stage.y)) <= 1 &&
+        Math.abs(viewBounds.width - Math.round(stage.width)) <= 1 &&
+        Math.abs(viewBounds.height - Math.round(stage.height)) <= 1
+      )
+    }
+
     const articleRequestsBeforeOriginal = fixture.articleRequests()
     await page.locator('.original-button').click()
     await expect.poll(() => fixture.articleRequests()).toBeGreaterThan(articleRequestsBeforeOriginal)
@@ -213,6 +229,32 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await expect(page.locator('.reader-title')).not.toHaveText(/^(阅读|Reader)$/)
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('dark')
     await expect.poll(() => page.locator('.reader-toolbar').evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(darkToolbarBackground)
+    await expect.poll(originalViewMatchesReaderStage).toBe(true)
+
+    // DL-5：原文 child WebContentsView 在 Settings 内切布局时保持打开；设置页期间仅隐藏 bounds，关闭后按新布局恢复。
+    await page.locator('.settings-button').click()
+    await expect(page.locator('.settings-layout')).toBeVisible()
+    await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
+    await expect.poll(async () => electronApp.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.contentView.children.length ?? -1
+    )).toBe(0)
+    await page.locator('.layout-mode-option[data-layout-mode="two-pane"]').click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'two-pane')
+    await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.workspace-pane')).toBeVisible()
+    await expect(page.locator('.source-pane')).toHaveCount(0)
+    await expect.poll(originalViewMatchesReaderStage).toBe(true)
+    await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
+
+    await page.locator('.settings-button').click()
+    await page.locator('.layout-mode-option[data-layout-mode="three-pane"]').click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'three-pane')
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.source-pane')).toBeVisible()
+    await expect(page.locator('.article-pane')).toBeVisible()
+    await expect.poll(originalViewMatchesReaderStage).toBe(true)
+    await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
 
     // UI-3P.6：原文 WebContentsView 必须跟随 Article Divider 改变 Reader stage bounds。
     const readerStageBeforeResize = await page.locator('.reader-stage').boundingBox()
@@ -245,22 +287,6 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
 
     // UI-3P.7：独立 collapse / Focus 同样必须让原文 child WebContentsView 跟随 Reader stage，而不是残留旧 bounds。
-    const originalViewMatchesReaderStage = async (): Promise<boolean> => {
-      const stage = await page.locator('.reader-stage').boundingBox()
-      const viewBounds = await electronApp.evaluate(({ BrowserWindow }) => {
-        const window = BrowserWindow.getAllWindows()[0]
-        const child = window?.contentView.children.at(-1)
-        return child?.getBounds() ?? null
-      })
-      if (!stage || !viewBounds) return false
-      return (
-        Math.abs(viewBounds.x - Math.round(stage.x)) <= 1 &&
-        Math.abs(viewBounds.y - Math.round(stage.y)) <= 1 &&
-        Math.abs(viewBounds.width - Math.round(stage.width)) <= 1 &&
-        Math.abs(viewBounds.height - Math.round(stage.height)) <= 1
-      )
-    }
-
     await page.locator('.pane-divider-source .collapse-handle').click()
     await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).sourcePaneCollapsed)).toBe(true)
     await expect.poll(originalViewMatchesReaderStage).toBe(true)
@@ -588,8 +614,10 @@ test('reader share copies Markdown and account change clears the previous reader
     expect(copiedMarkdown).toContain('/article/1')
     await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).readingShareConfigured)).toBe(true)
 
-    // 添加第二个 Local 会切换当前账户，并通过 SettingsPanel.onChanged 驱动 App 清理旧 Reader。
+    // DL-5：先切到双栏，再切换账户；旧 Reader 必须在双栏立即清空，切回三栏后也不能复活。
     await page.locator('.settings-button').click()
+    await page.locator('.layout-mode-option[data-layout-mode="two-pane"]').click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'two-pane')
     await page.getByRole('button', { name: '账户' }).click()
     const addAccountSection = page.locator('.settings-section').filter({ hasText: '添加账户' }).last()
     await expect(addAccountSection).toBeVisible()
@@ -599,6 +627,15 @@ test('reader share copies Markdown and account change clears the previous reader
     await expect.poll(async () => page.evaluate(async () => (await window.origread.getAccounts()).accounts.find((item) => item.name === 'UI-3P.10 Second Local')?.id === (await window.origread.getAccounts()).currentAccountId)).toBe(true)
 
     await page.locator('.settings-close-button').click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'two-pane')
+    await expect(page.locator('.reader-empty-state')).toBeVisible()
+    await expect(page.locator('.article-heading')).toHaveCount(0)
+    await expect(page.locator('.article-item')).toHaveCount(0)
+
+    await page.locator('.settings-button').click()
+    await page.locator('.layout-mode-option[data-layout-mode="three-pane"]').click()
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'three-pane')
     await expect(page.locator('.reader-empty-state')).toBeVisible()
     await expect(page.locator('.article-heading')).toHaveCount(0)
     await expect(page.locator('.article-item')).toHaveCount(0)

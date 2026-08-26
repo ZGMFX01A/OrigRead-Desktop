@@ -479,7 +479,13 @@ export default function App(): React.JSX.Element {
     if (!originalViewState.open || !readerStageRef.current) return
     const host = readerStageRef.current
     const updateBounds = (): void => {
-      void window.origread.updateOriginalArticleBounds(boundsForElement(host))
+      // Settings 仍然属于 Reader Pane 内部页面。原文 child WebContentsView 保持打开，
+      // 但 Settings 可见期间必须把 child 暂时移出可视区域，否则它会盖住 React 设置页。
+      // 关闭 Settings 后 ResizeObserver / effect 会立即按新布局恢复真实 Reader stage bounds。
+      const bounds: OriginalViewBounds = settingsOpen
+        ? { x: 0, y: 0, width: 0, height: 0 }
+        : boundsForElement(host)
+      void window.origread.updateOriginalArticleBounds(bounds)
     }
     const observer = new ResizeObserver(updateBounds)
     observer.observe(host)
@@ -489,7 +495,7 @@ export default function App(): React.JSX.Element {
       observer.disconnect()
       window.removeEventListener('resize', updateBounds)
     }
-  }, [originalViewState.open])
+  }, [originalViewState.open, settingsOpen])
 
   useEffect(() => {
     let cancelled = false
@@ -972,7 +978,8 @@ export default function App(): React.JSX.Element {
   }
 
   const showSettings = async (page: SettingsPage = 'general'): Promise<void> => {
-    if (originalViewState.open) await closeOriginalArticle()
+    // Original Article 作为当前 Reader 上下文保留；Settings 打开时仅临时隐藏 child WebContentsView，
+    // 这样用户可以切换两栏/三栏后无损返回同一原网页。
     closeTwoPaneSourcePicker(false)
     setReaderMoreOpen(false)
     setSourceCatalogOpen(false)
@@ -1947,7 +1954,7 @@ export default function App(): React.JSX.Element {
               </>
             )}
           </div>
-          {!settingsOpen && !sourceCatalogOpen && !originalViewState.open && (
+          {!settingsOpen && !sourceCatalogOpen && (
             <div className="reader-fixed-actions">
               <button type="button" className="icon-button settings-button" aria-label={t('settings')} title={t('settings')} onClick={() => void showSettings()}>
                 <Settings size={17} />
