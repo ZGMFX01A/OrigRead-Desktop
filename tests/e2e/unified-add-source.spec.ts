@@ -226,8 +226,29 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     const sourceItem = page.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' })
     await sourceItem.click()
     await expect(page.locator('.article-scope-bar')).toContainText('OrigRead E2E Feed')
+    const expectedScopeStats = await page.evaluate(async (feedId) => {
+      const feedArticles = await window.origread.listArticlesByFeed(feedId)
+      return {
+        total: feedArticles.length,
+        unread: feedArticles.filter((item) => item.isUnread).length,
+        starred: feedArticles.filter((item) => item.isStarred).length
+      }
+    }, currentFixture!.feedId)
+    const scopeStats = page.locator('.article-scope-stats > span')
+    await expect(scopeStats).toHaveCount(3)
+    await expect(scopeStats.nth(0)).toContainText(String(expectedScopeStats.total))
+    await expect(scopeStats.nth(1)).toContainText(String(expectedScopeStats.unread))
+    await expect(scopeStats.nth(2)).toContainText(String(expectedScopeStats.starred))
     await expect(page.locator('.article-list')).toBeVisible()
     await expect.poll(async () => page.locator('.article-item').evaluateAll((items, feedId) => items.length > 0 && items.every((item) => item.getAttribute('data-feed-id') === feedId), currentFixture!.feedId)).toBe(true)
+
+    const articleMenuTarget = page.locator('.article-item').first()
+    await articleMenuTarget.click({ button: 'right' })
+    const articleContextMenu = page.locator('.desktop-context-menu')
+    await expect(articleContextMenu.getByRole('menuitem', { name: /标记为(已读|未读)/ })).toBeVisible()
+    await expect(articleContextMenu.getByRole('menuitem', { name: /(收藏文章|取消收藏)/ })).toBeVisible()
+    await page.locator('.article-scope-bar').click()
+    await expect(articleContextMenu).toBeHidden()
 
     await expect(page.locator(`.article-item[data-article-id="${currentFixture!.articleId}"]`)).toHaveClass(/read/)
     await expect(page.locator('.article-item.unread').first()).toBeVisible()
@@ -300,6 +321,13 @@ test('reader selection survives source and article filter changes', async () => 
     await expect(articleSearch).toHaveValue('Article 1')
     await expect(sourceSearch).toHaveValue('OrigRead E2E Feed')
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+
+    await articleSearch.fill('__origread_missing_article__')
+    await expect(page.locator('.article-list-empty')).toContainText('没有匹配的文章')
+    await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+    await page.getByRole('button', { name: '清除搜索' }).click()
+    await expect(articleSearch).toHaveValue('')
+    await expect(page.locator('.article-list')).toBeVisible()
 
     // Destination 现在固定在 Source Sidebar，但仍只过滤 Article Pane；Reader 生命周期保持独立。
     await page.locator('.source-destination-item').filter({ hasText: '未读' }).click()

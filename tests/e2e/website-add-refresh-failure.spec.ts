@@ -44,6 +44,12 @@ test('website subscription persists discovered articles without a second source 
     const sourceItem = page.locator('.source-item').filter({ hasText: websiteFeedName })
     await expect(sourceItem).toBeVisible()
     await expect(sourceItem).toContainText('WEBSITE')
+
+    // UI-3P.5：Article Pane 发起的同步失败属于文章列表反馈，不重复占用 Source Sidebar。
+    await page.locator('.refresh-all-button').click()
+    await expect(page.locator('.article-list-error')).toContainText('HTTP 418')
+    await expect(page.locator('.source-pane .workspace-error')).toHaveCount(0)
+    expect(fixture.rejectedRequests()).toBeGreaterThan(0)
   } finally {
     await testApp.close()
     await closeServer(server)

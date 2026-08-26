@@ -1,4 +1,4 @@
-import { MoreHorizontal, Plus, RefreshCw, Rss, Search, Star, X } from 'lucide-react'
+import { Inbox, Plus, RefreshCw, Rss, Search, SearchX, Star, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { ArticleRecord, FeedRecord } from '../../shared/library'
 import { FeedIcon, type ArticleScope, type Destination } from './SourceSidebar'
@@ -8,10 +8,14 @@ interface ArticleListPaneProps {
   articleScope: ArticleScope
   activeScopeFeed: FeedRecord | null
   scopeLabel: string
+  scopeArticleCount: number
+  scopeUnreadCount: number
+  scopeStarredCount: number
   articleQuery: string
   visibleArticles: ArticleRecord[]
   feeds: FeedRecord[]
   selectedArticleId: string | null
+  articleListError: string | null
   refreshing: boolean
   refreshDisabled: boolean
   onClearScope: () => void
@@ -33,10 +37,14 @@ export function ArticleListPane({
   articleScope,
   activeScopeFeed,
   scopeLabel,
+  scopeArticleCount,
+  scopeUnreadCount,
+  scopeStarredCount,
   articleQuery,
   visibleArticles,
   feeds,
   selectedArticleId,
+  articleListError,
   refreshing,
   refreshDisabled,
   onClearScope,
@@ -48,14 +56,22 @@ export function ArticleListPane({
   onAddSource
 }: ArticleListPaneProps): React.JSX.Element {
   const { t } = useTranslation()
+  const destinationLabelKey = destination === 'all' ? 'allArticles' : destination
+  const destinationCount = destination === 'all'
+    ? scopeArticleCount
+    : destination === 'unread'
+      ? scopeUnreadCount
+      : scopeStarredCount
+  const hasArticleQuery = articleQuery.trim().length > 0
+  const hasSubscriptions = feeds.length > 0
 
   return (
-    <section className="article-pane" aria-label={t(destination === 'all' ? 'allArticles' : destination)}>
-      <div className="article-scope-bar">
+    <section className="article-pane" aria-label={t(destinationLabelKey)}>
+      <header className="article-scope-bar">
         <div className="article-scope-current">
           {activeScopeFeed ? <FeedIcon feed={activeScopeFeed} /> : <div className="scope-icon"><Rss size={15}/></div>}
-          <div>
-            <span>{t('readingScope')}</span>
+          <div className="article-scope-copy">
+            <span>{t(destinationLabelKey)}</span>
             <strong>{scopeLabel}</strong>
           </div>
         </div>
@@ -64,7 +80,12 @@ export function ArticleListPane({
             <button type="button" className="icon-button" title={t('clearSourceFilter')} aria-label={t('clearSourceFilter')} onClick={onClearScope}><X size={14}/></button>
           )}
         </div>
-      </div>
+        <div className="article-scope-stats" aria-label={t('readingScope')}>
+          <span className={destination === 'all' ? 'active' : ''}><small>{t('allArticles')}</small><strong>{scopeArticleCount}</strong></span>
+          <span className={destination === 'unread' ? 'active' : ''}><small>{t('unread')}</small><strong>{scopeUnreadCount}</strong></span>
+          <span className={destination === 'starred' ? 'active' : ''}><small>{t('starred')}</small><strong>{scopeStarredCount}</strong></span>
+        </div>
+      </header>
 
       <div className="list-toolbar">
         <div className="search-field">
@@ -78,7 +99,9 @@ export function ArticleListPane({
           <kbd>Ctrl K</kbd>
         </div>
         <div className="list-meta">
-          <span>{t('articleCount', { count: visibleArticles.length })}</span>
+          <span>{hasArticleQuery
+            ? t('articleSearchResultCount', { visible: visibleArticles.length, total: destinationCount })
+            : t('articleCount', { count: destinationCount })}</span>
           <div className="article-list-actions">
             <button
               type="button"
@@ -90,14 +113,12 @@ export function ArticleListPane({
             >
               <RefreshCw size={16} className={refreshing ? 'spinning' : ''} />
             </button>
-            <button type="button" className="icon-button" aria-label={t('more')}>
-              <MoreHorizontal size={17} />
-            </button>
           </div>
         </div>
       </div>
 
       <div className="workspace-list-stage">
+        {articleListError && <div className="workspace-error article-list-error">{articleListError}</div>}
         {visibleArticles.length > 0 ? (
           <div className="list-content article-list">
             {visibleArticles.map((article) => (
@@ -137,14 +158,23 @@ export function ArticleListPane({
             ))}
           </div>
         ) : (
-          <div className="empty-list-state">
-            <div className="empty-icon"><Rss size={22} /></div>
-            <h1>{t('timelineEmpty')}</h1>
-            <p>{t('timelineEmptyDesc')}</p>
-            <button className="secondary-action" type="button" onClick={onAddSource}>
-              <Plus size={16} />
-              {t('addSourceNow')}
-            </button>
+          <div className="empty-list-state article-list-empty">
+            <div className="empty-icon">
+              {!hasSubscriptions ? <Rss size={22} /> : hasArticleQuery ? <SearchX size={22} /> : <Inbox size={22} />}
+            </div>
+            <h1>{!hasSubscriptions ? t('timelineEmpty') : hasArticleQuery ? t('articleSearchEmpty') : t('readerScopeEmpty')}</h1>
+            <p>{!hasSubscriptions ? t('timelineEmptyDesc') : hasArticleQuery ? t('articleSearchEmptyDesc') : t('readerScopeEmptyDesc')}</p>
+            {!hasSubscriptions ? (
+              <button className="secondary-action" type="button" onClick={onAddSource}>
+                <Plus size={16} />
+                {t('addSourceNow')}
+              </button>
+            ) : hasArticleQuery ? (
+              <button className="secondary-action" type="button" onClick={() => onArticleQueryChange('')}>
+                <Search size={15} />
+                {t('clearArticleSearch')}
+              </button>
+            ) : null}
           </div>
         )}
       </div>

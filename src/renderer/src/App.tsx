@@ -92,6 +92,7 @@ export default function App(): React.JSX.Element {
   const [addSourceOpen, setAddSourceOpen] = useState(false)
   const [sourceUrl, setSourceUrl] = useState('')
   const [sourceError, setSourceError] = useState<string | null>(null)
+  const [articleListError, setArticleListError] = useState<string | null>(null)
   const [isAddingSource, setIsAddingSource] = useState(false)
   const [sourceDiscovery, setSourceDiscovery] = useState<SourceDiscoveryResult | null>(null)
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null)
@@ -181,15 +182,17 @@ export default function App(): React.JSX.Element {
     let cancelled = false
     if (articleScope.kind === 'all') {
       setScopeArticles(null)
+      setArticleListError(null)
       return
     }
     setScopeArticles([])
+    setArticleListError(null)
     void loadArticlesForScope(articleScope)
       .then((loaded) => {
         if (!cancelled) setScopeArticles(loaded)
       })
       .catch((error) => {
-        if (!cancelled) setSourceError(error instanceof Error ? error.message : String(error))
+        if (!cancelled) setArticleListError(error instanceof Error ? error.message : String(error))
       })
     return () => { cancelled = true }
   }, [articleScope, loadArticlesForScope])
@@ -1185,10 +1188,15 @@ export default function App(): React.JSX.Element {
     }
   }
 
-  const refreshFeed = async (feed: FeedRecord, scopeAfterRefresh?: ArticleScope): Promise<void> => {
+  const refreshFeed = async (
+    feed: FeedRecord,
+    scopeAfterRefresh?: ArticleScope,
+    noticeTarget: 'source' | 'article' = 'source'
+  ): Promise<void> => {
     if (refreshingFeedId || isRefreshingAll) return
     setRefreshingFeedId(feed.id)
-    setSourceError(null)
+    const setRefreshError = noticeTarget === 'article' ? setArticleListError : setSourceError
+    setRefreshError(null)
     try {
       await window.origread.refreshSource(feed.id)
       if (scopeAfterRefresh) {
@@ -1201,7 +1209,7 @@ export default function App(): React.JSX.Element {
         await Promise.all([reloadLibrary(), reloadCurrentScope()])
       }
     } catch (error) {
-      setSourceError(`${t('refreshFailed')}: ${error instanceof Error ? error.message : String(error)}`)
+      setRefreshError(`${t('refreshFailed')}: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setRefreshingFeedId(null)
     }
@@ -1212,7 +1220,7 @@ export default function App(): React.JSX.Element {
     setArticleScope(scope)
     setArticleQuery('')
     if (isOrigReadDesktopReleaseFeed(feed.url) && feedStats(feed.id).total === 0) {
-      void refreshFeed(feed, scope)
+      void refreshFeed(feed, scope, 'article')
     }
   }
 
@@ -1246,20 +1254,20 @@ export default function App(): React.JSX.Element {
   const refreshAllSources = async (): Promise<void> => {
     if (isRefreshingAll || refreshingFeedId || feeds.length === 0) return
     setIsRefreshingAll(true)
-    setSourceError(null)
+    setArticleListError(null)
     try {
       const result = await window.origread.refreshAllSources()
       await Promise.all([reloadLibrary(), reloadCurrentScope()])
       if (result.failedCount > 0) {
         const firstFailure = result.results.find((item) => item.status === 'failed')
-        setSourceError(t('syncPartialFailure', {
+        setArticleListError(t('syncPartialFailure', {
           failed: result.failedCount,
           total: result.sourceCount,
           error: firstFailure?.error ?? t('unknownError')
         }))
       }
     } catch (error) {
-      setSourceError(`${t('refreshFailed')}: ${error instanceof Error ? error.message : String(error)}`)
+      setArticleListError(`${t('refreshFailed')}: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setIsRefreshingAll(false)
     }
@@ -1350,15 +1358,19 @@ export default function App(): React.JSX.Element {
             articleScope={articleScope}
             activeScopeFeed={activeScopeFeed}
             scopeLabel={scopeLabel}
+            scopeArticleCount={articleScope.kind === 'all' ? (librarySnapshot?.articles ?? scopedArticles.length) : scopedArticles.length}
+            scopeUnreadCount={scopedUnreadCount}
+            scopeStarredCount={scopedStarredCount}
             articleQuery={articleQuery}
             visibleArticles={visibleArticles}
             feeds={feeds}
             selectedArticleId={selectedArticleId}
+            articleListError={articleListError}
             refreshing={isRefreshingAll || refreshingFeedId === activeScopeFeed?.id}
             refreshDisabled={feeds.length === 0 || isRefreshingAll || refreshingFeedId !== null}
             onClearScope={() => { setArticleScope({ kind: 'all' }); setArticleQuery('') }}
             onArticleQueryChange={setArticleQuery}
-            onRefresh={() => activeScopeFeed ? void refreshFeed(activeScopeFeed) : void refreshAllSources()}
+            onRefresh={() => activeScopeFeed ? void refreshFeed(activeScopeFeed, undefined, 'article') : void refreshAllSources()}
             onSelectArticle={selectArticle}
             onToggleStarred={toggleStarred}
             onArticleContextMenu={(article, x, y) => setContextMenu({ kind: 'article', x, y, articleId: article.id })}
