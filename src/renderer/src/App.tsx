@@ -68,6 +68,7 @@ import {
 import { SourceSidebar, type ArticleScope, type Destination } from './SourceSidebar'
 import { ArticleListPane } from './ArticleListPane'
 import { PaneDivider } from './PaneDivider'
+import { THREE_PANE_BREAKPOINT, resolveResponsivePaneLayout } from './responsive-layout'
 
 type ReaderMode = 'article' | 'ai' | 'translation'
 
@@ -85,6 +86,8 @@ export default function App(): React.JSX.Element {
   const { t, i18n } = useTranslation()
   const [destination, setDestination] = useState<Destination>('all')
   const [focusReading, setFocusReading] = useState(false)
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
+  const [adaptiveSourceOverlayOpen, setAdaptiveSourceOverlayOpen] = useState(false)
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [librarySnapshot, setLibrarySnapshot] = useState<LibrarySnapshot | null>(null)
   const [feeds, setFeeds] = useState<FeedRecord[]>([])
@@ -155,6 +158,7 @@ export default function App(): React.JSX.Element {
   const readerStageRef = useRef<HTMLDivElement>(null)
   const readerContentRef = useRef<HTMLDivElement>(null)
   const readerSearchInputRef = useRef<HTMLInputElement>(null)
+  const adaptiveSourceOverlayCloseRef = useRef<HTMLButtonElement>(null)
   const selectedArticleIdRef = useRef<string | null>(null)
   const sourceDiscoveryRequestIdRef = useRef<string | null>(null)
   const aiSummaryRunRef = useRef(0)
@@ -243,6 +247,34 @@ export default function App(): React.JSX.Element {
     media.addEventListener('change', update)
     return () => media.removeEventListener('change', update)
   }, [])
+
+  useEffect(() => {
+    const update = (): void => setViewportWidth(window.innerWidth)
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [])
+
+  useEffect(() => {
+    // Adaptive overlay 只属于窄窗口当前会话；重新进入宽屏或 Focus 时必须自动退场。
+    if (viewportWidth >= THREE_PANE_BREAKPOINT || focusReading) {
+      setAdaptiveSourceOverlayOpen(false)
+      setSubscriptionMenuOpen(false)
+    }
+  }, [focusReading, viewportWidth])
+
+  useEffect(() => {
+    if (!adaptiveSourceOverlayOpen || settings?.sourcePaneCollapsed) return
+    window.requestAnimationFrame(() => adaptiveSourceOverlayCloseRef.current?.focus())
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        setAdaptiveSourceOverlayOpen(false)
+        setSubscriptionMenuOpen(false)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [adaptiveSourceOverlayOpen, settings?.sourcePaneCollapsed])
 
   useEffect(() => {
     const closeContextMenu = (): void => setContextMenu(null)
@@ -579,6 +611,8 @@ export default function App(): React.JSX.Element {
    * 退出后自然恢复进入 Focus 前的 Source / Article 手动组合。
    */
   const toggleFocusReading = useCallback((): void => {
+    setAdaptiveSourceOverlayOpen(false)
+    setSubscriptionMenuOpen(false)
     setFocusReading((current) => !current)
   }, [])
 
@@ -652,6 +686,8 @@ export default function App(): React.JSX.Element {
     setSyncRuntimeState(nextSync)
     // 配置恢复后的持久化 Pane 状态应立即可见；临时 Focus 不应遮住恢复结果。
     setFocusReading(false)
+    setAdaptiveSourceOverlayOpen(false)
+    setSubscriptionMenuOpen(false)
     const language = nextSettings.language === 'system' ? resolveDesktopLanguage(appInfo?.locale ?? navigator.language) : nextSettings.language
     await i18n.changeLanguage(language)
     await reloadLibrary()
@@ -697,10 +733,24 @@ export default function App(): React.JSX.Element {
   /** Source Pane 的手动折叠状态持久化；从 Focus restore 时先退出 Focus。 */
   const toggleSourcePane = (): void => {
     const manuallyCollapsed = settings?.sourcePaneCollapsed ?? false
-    const effectivelyCollapsed = focusReading || manuallyCollapsed
-    if (effectivelyCollapsed) {
+    const adaptiveHidden = viewportWidth < THREE_PANE_BREAKPOINT
+    if (focusReading) {
       setFocusReading(false)
+      if (manuallyCollapsed) {
+        void updateDesktopSettings({ sourcePaneCollapsed: false })
+      } else if (adaptiveHidden) {
+        setAdaptiveSourceOverlayOpen(true)
+      }
+      return
+    }
+    if (adaptiveHidden) {
+      // 窄窗口 rail 负责临时打开 Source overlay；若此前是手动折叠，先恢复持久化状态。
       if (manuallyCollapsed) void updateDesktopSettings({ sourcePaneCollapsed: false })
+      setAdaptiveSourceOverlayOpen(true)
+      return
+    }
+    if (manuallyCollapsed) {
+      void updateDesktopSettings({ sourcePaneCollapsed: false })
       return
     }
     void updateDesktopSettings({ sourcePaneCollapsed: true })
@@ -1326,12 +1376,16 @@ export default function App(): React.JSX.Element {
   const readerColors = resolveReaderColors(readerBackground)
   const sourcePaneCollapsed = settings?.sourcePaneCollapsed ?? false
   const articlePaneCollapsed = settings?.articlePaneCollapsed ?? false
-  const effectiveSourcePaneCollapsed = focusReading || sourcePaneCollapsed
+  const persistedArticlePaneWidth = settings?.articlePaneWidth ?? 380
+  const responsiveLayout = resolveResponsivePaneLayout(viewportWidth, persistedArticlePaneWidth)
+  const { adaptiveSourceHidden, compactLayout, articlePaneWidth: effectiveArticlePaneWidth } = responsiveLayout
+  const effectiveSourcePaneCollapsed = focusReading || sourcePaneCollapsed || adaptiveSourceHidden
   const effectiveArticlePaneCollapsed = focusReading || articlePaneCollapsed
   const readerStyle = {
     '--source-pane-track': effectiveSourcePaneCollapsed ? '0px' : `${settings?.sourcePaneWidth ?? 260}px`,
     '--source-divider-track': effectiveSourcePaneCollapsed ? '30px' : '5px',
-    '--article-pane-track': effectiveArticlePaneCollapsed ? '0px' : `${settings?.articlePaneWidth ?? 380}px`,
+    '--source-pane-overlay-width': `${settings?.sourcePaneWidth ?? 260}px`,
+    '--article-pane-track': effectiveArticlePaneCollapsed ? '0px' : `${effectiveArticlePaneWidth}px`,
     '--article-divider-track': effectiveArticlePaneCollapsed ? '30px' : '5px',
     '--reader-font-size': `${settings?.readerFontSize ?? 17}px`,
     '--reader-line-height': String(settings?.readerLineHeight ?? 1.85),
@@ -1346,6 +1400,51 @@ export default function App(): React.JSX.Element {
     '--reader-link-color': readerColors.link,
     '--ai-summary-panel-size': `${settings?.aiSummaryPanelSize ?? 360}px`
   } as CSSProperties
+
+  const renderSourceSidebar = (overlay = false): React.JSX.Element => {
+    const closeOverlay = (): void => {
+      if (overlay) {
+        setAdaptiveSourceOverlayOpen(false)
+        setSubscriptionMenuOpen(false)
+      }
+    }
+    return (
+      <SourceSidebar
+        destination={destination}
+        articleScope={articleScope}
+        sourceQuery={sourceQuery}
+        visibleFeedCount={visibleFeeds.length}
+        groupedFeeds={groupedVisibleFeeds}
+        feedStatsById={feedStatsById}
+        allArticleCount={librarySnapshot?.articles ?? articles.length}
+        allUnreadCount={librarySnapshot?.unread ?? articles.filter((article) => article.isUnread).length}
+        scopedArticleCount={articleScope.kind === 'all' ? (librarySnapshot?.articles ?? scopedArticles.length) : scopedArticles.length}
+        scopedUnreadCount={scopedUnreadCount}
+        scopedStarredCount={scopedStarredCount}
+        refreshingFeedId={refreshingFeedId}
+        isRefreshingAll={isRefreshingAll}
+        subscriptionMenuOpen={subscriptionMenuOpen}
+        opmlBusy={opmlBusy}
+        opmlStatus={opmlStatus}
+        sourceError={sourceError}
+        showNotices={!addSourceOpen}
+        onDestinationChange={(id) => { setArticleQuery(''); setDestination(id); closeOverlay() }}
+        onSourceQueryChange={setSourceQuery}
+        onSelectAll={() => { setArticleScope({ kind: 'all' }); setArticleQuery(''); closeOverlay() }}
+        onSelectGroup={(group) => { setArticleScope({ kind: 'group', id: group.id }); setArticleQuery(''); closeOverlay() }}
+        onSelectFeed={(feed) => { selectFeedScope(feed); closeOverlay() }}
+        onRefreshFeed={(feed) => void refreshFeed(feed)}
+        onOpenFeedSettings={(feed) => { closeOverlay(); setSourceSettingsFeed(feed) }}
+        onFeedContextMenu={(feed, x, y) => setContextMenu({ kind: 'feed', x, y, feedId: feed.id })}
+        onShowSourceCatalog={() => { closeOverlay(); void showSourceCatalog() }}
+        onToggleSubscriptionMenu={() => setSubscriptionMenuOpen((open) => !open)}
+        onCloseSubscriptionMenu={() => setSubscriptionMenuOpen(false)}
+        onAddSource={() => { closeOverlay(); openAddSource() }}
+        onImportOpml={() => void importOpml()}
+        onOpenOpmlExport={() => { closeOverlay(); setSubscriptionMenuOpen(false); setOpmlExportOpen(true) }}
+      />
+    )
+  }
 
   const renderAiSummaryPanel = (replaceMode = false): React.JSX.Element | null => aiSummary || aiLoading ? (
     <AiSummaryPanel
@@ -1369,43 +1468,12 @@ export default function App(): React.JSX.Element {
   ) : null
 
   return (
-    <main className={`app-shell ${focusReading ? 'focus-reading' : ''}`} style={readerStyle}>
-      {!effectiveSourcePaneCollapsed && (
-          <SourceSidebar
-            destination={destination}
-            articleScope={articleScope}
-            sourceQuery={sourceQuery}
-            visibleFeedCount={visibleFeeds.length}
-            groupedFeeds={groupedVisibleFeeds}
-            feedStatsById={feedStatsById}
-            allArticleCount={librarySnapshot?.articles ?? articles.length}
-            allUnreadCount={librarySnapshot?.unread ?? articles.filter((article) => article.isUnread).length}
-            scopedArticleCount={articleScope.kind === 'all' ? (librarySnapshot?.articles ?? scopedArticles.length) : scopedArticles.length}
-            scopedUnreadCount={scopedUnreadCount}
-            scopedStarredCount={scopedStarredCount}
-            refreshingFeedId={refreshingFeedId}
-            isRefreshingAll={isRefreshingAll}
-            subscriptionMenuOpen={subscriptionMenuOpen}
-            opmlBusy={opmlBusy}
-            opmlStatus={opmlStatus}
-            sourceError={sourceError}
-            showNotices={!addSourceOpen}
-            onDestinationChange={(id) => { setArticleQuery(''); setDestination(id) }}
-            onSourceQueryChange={setSourceQuery}
-            onSelectAll={() => { setArticleScope({ kind: 'all' }); setArticleQuery('') }}
-            onSelectGroup={(group) => { setArticleScope({ kind: 'group', id: group.id }); setArticleQuery('') }}
-            onSelectFeed={selectFeedScope}
-            onRefreshFeed={(feed) => void refreshFeed(feed)}
-            onOpenFeedSettings={setSourceSettingsFeed}
-            onFeedContextMenu={(feed, x, y) => setContextMenu({ kind: 'feed', x, y, feedId: feed.id })}
-            onShowSourceCatalog={() => void showSourceCatalog()}
-            onToggleSubscriptionMenu={() => setSubscriptionMenuOpen((open) => !open)}
-            onCloseSubscriptionMenu={() => setSubscriptionMenuOpen(false)}
-            onAddSource={openAddSource}
-            onImportOpml={() => void importOpml()}
-            onOpenOpmlExport={() => { setSubscriptionMenuOpen(false); setOpmlExportOpen(true) }}
-          />
-      )}
+    <main
+      className={`app-shell ${focusReading ? 'focus-reading' : ''} ${adaptiveSourceHidden ? 'adaptive-source-hidden' : ''} ${compactLayout ? 'compact-layout' : ''}`}
+      style={readerStyle}
+      data-viewport-width={viewportWidth}
+    >
+      {!effectiveSourcePaneCollapsed && renderSourceSidebar()}
 
       <PaneDivider
         kind="source"
@@ -1459,7 +1527,7 @@ export default function App(): React.JSX.Element {
         width={settings?.articlePaneWidth ?? 380}
         minWidth={ARTICLE_PANE_WIDTH_MIN}
         maxWidth={ARTICLE_PANE_WIDTH_MAX}
-        resizable={!effectiveArticlePaneCollapsed}
+        resizable={!effectiveArticlePaneCollapsed && !compactLayout}
         collapsed={effectiveArticlePaneCollapsed}
         onResize={previewArticlePaneWidth}
         onResizeEnd={(width) => void updateDesktopSettings({ articlePaneWidth: width })}
@@ -2071,6 +2139,33 @@ export default function App(): React.JSX.Element {
             await translateSelectedArticle(true,target)
           }}
         />
+      )}
+      {adaptiveSourceHidden && adaptiveSourceOverlayOpen && !focusReading && !sourcePaneCollapsed && (
+        <div
+          className="adaptive-source-overlay-backdrop"
+          role="presentation"
+          onPointerDown={() => { setAdaptiveSourceOverlayOpen(false); setSubscriptionMenuOpen(false) }}
+        >
+          <aside
+            className="adaptive-source-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('allSources')}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <button
+              ref={adaptiveSourceOverlayCloseRef}
+              type="button"
+              className="icon-button adaptive-source-overlay-close"
+              aria-label={t('close')}
+              title={t('close')}
+              onClick={() => { setAdaptiveSourceOverlayOpen(false); setSubscriptionMenuOpen(false) }}
+            >
+              <X size={17} />
+            </button>
+            {renderSourceSidebar(true)}
+          </aside>
+        </div>
       )}
     </main>
   )

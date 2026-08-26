@@ -288,6 +288,39 @@ test('add-source dialog discovers, ranks, subscribes and refreshes through the u
     await expect(page.locator('.article-pane')).toBeVisible()
     await expect.poll(originalViewMatchesReaderStage).toBe(true)
 
+    // UI-3P.8：adaptive hidden / compact resize 也必须驱动原文 child WebContentsView 实时跟随 Reader stage。
+    await electronApp.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1100, 760)
+    })
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(1100)
+    await expect(page.locator('.source-pane')).toHaveCount(0)
+    await expect(page.locator('.article-pane')).toBeVisible()
+    await expect.poll(originalViewMatchesReaderStage).toBe(true)
+    await expect.poll(async () => page.evaluate(async () => {
+      const current = await window.origread.getSettings()
+      return [current.sourcePaneCollapsed, current.articlePaneCollapsed]
+    })).toEqual([false, false])
+
+    await electronApp.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]
+      window?.setMinimumSize(800, 640)
+      window?.setContentSize(900, 760)
+    })
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(900)
+    await expect(page.locator('.app-shell')).toHaveClass(/compact-layout/)
+    await expect.poll(originalViewMatchesReaderStage).toBe(true)
+    await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
+
+    await electronApp.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]
+      window?.setMinimumSize(960, 640)
+      window?.setContentSize(1440, 900)
+    })
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(1440)
+    await expect(page.locator('.source-pane')).toBeVisible()
+    await expect(page.locator('.article-pane')).toBeVisible()
+    await expect.poll(originalViewMatchesReaderStage).toBe(true)
+
     await expect(page.locator('.reader-mode-button')).toBeVisible()
     await page.locator('.reader-mode-button').click()
     await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(false)

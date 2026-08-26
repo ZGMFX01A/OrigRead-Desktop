@@ -68,11 +68,11 @@ test('source and article dividers resize independently and persist only after dr
       return [settings.sourcePaneWidth, settings.articlePaneWidth]
     })).toEqual([220, 480])
 
-    // UI-3P.6 只保证窗口缩放后已持久化宽度仍合法且布局不重叠；自动隐藏留给 UI-3P.8。
+    // UI-3P.8 起 1200 以下会进入 adaptive hidden；本测试只保留宽屏 resize 的 Divider/持久化职责。
     await testApp.app.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows()[0]?.setContentSize(1120, 760)
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1280, 760)
     })
-    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(1120)
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(1280)
     const sourceAfterWindowResize = await requiredBox(sourcePane)
     const sourceDividerAfterWindowResize = await requiredBox(sourceDivider)
     const articleAfterWindowResize = await requiredBox(articlePane)
@@ -84,7 +84,7 @@ test('source and article dividers resize independently and persist only after dr
     expect(articleAfterWindowResize.x).toBeGreaterThanOrEqual(sourceDividerAfterWindowResize.x + sourceDividerAfterWindowResize.width)
     expect(articleDividerAfterWindowResize.x).toBeGreaterThanOrEqual(articleAfterWindowResize.x + articleAfterWindowResize.width)
     expect(readerAfterWindowResize.x).toBeGreaterThanOrEqual(articleDividerAfterWindowResize.x + articleDividerAfterWindowResize.width)
-    expect(readerAfterWindowResize.width).toBeGreaterThan(350)
+    expect(readerAfterWindowResize.width).toBeGreaterThan(550)
   } finally {
     await testApp.close()
   }

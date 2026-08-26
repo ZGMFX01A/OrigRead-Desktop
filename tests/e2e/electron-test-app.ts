@@ -8,7 +8,10 @@ export interface IsolatedElectronApp {
 }
 
 /** 每个 E2E 使用独立 userData，避免测试订阅/设置污染开发机数据库。 */
-export async function launchIsolatedOrigRead(envOverrides: Record<string, string> = {}): Promise<IsolatedElectronApp> {
+export async function launchIsolatedOrigRead(
+  envOverrides: Record<string, string> = {},
+  extraArgs: string[] = []
+): Promise<IsolatedElectronApp> {
   const root = join(process.cwd(), 'test-results')
   await mkdir(root, { recursive: true })
   const userDataDir = await mkdtemp(join(root, 'user-data-'))
@@ -25,7 +28,8 @@ export async function launchIsolatedOrigRead(envOverrides: Record<string, string
       '--disable-software-rasterizer',
       '--no-sandbox',
       '--disable-crash-reporter',
-      '--noerrdialogs'
+      '--noerrdialogs',
+      ...extraArgs
     ],
     cwd: process.cwd(),
     env
