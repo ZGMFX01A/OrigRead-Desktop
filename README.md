@@ -207,6 +207,16 @@ Target desktop platforms:
 - macOS 13+ on Apple Silicon
 - Linux x64 via AppImage, with DEB for Ubuntu/Debian systems
 
+### macOS installation
+
+After downloading the app, move `OrigRead.app` into `/Applications`. If macOS reports that the app is damaged, cannot verify the developer, or refuses to open it because of the quarantine attribute, run:
+
+```bash
+sudo xattr -r -d com.apple.quarantine /Applications/OrigRead.app
+```
+
+Then open OrigRead again. The terminal does not display characters while you enter the `sudo` password; this is normal.
+
 ## Build from source
 
 Requirements: Node.js 24+ and npm 11+.

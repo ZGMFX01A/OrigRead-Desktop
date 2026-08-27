@@ -207,6 +207,16 @@ GitHub 版本可以检查 OrigRead Desktop Releases，并根据当前系统选�
 - macOS 13+（Apple Silicon）
 - Linux x64（AppImage；Ubuntu/Debian 可使用 DEB）
 
+### macOS 安装说明
+
+下载安装包后，将 `OrigRead.app` 拖入 `/Applications`。如果 macOS 提示应用“已损坏”、无法验证开发者，或由于隔离属性而拒绝打开，可以在终端执行：
+
+```bash
+sudo xattr -r -d com.apple.quarantine /Applications/OrigRead.app
+```
+
+执行后重新打开 OrigRead 即可。输入 `sudo` 密码时终端不会显示字符，这是正常现象。
+
 ## 从源码构建
 
 环境要求：Node.js 24+、npm 11+。
