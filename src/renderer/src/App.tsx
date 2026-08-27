@@ -88,6 +88,7 @@ const aiSummaryPlacementOrder: AiSummaryPlacement[] = ['replace', 'left', 'right
 const AI_SUMMARY_PANEL_MIN = 220
 const AI_SUMMARY_PANEL_MAX = 640
 const AI_SUMMARY_PANEL_KEYBOARD_STEP = 20
+const RECENT_SOURCE_SCOPE_LIMIT = 5
 
 export default function App(): React.JSX.Element {
   const { t, i18n } = useTranslation()
@@ -95,7 +96,7 @@ export default function App(): React.JSX.Element {
   const [focusReading, setFocusReading] = useState(false)
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const [adaptiveSourceOverlayOpen, setAdaptiveSourceOverlayOpen] = useState(false)
-  // Source Switcher 只属于当前会话；SS-1 先拆出独立状态，旧 Overlay 仍作为过渡 UI 使用。
+  // Source Switcher 只属于当前会话，不持久化打开状态。
   const [sourceSwitcherOpen, setSourceSwitcherOpen] = useState(false)
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [librarySnapshot, setLibrarySnapshot] = useState<LibrarySnapshot | null>(null)
@@ -110,7 +111,7 @@ export default function App(): React.JSX.Element {
   const [sourceQuery, setSourceQuery] = useState('')
   // 双栏 Source Switcher 搜索完全独立，关闭 Switcher 时只清理自身查询。
   const [sourceSwitcherQuery, setSourceSwitcherQuery] = useState('')
-  // V1 Recent 仅保留会话级 key；SS-3 再接入展示和排序逻辑。
+  // Recent 只保留会话级 Group / Feed Scope，账户切换时主动清空，避免跨账户引用失效 ID。
   const [recentSourceScopeKeys, setRecentSourceScopeKeys] = useState<string[]>([])
   // 分组折叠属于会话级 UI 状态，提升到 App 后即使整个 Source Pane 临时折叠/卸载也不会丢失。
   const [collapsedSourceGroupIds, setCollapsedSourceGroupIds] = useState<Set<string>>(() => new Set())
@@ -202,6 +203,20 @@ export default function App(): React.JSX.Element {
   const toggleTwoPaneSourcePicker = useCallback((): void => {
     setSourceSwitcherQuery('')
     setSourceSwitcherOpen((open) => !open)
+  }, [])
+
+  /**
+   * 记录最近访问的 Group / Feed Scope。
+   *
+   * All 始终固定在切换器顶部，不进入 Recent；相同 Scope 去重并前置，最多保留 5 个。
+   */
+  const rememberSourceScope = useCallback((scope: ArticleScope): void => {
+    if (scope.kind === 'all') return
+    const key = `${scope.kind}:${scope.id}`
+    setRecentSourceScopeKeys((current) => [
+      key,
+      ...current.filter((item) => item !== key)
+    ].slice(0, RECENT_SOURCE_SCOPE_LIMIT))
   }, [])
 
   const reloadLibrary = useCallback(async (): Promise<void> => {
@@ -807,6 +822,10 @@ export default function App(): React.JSX.Element {
   const handleAccountChanged = async (): Promise<void> => {
     closeTwoPaneSourcePicker(false)
     setRecentSourceScopeKeys([])
+    // Feed / Group ID 只在当前账户内有效；切换账户必须回到 All，避免旧 Scope 继续引用上一账户数据。
+    setArticleScope({ kind: 'all' })
+    setScopeArticles(null)
+    setArticleQuery('')
     setSelectedArticleId(null)
     setReaderContent(null)
     setAiSummary(null)
@@ -1214,7 +1233,29 @@ export default function App(): React.JSX.Element {
         window.setTimeout(() => readerSearchInputRef.current?.focus(), 0)
         return
       }
-      if ((event.ctrlKey || event.metaKey) && key === 'k' && !settingsOpen && !sourceCatalogOpen && !subscriptionMenuOpen && !document.querySelector('[role="dialog"]')) {
+      if (
+        (event.ctrlKey || event.metaKey)
+        && event.shiftKey
+        && key === 'k'
+        && settings?.layoutMode === 'two-pane'
+        && !settings.workspaceCollapsed
+        && !focusReading
+        && !settingsOpen
+        && !sourceCatalogOpen
+        && !subscriptionMenuOpen
+        && !document.querySelector('[role="dialog"]')
+      ) {
+        event.preventDefault()
+        if (sourceSwitcherOpen) {
+          twoPaneSourcePickerSearchInputRef.current?.focus()
+          twoPaneSourcePickerSearchInputRef.current?.select()
+        } else {
+          setSourceSwitcherQuery('')
+          setSourceSwitcherOpen(true)
+        }
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'k' && !settingsOpen && !sourceCatalogOpen && !subscriptionMenuOpen && !document.querySelector('[role="dialog"]')) {
         const targetSearchInput = sourceSwitcherOpen
           ? twoPaneSourcePickerSearchInputRef.current
           : articleSearchInputRef.current
@@ -1301,7 +1342,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settingsOpen, sourceCatalogOpen, sourceSwitcherOpen, subscriptionMenuOpen, toggleFocusReading, visibleArticles])
+  }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, focusReading, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settings?.layoutMode, settings?.workspaceCollapsed, settingsOpen, sourceCatalogOpen, sourceSwitcherOpen, subscriptionMenuOpen, toggleFocusReading, visibleArticles])
 
   const openAddSource = (): void => {
     closeTwoPaneSourcePicker(false)
@@ -1482,10 +1523,19 @@ export default function App(): React.JSX.Element {
     }
   }
 
+  /** Group Scope 与 Feed Scope 共用 Recent 记录规则，确保三栏和双栏进入同一 Recent 列表。 */
+  const selectGroupScope = (group: GroupRecord): void => {
+    const scope: ArticleScope = { kind: 'group', id: group.id }
+    setArticleScope(scope)
+    setArticleQuery('')
+    rememberSourceScope(scope)
+  }
+
   const selectFeedScope = (feed: FeedRecord): void => {
     const scope: ArticleScope = { kind: 'feed', id: feed.id }
     setArticleScope(scope)
     setArticleQuery('')
+    rememberSourceScope(scope)
     if (isOrigReadDesktopReleaseFeed(feed.url) && feedStats(feed.id).total === 0) {
       void refreshFeed(feed, scope, 'article')
     }
@@ -1635,7 +1685,7 @@ export default function App(): React.JSX.Element {
         searchInputRef={sourcePicker ? twoPaneSourcePickerSearchInputRef : undefined}
         onSourceQueryChange={onSourceQueryChange}
         onSelectAll={() => { setArticleScope({ kind: 'all' }); setArticleQuery(''); closeSourceView() }}
-        onSelectGroup={(group) => { setArticleScope({ kind: 'group', id: group.id }); setArticleQuery(''); closeSourceView() }}
+        onSelectGroup={(group) => { selectGroupScope(group); closeSourceView() }}
         onToggleGroupCollapsed={(groupId) => setCollapsedSourceGroupIds((current) => {
           const next = new Set(current)
           if (next.has(groupId)) next.delete(groupId)
@@ -1730,6 +1780,7 @@ export default function App(): React.JSX.Element {
               feeds={feeds}
               feedStatsById={feedStatsById}
               articleScope={articleScope}
+              recentScopeKeys={recentSourceScopeKeys}
               allArticleCount={librarySnapshot?.articles ?? articles.length}
               allUnreadCount={librarySnapshot?.unread ?? articles.filter((article) => article.isUnread).length}
               onQueryChange={setSourceSwitcherQuery}
@@ -1739,8 +1790,7 @@ export default function App(): React.JSX.Element {
                 closeTwoPaneSourcePicker(true)
               }}
               onSelectGroup={(group) => {
-                setArticleScope({ kind: 'group', id: group.id })
-                setArticleQuery('')
+                selectGroupScope(group)
                 closeTwoPaneSourcePicker(true)
               }}
               onSelectFeed={(feed) => {

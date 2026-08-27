@@ -1,6 +1,7 @@
 import { Check, Folder, Inbox, Search } from 'lucide-react'
 import {
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -19,6 +20,7 @@ interface SourceSwitcherPopoverProps {
   feeds: FeedRecord[]
   feedStatsById: ReadonlyMap<string, FeedArticleStats>
   articleScope: ArticleScope
+  recentScopeKeys: string[]
   allArticleCount: number
   allUnreadCount: number
   onQueryChange: (value: string) => void
@@ -42,6 +44,10 @@ const POPOVER_MAX_WIDTH = 360
 const POPOVER_MIN_WIDTH = 280
 const POPOVER_MAX_HEIGHT = 480
 
+type RecentSourceScope =
+  | { key: string; kind: 'group'; group: GroupRecord }
+  | { key: string; kind: 'feed'; feed: FeedRecord }
+
 /**
  * 双栏模式的轻量来源切换器。
  *
@@ -55,6 +61,7 @@ export function SourceSwitcherPopover({
   feeds,
   feedStatsById,
   articleScope,
+  recentScopeKeys,
   allArticleCount,
   allUnreadCount,
   onQueryChange,
@@ -65,6 +72,8 @@ export function SourceSwitcherPopover({
 }: SourceSwitcherPopoverProps): React.JSX.Element {
   const { t } = useTranslation()
   const popoverRef = useRef<HTMLElement>(null)
+  const listboxId = `source-switcher-listbox-${useId().replace(/:/g, '')}`
+  const [activeOptionId, setActiveOptionId] = useState<string | null>(null)
   const [geometry, setGeometry] = useState<PopoverGeometry>({
     left: POPOVER_SAFE_EDGE,
     top: POPOVER_SAFE_EDGE,
@@ -102,11 +111,51 @@ export function SourceSwitcherPopover({
   )
   const hasResults = matchingGroups.entries.length > 0 || matchingGroups.ungrouped.length > 0
   const allScopeMatches = !normalizedQuery || t('allSources').toLocaleLowerCase().includes(normalizedQuery)
+  const recentScopes = useMemo<RecentSourceScope[]>(() => {
+    if (normalizedQuery) return []
+    const groupsById = new Map(groups.map((group) => [group.id, group]))
+    const feedsById = new Map(feeds.map((feed) => [feed.id, feed]))
+    return recentScopeKeys.reduce<RecentSourceScope[]>((result, key) => {
+      const separator = key.indexOf(':')
+      if (separator <= 0) return result
+      const kind = key.slice(0, separator)
+      const id = key.slice(separator + 1)
+      if (kind === 'group') {
+        const group = groupsById.get(id)
+        if (group) result.push({ key, kind: 'group', group })
+        return result
+      }
+      if (kind === 'feed') {
+        const feed = feedsById.get(id)
+        if (feed) result.push({ key, kind: 'feed', feed })
+        return result
+      }
+      return result
+    }, [])
+  }, [feeds, groups, normalizedQuery, recentScopeKeys])
 
   /** 每次 Popover 挂载都立即把键盘焦点交给 Search，避免外层 rAF 与 Trigger 点击焦点竞争。 */
   useLayoutEffect(() => {
     searchInputRef.current?.focus()
   }, [searchInputRef])
+
+  /**
+   * Search 保持真实 DOM 焦点，方向键只移动 aria-activedescendant。
+   * 查询导致当前 active option 消失时，优先回到当前选中 Scope，否则落到第一个可见项。
+   */
+  useLayoutEffect(() => {
+    const popover = popoverRef.current
+    if (!popover) return
+    const options = Array.from(popover.querySelectorAll<HTMLElement>('[role="option"]'))
+    if (options.length === 0) {
+      setActiveOptionId(null)
+      return
+    }
+    if (activeOptionId && options.some((option) => option.id === activeOptionId)) return
+    const selected = options.find((option) => option.getAttribute('aria-selected') === 'true')
+    const fallback = selected ?? options[0]
+    if (fallback) setActiveOptionId(fallback.id)
+  }, [activeOptionId, allScopeMatches, articleScope, matchingGroups, recentScopes])
 
   /** Popover 相对 Workspace 内容区定位，窗口 / Workspace resize 时实时重算。 */
   useLayoutEffect(() => {
@@ -182,12 +231,39 @@ export function SourceSwitcherPopover({
   const statsFor = (feedId: string): FeedArticleStats =>
     feedStatsById.get(feedId) ?? { feedId, total: 0, unread: 0, starred: 0 }
 
+  const optionId = (kind: string, id: string): string =>
+    `source-switcher-option-${kind}-${id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+
+  /** Combobox 键盘导航不会把焦点移出 Search，Enter 复用现有 click 选择链。 */
+  const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Enter') return
+    const options = Array.from(popoverRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])
+    if (options.length === 0) return
+    if (event.key === 'Enter') {
+      const active = options.find((option) => option.id === activeOptionId)
+      if (!active) return
+      event.preventDefault()
+      active.click()
+      return
+    }
+
+    event.preventDefault()
+    const direction = event.key === 'ArrowDown' ? 1 : -1
+    const currentIndex = options.findIndex((option) => option.id === activeOptionId)
+    const nextIndex = currentIndex < 0
+      ? (direction > 0 ? 0 : options.length - 1)
+      : (currentIndex + direction + options.length) % options.length
+    const next = options[nextIndex]
+    if (!next) return
+    setActiveOptionId(next.id)
+    next.scrollIntoView({ block: 'nearest' })
+  }
+
   return (
     <section
       ref={popoverRef}
       className="source-switcher-popover"
-      role="dialog"
-      aria-modal="false"
+      role="region"
       aria-label={t('chooseSourceScope')}
       data-placement={geometry.placement}
       style={{
@@ -202,19 +278,92 @@ export function SourceSwitcherPopover({
         <input
           ref={searchInputRef}
           value={query}
-          onChange={(event) => onQueryChange(event.target.value)}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded="true"
+          aria-controls={listboxId}
+          aria-activedescendant={activeOptionId ?? undefined}
+          onChange={(event) => {
+            setActiveOptionId(null)
+            onQueryChange(event.target.value)
+          }}
+          onKeyDown={handleSearchKeyDown}
           aria-label={t('searchSources')}
           placeholder={t('searchSources')}
         />
         <span>{t('sourceCount', { count: visibleFeedCount })}</span>
       </div>
 
-      <div className="source-switcher-list">
+      <div id={listboxId} className="source-switcher-list" role="listbox" aria-label={t('chooseSourceScope')}>
+        {recentScopes.length > 0 && (
+          <section className="source-switcher-group source-switcher-recent" role="group" aria-label={t('recentSources')}>
+            <div className="source-switcher-group-label">{t('recentSources')}</div>
+            {recentScopes.map((recent) => {
+              if (recent.kind === 'group') {
+                const groupFeeds = feeds.filter((feed) => feed.groupId === recent.group.id)
+                const unread = groupFeeds.reduce((sum, feed) => sum + statsFor(feed.id).unread, 0)
+                const selected = articleScope.kind === 'group' && articleScope.id === recent.group.id
+                const id = optionId('recent-group', recent.group.id)
+                return (
+                  <button
+                    type="button"
+                    id={id}
+                    role="option"
+                    tabIndex={-1}
+                    aria-selected={selected}
+                    className={`source-switcher-option source-switcher-group-option source-switcher-recent-option ${selected ? 'selected' : ''} ${activeOptionId === id ? 'keyboard-active' : ''}`}
+                    key={recent.key}
+                    onMouseEnter={() => setActiveOptionId(id)}
+                    onClick={() => onSelectGroup(recent.group)}
+                  >
+                    <span className="source-switcher-icon"><Folder size={15}/></span>
+                    <span className="source-switcher-copy">
+                      <strong>{recent.group.name}</strong>
+                      <small>{t('sourceCount', { count: groupFeeds.length })}</small>
+                    </span>
+                    <span className="source-switcher-meta">{t('unreadCountShort', { count: unread })}</span>
+                    {selected && <Check className="source-switcher-check" size={14}/>}
+                  </button>
+                )
+              }
+
+              const stats = statsFor(recent.feed.id)
+              const selected = articleScope.kind === 'feed' && articleScope.id === recent.feed.id
+              const id = optionId('recent-feed', recent.feed.id)
+              return (
+                <button
+                  type="button"
+                  id={id}
+                  role="option"
+                  tabIndex={-1}
+                  aria-selected={selected}
+                  className={`source-switcher-option source-switcher-feed-option source-switcher-recent-option ${selected ? 'selected' : ''} ${activeOptionId === id ? 'keyboard-active' : ''}`}
+                  key={recent.key}
+                  onMouseEnter={() => setActiveOptionId(id)}
+                  onClick={() => onSelectFeed(recent.feed)}
+                >
+                  <FeedIcon feed={recent.feed}/>
+                  <span className="source-switcher-copy">
+                    <strong>{recent.feed.name}</strong>
+                    <small>{feedHost(recent.feed.url)}</small>
+                  </span>
+                  <span className="source-switcher-meta">{t('unreadCountShort', { count: stats.unread })}</span>
+                  {selected && <Check className="source-switcher-check" size={14}/>}
+                </button>
+              )
+            })}
+          </section>
+        )}
+
         {allScopeMatches && (
           <button
             type="button"
-            className={`source-switcher-option source-switcher-all ${articleScope.kind === 'all' ? 'selected' : ''}`}
-            aria-current={articleScope.kind === 'all' ? 'true' : undefined}
+            id={optionId('all', 'all')}
+            role="option"
+            tabIndex={-1}
+            aria-selected={articleScope.kind === 'all'}
+            className={`source-switcher-option source-switcher-all ${articleScope.kind === 'all' ? 'selected' : ''} ${activeOptionId === optionId('all', 'all') ? 'keyboard-active' : ''}`}
+            onMouseEnter={() => setActiveOptionId(optionId('all', 'all'))}
             onClick={onSelectAll}
           >
             <span className="source-switcher-icon"><Inbox size={15}/></span>
@@ -231,11 +380,15 @@ export function SourceSwitcherPopover({
           const groupUnread = groupFeeds.reduce((sum, feed) => sum + statsFor(feed.id).unread, 0)
           const groupSelected = articleScope.kind === 'group' && articleScope.id === group.id
           return (
-            <section className="source-switcher-group" key={group.id}>
+            <section className="source-switcher-group" key={group.id} role="group" aria-label={group.name}>
               <button
                 type="button"
-                className={`source-switcher-option source-switcher-group-option ${groupSelected ? 'selected' : ''}`}
-                aria-current={groupSelected ? 'true' : undefined}
+                id={optionId('group', group.id)}
+                role="option"
+                tabIndex={-1}
+                aria-selected={groupSelected}
+                className={`source-switcher-option source-switcher-group-option ${groupSelected ? 'selected' : ''} ${activeOptionId === optionId('group', group.id) ? 'keyboard-active' : ''}`}
+                onMouseEnter={() => setActiveOptionId(optionId('group', group.id))}
                 onClick={() => onSelectGroup(group)}
               >
                 <span className="source-switcher-icon"><Folder size={15}/></span>
@@ -253,9 +406,13 @@ export function SourceSwitcherPopover({
                 return (
                   <button
                     type="button"
-                    className={`source-switcher-option source-switcher-feed-option ${selected ? 'selected' : ''}`}
-                    aria-current={selected ? 'true' : undefined}
+                    id={optionId('feed', feed.id)}
+                    role="option"
+                    tabIndex={-1}
+                    aria-selected={selected}
+                    className={`source-switcher-option source-switcher-feed-option ${selected ? 'selected' : ''} ${activeOptionId === optionId('feed', feed.id) ? 'keyboard-active' : ''}`}
                     key={feed.id}
+                    onMouseEnter={() => setActiveOptionId(optionId('feed', feed.id))}
                     onClick={() => onSelectFeed(feed)}
                   >
                     <FeedIcon feed={feed}/>
@@ -273,7 +430,7 @@ export function SourceSwitcherPopover({
         })}
 
         {matchingGroups.ungrouped.length > 0 && (
-          <section className="source-switcher-group">
+          <section className="source-switcher-group" role="group" aria-label={t('ungroupedSources')}>
             <div className="source-switcher-group-label">{t('ungroupedSources')}</div>
             {matchingGroups.ungrouped.map((feed) => {
               const stats = statsFor(feed.id)
@@ -281,9 +438,13 @@ export function SourceSwitcherPopover({
               return (
                 <button
                   type="button"
-                  className={`source-switcher-option source-switcher-feed-option ${selected ? 'selected' : ''}`}
-                  aria-current={selected ? 'true' : undefined}
+                  id={optionId('feed', feed.id)}
+                  role="option"
+                  tabIndex={-1}
+                  aria-selected={selected}
+                  className={`source-switcher-option source-switcher-feed-option ${selected ? 'selected' : ''} ${activeOptionId === optionId('feed', feed.id) ? 'keyboard-active' : ''}`}
                   key={feed.id}
+                  onMouseEnter={() => setActiveOptionId(optionId('feed', feed.id))}
                   onClick={() => onSelectFeed(feed)}
                 >
                   <FeedIcon feed={feed}/>

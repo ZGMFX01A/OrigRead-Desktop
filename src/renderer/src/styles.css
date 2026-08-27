@@ -375,6 +375,10 @@ button { color: inherit; }
 .source-switcher-option:hover {
   background: color-mix(in srgb, var(--surface-muted) 82%, var(--accent-soft));
 }
+.source-switcher-option.keyboard-active:not(.selected) {
+  border-color: color-mix(in srgb, var(--accent) 16%, var(--border));
+  background: color-mix(in srgb, var(--surface-muted) 72%, var(--accent-soft));
+}
 .source-switcher-option.selected {
   border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
   background: var(--accent-soft);
@@ -430,11 +434,13 @@ button { color: inherit; }
 }
 .source-switcher-check { color: var(--accent-strong); }
 .source-switcher-group + .source-switcher-group,
-.source-switcher-all + .source-switcher-group {
+.source-switcher-all + .source-switcher-group,
+.source-switcher-recent + .source-switcher-all {
   margin-top: 5px;
   padding-top: 5px;
   border-top: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
 }
+.source-switcher-recent-option { padding-left: 8px; }
 .source-switcher-feed-option { padding-left: 12px; }
 .source-switcher-group-label {
   padding: 7px 9px 4px;

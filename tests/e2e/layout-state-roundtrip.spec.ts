@@ -119,17 +119,36 @@ test('layout roundtrip preserves source scope, destination, reader selection and
     await expect.poll(async () => (await page.evaluate(() => window.origread.getSettings())).workspaceWidth).toBe(560)
 
     const sourcePicker = page.locator('.two-pane-source-picker-button')
-    await sourcePicker.click()
+    const sourceSwitcherShortcut = process.platform === 'darwin' ? 'Meta+Shift+K' : 'Control+Shift+K'
+    await page.keyboard.press(sourceSwitcherShortcut)
     const sourcePickerOverlay = page.locator('.source-switcher-popover')
     await expect(sourcePickerOverlay).toBeVisible()
-    await expect(sourcePickerOverlay.locator('.source-switcher-feed-option').filter({ hasText: fixture.feedAName })).toHaveAttribute('aria-current', 'true')
 
     const twoPaneSourceSearch = sourcePickerOverlay.locator('.source-switcher-search input')
+    const sourceSwitcherListbox = sourcePickerOverlay.locator('.source-switcher-list')
+    await expect(twoPaneSourceSearch).toBeFocused()
+    await expect(twoPaneSourceSearch).toHaveAttribute('role', 'combobox')
+    await expect(twoPaneSourceSearch).toHaveAttribute('aria-expanded', 'true')
+    await expect(twoPaneSourceSearch).toHaveAttribute('aria-controls', /^source-switcher-listbox-/)
+    await expect(sourceSwitcherListbox).toHaveAttribute('role', 'listbox')
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-source-switcher-recent-count', '2')
+    const recentOptions = sourcePickerOverlay.locator('.source-switcher-recent [role="option"]')
+    await expect(recentOptions).toHaveCount(2)
+    await expect(recentOptions.nth(0)).toContainText(fixture.feedAName)
+    await expect(recentOptions.nth(1)).toContainText(fixture.groupName)
+    await expect(recentOptions.nth(0)).toHaveAttribute('aria-selected', 'true')
+
+    // SS-3：同一快捷键在已打开状态只把焦点重新交给 Search，不会误关 Popover。
+    await page.keyboard.press(sourceSwitcherShortcut)
+    await expect(sourcePickerOverlay).toBeVisible()
+    await expect(twoPaneSourceSearch).toBeFocused()
+
     await twoPaneSourceSearch.fill(fixture.feedAName)
-    await expect(sourcePickerOverlay.locator('.source-switcher-feed-option').filter({ hasText: fixture.feedAName })).toBeVisible()
-    await expect(sourcePickerOverlay.locator('.source-switcher-feed-option').filter({ hasText: 'DL-5 Feed B' })).toHaveCount(0)
+    await expect(sourcePickerOverlay.locator('.source-switcher-feed-option:not(.source-switcher-recent-option)').filter({ hasText: fixture.feedAName })).toBeVisible()
+    await expect(sourcePickerOverlay.locator('.source-switcher-feed-option:not(.source-switcher-recent-option)').filter({ hasText: 'DL-5 Feed B' })).toHaveCount(0)
+    await expect(sourcePickerOverlay.locator('.source-switcher-recent')).toHaveCount(0)
     await twoPaneSourceSearch.fill(fixture.groupName)
-    await expect(sourcePickerOverlay.locator('.source-switcher-group-option').filter({ hasText: fixture.groupName })).toBeVisible()
+    await expect(sourcePickerOverlay.locator('.source-switcher-group-option:not(.source-switcher-recent-option)').filter({ hasText: fixture.groupName })).toBeVisible()
     await twoPaneSourceSearch.fill('no-source-should-match-this-value')
     await expect(sourcePickerOverlay.locator('.source-switcher-empty')).toBeVisible()
     await twoPaneSourceSearch.fill('')
@@ -141,18 +160,38 @@ test('layout roundtrip preserves source scope, destination, reader selection and
     expect(darkSurface.popover).not.toBe('rgb(255, 255, 255)')
     expect(darkSurface.search).not.toBe('rgb(255, 255, 255)')
 
-    // 双栏 Popover 中 Group / Feed Scope 都是正式入口；切换范围不会清掉 Reader 选中的 Article A。
-    await sourcePickerOverlay.locator('.source-switcher-group-option').filter({ hasText: fixture.groupName }).click()
+    // SS-3：Search 持焦点时只移动 aria-activedescendant；ArrowDown / ArrowUp 可往返，Enter 选择 active Group。
+    const initialActiveOption = await twoPaneSourceSearch.getAttribute('aria-activedescendant')
+    expect(initialActiveOption).toBeTruthy()
+    await page.keyboard.press('ArrowDown')
+    const nextActiveOption = await twoPaneSourceSearch.getAttribute('aria-activedescendant')
+    expect(nextActiveOption).not.toBe(initialActiveOption)
+    await page.keyboard.press('ArrowUp')
+    await expect(twoPaneSourceSearch).toHaveAttribute('aria-activedescendant', initialActiveOption!)
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Enter')
     await expect(sourcePickerOverlay).toHaveCount(0)
     await expect(page.locator('.article-scope-copy strong')).toHaveText(fixture.groupName)
     await expect(page.locator('.article-heading h1')).toContainText(fixture.articleTitle)
-    await sourcePicker.click()
-    await sourcePickerOverlay.locator('.source-switcher-feed-option').filter({ hasText: fixture.feedAName }).click()
+
+    // 最近选择的 Group 已前置；再次用快捷键打开后，方向键 + Enter 可直接切回最近 Feed。
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-source-switcher-recent-count', '2')
+    await page.keyboard.press(sourceSwitcherShortcut)
+    await expect(sourcePickerOverlay).toBeVisible()
+    await expect(sourcePickerOverlay.locator('.source-switcher-recent [role="option"]').nth(0)).toContainText(fixture.groupName)
+    await expect(sourcePickerOverlay.locator('.source-switcher-recent [role="option"]').nth(0)).toHaveAttribute('aria-selected', 'true')
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Enter')
     await expect(sourcePickerOverlay).toHaveCount(0)
     await expect(page.locator('.article-scope-copy strong')).toHaveText(fixture.feedAName)
     await expect(page.locator('.article-heading h1')).toContainText(fixture.articleTitle)
 
+    // 原 Ctrl/Cmd+K 仍只聚焦 Article Search，和新的 Source Switcher 快捷键互不覆盖。
+    const articleSearchShortcut = process.platform === 'darwin' ? 'Meta+K' : 'Control+K'
+    await page.keyboard.press(articleSearchShortcut)
+
     const twoPaneArticleSearch = page.locator('.two-pane-workspace-base .article-pane .list-toolbar .search-field input')
+    await expect(twoPaneArticleSearch).toBeFocused()
     await twoPaneArticleSearch.fill('Article 1')
     await expect(page.locator(`.article-item[data-article-id="${fixture.articleId}"]`)).toBeVisible()
     await twoPaneArticleSearch.fill('')

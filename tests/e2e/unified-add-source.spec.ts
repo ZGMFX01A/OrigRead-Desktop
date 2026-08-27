@@ -597,6 +597,10 @@ test('reader share copies Markdown and account change clears the previous reader
     await page.locator('.dialog-submit').click()
     await expect(page.locator('.source-dialog')).toBeHidden({ timeout: 10_000 })
 
+    // SS-3：任一布局选择 Feed 都进入会话级 Recent；账户切换后必须清空，不能携带旧账户 Feed ID。
+    await page.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' }).click()
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-source-switcher-recent-count', '1')
+
     const article = page.locator('.article-item').filter({ hasText: 'OrigRead E2E Article 1' }).first()
     await expect(article).toBeVisible()
     await article.click()
@@ -627,6 +631,8 @@ test('reader share copies Markdown and account change clears the previous reader
 
     await page.locator('.settings-close-button').click()
     await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'two-pane')
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-source-switcher-open', 'false')
+    await expect(page.locator('.app-shell')).toHaveAttribute('data-source-switcher-recent-count', '0')
     await expect(page.locator('.reader-empty-state')).toBeVisible()
     await expect(page.locator('.article-heading')).toHaveCount(0)
     await expect(page.locator('.article-item')).toHaveCount(0)

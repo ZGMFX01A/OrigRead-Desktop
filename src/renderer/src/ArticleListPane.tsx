@@ -87,11 +87,16 @@ export function ArticleListPane({
             ref={sourcePickerTriggerRef}
             type="button"
             className={`article-scope-current two-pane-source-picker-button ${sourcePickerOpen ? 'active' : ''}`}
-            aria-haspopup="dialog"
+            aria-haspopup="listbox"
             aria-expanded={sourcePickerOpen}
             aria-label={`${t('chooseSourceScope')}: ${scopeLabel}`}
             title={t('chooseSourceScope')}
             onClick={onChooseSourceScope}
+            onKeyDown={(event) => {
+              if (event.key !== 'ArrowDown' || sourcePickerOpen) return
+              event.preventDefault()
+              onChooseSourceScope()
+            }}
           >
             {activeScopeFeed ? <FeedIcon feed={activeScopeFeed} /> : <div className="scope-icon"><Rss size={15}/></div>}
             <div className="article-scope-copy">
