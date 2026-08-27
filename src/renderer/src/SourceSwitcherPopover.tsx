@@ -1,4 +1,4 @@
-import { Check, Folder, Inbox, Search, SlidersHorizontal } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Folder, Inbox, Search, SlidersHorizontal } from 'lucide-react'
 import {
   useEffect,
   useId,
@@ -21,11 +21,13 @@ interface SourceSwitcherPopoverProps {
   feedStatsById: ReadonlyMap<string, FeedArticleStats>
   articleScope: ArticleScope
   recentScopeKeys: string[]
+  collapsedGroupIds: ReadonlySet<string>
   allArticleCount: number
   allUnreadCount: number
   onQueryChange: (value: string) => void
   onSelectAll: () => void
   onSelectGroup: (group: GroupRecord) => void
+  onToggleGroupCollapsed: (groupId: string) => void
   onSelectFeed: (feed: FeedRecord) => void
   onManageSources: () => void
   onRequestClose: (restoreFocus: boolean) => void
@@ -63,11 +65,13 @@ export function SourceSwitcherPopover({
   feedStatsById,
   articleScope,
   recentScopeKeys,
+  collapsedGroupIds,
   allArticleCount,
   allUnreadCount,
   onQueryChange,
   onSelectAll,
   onSelectGroup,
+  onToggleGroupCollapsed,
   onSelectFeed,
   onManageSources,
   onRequestClose
@@ -157,7 +161,7 @@ export function SourceSwitcherPopover({
     const selected = options.find((option) => option.getAttribute('aria-selected') === 'true')
     const fallback = selected ?? options[0]
     if (fallback) setActiveOptionId(fallback.id)
-  }, [activeOptionId, allScopeMatches, articleScope, matchingGroups, recentScopes])
+  }, [activeOptionId, allScopeMatches, articleScope, collapsedGroupIds, matchingGroups, recentScopes])
 
   /** Popover 相对 Workspace 内容区定位，窗口 / Workspace resize 时实时重算。 */
   useLayoutEffect(() => {
@@ -216,7 +220,7 @@ export function SourceSwitcherPopover({
       resizeObserver.disconnect()
       window.removeEventListener('resize', updateGeometry)
     }
-  }, [feeds, groups, normalizedQuery, triggerRef])
+  }, [collapsedGroupIds, feeds, groups, normalizedQuery, triggerRef])
 
   /** 点击 Popover / Trigger 之外的区域只关闭切换器，不抢走用户刚点击目标的焦点。 */
   useEffect(() => {
@@ -381,28 +385,42 @@ export function SourceSwitcherPopover({
         {matchingGroups.entries.map(({ group, feeds: groupFeeds }) => {
           const groupUnread = groupFeeds.reduce((sum, feed) => sum + statsFor(feed.id).unread, 0)
           const groupSelected = articleScope.kind === 'group' && articleScope.id === group.id
+          // 搜索期间临时展开所有命中分组，避免匹配 Feed 被折叠状态隐藏；清空搜索后恢复原折叠状态。
+          const collapsed = !normalizedQuery && collapsedGroupIds.has(group.id)
           return (
             <section className="source-switcher-group" key={group.id} role="group" aria-label={group.name}>
-              <button
-                type="button"
-                id={optionId('group', group.id)}
-                role="option"
-                tabIndex={-1}
-                aria-selected={groupSelected}
-                className={`source-switcher-option source-switcher-group-option ${groupSelected ? 'selected' : ''} ${activeOptionId === optionId('group', group.id) ? 'keyboard-active' : ''}`}
-                onMouseEnter={() => setActiveOptionId(optionId('group', group.id))}
-                onClick={() => onSelectGroup(group)}
-              >
-                <span className="source-switcher-icon"><Folder size={15}/></span>
-                <span className="source-switcher-copy">
-                  <strong>{group.name}</strong>
-                  <small>{t('sourceCount', { count: groupFeeds.length })}</small>
-                </span>
-                <span className="source-switcher-meta">{t('unreadCountShort', { count: groupUnread })}</span>
-                {groupSelected && <Check className="source-switcher-check" size={14}/>}
-              </button>
+              <div className="source-switcher-group-header">
+                <button
+                  type="button"
+                  className="source-switcher-group-collapse"
+                  aria-label={t(collapsed ? 'expandSourceGroup' : 'collapseSourceGroup', { name: group.name })}
+                  aria-expanded={!collapsed}
+                  disabled={Boolean(normalizedQuery)}
+                  onClick={() => onToggleGroupCollapsed(group.id)}
+                >
+                  {collapsed ? <ChevronRight size={14}/> : <ChevronDown size={14}/>}
+                </button>
+                <button
+                  type="button"
+                  id={optionId('group', group.id)}
+                  role="option"
+                  tabIndex={-1}
+                  aria-selected={groupSelected}
+                  className={`source-switcher-option source-switcher-group-option ${groupSelected ? 'selected' : ''} ${activeOptionId === optionId('group', group.id) ? 'keyboard-active' : ''}`}
+                  onMouseEnter={() => setActiveOptionId(optionId('group', group.id))}
+                  onClick={() => onSelectGroup(group)}
+                >
+                  <span className="source-switcher-icon"><Folder size={15}/></span>
+                  <span className="source-switcher-copy">
+                    <strong>{group.name}</strong>
+                    <small>{t('sourceCount', { count: groupFeeds.length })}</small>
+                  </span>
+                  <span className="source-switcher-meta">{t('unreadCountShort', { count: groupUnread })}</span>
+                  {groupSelected && <Check className="source-switcher-check" size={14}/>}
+                </button>
+              </div>
 
-              {groupFeeds.map((feed) => {
+              {!collapsed && groupFeeds.map((feed) => {
                 const stats = statsFor(feed.id)
                 const selected = articleScope.kind === 'feed' && articleScope.id === feed.id
                 return (

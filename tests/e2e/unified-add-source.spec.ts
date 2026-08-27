@@ -487,8 +487,25 @@ test('reader selection survives source and article filter changes', async () => 
     await expect(twoPaneArticleSearch).toHaveValue('Article 1')
     await expect(sourcePicker.locator('.source-refresh-button, .source-settings-button')).toHaveCount(0)
 
-    // Switcher Search 独立匹配 Feed / host / Group，不复用三栏折叠状态。
+    // 双栏 Switcher 分组支持独立折叠；折叠状态不会改动三栏 Source Pane。
+    const matchedSwitcherGroup = sourcePicker.locator('.source-switcher-group').filter({ hasText: 'OrigRead E2E Feed' }).first()
+    const switcherGroupName = await matchedSwitcherGroup.getAttribute('aria-label')
+    if (!switcherGroupName) throw new Error('Source Switcher group did not expose an aria-label')
+    const switcherGroup = sourcePicker.getByRole('group', { name: switcherGroupName, exact: true })
+    const switcherGroupToggle = switcherGroup.locator('.source-switcher-group-collapse')
+    const switcherFeed = switcherGroup.locator('.source-switcher-feed-option').filter({ hasText: 'OrigRead E2E Feed' })
+    await expect(switcherGroupToggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(switcherFeed).toBeVisible()
+    await switcherGroupToggle.click()
+    await expect(switcherGroupToggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(switcherFeed).toHaveCount(0)
+    await sourcePicker.locator('.source-switcher-manage').focus()
+    await sourcePickerSearch.focus()
+
+    // 搜索时临时展开命中分组并禁用折叠按钮，清空搜索后恢复此前的折叠状态。
     await sourcePickerSearch.fill('OrigRead E2E Feed')
+    await expect(switcherGroupToggle).toBeDisabled()
+    await expect(switcherGroupToggle).toHaveAttribute('aria-expanded', 'true')
     await expect(sourcePicker.locator('.source-switcher-feed-option').filter({ hasText: 'OrigRead E2E Feed' })).toBeVisible()
     await expect(twoPaneArticleSearch).toHaveValue('Article 1')
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
@@ -497,6 +514,11 @@ test('reader selection survives source and article filter changes', async () => 
     await expect(sourcePicker.locator('.source-switcher-feed-option').filter({ hasText: 'OrigRead E2E Feed' })).toBeVisible()
 
     await sourcePickerSearch.fill('')
+    await expect(switcherGroupToggle).toBeEnabled()
+    await expect(switcherGroupToggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(switcherFeed).toHaveCount(0)
+    await switcherGroupToggle.click()
+    await expect(switcherGroupToggle).toHaveAttribute('aria-expanded', 'true')
     await sourcePicker.locator('.source-switcher-feed-option').filter({ hasText: 'OrigRead E2E Feed' }).click()
     await expect(sourcePicker).toHaveCount(0)
     await expect(page.locator('.article-scope-bar')).toContainText('OrigRead E2E Feed')
@@ -539,6 +561,9 @@ test('reader selection survives source and article filter changes', async () => 
     await page.locator('.settings-close-button').click()
     await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'three-pane')
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+    const threePaneGroup = page.locator('.source-group-section').filter({ hasText: 'OrigRead E2E Feed' }).first()
+    await expect(threePaneGroup.locator('.source-group-collapse')).toHaveAttribute('aria-expanded', 'true')
+    await expect(threePaneGroup.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' })).toBeVisible()
 
     // UI-3P.3：Source / Article 搜索框同时存在且状态独立，操作任一左侧 Pane 都不能清空 Reader。
     const articleSearch = page.locator('.article-pane .search-field input')

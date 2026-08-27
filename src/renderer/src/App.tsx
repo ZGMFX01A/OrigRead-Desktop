@@ -118,6 +118,8 @@ export default function App(): React.JSX.Element {
   const [recentSourceScopeKeys, setRecentSourceScopeKeys] = useState<string[]>([])
   // 分组折叠属于会话级 UI 状态，提升到 App 后即使整个 Source Pane 临时折叠/卸载也不会丢失。
   const [collapsedSourceGroupIds, setCollapsedSourceGroupIds] = useState<Set<string>>(() => new Set())
+  // 双栏 Source Switcher 使用独立折叠状态，避免快速切源操作反向改变三栏 Source Pane 的展开结构。
+  const [collapsedSourceSwitcherGroupIds, setCollapsedSourceSwitcherGroupIds] = useState<Set<string>>(() => new Set())
   const [articleQuery, setArticleQuery] = useState('')
   const [articleScope, setArticleScope] = useState<ArticleScope>({ kind: 'all' })
   const [selectedArticleId, setSelectedArticleId] = useState<string | null>(null)
@@ -1822,6 +1824,7 @@ export default function App(): React.JSX.Element {
               feedStatsById={feedStatsById}
               articleScope={articleScope}
               recentScopeKeys={recentSourceScopeKeys}
+              collapsedGroupIds={collapsedSourceSwitcherGroupIds}
               allArticleCount={librarySnapshot?.articles ?? articles.length}
               allUnreadCount={librarySnapshot?.unread ?? articles.filter((article) => article.isUnread).length}
               onQueryChange={setSourceSwitcherQuery}
@@ -1834,6 +1837,12 @@ export default function App(): React.JSX.Element {
                 selectGroupScope(group)
                 closeSourceSwitcher(true)
               }}
+              onToggleGroupCollapsed={(groupId) => setCollapsedSourceSwitcherGroupIds((current) => {
+                const next = new Set(current)
+                if (next.has(groupId)) next.delete(groupId)
+                else next.add(groupId)
+                return next
+              })}
               onSelectFeed={(feed) => {
                 selectFeedScope(feed)
                 closeSourceSwitcher(true)
