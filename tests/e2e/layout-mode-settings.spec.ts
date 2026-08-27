@@ -48,7 +48,7 @@ test('two-pane layout restores a resizable Workspace + Reader while keeping thre
     expect(initialGeometry.reader).toBeGreaterThan(700)
 
     // SS-2：双栏来源切换改成锚定 Trigger 的局部 Popover，Article Pane 始终保持可见和可交互。
-    const sourcePickerTrigger = page.locator('.two-pane-source-picker-button')
+    const sourcePickerTrigger = page.locator('.source-switcher-trigger')
     const sourcePickerOverlay = page.locator('.source-switcher-popover')
     const sourcePickerSearch = sourcePickerOverlay.locator('.source-switcher-search input')
     await expect(sourcePickerTrigger).toHaveAttribute('title', /选择来源|Choose source/)
@@ -72,7 +72,7 @@ test('two-pane layout restores a resizable Workspace + Reader while keeping thre
     const overlayGeometry = await page.evaluate(() => {
       const workspace = document.querySelector('.workspace-pane')!.getBoundingClientRect()
       const overlay = document.querySelector('.source-switcher-popover')!.getBoundingClientRect()
-      const trigger = document.querySelector('.two-pane-source-picker-button')!.getBoundingClientRect()
+      const trigger = document.querySelector('.source-switcher-trigger')!.getBoundingClientRect()
       const reader = document.querySelector('.reader-pane')!.getBoundingClientRect()
       return {
         workspaceLeft: workspace.left,

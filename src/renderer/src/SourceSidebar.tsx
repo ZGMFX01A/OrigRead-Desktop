@@ -111,7 +111,8 @@ export function SourceBrandHeader({
 /**
  * Desktop 共用的来源范围内容。
  *
- * 三栏中直接作为 Source Pane；双栏中由 TwoPaneWorkspace 以内嵌来源视图承载。
+ * 三栏中直接作为常驻 Source Pane；双栏只在低频 Source Manager 中复用完整管理能力。
+ * 高频来源切换由独立 SourceSwitcherPopover 负责，避免再次把完整来源页当成快速导航。
  * 这里只负责来源范围选择和来源级操作；文章筛选与文章列表由 ArticleListPane 独立承担。
  */
 export function SourceSidebar({

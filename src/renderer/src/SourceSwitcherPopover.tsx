@@ -1,4 +1,4 @@
-import { Check, Folder, Inbox, Search } from 'lucide-react'
+import { Check, Folder, Inbox, Search, SlidersHorizontal } from 'lucide-react'
 import {
   useEffect,
   useId,
@@ -27,6 +27,7 @@ interface SourceSwitcherPopoverProps {
   onSelectAll: () => void
   onSelectGroup: (group: GroupRecord) => void
   onSelectFeed: (feed: FeedRecord) => void
+  onManageSources: () => void
   onRequestClose: (restoreFocus: boolean) => void
 }
 
@@ -68,6 +69,7 @@ export function SourceSwitcherPopover({
   onSelectAll,
   onSelectGroup,
   onSelectFeed,
+  onManageSources,
   onRequestClose
 }: SourceSwitcherPopoverProps): React.JSX.Element {
   const { t } = useTranslation()
@@ -467,6 +469,13 @@ export function SourceSwitcherPopover({
             <span>{t('sourceSwitcherNoResultsHint')}</span>
           </div>
         )}
+      </div>
+
+      <div className="source-switcher-footer">
+        <button type="button" className="source-switcher-manage" onClick={onManageSources}>
+          <SlidersHorizontal size={14}/>
+          <span>{t('manageSources')}</span>
+        </button>
       </div>
     </section>
   )

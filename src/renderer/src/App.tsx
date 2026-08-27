@@ -75,6 +75,7 @@ import { ArticleListPane } from './ArticleListPane'
 import { PaneDivider } from './PaneDivider'
 import { TwoPaneReadingLayout } from './TwoPaneReadingLayout'
 import { SourceSwitcherPopover } from './SourceSwitcherPopover'
+import { SourceManagerOverlay } from './SourceManagerOverlay'
 import { THREE_PANE_BREAKPOINT, resolveResponsivePaneLayout } from './responsive-layout'
 
 type ReaderMode = 'article' | 'ai' | 'translation'
@@ -98,6 +99,8 @@ export default function App(): React.JSX.Element {
   const [adaptiveSourceOverlayOpen, setAdaptiveSourceOverlayOpen] = useState(false)
   // Source Switcher 只属于当前会话，不持久化打开状态。
   const [sourceSwitcherOpen, setSourceSwitcherOpen] = useState(false)
+  // Source Manager 只承载双栏低频来源管理；与高频 Source Switcher 完全分离。
+  const [sourceManagerOpen, setSourceManagerOpen] = useState(false)
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [librarySnapshot, setLibrarySnapshot] = useState<LibrarySnapshot | null>(null)
   const [feeds, setFeeds] = useState<FeedRecord[]>([])
@@ -179,8 +182,9 @@ export default function App(): React.JSX.Element {
   const readerSearchInputRef = useRef<HTMLInputElement>(null)
   const articleSearchInputRef = useRef<HTMLInputElement>(null)
   const adaptiveSourceOverlayCloseRef = useRef<HTMLButtonElement>(null)
-  const twoPaneSourcePickerTriggerRef = useRef<HTMLButtonElement>(null)
-  const twoPaneSourcePickerSearchInputRef = useRef<HTMLInputElement>(null)
+  const sourceSwitcherTriggerRef = useRef<HTMLButtonElement>(null)
+  const sourceSwitcherSearchInputRef = useRef<HTMLInputElement>(null)
+  const sourceManagerCloseRef = useRef<HTMLButtonElement>(null)
   const readerMoreButtonRef = useRef<HTMLButtonElement>(null)
   const readerSecondaryActionsRef = useRef<HTMLDivElement>(null)
   const selectedArticleIdRef = useRef<string | null>(null)
@@ -190,20 +194,37 @@ export default function App(): React.JSX.Element {
   const autoUpdateCheckedRef = useRef(false)
   const speech = useReaderSpeech(settings?.ttsVoiceURI ?? '')
 
-  /** 关闭双栏来源选择浮层；普通关闭后把键盘焦点还给触发按钮。 */
-  const closeTwoPaneSourcePicker = useCallback((restoreFocus = true): void => {
+  /** 关闭双栏快速来源切换器；普通关闭后把键盘焦点还给触发按钮。 */
+  const closeSourceSwitcher = useCallback((restoreFocus = true): void => {
     setSourceSwitcherOpen(false)
     setSourceSwitcherQuery('')
     if (restoreFocus) {
-      window.requestAnimationFrame(() => twoPaneSourcePickerTriggerRef.current?.focus())
+      window.requestAnimationFrame(() => sourceSwitcherTriggerRef.current?.focus())
     }
   }, [])
 
   /** 双栏当前来源 Trigger 直接切换轻量 Source Switcher，不再进入整栏来源页。 */
-  const toggleTwoPaneSourcePicker = useCallback((): void => {
+  const toggleSourceSwitcher = useCallback((): void => {
+    setSourceManagerOpen(false)
     setSourceSwitcherQuery('')
     setSourceSwitcherOpen((open) => !open)
   }, [])
+
+  /** 关闭双栏低频 Source Manager；需要时把焦点恢复到当前来源 Trigger。 */
+  const closeSourceManager = useCallback((restoreFocus = true): void => {
+    setSourceManagerOpen(false)
+    setSubscriptionMenuOpen(false)
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => sourceSwitcherTriggerRef.current?.focus())
+    }
+  }, [])
+
+  /** 从 Quick Switcher 进入完整来源管理视图，禁止两个浮层同时存在。 */
+  const openSourceManager = useCallback((): void => {
+    closeSourceSwitcher(false)
+    setSubscriptionMenuOpen(false)
+    setSourceManagerOpen(true)
+  }, [closeSourceSwitcher])
 
   /**
    * 记录最近访问的 Group / Feed Scope。
@@ -333,20 +354,41 @@ export default function App(): React.JSX.Element {
     if (!sourceSwitcherOpen) return
     // Workspace 不可见或主布局已经切走时直接退场，不把焦点强行拉回已隐藏的 Trigger。
     if (settings?.layoutMode !== 'two-pane' || settings?.workspaceCollapsed || focusReading) {
-      closeTwoPaneSourcePicker(false)
+      closeSourceSwitcher(false)
       return
     }
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return
       event.preventDefault()
       event.stopPropagation()
-      closeTwoPaneSourcePicker(true)
+      closeSourceSwitcher(true)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [closeTwoPaneSourcePicker, focusReading, settings?.layoutMode, settings?.workspaceCollapsed, sourceSwitcherOpen])
+  }, [closeSourceSwitcher, focusReading, settings?.layoutMode, settings?.workspaceCollapsed, sourceSwitcherOpen])
+
+  useEffect(() => {
+    if (!sourceManagerOpen) return
+    // Source Manager 仅存在于可见的双栏 Workspace；离开布局时直接关闭，避免残留覆盖层。
+    if (settings?.layoutMode !== 'two-pane' || settings?.workspaceCollapsed || focusReading) {
+      closeSourceManager(false)
+      return
+    }
+    const focusFrame = window.requestAnimationFrame(() => sourceManagerCloseRef.current?.focus())
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      closeSourceManager(true)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.cancelAnimationFrame(focusFrame)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [closeSourceManager, focusReading, settings?.layoutMode, settings?.workspaceCollapsed, sourceManagerOpen])
 
   useEffect(() => {
     if (!readerMoreOpen) return
@@ -595,7 +637,6 @@ export default function App(): React.JSX.Element {
 
   const normalizedArticleQuery = articleQuery.trim().toLocaleLowerCase()
   const normalizedSourceQuery = sourceQuery.trim().toLocaleLowerCase()
-  const normalizedSourceSwitcherQuery = sourceSwitcherQuery.trim().toLocaleLowerCase()
   const scopedArticles = articleScope.kind === 'all' ? articles : (scopeArticles ?? [])
   const visibleArticles = useMemo(() => {
     return scopedArticles.filter((article) => {
@@ -609,10 +650,6 @@ export default function App(): React.JSX.Element {
     if (!normalizedSourceQuery) return feeds
     return feeds.filter((feed) => `${feed.name} ${feed.url}`.toLocaleLowerCase().includes(normalizedSourceQuery))
   }, [feeds, normalizedSourceQuery])
-  const sourceSwitcherVisibleFeeds = useMemo(() => {
-    if (!normalizedSourceSwitcherQuery) return feeds
-    return feeds.filter((feed) => `${feed.name} ${feed.url}`.toLocaleLowerCase().includes(normalizedSourceSwitcherQuery))
-  }, [feeds, normalizedSourceSwitcherQuery])
   const groupedVisibleFeeds = useMemo(() => {
     const sortedGroups = groups.slice().sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
     const knownIds = new Set(sortedGroups.map((group) => group.id))
@@ -623,16 +660,6 @@ export default function App(): React.JSX.Element {
     if (ungrouped.length > 0) result.push({ group: { id: '__ungrouped__', name: t('ungroupedSources'), sortOrder: Number.MAX_SAFE_INTEGER, isDefault: false }, feeds: ungrouped })
     return result
   }, [groups, t, visibleFeeds])
-  const sourceSwitcherGroupedVisibleFeeds = useMemo(() => {
-    const sortedGroups = groups.slice().sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
-    const knownIds = new Set(sortedGroups.map((group) => group.id))
-    const result = sortedGroups
-      .map((group) => ({ group, feeds: sourceSwitcherVisibleFeeds.filter((feed) => feed.groupId === group.id) }))
-      .filter((entry) => entry.feeds.length > 0)
-    const ungrouped = sourceSwitcherVisibleFeeds.filter((feed) => !knownIds.has(feed.groupId))
-    if (ungrouped.length > 0) result.push({ group: { id: '__ungrouped__', name: t('ungroupedSources'), sortOrder: Number.MAX_SAFE_INTEGER, isDefault: false }, feeds: ungrouped })
-    return result
-  }, [groups, sourceSwitcherVisibleFeeds, t])
   const feedStatsById = useMemo(
     () => new Map(feedArticleStats.map((stats) => [stats.feedId, stats])),
     [feedArticleStats]
@@ -736,11 +763,12 @@ export default function App(): React.JSX.Element {
    */
   const toggleFocusReading = useCallback((): void => {
     setAdaptiveSourceOverlayOpen(false)
-    closeTwoPaneSourcePicker(false)
+    closeSourceSwitcher(false)
+    closeSourceManager(false)
     setSubscriptionMenuOpen(false)
     setReaderMoreOpen(false)
     setFocusReading((current) => !current)
-  }, [closeTwoPaneSourcePicker])
+  }, [closeSourceManager, closeSourceSwitcher])
 
   const generateAiSummary = async (forceRefresh = false, options?: AiSummaryRequestOptions): Promise<void> => {
     if (!selectedArticleId || readerToolLoading) return
@@ -813,6 +841,8 @@ export default function App(): React.JSX.Element {
     // 配置恢复后的持久化 Pane 状态应立即可见；临时 Focus 不应遮住恢复结果。
     setFocusReading(false)
     setAdaptiveSourceOverlayOpen(false)
+    closeSourceSwitcher(false)
+    closeSourceManager(false)
     setSubscriptionMenuOpen(false)
     const language = nextSettings.language === 'system' ? resolveDesktopLanguage(appInfo?.locale ?? navigator.language) : nextSettings.language
     await i18n.changeLanguage(language)
@@ -820,7 +850,8 @@ export default function App(): React.JSX.Element {
   }
 
   const handleAccountChanged = async (): Promise<void> => {
-    closeTwoPaneSourcePicker(false)
+    closeSourceSwitcher(false)
+    closeSourceManager(false)
     setRecentSourceScopeKeys([])
     // Feed / Group ID 只在当前账户内有效；切换账户必须回到 All，避免旧 Scope 继续引用上一账户数据。
     setArticleScope({ kind: 'all' })
@@ -845,7 +876,8 @@ export default function App(): React.JSX.Element {
         // 主布局切换必须退出临时 Focus / overlay，但不能改写任一布局自己的持久化宽度与折叠偏好。
         setFocusReading(false)
         setAdaptiveSourceOverlayOpen(false)
-        closeTwoPaneSourcePicker(false)
+        closeSourceSwitcher(false)
+        closeSourceManager(false)
         setSubscriptionMenuOpen(false)
         setReaderMoreOpen(false)
       }
@@ -1020,7 +1052,8 @@ export default function App(): React.JSX.Element {
   const showSettings = async (page: SettingsPage = 'general'): Promise<void> => {
     // Original Article 作为当前 Reader 上下文保留；Settings 打开时仅临时隐藏 child WebContentsView，
     // 这样用户可以切换两栏/三栏后无损返回同一原网页。
-    closeTwoPaneSourcePicker(false)
+    closeSourceSwitcher(false)
+    closeSourceManager(false)
     setReaderMoreOpen(false)
     setSourceCatalogOpen(false)
     setSettingsInitialPage(page)
@@ -1242,13 +1275,14 @@ export default function App(): React.JSX.Element {
         && !focusReading
         && !settingsOpen
         && !sourceCatalogOpen
+        && !sourceManagerOpen
         && !subscriptionMenuOpen
         && !document.querySelector('[role="dialog"]')
       ) {
         event.preventDefault()
         if (sourceSwitcherOpen) {
-          twoPaneSourcePickerSearchInputRef.current?.focus()
-          twoPaneSourcePickerSearchInputRef.current?.select()
+          sourceSwitcherSearchInputRef.current?.focus()
+          sourceSwitcherSearchInputRef.current?.select()
         } else {
           setSourceSwitcherQuery('')
           setSourceSwitcherOpen(true)
@@ -1257,7 +1291,7 @@ export default function App(): React.JSX.Element {
       }
       if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'k' && !settingsOpen && !sourceCatalogOpen && !subscriptionMenuOpen && !document.querySelector('[role="dialog"]')) {
         const targetSearchInput = sourceSwitcherOpen
-          ? twoPaneSourcePickerSearchInputRef.current
+          ? sourceSwitcherSearchInputRef.current
           : articleSearchInputRef.current
         if (!targetSearchInput) return
         event.preventDefault()
@@ -1278,7 +1312,7 @@ export default function App(): React.JSX.Element {
         toggleFocusReading()
         return
       }
-      if (interactiveTarget || event.ctrlKey || event.metaKey || event.altKey || settingsOpen || sourceCatalogOpen || sourceSwitcherOpen || subscriptionMenuOpen || document.querySelector('[role="dialog"]')) return
+      if (interactiveTarget || event.ctrlKey || event.metaKey || event.altKey || settingsOpen || sourceCatalogOpen || sourceSwitcherOpen || sourceManagerOpen || subscriptionMenuOpen || document.querySelector('[role="dialog"]')) return
       if (originalViewState.open) {
         if (key === 'u' && selectedArticle) {
           event.preventDefault()
@@ -1342,10 +1376,11 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, focusReading, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settings?.layoutMode, settings?.workspaceCollapsed, settingsOpen, sourceCatalogOpen, sourceSwitcherOpen, subscriptionMenuOpen, toggleFocusReading, visibleArticles])
+  }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, focusReading, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settings?.layoutMode, settings?.workspaceCollapsed, settingsOpen, sourceCatalogOpen, sourceManagerOpen, sourceSwitcherOpen, subscriptionMenuOpen, toggleFocusReading, visibleArticles])
 
   const openAddSource = (): void => {
-    closeTwoPaneSourcePicker(false)
+    closeSourceSwitcher(false)
+    closeSourceManager(false)
     setSubscriptionMenuOpen(false)
     setSourceCatalogOpen(false)
     setSourceError(null)
@@ -1405,7 +1440,8 @@ export default function App(): React.JSX.Element {
 
   const showSourceCatalog = async (): Promise<void> => {
     if (originalViewState.open) await closeOriginalArticle()
-    closeTwoPaneSourcePicker(false)
+    closeSourceSwitcher(false)
+    closeSourceManager(false)
     setReaderMoreOpen(false)
     setSettingsOpen(false)
     setSourceCatalogOpen(true)
@@ -1649,27 +1685,23 @@ export default function App(): React.JSX.Element {
     />
   )
 
-  const renderSourceSidebar = ({ overlay = false, sourcePicker = false }: {
+  const renderSourceSidebar = ({ overlay = false, sourceManager = false }: {
     overlay?: boolean
-    sourcePicker?: boolean
+    sourceManager?: boolean
   } = {}): React.JSX.Element => {
-    const sourceQueryForView = sourcePicker ? sourceSwitcherQuery : sourceQuery
-    const visibleFeedsForView = sourcePicker ? sourceSwitcherVisibleFeeds : visibleFeeds
-    const groupedFeedsForView = sourcePicker ? sourceSwitcherGroupedVisibleFeeds : groupedVisibleFeeds
-    const onSourceQueryChange = sourcePicker ? setSourceSwitcherQuery : setSourceQuery
     const closeSourceView = (restoreFocus = true): void => {
       if (overlay) {
         setAdaptiveSourceOverlayOpen(false)
         setSubscriptionMenuOpen(false)
       }
-      if (sourcePicker) closeTwoPaneSourcePicker(restoreFocus)
+      if (sourceManager) closeSourceManager(restoreFocus)
     }
     return (
       <SourceSidebar
         articleScope={articleScope}
-        sourceQuery={sourceQueryForView}
-        visibleFeedCount={visibleFeedsForView.length}
-        groupedFeeds={groupedFeedsForView}
+        sourceQuery={sourceQuery}
+        visibleFeedCount={visibleFeeds.length}
+        groupedFeeds={groupedVisibleFeeds}
         feedStatsById={feedStatsById}
         allArticleCount={librarySnapshot?.articles ?? articles.length}
         allUnreadCount={librarySnapshot?.unread ?? articles.filter((article) => article.isUnread).length}
@@ -1681,9 +1713,8 @@ export default function App(): React.JSX.Element {
         opmlStatus={opmlStatus}
         sourceError={sourceError}
         showNotices={!addSourceOpen}
-        showHeader={!sourcePicker}
-        searchInputRef={sourcePicker ? twoPaneSourcePickerSearchInputRef : undefined}
-        onSourceQueryChange={onSourceQueryChange}
+        showHeader={!sourceManager}
+        onSourceQueryChange={setSourceQuery}
         onSelectAll={() => { setArticleScope({ kind: 'all' }); setArticleQuery(''); closeSourceView() }}
         onSelectGroup={(group) => { selectGroupScope(group); closeSourceView() }}
         onToggleGroupCollapsed={(groupId) => setCollapsedSourceGroupIds((current) => {
@@ -1732,8 +1763,8 @@ export default function App(): React.JSX.Element {
       onArticleContextMenu={(article, x, y) => setContextMenu({ kind: 'article', x, y, articleId: article.id })}
       onAddSource={openAddSource}
       onChooseSourceScope={onChooseSourceScope}
-      sourcePickerTriggerRef={onChooseSourceScope ? twoPaneSourcePickerTriggerRef : undefined}
-      sourcePickerOpen={Boolean(onChooseSourceScope && sourceSwitcherOpen)}
+      sourceSwitcherTriggerRef={onChooseSourceScope ? sourceSwitcherTriggerRef : undefined}
+      sourceSwitcherOpen={Boolean(onChooseSourceScope && sourceSwitcherOpen)}
     />
   )
 
@@ -1766,15 +1797,25 @@ export default function App(): React.JSX.Element {
       data-layout-mode={layoutMode}
       data-source-switcher-open={sourceSwitcherOpen ? 'true' : 'false'}
       data-source-switcher-recent-count={recentSourceScopeKeys.length}
+      data-source-manager-open={sourceManagerOpen ? 'true' : 'false'}
     >
       {twoPaneLayout ? (
         <TwoPaneReadingLayout
           workspaceHeader={renderSourceBrandHeader()}
-          workspaceContent={renderArticleListPane(toggleTwoPaneSourcePicker)}
-          workspaceOverlay={sourceSwitcherOpen ? (
+          workspaceContent={renderArticleListPane(toggleSourceSwitcher)}
+          workspaceOverlay={sourceManagerOpen ? (
+            <SourceManagerOverlay
+              title={t('sourceManagerTitle')}
+              closeLabel={t('close')}
+              closeButtonRef={sourceManagerCloseRef}
+              onClose={() => closeSourceManager(true)}
+            >
+              {renderSourceSidebar({ sourceManager: true })}
+            </SourceManagerOverlay>
+          ) : sourceSwitcherOpen ? (
             <SourceSwitcherPopover
-              triggerRef={twoPaneSourcePickerTriggerRef}
-              searchInputRef={twoPaneSourcePickerSearchInputRef}
+              triggerRef={sourceSwitcherTriggerRef}
+              searchInputRef={sourceSwitcherSearchInputRef}
               query={sourceSwitcherQuery}
               groups={groups}
               feeds={feeds}
@@ -1787,17 +1828,18 @@ export default function App(): React.JSX.Element {
               onSelectAll={() => {
                 setArticleScope({ kind: 'all' })
                 setArticleQuery('')
-                closeTwoPaneSourcePicker(true)
+                closeSourceSwitcher(true)
               }}
               onSelectGroup={(group) => {
                 selectGroupScope(group)
-                closeTwoPaneSourcePicker(true)
+                closeSourceSwitcher(true)
               }}
               onSelectFeed={(feed) => {
                 selectFeedScope(feed)
-                closeTwoPaneSourcePicker(true)
+                closeSourceSwitcher(true)
               }}
-              onRequestClose={closeTwoPaneSourcePicker}
+              onManageSources={openSourceManager}
+              onRequestClose={closeSourceSwitcher}
             />
           ) : undefined}
           workspaceAriaLabel={t('layoutModeTwoPane')}

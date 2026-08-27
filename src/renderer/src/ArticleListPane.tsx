@@ -29,8 +29,8 @@ interface ArticleListPaneProps {
   onArticleContextMenu: (article: ArticleRecord, x: number, y: number) => void
   onAddSource: () => void
   onChooseSourceScope?: () => void
-  sourcePickerTriggerRef?: RefObject<HTMLButtonElement | null>
-  sourcePickerOpen?: boolean
+  sourceSwitcherTriggerRef?: RefObject<HTMLButtonElement | null>
+  sourceSwitcherOpen?: boolean
 }
 
 /**
@@ -65,8 +65,8 @@ export function ArticleListPane({
   onArticleContextMenu,
   onAddSource,
   onChooseSourceScope,
-  sourcePickerTriggerRef,
-  sourcePickerOpen = false
+  sourceSwitcherTriggerRef,
+  sourceSwitcherOpen = false
 }: ArticleListPaneProps): React.JSX.Element {
   const { t } = useTranslation()
   const destinationLabelKey = destination === 'all' ? 'allArticles' : destination
@@ -84,16 +84,16 @@ export function ArticleListPane({
       <header className="article-scope-bar">
         {onChooseSourceScope ? (
           <button
-            ref={sourcePickerTriggerRef}
+            ref={sourceSwitcherTriggerRef}
             type="button"
-            className={`article-scope-current two-pane-source-picker-button ${sourcePickerOpen ? 'active' : ''}`}
+            className={`article-scope-current source-switcher-trigger ${sourceSwitcherOpen ? 'active' : ''}`}
             aria-haspopup="listbox"
-            aria-expanded={sourcePickerOpen}
+            aria-expanded={sourceSwitcherOpen}
             aria-label={`${t('chooseSourceScope')}: ${scopeLabel}`}
             title={t('chooseSourceScope')}
             onClick={onChooseSourceScope}
             onKeyDown={(event) => {
-              if (event.key !== 'ArrowDown' || sourcePickerOpen) return
+              if (event.key !== 'ArrowDown' || sourceSwitcherOpen) return
               event.preventDefault()
               onChooseSourceScope()
             }}
@@ -103,7 +103,7 @@ export function ArticleListPane({
               <span>{t(destinationLabelKey)}</span>
               <strong>{scopeLabel}</strong>
             </div>
-            <ChevronDown className="two-pane-source-picker-chevron" size={14}/>
+            <ChevronDown className="source-switcher-trigger-chevron" size={14}/>
           </button>
         ) : (
           <div className="article-scope-current">

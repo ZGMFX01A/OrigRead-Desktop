@@ -118,7 +118,7 @@ test('layout roundtrip preserves source scope, destination, reader selection and
     await page.keyboard.press('End')
     await expect.poll(async () => (await page.evaluate(() => window.origread.getSettings())).workspaceWidth).toBe(560)
 
-    const sourcePicker = page.locator('.two-pane-source-picker-button')
+    const sourcePicker = page.locator('.source-switcher-trigger')
     const sourceSwitcherShortcut = process.platform === 'darwin' ? 'Meta+Shift+K' : 'Control+Shift+K'
     await page.keyboard.press(sourceSwitcherShortcut)
     const sourcePickerOverlay = page.locator('.source-switcher-popover')

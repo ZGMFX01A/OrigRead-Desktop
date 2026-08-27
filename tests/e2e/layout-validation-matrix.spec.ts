@@ -92,7 +92,7 @@ async function expectLayoutGeometry(page: Page, layoutMode: LayoutMode, width: n
     await expect(page.locator('.workspace-pane')).toBeVisible()
     await expect(page.locator('.pane-divider-workspace')).toBeVisible()
     await expect(page.locator('.source-pane')).toHaveCount(0)
-    await expect(page.locator('.two-pane-source-picker-button')).toBeVisible()
+    await expect(page.locator('.source-switcher-trigger')).toBeVisible()
     return
   }
 
