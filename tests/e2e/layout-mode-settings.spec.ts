@@ -47,19 +47,20 @@ test('two-pane layout restores a resizable Workspace + Reader while keeping thre
     expect(initialGeometry.workspace).toBeLessThanOrEqual(421)
     expect(initialGeometry.reader).toBeGreaterThan(700)
 
-    // DL-3：来源选择覆盖 Workspace 内容区，底层 Article Pane 常驻，不覆盖 Reader。
+    // SS-2：双栏来源切换改成锚定 Trigger 的局部 Popover，Article Pane 始终保持可见和可交互。
     const sourcePickerTrigger = page.locator('.two-pane-source-picker-button')
-    const sourcePickerOverlay = page.locator('.two-pane-source-picker-overlay')
-    const sourcePickerSearch = sourcePickerOverlay.locator('.search-field input')
+    const sourcePickerOverlay = page.locator('.source-switcher-popover')
+    const sourcePickerSearch = sourcePickerOverlay.locator('.source-switcher-search input')
     await expect(sourcePickerTrigger).toHaveAttribute('title', /选择来源|Choose source/)
     await expect(sourcePickerTrigger).not.toContainText(/选择来源|Choose source/)
     await expect(sourcePickerTrigger.locator('.article-scope-copy strong')).toBeVisible()
     await sourcePickerTrigger.click()
     await expect(page.locator('.app-shell')).toHaveAttribute('data-source-switcher-open', 'true')
     await expect(sourcePickerOverlay).toBeVisible()
-    await expect(page.locator('.source-pane.embedded-source-pane')).toBeVisible()
+    await expect(page.locator('.source-pane.embedded-source-pane')).toHaveCount(0)
     await expect(page.locator('.two-pane-workspace-base .article-pane')).toHaveCount(1)
-    await expect(page.locator('.two-pane-workspace-base')).toHaveAttribute('aria-hidden', 'true')
+    await expect(page.locator('.two-pane-workspace-base')).not.toHaveAttribute('aria-hidden', 'true')
+    await expect(page.locator('.two-pane-workspace-base')).not.toHaveAttribute('inert', '')
     await expect(sourcePickerTrigger).toHaveAttribute('aria-expanded', 'true')
     await expect(sourcePickerSearch).toBeFocused()
     await expect(sourcePickerSearch).toHaveValue('')
@@ -68,35 +69,49 @@ test('two-pane layout restores a resizable Workspace + Reader while keeping thre
 
     const overlayGeometry = await page.evaluate(() => {
       const workspace = document.querySelector('.workspace-pane')!.getBoundingClientRect()
-      const overlay = document.querySelector('.two-pane-source-picker-overlay')!.getBoundingClientRect()
+      const overlay = document.querySelector('.source-switcher-popover')!.getBoundingClientRect()
+      const trigger = document.querySelector('.two-pane-source-picker-button')!.getBoundingClientRect()
       const reader = document.querySelector('.reader-pane')!.getBoundingClientRect()
       return {
         workspaceLeft: workspace.left,
         workspaceRight: workspace.right,
+        workspaceWidth: workspace.width,
         overlayLeft: overlay.left,
         overlayRight: overlay.right,
+        overlayTop: overlay.top,
+        overlayWidth: overlay.width,
+        triggerBottom: trigger.bottom,
         readerLeft: reader.left
       }
     })
-    expect(overlayGeometry.overlayLeft).toBeGreaterThanOrEqual(overlayGeometry.workspaceLeft)
-    expect(overlayGeometry.overlayRight).toBeLessThanOrEqual(overlayGeometry.workspaceRight + 1)
+    expect(overlayGeometry.overlayLeft).toBeGreaterThanOrEqual(overlayGeometry.workspaceLeft + 10)
+    expect(overlayGeometry.overlayRight).toBeLessThanOrEqual(overlayGeometry.workspaceRight - 10)
     expect(overlayGeometry.overlayRight).toBeLessThanOrEqual(overlayGeometry.readerLeft + 1)
+    expect(overlayGeometry.overlayWidth).toBeLessThan(overlayGeometry.workspaceWidth - 20)
+    expect(overlayGeometry.overlayTop).toBeGreaterThanOrEqual(overlayGeometry.triggerBottom + 4)
 
-    // Escape / X / 范围选择都关闭 Overlay，并把焦点还给来源 Trigger。
+    // Escape 关闭 Popover 并把焦点还给来源 Trigger。
     await page.keyboard.press('Escape')
     await expect(sourcePickerOverlay).toHaveCount(0)
     await expect(page.locator('.app-shell')).toHaveAttribute('data-source-switcher-open', 'false')
     await expect(sourcePickerTrigger).toBeFocused()
     await expect(page.locator('.two-pane-workspace-base')).not.toHaveAttribute('aria-hidden', 'true')
 
+    // Trigger 自身可以开 / 关，不再依赖整栏 Overlay 的关闭按钮。
     await sourcePickerTrigger.click()
     await expect(sourcePickerSearch).toBeFocused()
-    await page.locator('.two-pane-source-picker-close').click()
+    await sourcePickerTrigger.click()
     await expect(sourcePickerOverlay).toHaveCount(0)
     await expect(sourcePickerTrigger).toBeFocused()
 
+    // 点击 Popover 外部会关闭；Article Workspace 本身保持挂载且没有被 inert。
     await sourcePickerTrigger.click()
-    await page.locator('.two-pane-source-picker-overlay .source-scope-all').click()
+    await expect(sourcePickerSearch).toBeFocused()
+    await page.locator('.reader-pane').click({ position: { x: 30, y: 120 } })
+    await expect(sourcePickerOverlay).toHaveCount(0)
+
+    await sourcePickerTrigger.click()
+    await sourcePickerOverlay.locator('.source-switcher-all').click()
     await expect(sourcePickerOverlay).toHaveCount(0)
     await expect(sourcePickerTrigger).toBeFocused()
 

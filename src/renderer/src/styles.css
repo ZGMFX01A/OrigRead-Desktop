@@ -309,6 +309,153 @@ button { color: inherit; }
   background: transparent;
 }
 
+/* SS-2：双栏快速切源改为锚定当前来源 Trigger 的轻量 Popover，不再覆盖整块 Workspace。 */
+.source-switcher-popover {
+  position: absolute;
+  z-index: 12;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 92%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-muted));
+  color: var(--text);
+  box-shadow: 0 14px 34px rgba(28, 29, 36, 0.18), 0 2px 8px rgba(28, 29, 36, 0.08);
+}
+.source-switcher-search {
+  flex: 0 0 auto;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 96%, var(--surface-muted));
+  color: var(--muted);
+}
+.source-switcher-search:focus-within {
+  border-bottom-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.source-switcher-search input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+}
+.source-switcher-search input::placeholder { color: color-mix(in srgb, var(--muted) 76%, transparent); }
+.source-switcher-search > span { white-space: nowrap; color: var(--muted); font-size: 9.5px; }
+.source-switcher-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+}
+.source-switcher-option {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.source-switcher-option:hover {
+  background: color-mix(in srgb, var(--surface-muted) 82%, var(--accent-soft));
+}
+.source-switcher-option.selected {
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+.source-switcher-option:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent);
+  outline-offset: -2px;
+}
+.source-switcher-icon {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface-muted) 74%, var(--accent-soft));
+  color: color-mix(in srgb, var(--accent-strong) 82%, var(--muted));
+}
+.source-switcher-feed-option > .source-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+}
+.source-switcher-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.source-switcher-copy strong {
+  overflow: hidden;
+  color: inherit;
+  font-size: 11.5px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-switcher-copy small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-switcher-option.selected .source-switcher-copy small { color: color-mix(in srgb, var(--accent-strong) 62%, var(--muted)); }
+.source-switcher-meta {
+  max-width: 82px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-switcher-check { color: var(--accent-strong); }
+.source-switcher-group + .source-switcher-group,
+.source-switcher-all + .source-switcher-group {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+}
+.source-switcher-feed-option { padding-left: 12px; }
+.source-switcher-group-label {
+  padding: 7px 9px 4px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+}
+.source-switcher-empty {
+  min-height: 130px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 20px;
+  color: var(--muted);
+  text-align: center;
+}
+.source-switcher-empty strong { color: var(--text); font-size: 11.5px; }
+.source-switcher-empty span { max-width: 230px; font-size: 9.5px; line-height: 1.5; }
+
 .source-pane,
 .article-pane {
   min-width: 0;

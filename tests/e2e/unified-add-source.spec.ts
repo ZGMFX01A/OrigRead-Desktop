@@ -467,7 +467,7 @@ test('reader selection survives source and article filter changes', async () => 
     await article.click()
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
 
-    // DL-3：真实数据下验证双栏 Source Picker Overlay 不重建 Article Workspace，也不替换 Reader。
+    // SS-2：真实数据下验证轻量 Source Switcher 不遮住 Article Workspace，也不替换 Reader。
     await page.locator('.settings-button').click()
     await page.locator('.layout-mode-option[data-layout-mode="two-pane"]').click()
     await page.locator('.settings-close-button').click()
@@ -477,28 +477,27 @@ test('reader selection survives source and article filter changes', async () => 
     const twoPaneArticleSearch = page.locator('.two-pane-workspace-base .article-pane .search-field input')
     await twoPaneArticleSearch.fill('Article 1')
     await page.locator('.two-pane-source-picker-button').click()
-    const sourcePicker = page.locator('.two-pane-source-picker-overlay')
-    const sourcePickerSearch = sourcePicker.locator('.search-field input')
-    const sourcePickerGroupToggle = sourcePicker.locator('.source-group-collapse').first()
+    const sourcePicker = page.locator('.source-switcher-popover')
+    const sourcePickerSearch = sourcePicker.locator('.source-switcher-search input')
     await expect(sourcePickerSearch).toBeFocused()
+    await expect(sourcePicker).toBeVisible()
+    await expect(page.locator('.two-pane-workspace-base')).not.toHaveAttribute('aria-hidden', 'true')
+    await expect(page.locator('.two-pane-workspace-base .article-pane')).toBeVisible()
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
     await expect(twoPaneArticleSearch).toHaveValue('Article 1')
+    await expect(sourcePicker.locator('.source-refresh-button, .source-settings-button')).toHaveCount(0)
 
-    // 手动折叠分组后，来源搜索临时展开命中分组；清空搜索后恢复原折叠状态。
-    await sourcePickerGroupToggle.click()
-    await expect(sourcePickerGroupToggle).toHaveAttribute('aria-expanded', 'false')
+    // Switcher Search 独立匹配 Feed / host / Group，不复用三栏折叠状态。
     await sourcePickerSearch.fill('OrigRead E2E Feed')
-    await expect(sourcePickerGroupToggle).toHaveAttribute('aria-expanded', 'true')
-    await expect(sourcePickerGroupToggle).toBeDisabled()
-    await expect(sourcePicker.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' })).toBeVisible()
+    await expect(sourcePicker.locator('.source-switcher-feed-option').filter({ hasText: 'OrigRead E2E Feed' })).toBeVisible()
     await expect(twoPaneArticleSearch).toHaveValue('Article 1')
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
+
+    await sourcePickerSearch.fill('127.0.0.1')
+    await expect(sourcePicker.locator('.source-switcher-feed-option').filter({ hasText: 'OrigRead E2E Feed' })).toBeVisible()
 
     await sourcePickerSearch.fill('')
-    await expect(sourcePickerGroupToggle).toHaveAttribute('aria-expanded', 'false')
-    await expect(sourcePicker.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' })).toHaveCount(0)
-    await sourcePickerGroupToggle.click()
-    await sourcePicker.locator('.source-item').filter({ hasText: 'OrigRead E2E Feed' }).click()
+    await sourcePicker.locator('.source-switcher-feed-option').filter({ hasText: 'OrigRead E2E Feed' }).click()
     await expect(sourcePicker).toHaveCount(0)
     await expect(page.locator('.article-scope-bar')).toContainText('OrigRead E2E Feed')
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
@@ -506,11 +505,11 @@ test('reader selection survives source and article filter changes', async () => 
 
     // Group / All 与 Feed 使用同一条关闭链；每次只改变 Article Scope，不替换 Reader。
     await page.locator('.two-pane-source-picker-button').click()
-    await page.locator('.two-pane-source-picker-overlay .source-group-scope').first().click()
+    await sourcePicker.locator('.source-switcher-group-option').first().click()
     await expect(sourcePicker).toHaveCount(0)
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
     await page.locator('.two-pane-source-picker-button').click()
-    await page.locator('.two-pane-source-picker-overlay .source-scope-all').click()
+    await sourcePicker.locator('.source-switcher-all').click()
     await expect(sourcePicker).toHaveCount(0)
     await expect(page.locator('.article-heading h1')).toContainText('OrigRead E2E Article 1')
 

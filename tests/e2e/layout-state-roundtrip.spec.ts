@@ -120,23 +120,34 @@ test('layout roundtrip preserves source scope, destination, reader selection and
 
     const sourcePicker = page.locator('.two-pane-source-picker-button')
     await sourcePicker.click()
-    const sourcePickerOverlay = page.locator('.two-pane-source-picker-overlay')
+    const sourcePickerOverlay = page.locator('.source-switcher-popover')
     await expect(sourcePickerOverlay).toBeVisible()
-    await expect(sourcePickerOverlay.locator('.source-item').filter({ hasText: fixture.feedAName })).toHaveAttribute('aria-current', 'true')
+    await expect(sourcePickerOverlay.locator('.source-switcher-feed-option').filter({ hasText: fixture.feedAName })).toHaveAttribute('aria-current', 'true')
 
-    const twoPaneSourceSearch = sourcePickerOverlay.locator('.source-list-toolbar .search-field input')
+    const twoPaneSourceSearch = sourcePickerOverlay.locator('.source-switcher-search input')
     await twoPaneSourceSearch.fill(fixture.feedAName)
-    await expect(sourcePickerOverlay.locator('.source-item').filter({ hasText: fixture.feedAName })).toBeVisible()
-    await expect(sourcePickerOverlay.locator('.source-item').filter({ hasText: 'DL-5 Feed B' })).toHaveCount(0)
+    await expect(sourcePickerOverlay.locator('.source-switcher-feed-option').filter({ hasText: fixture.feedAName })).toBeVisible()
+    await expect(sourcePickerOverlay.locator('.source-switcher-feed-option').filter({ hasText: 'DL-5 Feed B' })).toHaveCount(0)
+    await twoPaneSourceSearch.fill(fixture.groupName)
+    await expect(sourcePickerOverlay.locator('.source-switcher-group-option').filter({ hasText: fixture.groupName })).toBeVisible()
+    await twoPaneSourceSearch.fill('no-source-should-match-this-value')
+    await expect(sourcePickerOverlay.locator('.source-switcher-empty')).toBeVisible()
     await twoPaneSourceSearch.fill('')
 
-    // 双栏 Overlay 中 Group / Feed Scope 都必须是正式入口；切换范围不会清掉 Reader 选中的 Article A。
-    await sourcePickerOverlay.locator('.source-group-scope').filter({ hasText: fixture.groupName }).click()
+    const darkSurface = await sourcePickerOverlay.evaluate((element) => ({
+      popover: getComputedStyle(element).backgroundColor,
+      search: getComputedStyle(element.querySelector('.source-switcher-search')!).backgroundColor
+    }))
+    expect(darkSurface.popover).not.toBe('rgb(255, 255, 255)')
+    expect(darkSurface.search).not.toBe('rgb(255, 255, 255)')
+
+    // 双栏 Popover 中 Group / Feed Scope 都是正式入口；切换范围不会清掉 Reader 选中的 Article A。
+    await sourcePickerOverlay.locator('.source-switcher-group-option').filter({ hasText: fixture.groupName }).click()
     await expect(sourcePickerOverlay).toHaveCount(0)
     await expect(page.locator('.article-scope-copy strong')).toHaveText(fixture.groupName)
     await expect(page.locator('.article-heading h1')).toContainText(fixture.articleTitle)
     await sourcePicker.click()
-    await sourcePickerOverlay.locator('.source-item').filter({ hasText: fixture.feedAName }).click()
+    await sourcePickerOverlay.locator('.source-switcher-feed-option').filter({ hasText: fixture.feedAName }).click()
     await expect(sourcePickerOverlay).toHaveCount(0)
     await expect(page.locator('.article-scope-copy strong')).toHaveText(fixture.feedAName)
     await expect(page.locator('.article-heading h1')).toContainText(fixture.articleTitle)

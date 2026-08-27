@@ -74,7 +74,7 @@ import { SourceBrandHeader, SourceSidebar, type ArticleScope, type Destination }
 import { ArticleListPane } from './ArticleListPane'
 import { PaneDivider } from './PaneDivider'
 import { TwoPaneReadingLayout } from './TwoPaneReadingLayout'
-import { TwoPaneSourcePickerOverlay } from './TwoPaneSourcePickerOverlay'
+import { SourceSwitcherPopover } from './SourceSwitcherPopover'
 import { THREE_PANE_BREAKPOINT, resolveResponsivePaneLayout } from './responsive-layout'
 
 type ReaderMode = 'article' | 'ai' | 'translation'
@@ -198,10 +198,10 @@ export default function App(): React.JSX.Element {
     }
   }, [])
 
-  /** 打开双栏来源选择浮层；实际搜索框聚焦由 Overlay 生命周期 effect 统一处理。 */
-  const openTwoPaneSourcePicker = useCallback((): void => {
+  /** 双栏当前来源 Trigger 直接切换轻量 Source Switcher，不再进入整栏来源页。 */
+  const toggleTwoPaneSourcePicker = useCallback((): void => {
     setSourceSwitcherQuery('')
-    setSourceSwitcherOpen(true)
+    setSourceSwitcherOpen((open) => !open)
   }, [])
 
   const reloadLibrary = useCallback(async (): Promise<void> => {
@@ -321,7 +321,6 @@ export default function App(): React.JSX.Element {
       closeTwoPaneSourcePicker(false)
       return
     }
-    const focusFrame = window.requestAnimationFrame(() => twoPaneSourcePickerSearchInputRef.current?.focus())
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return
       event.preventDefault()
@@ -330,7 +329,6 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => {
-      window.cancelAnimationFrame(focusFrame)
       window.removeEventListener('keydown', onKeyDown)
     }
   }, [closeTwoPaneSourcePicker, focusReading, settings?.layoutMode, settings?.workspaceCollapsed, sourceSwitcherOpen])
@@ -1722,15 +1720,35 @@ export default function App(): React.JSX.Element {
       {twoPaneLayout ? (
         <TwoPaneReadingLayout
           workspaceHeader={renderSourceBrandHeader()}
-          workspaceContent={renderArticleListPane(openTwoPaneSourcePicker)}
+          workspaceContent={renderArticleListPane(toggleTwoPaneSourcePicker)}
           workspaceOverlay={sourceSwitcherOpen ? (
-            <TwoPaneSourcePickerOverlay
-              title={t('chooseSourceScope')}
-              closeLabel={t('close')}
-              onClose={() => closeTwoPaneSourcePicker(true)}
-            >
-              {renderSourceSidebar({ sourcePicker: true })}
-            </TwoPaneSourcePickerOverlay>
+            <SourceSwitcherPopover
+              triggerRef={twoPaneSourcePickerTriggerRef}
+              searchInputRef={twoPaneSourcePickerSearchInputRef}
+              query={sourceSwitcherQuery}
+              groups={groups}
+              feeds={feeds}
+              feedStatsById={feedStatsById}
+              articleScope={articleScope}
+              allArticleCount={librarySnapshot?.articles ?? articles.length}
+              allUnreadCount={librarySnapshot?.unread ?? articles.filter((article) => article.isUnread).length}
+              onQueryChange={setSourceSwitcherQuery}
+              onSelectAll={() => {
+                setArticleScope({ kind: 'all' })
+                setArticleQuery('')
+                closeTwoPaneSourcePicker(true)
+              }}
+              onSelectGroup={(group) => {
+                setArticleScope({ kind: 'group', id: group.id })
+                setArticleQuery('')
+                closeTwoPaneSourcePicker(true)
+              }}
+              onSelectFeed={(feed) => {
+                selectFeedScope(feed)
+                closeTwoPaneSourcePicker(true)
+              }}
+              onRequestClose={closeTwoPaneSourcePicker}
+            />
           ) : undefined}
           workspaceAriaLabel={t('layoutModeTwoPane')}
           width={settings?.workspaceWidth ?? 420}
