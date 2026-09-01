@@ -27,22 +27,35 @@ describe('AI summary policy', () => {
     expect(summaryOutputCeiling(3_000, 'DETAILED')).toBe(1_000)
   })
 
-  it('parses invisible model metadata and a no-summary decision', () => {
-    expect(parseAiSummaryModelOutput('<!-- origread-summary-v1: {"v":1,"shouldSummarize":false,"form":"flash","domain":"finance","reason":"source_already_concise"} -->')).toEqual({
-      shouldSummarize: false,
+  it('parses v2 invisible metadata and summary body', () => {
+    expect(parseAiSummaryModelOutput('<!-- origread-summary-v2: {"v":2,"form":"flash","domain":"finance"} -->\n摘要正文')).toEqual({
       articleForm: 'flash',
       domain: 'finance',
-      reason: 'source_already_concise',
-      summary: ''
+      summary: '摘要正文'
     })
   })
 
-  it('keeps parsing the legacy metadata marker for compatible providers and old responses', () => {
-    expect(parseAiSummaryModelOutput('<!-- origread-summary: {"shouldSummarize":true,"form":"news","domain":"technology","reason":null} -->\n正文摘要').summary).toBe('正文摘要')
+  it('supports formatted JSON inside the v2 metadata comment', () => {
+    const parsed = parseAiSummaryModelOutput(`<!-- origread-summary-v2:
+{
+  "v": 2,
+  "form": "research",
+  "domain": "machine-learning"
+}
+-->
+正文摘要`)
+    expect(parsed).toEqual({ articleForm: 'research', domain: 'machine-learning', summary: '正文摘要' })
   })
 
   it('fails open when a compatible model ignores the metadata protocol', () => {
-    expect(parseAiSummaryModelOutput('普通 Markdown 摘要').summary).toBe('普通 Markdown 摘要')
-    expect(parseAiSummaryModelOutput('普通 Markdown 摘要').shouldSummarize).toBe(true)
+    expect(parseAiSummaryModelOutput('普通 Markdown 摘要')).toEqual({ articleForm: null, domain: null, summary: '普通 Markdown 摘要' })
+  })
+
+  it('fails open to the summary body when v2 metadata is malformed', () => {
+    expect(parseAiSummaryModelOutput('<!-- origread-summary-v2: {"v":2,"form":"unknown","domain":"Technology"} -->\n可用正文')).toEqual({
+      articleForm: null,
+      domain: null,
+      summary: '可用正文'
+    })
   })
 })

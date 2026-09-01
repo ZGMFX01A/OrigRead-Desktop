@@ -1,25 +1,77 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AiSettingsRepository } from './ai-settings-repository'
-import type { OpenAiCompatibleProvider } from './openai-compatible-provider'
+import type { AiRuntimeConfig, OpenAiCompatibleProvider } from './openai-compatible-provider'
 import type { ArticleRecord, FeedRecord } from '../../shared/library'
 import { DesktopDatabase } from '../database/database'
 import { LibraryRepository } from '../database/library-repository'
 import { DEFAULT_GROUP_ID } from '../database/migrations'
 import { ReaderContentService } from '../content/reader-content-service'
-import { AiSummaryService, prepareArticleForSummary } from './ai-summary-service'
+import { NETWORK_REQUEST_TIMEOUT_MS } from '../network/request-policy'
+import { LlmCustomizationSettingsRepository } from '../llm/customization-settings-repository'
+import { LlmTaskPromptCustomizer } from '../llm/prompt-customization'
+import { LlmSkillRepository } from '../llm/skill-repository'
+import {
+  AiSummaryService,
+  aiSummaryInputBudget,
+  extractAiSummaryStreamPreview,
+  planAiSummaryBudget,
+  prepareArticleForSummary
+} from './ai-summary-service'
 
 const databases: DesktopDatabase[] = []
 const tempDirs: string[] = []
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const database of databases.splice(0)) database.close()
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
 describe('AiSummaryService', () => {
+  it('uses the short health-check timeout for explicit provider connection tests', async () => {
+    const database = new DesktopDatabase(':memory:')
+    databases.push(database)
+    const library = new LibraryRepository(database.connection)
+    const config = {
+      enabled: true,
+      defaultProviderId: 'default-provider',
+      outputLanguage: 'zh-CN',
+      summaryLength: 'STANDARD' as const,
+      providers: [{
+        id: 'default-provider',
+        name: 'Default',
+        enabled: true,
+        endpoint: 'https://default.example/v1',
+        defaultModel: 'default-model',
+        models: ['default-model'],
+        hasApiKey: true
+      }]
+    }
+    const settings = { current: () => config, getApiKey: () => 'test-key' } as unknown as AiSettingsRepository
+    let observedTimeoutMs: number | undefined
+    const provider = {
+      complete: async (_systemPrompt: string, _userPrompt: string, runtime: AiRuntimeConfig) => {
+        observedTimeoutMs = runtime.requestTimeoutMs
+        return 'OK'
+      }
+    } as unknown as OpenAiCompatibleProvider
+    const service = new AiSummaryService(library, new ReaderContentService(library), settings, 'unused-cache-dir', provider)
+
+    await service.testProvider('default-provider')
+
+    expect(observedTimeoutMs).toBe(NETWORK_REQUEST_TIMEOUT_MS.AI_PROVIDER_HEALTH)
+  })
+
+  it('hides partial metadata from streaming preview and shows body after the comment closes', () => {
+    expect(extractAiSummaryStreamPreview('<')).toBe('')
+    expect(extractAiSummaryStreamPreview('<!-- origread-summary-v2: {"v":2')).toBe('')
+    expect(extractAiSummaryStreamPreview('<!-- origread-summary-v2: {"v":2,"form":"news","domain":"technology"} -->\n正文')).toBe('正文')
+    expect(extractAiSummaryStreamPreview('兼容模型直接输出正文')).toBe('兼容模型直接输出正文')
+  })
+
   it('preserves table rows for research and report summarization', () => {
     const prepared = prepareArticleForSummary({
       articleId: 'table-article',
@@ -46,6 +98,42 @@ describe('AiSummaryService', () => {
     expect(prepared).toContain('正文结论必须保留')
   })
 
+  it('uses increasing mode budgets while respecting small provider context windows', () => {
+    expect(aiSummaryInputBudget('BRIEF')).toBe(12_000)
+    expect(aiSummaryInputBudget('STANDARD')).toBe(24_000)
+    expect(aiSummaryInputBudget('DETAILED')).toBe(36_000)
+
+    const fourK = planAiSummaryBudget(4_096, 'system prompt', 'title', 'DETAILED')
+    const eightK = planAiSummaryBudget(8_000, 'system prompt', 'title', 'DETAILED')
+    expect(fourK.articleCharacterBudget).toBeLessThan(4_096)
+    expect(eightK.articleCharacterBudget).toBeGreaterThan(fourK.articleCharacterBudget)
+    expect(eightK.articleCharacterBudget).toBeLessThan(8_000)
+    expect(fourK.outputReserveTokens).toBe(1_024)
+  })
+
+  it('rejects a provider window that cannot fit fixed prompt plus meaningful article input', () => {
+    expect(() => planAiSummaryBudget(4_096, '固定提示词'.repeat(4_000), '标题', 'STANDARD')).toThrow(/上下文窗口|正文预算/)
+  })
+
+  it('samples the middle of a long structured report instead of keeping only head and tail', () => {
+    const chapters = Array.from({ length: 9 }, (_value, index) => {
+      const sentinel = index === 4 ? ' MIDDLE-KEY-CHAPTER-SENTINEL ' : ' '
+      return `<h2>Chapter ${index}</h2><p>${`chapter-${index}-data `.repeat(50)}${sentinel}</p>`
+    }).join('')
+    const prepared = prepareArticleForSummary({
+      articleId: 'coverage-article',
+      mode: 'content',
+      html: `<article>${chapters}</article>`,
+      sourceUrl: 'https://example.com/report'
+    }, 'STANDARD', 2_200)
+
+    expect(prepared.length).toBeLessThanOrEqual(2_200)
+    expect(prepared).toContain('Chapter 0')
+    expect(prepared).toContain('MIDDLE-KEY-CHAPTER-SENTINEL')
+    expect(prepared).toContain('Chapter 8')
+    expect(prepared).toContain('[content omitted due to input limit]')
+  })
+
   it('reuses the latest successful explicit-provider summary for a later normal open and reports real stages', async () => {
     const database = new DesktopDatabase(':memory:')
     databases.push(database)
@@ -70,8 +158,10 @@ describe('AiSummaryService', () => {
 
     let providerCalls = 0
     const provider = {
-      completeDetailed: async () => {
+      streamDetailed: async (_systemPrompt: string, _userPrompt: string, runtime: AiRuntimeConfig, onDelta: (delta: { content: string; reasoning: string; finishReason: string | null }) => void) => {
         providerCalls += 1
+        expect(runtime.temperature).toBe(0)
+        onDelta({ content: '<!-- origread-summary-v2: {"v":2,"form":"analysis","domain":"technology"} -->\nalternate summary', reasoning: '', finishReason: 'stop' })
         return { content: 'alternate summary', reasoning: null }
       }
     } as unknown as OpenAiCompatibleProvider
@@ -96,6 +186,56 @@ describe('AiSummaryService', () => {
     expect(providerCalls).toBe(1)
   })
 
+  it('applies the fixed Summary Skill and Custom Instructions and isolates cache variants when preferences change', async () => {
+    const database = new DesktopDatabase(':memory:')
+    databases.push(database)
+    const library = new LibraryRepository(database.connection)
+    library.upsertFeed(feed())
+    library.upsertArticle(article())
+    const config = {
+      enabled: true,
+      defaultProviderId: 'default-provider',
+      outputLanguage: 'zh-CN',
+      summaryLength: 'STANDARD' as const,
+      providers: [{ id: 'default-provider', name: 'Default', enabled: true, endpoint: 'https://default.example/v1', defaultModel: 'default-model', models: ['default-model'], hasApiKey: true }]
+    }
+    const aiSettings = { current: () => config, getApiKey: () => 'test-key' } as unknown as AiSettingsRepository
+    const skills = new LlmSkillRepository(database.connection)
+    const customization = new LlmCustomizationSettingsRepository(database.connection)
+    await skills.createFromMarkdown(`---\nname: summary-evidence\ndescription: Evidence-focused summary.\n---\nPreserve quantitative evidence and explicit limitations.`)
+    skills.setBinding('SUMMARY', 'summary-evidence')
+    customization.update({ customInstructions: 'Prefer compact prose.' })
+    const customizer = new LlmTaskPromptCustomizer(skills, customization)
+    const systemPrompts: string[] = []
+    const provider = {
+      streamDetailed: async (systemPrompt: string) => {
+        systemPrompts.push(systemPrompt)
+        return {
+          content: '<!-- origread-summary-v2: {"v":2,"form":"analysis","domain":"technology"} -->\n定制摘要',
+          reasoning: null
+        }
+      }
+    } as unknown as OpenAiCompatibleProvider
+    const cacheDir = mkdtempSync(join(tmpdir(), 'origread-ai-summary-d4-'))
+    tempDirs.push(cacheDir)
+    const service = new AiSummaryService(library, new ReaderContentService(library), aiSettings, cacheDir, provider, customizer)
+
+    await service.summarize('article-1', true)
+    expect(systemPrompts).toHaveLength(1)
+    expect(systemPrompts[0]).toContain('<origread_user_skill id="summary-evidence">')
+    expect(systemPrompts[0]).toContain('Preserve quantitative evidence and explicit limitations.')
+    expect(systemPrompts[0]).toContain('<origread_user_custom_instructions>')
+    expect(systemPrompts[0]).toContain('Prefer compact prose.')
+
+    await service.summarize('article-1')
+    expect(systemPrompts).toHaveLength(1)
+
+    customization.update({ customInstructions: 'Use short paragraphs.' })
+    await service.summarize('article-1')
+    expect(systemPrompts).toHaveLength(2)
+    expect(systemPrompts[1]).toContain('Use short paragraphs.')
+  })
+
   it('returns and caches NOT_NEEDED locally for an obviously concise article without calling provider', async () => {
     const database = new DesktopDatabase(':memory:')
     databases.push(database)
@@ -111,7 +251,7 @@ describe('AiSummaryService', () => {
     }
     const settings = { current: () => config, getApiKey: () => 'test-key' } as unknown as AiSettingsRepository
     let providerCalls = 0
-    const provider = { completeDetailed: async () => { providerCalls += 1; return { content: 'should not happen', reasoning: null } } } as unknown as OpenAiCompatibleProvider
+    const provider = { streamDetailed: async () => { providerCalls += 1; return { content: 'should not happen', reasoning: null } } } as unknown as OpenAiCompatibleProvider
     const cacheDir = mkdtempSync(join(tmpdir(), 'origread-ai-summary-'))
     tempDirs.push(cacheDir)
     const service = new AiSummaryService(library, new ReaderContentService(library), settings, cacheDir, provider)
@@ -122,6 +262,92 @@ describe('AiSummaryService', () => {
     const reopened = await service.summarize('article-1')
     expect(reopened.status).toBe('NOT_NEEDED')
     expect(providerCalls).toBe(0)
+  })
+
+  it('force refresh bypasses the local concise-article gate and really calls the provider', async () => {
+    const database = new DesktopDatabase(':memory:')
+    databases.push(database)
+    const library = new LibraryRepository(database.connection)
+    library.upsertFeed(feed())
+    library.upsertArticle(article('<p>详情见原文。</p>'))
+    const config = {
+      enabled: true,
+      defaultProviderId: 'default-provider',
+      outputLanguage: 'zh-CN',
+      summaryLength: 'STANDARD' as const,
+      providers: [{ id: 'default-provider', name: 'Default', enabled: true, endpoint: 'https://default.example/v1', defaultModel: 'default-model', models: ['default-model'], hasApiKey: true }]
+    }
+    const settings = { current: () => config, getApiKey: () => 'test-key' } as unknown as AiSettingsRepository
+    let providerCalls = 0
+    const provider = {
+      streamDetailed: async () => {
+        providerCalls += 1
+        return { content: '<!-- origread-summary-v2: {"v":2,"form":"flash","domain":"technology"} -->\n重新生成的摘要', reasoning: null }
+      }
+    } as unknown as OpenAiCompatibleProvider
+    const cacheDir = mkdtempSync(join(tmpdir(), 'origread-ai-summary-'))
+    tempDirs.push(cacheDir)
+    const service = new AiSummaryService(library, new ReaderContentService(library), settings, cacheDir, provider)
+
+    const result = await service.summarize('article-1', true)
+    expect(result).toMatchObject({ status: 'GENERATED', summary: '重新生成的摘要', articleForm: 'flash', domain: 'technology' })
+    expect(providerCalls).toBe(1)
+  })
+
+  it('aggregates summary timings without logging prompts, API keys, or authorization data', async () => {
+    const database = new DesktopDatabase(':memory:')
+    databases.push(database)
+    const library = new LibraryRepository(database.connection)
+    library.upsertFeed(feed())
+    library.upsertArticle(article())
+    const config = {
+      enabled: true,
+      defaultProviderId: 'default-provider',
+      outputLanguage: 'zh-CN',
+      summaryLength: 'STANDARD' as const,
+      providers: [{ id: 'default-provider', name: 'Default', enabled: true, endpoint: 'https://default.example/v1', defaultModel: 'default-model', models: ['default-model'], hasApiKey: true }]
+    }
+    const secret = 'super-secret-api-key'
+    const settings = { current: () => config, getApiKey: () => secret } as unknown as AiSettingsRepository
+    const provider = {
+      streamDetailed: async (_systemPrompt: string, _userPrompt: string, runtime: AiRuntimeConfig) => {
+        runtime.onTiming?.({ metric: 'request_start', elapsedMs: 0 })
+        runtime.onTiming?.({ metric: 'TTFB', elapsedMs: 12.3 })
+        runtime.onTiming?.({ metric: 'first_sse', elapsedMs: 18.4 })
+        runtime.onTiming?.({ metric: 'TTFR', elapsedMs: 25.5 })
+        runtime.onTiming?.({ metric: 'TTFC', elapsedMs: 41.6 })
+        return {
+          content: '<!-- origread-summary-v2: {"v":2,"form":"analysis","domain":"technology"} -->\n性能摘要正文',
+          reasoning: '性能推理'
+        }
+      }
+    } as unknown as OpenAiCompatibleProvider
+    const cacheDir = mkdtempSync(join(tmpdir(), 'origread-ai-summary-'))
+    tempDirs.push(cacheDir)
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    const service = new AiSummaryService(library, new ReaderContentService(library), settings, cacheDir, provider)
+
+    await service.summarize('article-1', true)
+
+    const perfCall = info.mock.calls.find(([prefix]) => prefix === '[OrigRead][AI Perf]')
+    expect(perfCall).toBeDefined()
+    const perf = JSON.parse(String(perfCall?.[1])) as Record<string, unknown>
+    expect(perf).toMatchObject({
+      task: 'summary',
+      TTFB_ms: 12.3,
+      first_sse_ms: 18.4,
+      TTFR_ms: 25.5,
+      TTFC_ms: 41.6,
+      streaming: true,
+      outcome: 'generated'
+    })
+    expect(Number(perf.prepare_ms)).toBeGreaterThanOrEqual(0)
+    expect(Number(perf.request_start_ms)).toBeGreaterThanOrEqual(Number(perf.prepare_ms))
+    expect(Number(perf.total_ms)).toBeGreaterThanOrEqual(Number(perf.request_start_ms))
+    const serializedLogs = JSON.stringify(info.mock.calls)
+    expect(serializedLogs).not.toContain(secret)
+    expect(serializedLogs).not.toContain('You are')
+    expect(serializedLogs).not.toContain('Authorization')
   })
 
   it('invalidates a NOT_NEEDED cache when the actual reader content changes from a short feed body to full content', async () => {
@@ -140,7 +366,7 @@ describe('AiSummaryService', () => {
     const settings = { current: () => config, getApiKey: () => 'test-key' } as unknown as AiSettingsRepository
     let providerCalls = 0
     const provider = {
-      completeDetailed: async () => {
+      streamDetailed: async () => {
         providerCalls += 1
         return { content: '完整正文已经具备摘要价值。', reasoning: null }
       }

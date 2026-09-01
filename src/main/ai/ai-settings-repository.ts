@@ -1,12 +1,20 @@
 import type { DatabaseSync } from 'node:sqlite'
-import type { AiProviderPatch, AiProviderProfile, AiSettings, AiSummaryLength } from '../../shared/ai'
-import { DEFAULT_AI_PROVIDER_ID } from '../../shared/ai'
+import type {
+  AiCapabilityOverrideMode,
+  AiOutputTokenLimitStyle,
+  AiProviderPatch,
+  AiProviderProfile,
+  AiSettings,
+  AiSummaryLength
+} from '../../shared/ai'
+import { DEFAULT_AI_CONTEXT_WINDOW_TOKENS, DEFAULT_AI_PROVIDER_ID } from '../../shared/ai'
 import type { SecretStore } from '../security/secret-store'
 
 const SETTINGS_KEY = 'ai.settings'
 
-interface StoredAiProvider extends Omit<AiProviderProfile, 'hasApiKey'> {}
+interface StoredAiProvider extends Omit<AiProviderProfile, 'hasApiKey' | 'apiKeyLength'> {}
 interface StoredAiSettings extends Omit<AiSettings, 'providers'> { providers: StoredAiProvider[] }
+type NormalizableStoredAiSettings = Partial<Omit<StoredAiSettings, 'providers'>> & { providers?: Array<Partial<StoredAiProvider>> }
 
 export class AiSettingsRepository {
   constructor(
@@ -18,10 +26,15 @@ export class AiSettingsRepository {
   current(): AiSettings {
     const stored = this.read() ?? defaultStoredAiSettings(this.defaultOutputLanguage)
     const normalized = normalizeSettings(stored, this.defaultOutputLanguage)
-    return { ...normalized, providers: normalized.providers.map((provider) => ({
-      ...provider,
-      hasApiKey: this.secrets.contains(secretKey(provider.id))
-    })) }
+    return { ...normalized, providers: normalized.providers.map((provider) => {
+      const key = secretKey(provider.id)
+      const hasApiKey = this.secrets.contains(key)
+      return {
+        ...provider,
+        hasApiKey,
+        apiKeyLength: hasApiKey ? this.secrets.get(key).length : 0
+      }
+    }) }
   }
 
   setEnabled(enabled: boolean): AiSettings { return this.save({ ...this.toStored(this.current()), enabled }) }
@@ -54,7 +67,21 @@ export class AiSettingsRepository {
       ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
       ...(patch.endpoint !== undefined ? { endpoint: patch.endpoint } : {}),
       ...(patch.defaultModel !== undefined ? { defaultModel: patch.defaultModel } : {}),
-      ...(endpointChanged ? { models: [] } : patch.models !== undefined ? { models: patch.models } : {})
+      ...(endpointChanged
+        ? {
+            models: [],
+            streamingCapabilityOverride: 'AUTO' as const,
+            toolCallingCapabilityOverride: 'AUTO' as const,
+            reasoningCapabilityOverride: 'AUTO' as const,
+            outputTokenLimitStyle: 'AUTO' as const
+          }
+        : patch.models !== undefined ? { models: patch.models } : {}),
+      ...(patch.streamingCapabilityOverride !== undefined ? { streamingCapabilityOverride: patch.streamingCapabilityOverride } : {}),
+      ...(patch.toolCallingCapabilityOverride !== undefined ? { toolCallingCapabilityOverride: patch.toolCallingCapabilityOverride } : {}),
+      ...(patch.reasoningCapabilityOverride !== undefined ? { reasoningCapabilityOverride: patch.reasoningCapabilityOverride } : {}),
+      ...(patch.outputTokenLimitStyle !== undefined ? { outputTokenLimitStyle: patch.outputTokenLimitStyle } : {}),
+      ...(patch.contextWindowTokens !== undefined ? { contextWindowTokens: patch.contextWindowTokens } : {}),
+      ...(patch.strictStreamTermination !== undefined ? { strictStreamTermination: patch.strictStreamTermination } : {})
     }) : item)
     return this.save({ ...current, providers: updated })
   }
@@ -73,14 +100,14 @@ export class AiSettingsRepository {
     for (const [id, value] of Object.entries(values)) if (value.trim()) this.secrets.put(secretKey(id), value)
   }
 
-  restore(settings: Omit<AiSettings, 'providers'> & { providers: Array<Omit<AiProviderProfile, 'hasApiKey'>> }, apiKeys?: Record<string, string>): AiSettings {
+  restore(settings: Omit<AiSettings, 'providers'> & { providers: Array<Partial<Omit<AiProviderProfile, 'hasApiKey'>>> }, apiKeys?: Record<string, string>): AiSettings {
     const restored = this.save(normalizeSettings(settings, this.defaultOutputLanguage))
     if (apiKeys) this.replaceApiKeys(apiKeys)
     return this.current()
   }
 
   private toStored(settings: AiSettings): StoredAiSettings {
-    return { ...settings, providers: settings.providers.map(({ hasApiKey: _ignored, ...provider }) => provider) }
+    return { ...settings, providers: settings.providers.map(({ hasApiKey: _ignored, apiKeyLength: _length, ...provider }) => provider) }
   }
   private save(value: StoredAiSettings): AiSettings {
     const normalized = normalizeSettings(value, this.defaultOutputLanguage)
@@ -96,12 +123,25 @@ export class AiSettingsRepository {
 
 function secretKey(id: string): string { return `ai:${id}:api-key` }
 function defaultProvider(id = DEFAULT_AI_PROVIDER_ID, name = '默认服务'): StoredAiProvider {
-  return { id, name, enabled: true, endpoint: 'https://api.openai.com/v1', defaultModel: '', models: [] }
+  return {
+    id,
+    name,
+    enabled: true,
+    endpoint: 'https://api.openai.com/v1',
+    defaultModel: '',
+    models: [],
+    streamingCapabilityOverride: 'AUTO',
+    toolCallingCapabilityOverride: 'AUTO',
+    reasoningCapabilityOverride: 'AUTO',
+    outputTokenLimitStyle: 'AUTO',
+    contextWindowTokens: DEFAULT_AI_CONTEXT_WINDOW_TOKENS,
+    strictStreamTermination: true
+  }
 }
 function defaultStoredAiSettings(defaultOutputLanguage = 'zh-CN'): StoredAiSettings {
   return { enabled: false, providers: [defaultProvider()], defaultProviderId: DEFAULT_AI_PROVIDER_ID, outputLanguage: defaultOutputLanguage, summaryLength: 'STANDARD' }
 }
-function normalizeSettings(value: Partial<StoredAiSettings>, defaultOutputLanguage = 'zh-CN'): StoredAiSettings {
+function normalizeSettings(value: NormalizableStoredAiSettings, defaultOutputLanguage = 'zh-CN'): StoredAiSettings {
   const providers = Array.isArray(value.providers) && value.providers.length ? value.providers.map(normalizeProvider) : [defaultProvider()]
   const defaultProviderId = providers.some((item) => item.id === value.defaultProviderId) ? value.defaultProviderId! : providers[0]!.id
   const summaryLength: AiSummaryLength = ['BRIEF','STANDARD','DETAILED'].includes(String(value.summaryLength)) ? value.summaryLength as AiSummaryLength : 'STANDARD'
@@ -115,7 +155,26 @@ function normalizeProvider(value: Partial<StoredAiProvider>): StoredAiProvider {
     enabled: value.enabled !== false,
     endpoint: String(value.endpoint ?? '').trim(),
     defaultModel: String(value.defaultModel ?? '').trim(),
-    models
+    models,
+    streamingCapabilityOverride: normalizeCapabilityOverride(value.streamingCapabilityOverride),
+    toolCallingCapabilityOverride: normalizeCapabilityOverride(value.toolCallingCapabilityOverride),
+    reasoningCapabilityOverride: normalizeCapabilityOverride(value.reasoningCapabilityOverride),
+    outputTokenLimitStyle: normalizeOutputTokenLimitStyle(value.outputTokenLimitStyle),
+    contextWindowTokens: normalizeContextWindowTokens(value.contextWindowTokens),
+    strictStreamTermination: value.strictStreamTermination !== false
   }
+}
+
+function normalizeCapabilityOverride(value: unknown): AiCapabilityOverrideMode {
+  return value === 'ENABLED' || value === 'DISABLED' ? value : 'AUTO'
+}
+
+function normalizeOutputTokenLimitStyle(value: unknown): AiOutputTokenLimitStyle {
+  return value === 'MAX_TOKENS' || value === 'MAX_COMPLETION_TOKENS' ? value : 'AUTO'
+}
+
+function normalizeContextWindowTokens(value: unknown): number {
+  const parsed = typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : DEFAULT_AI_CONTEXT_WINDOW_TOKENS
+  return Math.min(4_000_000, Math.max(4_096, parsed))
 }
 

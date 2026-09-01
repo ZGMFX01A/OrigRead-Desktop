@@ -1,5 +1,6 @@
 import * as cheerio from 'cheerio'
 import type { TranslationProviderType } from '../../shared/translation'
+import { NETWORK_REQUEST_TIMEOUT_MS, requestSignal } from '../network/request-policy'
 
 export interface TranslationRuntimeConfig { endpoint: string; apiKey: string; region: string }
 export interface TranslationBatchResult { texts: string[]; detectedSourceLanguage: string | null }
@@ -19,7 +20,10 @@ abstract class HttpProvider implements TranslationProvider {
   maxSegmentCharacters = 4_000
   abstract translate(texts: string[], sourceLanguage: string | null, targetLanguage: string, config: TranslationRuntimeConfig): Promise<TranslationBatchResult>
   protected async json(url: string, init: RequestInit): Promise<unknown> {
-    const response = await fetch(url, { ...init, signal: AbortSignal.timeout(30_000) })
+    const response = await fetch(url, {
+      ...init,
+      signal: requestSignal(init.signal ?? undefined, NETWORK_REQUEST_TIMEOUT_MS.TRANSLATION)
+    })
     const text = await response.text()
     if (!response.ok) throw new Error(translationHttpError(response.status, text))
     try { return JSON.parse(text) } catch { throw new Error('翻译服务返回了无法解析的 JSON') }

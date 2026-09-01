@@ -15,17 +15,38 @@ export interface AiSummaryInputMetrics {
 }
 
 export interface AiSummaryModelDecision {
-  shouldSummarize: boolean
   articleForm: AiArticleForm | null
   domain: string | null
-  reason: AiSummarySkipReason | null
   summary: string
 }
 
 const ARTICLE_FORMS = new Set<AiArticleForm>(['flash', 'release', 'news', 'review', 'guide', 'research', 'report', 'analysis', 'opinion', 'interview', 'other'])
-const SKIP_REASONS = new Set<AiSummarySkipReason>(['source_already_concise', 'low_compression_value', 'insufficient_content'])
-const META_V1_PATTERN = /^\s*<!--\s*origread-summary-v1:\s*(\{[^\r\n]*\})\s*-->\s*/i
-const LEGACY_META_PATTERN = /^\s*<!--\s*origread-summary:\s*(\{[^\r\n]*\})\s*-->\s*/i
+const SUMMARY_META_V2_PREFIX = '<!-- origread-summary-v2:'
+const SUMMARY_META_VERSION = 2
+const MAX_SUMMARY_DOMAIN_LENGTH = 24
+const SUMMARY_DOMAIN_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/
+
+interface SummaryMetaPrefix {
+  json: string
+  bodyStartIndex: number
+}
+
+function extractSummaryMetaPrefix(content: string): SummaryMetaPrefix | null {
+  let start = 0
+  while (start < content.length && /\s/.test(content[start]!)) start += 1
+  if (start >= content.length) return null
+  if (content.slice(start, start + SUMMARY_META_V2_PREFIX.length).toLowerCase() !== SUMMARY_META_V2_PREFIX.toLowerCase()) return null
+
+  const jsonStart = start + SUMMARY_META_V2_PREFIX.length
+  const commentEnd = content.indexOf('-->', jsonStart)
+  if (commentEnd < 0) return null
+  const json = content.slice(jsonStart, commentEnd).trim()
+  if (!json.startsWith('{') || !json.endsWith('}')) return null
+
+  let bodyStartIndex = commentEnd + 3
+  while (bodyStartIndex < content.length && /\s/.test(content[bodyStartIndex]!)) bodyStartIndex += 1
+  return { json, bodyStartIndex }
+}
 
 export function measureAiSummaryInput(content: string): AiSummaryInputMetrics {
   const lines = content.replace(/\r\n/g, '\n').split('\n')
@@ -105,26 +126,26 @@ export function summaryOutputCeiling(effectiveLength: number, length: AiSummaryL
 }
 
 export function parseAiSummaryModelOutput(content: string): AiSummaryModelDecision {
-  const match = META_V1_PATTERN.exec(content) ?? LEGACY_META_PATTERN.exec(content)
-  if (!match) return { shouldSummarize: true, articleForm: null, domain: null, reason: null, summary: content.trim() }
+  const metaPrefix = extractSummaryMetaPrefix(content)
+  if (!metaPrefix) return { articleForm: null, domain: null, summary: content.trim() }
   try {
-    const meta = JSON.parse(match[1]!) as Record<string, unknown>
-    const shouldSummarize = meta.shouldSummarize !== false
-    const form = typeof meta.form === 'string' && ARTICLE_FORMS.has(meta.form as AiArticleForm) ? meta.form as AiArticleForm : null
-    const domain = typeof meta.domain === 'string' ? meta.domain.trim().slice(0, 48) || null : null
-    const reason = typeof meta.reason === 'string' && SKIP_REASONS.has(meta.reason as AiSummarySkipReason) ? meta.reason as AiSummarySkipReason : null
-    const summary = content.slice(match[0].length).trim()
-    if (shouldSummarize && !summary) throw new Error('AI 摘要元数据声明需要摘要，但没有返回摘要正文')
-    return { shouldSummarize, articleForm: form, domain, reason: shouldSummarize ? null : (reason ?? 'low_compression_value'), summary: shouldSummarize ? summary : '' }
+    const meta = JSON.parse(metaPrefix.json) as Record<string, unknown>
+    if (meta.v !== SUMMARY_META_VERSION) throw new Error('AI 摘要元数据版本无效')
+    const form = typeof meta.form === 'string' && ARTICLE_FORMS.has(meta.form.toLowerCase() as AiArticleForm)
+      ? meta.form.toLowerCase() as AiArticleForm
+      : null
+    if (!form) throw new Error('AI 摘要文章形态无效')
+    const domain = typeof meta.domain === 'string' ? meta.domain.trim() : ''
+    if (domain.length < 1 || domain.length > MAX_SUMMARY_DOMAIN_LENGTH || !SUMMARY_DOMAIN_PATTERN.test(domain)) {
+      throw new Error('AI 摘要领域标签无效')
+    }
+    const summary = content.slice(metaPrefix.bodyStartIndex).trim()
+    if (!summary) throw new Error('AI 摘要元数据后没有返回摘要正文')
+    return { articleForm: form, domain, summary }
   } catch {
     // 兼容不完全遵循协议的 OpenAI Compatible 模型：元数据坏掉时 fail-open，仍显示模型正文。
-    return {
-      shouldSummarize: true,
-      articleForm: null,
-      domain: null,
-      reason: null,
-      summary: content.replace(META_V1_PATTERN, '').replace(LEGACY_META_PATTERN, '').trim() || content.trim()
-    }
+    const body = content.slice(metaPrefix.bodyStartIndex).trim()
+    return { articleForm: null, domain: null, summary: body || content.trim() }
   }
 }
 
