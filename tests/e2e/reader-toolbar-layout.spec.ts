@@ -73,7 +73,7 @@ test('reader toolbar responds to Reader pane width and keeps Settings visible', 
     await page.setViewportSize({ width: 1800, height: 900 })
     expect((await requiredBox(readerPane)).width).toBeGreaterThan(1000)
     await expect(aiLabel).toHaveCSS('display', 'none')
-    await expect(page.locator('.ai-summary-button')).toHaveAttribute('title', /AI 摘要|AI summary/i)
+    await expect(page.locator('.ai-summary-button')).toHaveAttribute('title', /AI 助手|AI assistant/i)
     await expect(page.locator('.translation-button')).toHaveAttribute('title', /翻译|Translation|Translate/i)
     await expect(voiceSelect).toHaveCSS('opacity', '0')
     expect((await requiredBox(voiceControl)).width).toBeLessThanOrEqual(36)
