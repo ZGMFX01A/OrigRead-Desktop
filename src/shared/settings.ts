@@ -1,7 +1,7 @@
 import type { DesktopLanguage } from './locale'
 
 export type DesktopLanguagePreference = 'system' | DesktopLanguage
-export type AiSummaryPlacement = 'replace' | 'left' | 'right' | 'top' | 'bottom'
+export type AiSummaryPlacement = 'left' | 'right'
 export type ThemePreference = 'system' | 'light' | 'dark'
 export type ReaderBackgroundPreference = 'theme' | 'paper' | 'warm' | 'sepia' | 'mint' | 'custom'
 /** Desktop 阅读主界面的用户布局偏好；与窗口响应式临时隐藏状态严格分离。 */
@@ -68,7 +68,7 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   readerBackground: 'theme',
   readerBackgroundCustom: '#eef7ee',
   ttsVoiceURI: '',
-  aiSummaryPlacement: 'replace',
+  aiSummaryPlacement: 'right',
   aiSummaryPanelSize: 360,
   readingShareConfigured: false,
   readingShareIncludeTitle: true,
@@ -253,10 +253,14 @@ function normalizeReaderContentWidth(value: unknown): number {
   return Math.round(Math.min(Math.max(numberValue, 600), 1000))
 }
 
-function normalizeAiSummaryPlacement(value: unknown): AiSummaryPlacement {
-  return value === 'replace' || value === 'left' || value === 'right' || value === 'top' || value === 'bottom'
-    ? value
-    : DEFAULT_DESKTOP_SETTINGS.aiSummaryPlacement
+/**
+ * D0.4：统一 AI Panel 首版只保留左右布局。
+ * 旧版 replace/top/bottom 都迁移到新的默认右侧，不把旧值继续暴露给 Renderer。
+ */
+export function normalizeAiSummaryPlacement(value: unknown): AiSummaryPlacement {
+  if (value === 'left') return 'left'
+  if (value === 'right' || value === 'replace' || value === 'top' || value === 'bottom') return 'right'
+  return DEFAULT_DESKTOP_SETTINGS.aiSummaryPlacement
 }
 
 function normalizeAiSummaryPanelSize(value: unknown): number {

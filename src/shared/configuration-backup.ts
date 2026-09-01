@@ -1,5 +1,7 @@
-import type { AiSummaryLength } from './ai'
+import type { AiCapabilityOverrideMode, AiOutputTokenLimitStyle, AiSummaryLength } from './ai'
 import type { TranslationDisplayMode, TranslationProviderType, TranslationTarget } from './translation'
+import type { LlmCustomizationSettings } from './llm-customization'
+import type { PersistentWebSearchMode, WebSearchProviderKind } from './web-search'
 
 export interface ConfigurationBackup {
   schemaVersion: 1
@@ -17,7 +19,22 @@ export interface ConfigurationBackup {
   rssHubSourceUrls: Record<string, string>
   translation: TranslationBackup
   ai: AiBackup
+  llm?: LlmBackup
+  webSearch?: WebSearchBackup
   encryptedSecrets: EncryptedBackupSecrets | null
+}
+
+export interface LlmBackup {
+  customization: LlmCustomizationSettings
+  skills: unknown
+  quickMessages: unknown
+}
+
+export interface WebSearchBackup {
+  mode: PersistentWebSearchMode
+  providers: Array<{id:string;kind:WebSearchProviderKind;name:string;endpoint:string;enabled:boolean}>
+  defaultProviderId: string | null
+  maxResults: number
 }
 
 export interface AccountSettingsBackup {
@@ -41,10 +58,23 @@ export interface TranslationBackup {
 }
 export interface AiBackup {
   enabled:boolean;defaultProviderId:string;outputLanguage:string;summaryLength:AiSummaryLength
-  providers:Array<{id:string;name:string;enabled:boolean;endpoint:string;defaultModel:string;models:string[]}>
+  providers:Array<{
+    id:string;name:string;enabled:boolean;endpoint:string;defaultModel:string;models:string[]
+    streamingCapabilityOverride?:AiCapabilityOverrideMode
+    toolCallingCapabilityOverride?:AiCapabilityOverrideMode
+    reasoningCapabilityOverride?:AiCapabilityOverrideMode
+    outputTokenLimitStyle?:AiOutputTokenLimitStyle
+    contextWindowTokens?:number
+    strictStreamTermination?:boolean
+  }>
 }
 export interface EncryptedBackupSecrets { kdf:'PBKDF2WithHmacSHA256';cipher:'AES-256-GCM';iterations:number;saltBase64:string;ivBase64:string;ciphertextBase64:string }
-export interface ConfigurationBackupSecrets { translationApiKeys:Partial<Record<TranslationProviderType,string>>;aiApiKeys:Record<string,string> }
+export interface ConfigurationBackupSecrets {
+  translationApiKeys:Partial<Record<TranslationProviderType,string>>
+  aiApiKeys:Record<string,string>
+  /** Optional so encrypted backups created before D5 remain readable. */
+  webSearchApiKeys?:Record<string,string>
+}
 export interface ConfigurationRestoreResult { groupsAdded:number;feedsAdded:number;feedsUpdated:number;filterRulesRestored:number;credentialsRestored:boolean }
 export interface ConfigurationBackupFileResult { ok:boolean;cancelled:boolean;path:string|null;restoreResult?:ConfigurationRestoreResult;error:string|null }
 

@@ -90,6 +90,24 @@ describe('SettingsRepository', () => {
     database.close()
   })
 
+  it.each(['replace', 'top', 'bottom'] as const)('migrates legacy AI summary placement %s to right', (legacyPlacement) => {
+    const database = new DesktopDatabase(':memory:')
+    database.connection.prepare(`
+      INSERT INTO app_settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+    `).run('desktop.settings', JSON.stringify({
+      aiSummaryPlacement: legacyPlacement,
+      aiSummaryPanelSize: 470
+    }), Date.now())
+    const repository = new SettingsRepository(database.connection)
+
+    expect(repository.current()).toMatchObject({
+      aiSummaryPlacement: 'right',
+      aiSummaryPanelSize: 470
+    })
+    database.close()
+  })
+
   it('falls back for invalid pane widths and clamps finite out-of-range values', () => {
     const database = new DesktopDatabase(':memory:')
     database.connection.prepare(`

@@ -153,7 +153,7 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
         typeof window.origread?.getReaderContent === 'function' &&
         typeof window.origread?.fetchFullContent === 'function' &&
         typeof window.origread?.getAiSettings === 'function' &&
-        typeof window.origread?.getAiApiKey === 'function' &&
+        typeof window.origread?.revealAiApiKey === 'function' &&
         typeof window.origread?.summarizeArticle === 'function' &&
         typeof window.origread?.getTranslationSettings === 'function' &&
         typeof window.origread?.getTranslationApiKey === 'function' &&
@@ -261,27 +261,30 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
     await expect(page.locator('.app-shell')).toHaveCSS('--reader-text-color', '#35373e')
 
     await page.getByRole('button', { name: 'AI 阅读' }).click()
-    await expect(page.locator('.provider-card')).toHaveCount(1)
-    await expect(page.getByText('1～2 段摘要 + 4～6 个主要观点，每点补充关键依据、机制或影响', { exact: true })).toBeVisible()
-    await expect(page.getByText('高密度单段摘要，中文建议约 120～220 字，不列要点', { exact: true })).toHaveCount(0)
-    const aiProviderCard = page.locator('.provider-card').first()
+    await expect(page.getByText('阅读默认值', { exact: true })).toBeVisible()
+    await expect(page.getByText('决定“快速摘要”默认有多详细；生成前仍可临时调整。', { exact: true })).toBeVisible()
+    await expect(page.locator('.ai-provider-workspace')).toHaveCount(0)
+    await page.getByRole('tab', { name: '模型服务' }).click()
+    await expect(page.locator('.ai-provider-list-item')).toHaveCount(1)
+    const aiProviderCard = page.locator('.ai-provider-detail')
     const aiKey = aiProviderCard.locator('.secret-key-input')
-    await expect(aiKey).toHaveValue('ai-secret-123456789')
+    await expect(aiKey).toHaveValue('')
     await expect(aiKey).toHaveAttribute('type', 'password')
     await expect(aiProviderCard.locator('.secret-key-state')).toContainText('19 个字符')
     await aiProviderCard.locator('.secret-key-eye').click()
     await expect(aiKey).toHaveAttribute('type', 'text')
+    await expect(aiKey).toHaveValue('ai-secret-123456789')
     await aiProviderCard.locator('.secret-key-eye').click()
-    const aiEndpoint = aiProviderCard.locator('.provider-field').filter({ hasText: 'Endpoint' }).locator('input')
+    const aiEndpoint = aiProviderCard.locator('.ai-provider-form-field').filter({ hasText: '接口地址' }).locator('input')
     await aiEndpoint.fill('https://api2.example.test/v1')
     await aiEndpoint.blur()
-    await expect(aiKey).toHaveValue('ai-secret-123456789')
+    await expect(aiKey).toHaveValue('')
     await aiKey.fill('ai-secret-updated-123')
     await expect(aiProviderCard.locator('.secret-key-state')).toContainText('有未保存的修改')
     await aiProviderCard.locator('.secret-key-save').click()
     await expect.poll(async () => page.evaluate(async () => {
       const ai = await window.origread.getAiSettings()
-      return window.origread.getAiApiKey(ai.providers[0]!.id)
+      return window.origread.revealAiApiKey(ai.providers[0]!.id)
     })).toBe('ai-secret-updated-123')
 
     await page.getByRole('button', { name: '翻译设置' }).click()

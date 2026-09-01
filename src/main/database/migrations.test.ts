@@ -30,6 +30,15 @@ describe('database migration v2 -> current schema', () => {
     expect(db.prepare('SELECT value FROM app_settings WHERE key=?').get(CURRENT_ACCOUNT_SETTING_KEY)).toEqual({value:'1'})
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='archived_articles'").get()).toEqual({name:'archived_articles'})
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='rss_http_cache'").get()).toEqual({name:'rss_http_cache'})
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='llm_conversations'").get()).toEqual({name:'llm_conversations'})
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='llm_messages'").get()).toEqual({name:'llm_messages'})
+    const llmMessageColumns = db.prepare("PRAGMA table_info('llm_messages')").all() as Array<{name:string}>
+    expect(llmMessageColumns.map((column)=>column.name)).toEqual(expect.arrayContaining([
+      'provider_id','model','web_search_status','web_search_query','web_search_provider_name','web_search_result_count','web_search_error_message'
+    ]))
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='llm_context_refs'").get()).toEqual({name:'llm_context_refs'})
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='llm_evidence_blocks'").get()).toEqual({name:'llm_evidence_blocks'})
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='llm_citation_refs'").get()).toEqual({name:'llm_citation_refs'})
     expect(db.prepare(`
       SELECT f.account_id,f.group_id,f.name,f.url,f.source_page_url,f.source_type,f.icon
       FROM feeds f
@@ -47,6 +56,96 @@ describe('database migration v2 -> current schema', () => {
     db.prepare('DELETE FROM feeds WHERE url=?').run(ORIGREAD_DESKTOP_RELEASE_FEED_URL)
     expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
     expect(db.prepare('SELECT COUNT(*) AS count FROM feeds WHERE url=?').get(ORIGREAD_DESKTOP_RELEASE_FEED_URL)).toEqual({count:0})
+    db.close()
+  })
+
+  it('backfills v8 assistant model snapshots and adds Web Search history columns through the current schema', () => {
+    const db = new DatabaseSync(':memory:')
+    db.exec(`
+      PRAGMA foreign_keys=ON;
+      CREATE TABLE llm_conversations (
+        id TEXT PRIMARY KEY,title TEXT NOT NULL,provider_id TEXT,model TEXT,skill_id TEXT,
+        article_id TEXT,article_title TEXT,article_link TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE TABLE llm_messages (
+        id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES llm_conversations(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,content TEXT NOT NULL DEFAULT '',request_task TEXT,reasoning TEXT,status TEXT NOT NULL DEFAULT 'COMPLETE',
+        error_message TEXT,history_active INTEGER NOT NULL DEFAULT 1,prompt_tokens INTEGER,completion_tokens INTEGER,
+        duration_ms INTEGER,token_usage_estimated INTEGER NOT NULL DEFAULT 0,finish_reason TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL
+      ) STRICT;
+      INSERT INTO llm_conversations VALUES('c1','Chat','provider-old','model-old',NULL,NULL,NULL,NULL,1,1);
+      INSERT INTO llm_messages VALUES('u1','c1','USER','Question','CHAT',NULL,'COMPLETE',NULL,1,NULL,NULL,NULL,0,NULL,2,2);
+      INSERT INTO llm_messages VALUES('a1','c1','ASSISTANT','Answer','CHAT',NULL,'COMPLETE',NULL,1,NULL,NULL,NULL,0,'STOP',3,3);
+      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL) STRICT;
+      INSERT INTO schema_migrations VALUES(8,1);
+    `)
+
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+    expect(db.prepare('SELECT provider_id,model FROM llm_messages WHERE id=?').get('a1'))
+      .toEqual({provider_id:'provider-old',model:'model-old'})
+    expect(db.prepare('SELECT provider_id,model FROM llm_messages WHERE id=?').get('u1'))
+      .toEqual({provider_id:null,model:null})
+    const columns = db.prepare("PRAGMA table_info('llm_messages')").all() as Array<{name:string}>
+    expect(columns.map((column)=>column.name)).toEqual(expect.arrayContaining([
+      'web_search_status','web_search_query','web_search_provider_name','web_search_result_count','web_search_error_message'
+    ]))
+    db.close()
+  })
+
+  it('upgrades an already-v9 database without relying on the historical v8 create-table definition', () => {
+    const db = new DatabaseSync(':memory:')
+    db.exec(`
+      PRAGMA foreign_keys=ON;
+      CREATE TABLE llm_conversations (
+        id TEXT PRIMARY KEY,title TEXT NOT NULL,provider_id TEXT,model TEXT,skill_id TEXT,
+        article_id TEXT,article_title TEXT,article_link TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE TABLE llm_messages (
+        id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES llm_conversations(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,content TEXT NOT NULL DEFAULT '',request_task TEXT,provider_id TEXT,model TEXT,reasoning TEXT,
+        status TEXT NOT NULL DEFAULT 'COMPLETE',error_message TEXT,history_active INTEGER NOT NULL DEFAULT 1,
+        prompt_tokens INTEGER,completion_tokens INTEGER,duration_ms INTEGER,token_usage_estimated INTEGER NOT NULL DEFAULT 0,
+        finish_reason TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL) STRICT;
+      INSERT INTO schema_migrations VALUES(9,1);
+    `)
+
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+    const columns = db.prepare("PRAGMA table_info('llm_messages')").all() as Array<{name:string}>
+    expect(columns.map((column)=>column.name)).toEqual(expect.arrayContaining([
+      'web_search_status','web_search_query','web_search_provider_name','web_search_result_count','web_search_error_message'
+    ]))
+    db.close()
+  })
+
+  it('repairs a v9 development database that already contains only part of the v10 Web Search columns', () => {
+    const db = new DatabaseSync(':memory:')
+    db.exec(`
+      PRAGMA foreign_keys=ON;
+      CREATE TABLE llm_conversations (
+        id TEXT PRIMARY KEY,title TEXT NOT NULL,provider_id TEXT,model TEXT,skill_id TEXT,
+        article_id TEXT,article_title TEXT,article_link TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE TABLE llm_messages (
+        id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES llm_conversations(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,content TEXT NOT NULL DEFAULT '',request_task TEXT,provider_id TEXT,model TEXT,reasoning TEXT,
+        status TEXT NOT NULL DEFAULT 'COMPLETE',error_message TEXT,history_active INTEGER NOT NULL DEFAULT 1,
+        web_search_status TEXT,web_search_query TEXT,web_search_provider_name TEXT,web_search_error_message TEXT,
+        prompt_tokens INTEGER,completion_tokens INTEGER,duration_ms INTEGER,token_usage_estimated INTEGER NOT NULL DEFAULT 0,
+        finish_reason TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL) STRICT;
+      INSERT INTO schema_migrations VALUES(9,1);
+    `)
+
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+    expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all())
+      .toEqual([{version:9},{version:10},{version:11}])
+    const columns = db.prepare("PRAGMA table_info('llm_messages')").all() as Array<{name:string}>
+    expect(columns.map((column)=>column.name)).toEqual(expect.arrayContaining([
+      'web_search_status','web_search_query','web_search_provider_name','web_search_result_count','web_search_error_message'
+    ]))
     db.close()
   })
 })

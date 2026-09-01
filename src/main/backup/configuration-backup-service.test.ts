@@ -17,6 +17,10 @@ import { MemorySecretStore } from '../security/secret-store'
 import { ConfigurationBackupService } from './configuration-backup-service'
 import { encryptConfigurationSecrets } from './configuration-backup-crypto'
 import type { ConfigurationBackup } from '../../shared/configuration-backup'
+import { LlmSkillRepository } from '../llm/skill-repository'
+import { LlmQuickMessageRepository } from '../llm/quick-message-repository'
+import { LlmCustomizationSettingsRepository } from '../llm/customization-settings-repository'
+import { WebSearchRepository } from '../search/web-search-repository'
 
 const dirs: string[] = []
 afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })))
@@ -88,7 +92,8 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       'origread.desktop.sourcePaneWidth': 300,
       'origread.desktop.articlePaneWidth': 440,
       'origread.desktop.sourcePaneCollapsed': true,
-      'origread.desktop.articlePaneCollapsed': false
+      'origread.desktop.articlePaneCollapsed': false,
+      'origread.desktop.aiSummaryPlacement': 'right'
     })
     expect(plain.encryptedSecrets).toBeNull()
 
@@ -104,6 +109,95 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
 
     const encrypted = JSON.parse(fixture.backup.exportBackup('backup-pass')) as ConfigurationBackup
     expect(encrypted.encryptedSecrets).toMatchObject({ kdf: 'PBKDF2WithHmacSHA256', cipher: 'AES-256-GCM', iterations: 210_000 })
+  })
+
+  it.each(['replace', 'top', 'bottom'] as const)('restores legacy desktop summary placement %s as right', (legacyPlacement) => {
+    const fixture = createFixture()
+    const backup = androidBackup(fixture)
+    backup.preferences = {
+      'origread.desktop.aiSummaryPlacement': legacyPlacement,
+      'origread.desktop.aiSummaryPanelSize': 430
+    }
+
+    fixture.backup.restoreBackup(JSON.stringify(backup), 'backup-pass')
+
+    expect(fixture.settings.current()).toMatchObject({
+      aiSummaryPlacement: 'right',
+      aiSummaryPanelSize: 430
+    })
+  })
+
+  it('round-trips Skills, Quick Messages, and Custom Instructions without exposing them as secrets', async () => {
+    const fixture = createFixture()
+    await fixture.skills.createFromMarkdown(`---\nname: evidence-reader\ndescription: Use for evidence checks\n---\nCheck claims carefully.`)
+    fixture.skills.setBinding('SUMMARY', 'evidence-reader')
+    fixture.quickMessages.create('Compare', 'Compare {{article_title}} with the current evidence.')
+    fixture.customization.update({ skillsEnabled: false, customInstructions: 'Prefer concise answers.' })
+
+    const content = fixture.backup.exportBackup('')
+    const exported = JSON.parse(content) as ConfigurationBackup
+    expect(exported.llm).toMatchObject({
+      customization: { skillsEnabled: false, customInstructions: 'Prefer concise answers.' }
+    })
+    expect(JSON.stringify(exported.llm)).toContain('evidence-reader')
+    expect(JSON.stringify(exported.llm)).toContain('Compare')
+    expect(exported.encryptedSecrets).toBeNull()
+
+    fixture.skills.delete('evidence-reader')
+    fixture.quickMessages.delete(fixture.quickMessages.current().find((message) => message.title === 'Compare')!.id)
+    fixture.customization.update({ skillsEnabled: true, customInstructions: 'Changed after backup.' })
+    fixture.backup.restoreBackup(content)
+
+    expect(fixture.skills.skill('evidence-reader')).toMatchObject({ id: 'evidence-reader', enabled: true })
+    expect(fixture.skills.current().bindings.summarySkillId).toBe('evidence-reader')
+    expect(fixture.quickMessages.current().some((message) => message.title === 'Compare')).toBe(true)
+    expect(fixture.customization.current()).toEqual({ skillsEnabled: false, customInstructions: 'Prefer concise answers.' })
+  })
+
+  it('round-trips Web Search profiles separately from encrypted API keys and rejects dangling Search secrets', () => {
+    const fixture = createFixture()
+    const added = fixture.webSearch.addProvider('TAVILY')
+    const provider = added.providers[0]!
+    fixture.webSearch.updateProvider({
+      id: provider.id,
+      name: 'Backup Tavily',
+      endpoint: 'https://api.tavily.com/search',
+      apiKey: 'search-secret-value'
+    })
+    fixture.webSearch.updateSettings({ mode: 'AUTO', defaultProviderId: provider.id, maxResults: 8 })
+
+    const content = fixture.backup.exportBackup('backup-pass')
+    const exported = JSON.parse(content) as ConfigurationBackup
+    expect(exported.webSearch).toMatchObject({
+      mode: 'AUTO', defaultProviderId: provider.id, maxResults: 8,
+      providers: [{ id: provider.id, kind: 'TAVILY', name: 'Backup Tavily' }]
+    })
+    expect(JSON.stringify(exported.webSearch)).not.toContain('search-secret-value')
+    expect(content).not.toContain('search-secret-value')
+
+    fixture.webSearch.removeProvider(provider.id)
+    expect(fixture.webSearch.current().providers).toHaveLength(0)
+    fixture.backup.restoreBackup(content, 'backup-pass')
+    expect(fixture.webSearch.current()).toMatchObject({ mode: 'AUTO', defaultProviderId: provider.id, maxResults: 8 })
+    expect(fixture.webSearch.getApiKey(provider.id)).toBe('search-secret-value')
+
+    const dangling = { ...exported }
+    dangling.encryptedSecrets = encryptConfigurationSecrets({
+      translationApiKeys: {}, aiApiKeys: {}, webSearchApiKeys: { 'missing-provider': 'bad-secret' }
+    }, 'backup-pass')
+    expect(() => fixture.backup.restoreBackup(JSON.stringify(dangling), 'backup-pass')).toThrow('Web Search 凭据引用了不存在的 Provider')
+  })
+
+  it('keeps current Web Search settings when restoring a pre-D5 backup without Search fields', () => {
+    const fixture = createFixture()
+    const added = fixture.webSearch.addProvider('KEENABLE')
+    const provider = added.providers[0]!
+    fixture.webSearch.updateSettings({ mode: 'AUTO', defaultProviderId: provider.id, maxResults: 10 })
+
+    fixture.backup.restoreBackup(JSON.stringify(androidBackup(fixture)), 'backup-pass')
+
+    expect(fixture.webSearch.current()).toMatchObject({ mode: 'AUTO', defaultProviderId: provider.id, maxResults: 10 })
+    expect(fixture.webSearch.current().providers[0]).toMatchObject({ id: provider.id, kind: 'KEENABLE' })
   })
 })
 
@@ -121,8 +215,15 @@ function createFixture() {
   const secrets = new MemorySecretStore()
   const translation = new TranslationSettingsRepository(database.connection, secrets)
   const ai = new AiSettingsRepository(database.connection, secrets)
-  const backup = new ConfigurationBackupService('0.1.0', library, settings, websiteRules, jsonRules, filters, websitePreferences, rssHub, translation, ai)
-  return { dir, database, library, settings, websiteRules, jsonRules, filters, websitePreferences, rssHub, translation, ai, backup }
+  const skills = new LlmSkillRepository(database.connection)
+  const quickMessages = new LlmQuickMessageRepository(database.connection)
+  const customization = new LlmCustomizationSettingsRepository(database.connection)
+  const webSearch = new WebSearchRepository(database.connection, secrets)
+  const backup = new ConfigurationBackupService(
+    '0.1.0', library, settings, websiteRules, jsonRules, filters, websitePreferences, rssHub, translation, ai,
+    undefined, skills, quickMessages, customization, webSearch
+  )
+  return { dir, database, library, settings, websiteRules, jsonRules, filters, websitePreferences, rssHub, translation, ai, skills, quickMessages, customization, webSearch, backup }
 }
 
 function androidBackup(fixture: ReturnType<typeof createFixture>): ConfigurationBackup {
