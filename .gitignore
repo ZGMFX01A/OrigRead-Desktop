@@ -17,3 +17,4 @@ Thumbs.db
 !.env.example
 docs/DEVELOPMENT_PLAN.md
 release-validation/
+/chatbox-main/
