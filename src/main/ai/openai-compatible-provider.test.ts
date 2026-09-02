@@ -159,6 +159,31 @@ describe('OpenAiCompatibleProvider Android parity', () => {
     })).rejects.toMatchObject({ name: 'TimeoutError' })
   })
 
+  it('redacts credential-shaped values echoed by an AI error response', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(401, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ error: { message: 'token=server-secret Authorization: Bearer echoed-secret request_id=req-7' } }))
+    })
+    servers.push(server)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('no port')
+
+    await expect(new OpenAiCompatibleProvider().completeDetailed('s', 'u', {
+      endpoint: `http://127.0.0.1:${address.port}`,
+      model: 'm',
+      apiKey: 'client-secret'
+    })).rejects.toSatisfy((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      return message.includes('token=[redacted]')
+        && message.includes('Bearer [redacted]')
+        && message.includes('request_id=req-7')
+        && !message.includes('server-secret')
+        && !message.includes('echoed-secret')
+        && !message.includes('client-secret')
+    })
+  })
+
   it('streams multi-message chat and aggregates split tool-call deltas with raw finish reason', async () => {
     let requestBody = ''
     const server = createServer((request, response) => {

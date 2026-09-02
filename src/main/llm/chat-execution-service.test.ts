@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { AiChatCompletionDeltaListener, AiChatCompletionResult, AiChatMessage, AiChatToolDefinition, AiRuntimeConfig } from '../ai/openai-compatible-provider'
 import { AiSettingsRepository } from '../ai/ai-settings-repository'
 import { MemorySecretStore } from '../security/secret-store'
@@ -167,6 +167,84 @@ function readOnlyTool(id = 'lookup'): LlmTool {
 }
 
 describe('LlmChatExecutionService D2 pipeline', () => {
+  it('records D8.1 end-to-end performance without logging request content or secrets', async () => {
+    const transport = new QueueTransport([
+      async ({ config }) => {
+        config.onTiming?.({ metric: 'TTFB', elapsedMs: 2.1 })
+        config.onTiming?.({ metric: 'first_sse', elapsedMs: 3.2 })
+        return {
+          content: '', reasoning: null, finishReason: 'tool_calls',
+          toolCalls: [{ id: 'provider-perf-tool', name: 'perf_lookup', argumentsJson: '{"id":1}' }]
+        }
+      },
+      async ({ config, onDelta }) => {
+        config.onTiming?.({ metric: 'TTFB', elapsedMs: 1.1 })
+        config.onTiming?.({ metric: 'first_sse', elapsedMs: 1.4 })
+        config.onTiming?.({ metric: 'TTFR', elapsedMs: 2.2 })
+        onDelta({ content: '', reasoning: 'checking', finishReason: null, toolCalls: [] })
+        config.onTiming?.({ metric: 'TTFC', elapsedMs: 3.3 })
+        for (let index = 0; index < 40; index += 1) {
+          onDelta({ content: `chunk-${index} `, reasoning: '', finishReason: null, toolCalls: [] })
+        }
+        return { content: 'done', reasoning: 'checking', finishReason: 'stop', toolCalls: [] }
+      }
+    ])
+    const router = searchRouter(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 8))
+      return successfulSearch()
+    })
+    const env = setup(transport, router)
+    env.toolRuntime.register({
+      descriptor: {
+        id: 'perf_lookup', name: 'perf_lookup', description: 'Performance fixture lookup', source: 'ORIGREAD_INTERNAL',
+        sourceId: 'origread', risk: 'READ_ONLY', enabled: true,
+        inputSchema: { type: 'object', properties: { id: { type: 'number' } } }, outputSchema: null
+      },
+      execute: async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 6))
+        return { status: 'SUCCESS', content: '{"value":"fixture"}' }
+      }
+    })
+    const identity = createConversation(env.repository)
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+
+    await env.service.execute({
+      ...identity,
+      requestId: 'request-perf',
+      ownerId: 'renderer-1',
+      profile: { enabledToolIds: new Set(['perf_lookup']) },
+      webSearch: preparedSearch()
+    }, () => undefined)
+
+    const perfCall = info.mock.calls.find(([prefix]) => prefix === '[OrigRead][LLM Perf]')
+    expect(perfCall).toBeDefined()
+    const perf = JSON.parse(String(perfCall?.[1])) as Record<string, unknown>
+    expect(perf).toMatchObject({
+      task: 'chat',
+      provider_rounds: 2,
+      tool_calls: 1,
+      streaming_snapshot_interval_ms: 300,
+      outcome: 'complete'
+    })
+    expect(Number(perf.search_ms)).toBeGreaterThanOrEqual(5)
+    expect(Number(perf.search_to_model_gap_ms)).toBeGreaterThanOrEqual(0)
+    expect(Number(perf.provider_first_start_ms)).toBeGreaterThanOrEqual(Number(perf.search_ms))
+    expect(Number(perf.TTFB_ms)).toBeGreaterThanOrEqual(0)
+    expect(Number(perf.first_sse_ms)).toBeGreaterThanOrEqual(Number(perf.TTFB_ms))
+    expect(Number(perf.TTFR_ms)).toBeGreaterThan(Number(perf.first_sse_ms))
+    expect(Number(perf.TTFC_ms)).toBeGreaterThan(Number(perf.TTFR_ms))
+    expect(Number(perf.tool_execution_total_ms)).toBeGreaterThanOrEqual(4)
+    expect(Number(perf.tool_execution_max_ms)).toBeGreaterThanOrEqual(4)
+    expect(Number(perf.streaming_snapshot_writes)).toBeLessThanOrEqual(2)
+    expect(Number(perf.total_ms)).toBeGreaterThan(0)
+    const serialized = String(perfCall?.[1])
+    expect(serialized).not.toContain('What happened?')
+    expect(serialized).not.toContain('fixture')
+    expect(serialized).not.toContain('provider-perf-tool')
+    info.mockRestore()
+    env.database.close()
+  })
+
   it('streams, freezes evidence, resolves valid citations, and persists a terminal assistant message', async () => {
     const transport = new QueueTransport([
       async ({ messages, onDelta }) => {
@@ -263,6 +341,69 @@ describe('LlmChatExecutionService D2 pipeline', () => {
     expect(env.repository.getToolCalls(identity.conversationId)).toMatchObject([
       { providerCallId: 'provider-call-1', toolId: 'lookup', status: 'COMPLETE', resultContent: '{"value":"tool-result"}' }
     ])
+    expect(transport.calls).toHaveLength(2)
+    env.database.close()
+  })
+
+  it('stops promptly when a Tool ignores AbortSignal and waits for its drain before the next request', async () => {
+    let markToolStarted!: () => void
+    const toolStarted = new Promise<void>((resolve) => { markToolStarted = resolve })
+    let releaseTool!: () => void
+    const toolRelease = new Promise<void>((resolve) => { releaseTool = resolve })
+    const transport = new QueueTransport([
+      async () => ({
+        content: '', reasoning: null, finishReason: 'tool_calls',
+        toolCalls: [{ id: 'provider-stuck-tool', name: 'slow_lookup', argumentsJson: '{}' }]
+      }),
+      async ({ onDelta }) => {
+        onDelta({ content: 'Second request completed', reasoning: '', finishReason: 'stop', toolCalls: [] })
+        return { content: 'Second request completed', reasoning: null, finishReason: 'stop', toolCalls: [] }
+      }
+    ])
+    const env = setup(transport)
+    const slowTool = readOnlyTool('slow_lookup')
+    slowTool.execute = async () => {
+      markToolStarted()
+      await toolRelease // Deliberately ignores the AbortSignal supplied by ToolRuntime.
+      return { status: 'SUCCESS', content: 'late result that must be discarded' }
+    }
+    env.toolRuntime.register(slowTool)
+    const identity = createConversation(env.repository)
+
+    const first = env.service.execute({
+      ...identity,
+      requestId: 'request-stuck-tool',
+      ownerId: 'renderer-1',
+      profile: { enabledToolIds: new Set(['slow_lookup']) }
+    }, () => undefined)
+    await toolStarted
+
+    const stopStartedAt = performance.now()
+    expect(env.registry.cancel('request-stuck-tool')).toBe(true)
+    const stopped = await Promise.race([
+      first,
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('Stop waited for the ignored Tool drain')), 250))
+    ])
+    expect(performance.now() - stopStartedAt).toBeLessThan(250)
+    expect(stopped).toMatchObject({ status: 'STOPPED', finishReason: 'CANCELLED' })
+    expect(env.repository.getToolCalls(identity.conversationId)).toMatchObject([
+      { providerCallId: 'provider-stuck-tool', status: 'ERROR', errorMessage: expect.stringContaining('cancelled') }
+    ])
+
+    env.repository.appendMessage(identity.conversationId, { id: 'user-2', role: 'USER', content: 'Continue safely.', now: 40 })
+    env.repository.appendMessage(identity.conversationId, { id: 'assistant-2', role: 'ASSISTANT', content: '', status: 'STREAMING', now: 50 })
+    const second = env.service.execute({
+      conversationId: identity.conversationId,
+      assistantMessageId: 'assistant-2',
+      requestId: 'request-after-stuck-tool',
+      ownerId: 'renderer-1',
+      profile: { enabledToolIds: new Set(['slow_lookup']) }
+    }, () => undefined)
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 20))
+    expect(transport.calls).toHaveLength(1)
+    releaseTool()
+    await expect(second).resolves.toMatchObject({ content: 'Second request completed', status: 'COMPLETE', finishReason: 'STOP' })
     expect(transport.calls).toHaveLength(2)
     env.database.close()
   })
@@ -380,12 +521,21 @@ describe('LlmChatExecutionService D2 pipeline', () => {
     env.toolRuntime.register(tool)
     const identity = createConversation(env.repository)
 
-    const result = await env.service.execute({
+    const running = env.service.execute({
       ...identity,
       requestId: 'request-mcp-citation',
       ownerId: 'renderer-1',
       profile: { enabledToolIds: new Set(['lookup_release']) }
     }, () => undefined)
+    const pending = await waitForPendingToolCall(env.repository, identity.conversationId)
+    expect(env.service.toolActivity(identity.conversationId)[0]).toMatchObject({
+      toolCallId: pending.id,
+      risk: 'READ_ONLY',
+      source: 'MCP',
+      status: 'PENDING_APPROVAL'
+    })
+    expect(env.service.resolveToolApproval(pending.id, 'APPROVE')).toBe(true)
+    const result = await running
 
     expect(result.content).toBe('The release is ready [[E1]].')
     const toolRef = env.repository.getContextRefsForAssistant(identity.assistantMessageId).find((ref) => ref.type === 'TOOL_RESULT')

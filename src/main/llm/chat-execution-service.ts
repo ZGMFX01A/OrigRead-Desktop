@@ -15,6 +15,8 @@ import type {
   AiChatCompletionResult,
   AiChatMessage,
   AiChatToolDefinition,
+  AiTransportTimingEvent,
+  AiTransportTimingMetric,
   OpenAiCompatibleProvider
 } from '../ai/openai-compatible-provider'
 import { buildCitationRefsFromAssistantOutput, prepareCitationProtocol, type LlmCitationEvidenceCandidate } from './citation-protocol'
@@ -34,6 +36,25 @@ import { buildLlmToolActivityView } from './tool-approval-view'
 import { MANUAL_TOOL_CONTEXT_PRIORITY } from './context-priority'
 
 const MAX_AUTOMATIC_TOOL_ROUNDS = 8
+const STREAMING_SNAPSHOT_PERSIST_INTERVAL_MS = 300
+
+interface LlmExecutionPerfState {
+  task: 'CHAT' | 'ARTICLE_ANALYSIS'
+  startedAt: number
+  searchMs: number | null
+  searchCompletedAt: number | null
+  firstProviderStartedAt: number | null
+  transportTimings: Partial<Record<AiTransportTimingMetric, number>>
+  providerRounds: number
+  toolCalls: number
+  toolExecutionTotalMs: number
+  toolExecutionMaxMs: number
+  toolApprovalWaitTotalMs: number
+  streamingSnapshotWrites: number
+  contextPersistMs: number | null
+  terminalPersistMs: number | null
+  outcome: 'complete' | 'cancelled' | 'error'
+}
 
 export interface LlmExecutionEvidenceGroup {
   contextId: string
@@ -69,6 +90,7 @@ export class LlmChatExecutionService {
     conversationId: string
     resolve(decision: LlmToolApprovalDecision): void
   }>()
+  private readonly pendingToolDrains = new Map<string, Set<Promise<void>>>()
 
   constructor(
     private readonly repository: LlmChatRepository,
@@ -98,6 +120,23 @@ export class LlmChatExecutionService {
     const identity = normalizeIdentity(input)
     const registered = this.registry.begin(identity, input.ownerId)
     const executionStartedAt = Date.now()
+    const perf: LlmExecutionPerfState = {
+      task: input.profile?.task ?? 'CHAT',
+      startedAt: performance.now(),
+      searchMs: null,
+      searchCompletedAt: null,
+      firstProviderStartedAt: null,
+      transportTimings: {},
+      providerRounds: 0,
+      toolCalls: 0,
+      toolExecutionTotalMs: 0,
+      toolExecutionMaxMs: 0,
+      toolApprovalWaitTotalMs: 0,
+      streamingSnapshotWrites: 0,
+      contextPersistMs: null,
+      terminalPersistMs: null,
+      outcome: 'error'
+    }
     let sequence = 0
     let latestAssistant: LlmMessageRecord | null = null
     let accumulatedContent = ''
@@ -114,6 +153,10 @@ export class LlmChatExecutionService {
     }
 
     try {
+      // D8.2: a cancelled Tool may ignore AbortSignal and keep executing briefly in the background.
+      // Stop should still finish for the user immediately, but another request for the same
+      // Conversation must not overlap that abandoned Tool's side effects.
+      await this.waitForPendingToolDrains(identity.conversationId, registered.signal)
       const conversation = this.repository.getConversation(identity.conversationId)
       if (!conversation) throw new Error('会话不存在')
       const currentAssistant = this.repository.getMessage(identity.assistantMessageId)
@@ -154,7 +197,10 @@ export class LlmChatExecutionService {
             errorMessage: null
           })
           if (!this.webSearchRouter) throw new Error('Web Search runtime is not ready')
+          const searchStartedAt = performance.now()
           const route = await this.webSearchRouter.executePreparedSearch(input.webSearch, registered.signal)
+          perf.searchCompletedAt = performance.now()
+          perf.searchMs = perf.searchCompletedAt - searchStartedAt
           const searchContext = route.response ? buildWebSearchContext(route.response) : { contextItems: [], evidenceGroups: [] }
           assistant = {
             ...assistant,
@@ -183,8 +229,10 @@ export class LlmChatExecutionService {
         }
       }
 
+      const contextPersistStartedAt = performance.now()
       const plan = this.runtime.prepare(input.profile, contextItems)
       const contextState = this.persistContext(identity, plan, contextItems, evidenceGroups)
+      perf.contextPersistMs = performance.now() - contextPersistStartedAt
       assistant = markAssistantStreaming(assistant, plan.providerId, plan.model)
       latestAssistant = assistant
       this.repository.updateMessage(assistant, false)
@@ -201,21 +249,40 @@ export class LlmChatExecutionService {
       for (let round = 0; round < MAX_AUTOMATIC_TOOL_ROUNDS; round += 1) {
         const budget = validateLlmPromptBudget(plan, providerMessages, toolDefinitions)
         estimatedPromptTokens += budget.promptTokens
+        const providerRoundStartedAt = performance.now()
+        perf.providerRounds += 1
+        if (perf.firstProviderStartedAt === null) perf.firstProviderStartedAt = providerRoundStartedAt
+        const roundOffsetMs = providerRoundStartedAt - perf.startedAt
+        const runtimeConfig = {
+          ...plan.runtimeConfig,
+          onTiming: (event: AiTransportTimingEvent) => {
+            plan.runtimeConfig.onTiming?.(event)
+            recordOverallTransportTiming(perf, event, roundOffsetMs)
+          }
+        }
         const result = await this.transport.streamChatDetailed(
           providerMessages,
-          plan.runtimeConfig,
+          runtimeConfig,
           (delta) => {
             appendDelta(delta, (reasoning) => {
               accumulatedReasoning += reasoning
               assistant = { ...assistant, reasoning: accumulatedReasoning || null, updatedAt: Date.now() }
               latestAssistant = assistant
-              lastStreamingPersistAt = this.persistStreamingSnapshotIfDue(assistant, lastStreamingPersistAt)
+              lastStreamingPersistAt = this.persistStreamingSnapshotIfDue(
+                assistant,
+                lastStreamingPersistAt,
+                () => { perf.streamingSnapshotWrites += 1 }
+              )
               emitEvent({ type: 'REASONING_DELTA', delta: reasoning })
             }, (content) => {
               accumulatedContent += content
               assistant = { ...assistant, content: accumulatedContent, updatedAt: Date.now() }
               latestAssistant = assistant
-              lastStreamingPersistAt = this.persistStreamingSnapshotIfDue(assistant, lastStreamingPersistAt)
+              lastStreamingPersistAt = this.persistStreamingSnapshotIfDue(
+                assistant,
+                lastStreamingPersistAt,
+                () => { perf.streamingSnapshotWrites += 1 }
+              )
               emitEvent({ type: 'CONTENT_DELTA', delta: content })
             })
           },
@@ -238,7 +305,8 @@ export class LlmChatExecutionService {
           descriptorByName,
           contextState,
           registered.signal,
-          emitEvent
+          emitEvent,
+          perf
         )
         providerMessages.push(...toolRound.providerMessages)
       }
@@ -256,11 +324,15 @@ export class LlmChatExecutionService {
         executionStartedAt
       )
       latestAssistant = assistant
+      const terminalPersistStartedAt = performance.now()
       this.persistAssistantTerminal(assistant, contextState)
+      perf.terminalPersistMs = performance.now() - terminalPersistStartedAt
+      perf.outcome = 'complete'
       emitEvent({ type: 'TERMINAL', finishReason })
       return assistant
     } catch (error) {
       const serialized = serializeLlmIpcError(error, registered.signal)
+      perf.outcome = serialized.code === 'CANCELLED' ? 'cancelled' : 'error'
       const existing = latestAssistant ?? this.repository.getMessage(identity.assistantMessageId)
       if (existing) {
         const cancelled = serialized.code === 'CANCELLED'
@@ -302,6 +374,7 @@ export class LlmChatExecutionService {
       else emitEvent({ type: 'ERROR', error: serialized })
       throw error
     } finally {
+      logLlmExecutionPerf(perf)
       this.registry.finish(identity.requestId)
     }
   }
@@ -428,7 +501,8 @@ export class LlmChatExecutionService {
     descriptorByName: ReadonlyMap<string, LlmExecutionPlan['tools'][number]>,
     contextState: PersistedContextState,
     signal: AbortSignal,
-    emit: (event: LlmExecutionEventPayload) => void
+    emit: (event: LlmExecutionEventPayload) => void,
+    perf: LlmExecutionPerfState
   ): Promise<{ providerMessages: AiChatMessage[] }> {
     const now = Date.now()
     const records: LlmToolCallRecord[] = result.toolCalls.map((call): LlmToolCallRecord => {
@@ -469,9 +543,11 @@ export class LlmChatExecutionService {
       }
       if (record.status === 'PENDING_APPROVAL') {
         let decision: LlmToolApprovalDecision
+        const approvalStartedAt = performance.now()
         try {
           decision = await approvalPromises.get(record.id)!
         } catch (error) {
+          perf.toolApprovalWaitTotalMs += performance.now() - approvalStartedAt
           const updated = {
             ...record,
             status: 'ERROR' as const,
@@ -482,6 +558,7 @@ export class LlmChatExecutionService {
           emit({ type: 'TOOL_STATE', toolCallId: record.id, status: updated.status })
           throw error
         }
+        perf.toolApprovalWaitTotalMs += performance.now() - approvalStartedAt
         if (decision === 'DENY') {
           const resultContent = 'Tool execution was denied by the user.'
           const updated = {
@@ -497,11 +574,30 @@ export class LlmChatExecutionService {
           continue
         }
       }
-      const execution = await this.tools.execute(
+      const toolStartedAt = performance.now()
+      perf.toolCalls += 1
+      const executionPromise = this.tools.execute(
         { id: record.id, toolId: descriptor.id, argumentsJson: record.argumentsJson },
         { enabledToolIds: new Set([descriptor.id]) },
         { signal, confirmed: record.status === 'PENDING_APPROVAL' }
       )
+      let execution: Awaited<ReturnType<LlmToolRuntime['execute']>>
+      try {
+        execution = await this.awaitAbortableToolExecution(identity.conversationId, executionPromise, signal)
+        recordToolExecutionTiming(perf, performance.now() - toolStartedAt)
+      } catch (error) {
+        if (signal.aborted) {
+          const updated = {
+            ...record,
+            status: 'ERROR' as const,
+            errorMessage: 'Tool execution was cancelled; any in-flight result was discarded.',
+            updatedAt: Date.now()
+          }
+          this.repository.updateToolCall(updated)
+          emit({ type: 'TOOL_STATE', toolCallId: record.id, status: updated.status })
+        }
+        throw error
+      }
       if (execution.status === 'CONFIRMATION_REQUIRED') {
         const updated = { ...record, status: 'ERROR' as const, errorMessage: 'Tool 审批状态失效，Tool 未执行。', updatedAt: Date.now() }
         this.repository.updateToolCall(updated)
@@ -617,6 +713,54 @@ export class LlmChatExecutionService {
     })
   }
 
+  private async awaitAbortableToolExecution<T>(
+    conversationId: string,
+    execution: Promise<T>,
+    signal: AbortSignal
+  ): Promise<T> {
+    if (signal.aborted) {
+      this.registerToolDrain(conversationId, execution)
+      throw llmAbortReason(signal)
+    }
+    let removeAbortListener = (): void => undefined
+    const aborted = new Promise<never>((_resolve, reject) => {
+      const onAbort = (): void => reject(llmAbortReason(signal))
+      signal.addEventListener('abort', onAbort, { once: true })
+      removeAbortListener = () => signal.removeEventListener('abort', onAbort)
+    })
+    try {
+      return await Promise.race([execution, aborted])
+    } catch (error) {
+      if (signal.aborted) this.registerToolDrain(conversationId, execution)
+      throw error
+    } finally {
+      removeAbortListener()
+    }
+  }
+
+  private registerToolDrain(conversationId: string, execution: Promise<unknown>): void {
+    const id = conversationId.trim()
+    const drain = execution.then(() => undefined, () => undefined)
+    const drains = this.pendingToolDrains.get(id) ?? new Set<Promise<void>>()
+    drains.add(drain)
+    this.pendingToolDrains.set(id, drains)
+    void drain.finally(() => {
+      const current = this.pendingToolDrains.get(id)
+      if (!current) return
+      current.delete(drain)
+      if (current.size === 0) this.pendingToolDrains.delete(id)
+    })
+  }
+
+  private async waitForPendingToolDrains(conversationId: string, signal: AbortSignal): Promise<void> {
+    const id = conversationId.trim()
+    while (true) {
+      const drains = this.pendingToolDrains.get(id)
+      if (!drains || drains.size === 0) return
+      await raceAbortable(Promise.allSettled([...drains]).then(() => undefined), signal)
+    }
+  }
+
   private persistAssistantTerminal(assistant: LlmMessageRecord, context: PersistedContextState): void {
     this.repository.updateMessage(assistant)
     const citationResult = buildCitationRefsFromAssistantOutput(
@@ -627,12 +771,80 @@ export class LlmChatExecutionService {
     this.repository.replaceCitationRefsForAssistant(assistant.id, citationResult.refs)
   }
 
-  private persistStreamingSnapshotIfDue(assistant: LlmMessageRecord, lastPersistAt: number): number {
+  private persistStreamingSnapshotIfDue(
+    assistant: LlmMessageRecord,
+    lastPersistAt: number,
+    onPersist: () => void = () => undefined
+  ): number {
     const now = Date.now()
-    if (now - lastPersistAt < 150) return lastPersistAt
+    if (now - lastPersistAt < STREAMING_SNAPSHOT_PERSIST_INTERVAL_MS) return lastPersistAt
     this.repository.updateMessage({ ...assistant, updatedAt: now }, false)
+    onPersist()
     return now
   }
+}
+
+function llmAbortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new DOMException('LLM request cancelled', 'AbortError')
+}
+
+async function raceAbortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw llmAbortReason(signal)
+  let removeAbortListener = (): void => undefined
+  const aborted = new Promise<never>((_resolve, reject) => {
+    const onAbort = (): void => reject(llmAbortReason(signal))
+    signal.addEventListener('abort', onAbort, { once: true })
+    removeAbortListener = () => signal.removeEventListener('abort', onAbort)
+  })
+  try {
+    return await Promise.race([operation, aborted])
+  } finally {
+    removeAbortListener()
+  }
+}
+
+function recordOverallTransportTiming(
+  perf: LlmExecutionPerfState,
+  event: AiTransportTimingEvent,
+  roundOffsetMs: number
+): void {
+  if (event.metric === 'request_start') return
+  perf.transportTimings[event.metric] ??= roundOffsetMs + event.elapsedMs
+}
+
+function recordToolExecutionTiming(perf: LlmExecutionPerfState, elapsedMs: number): void {
+  const normalized = Math.max(0, elapsedMs)
+  perf.toolExecutionTotalMs += normalized
+  perf.toolExecutionMaxMs = Math.max(perf.toolExecutionMaxMs, normalized)
+}
+
+function logLlmExecutionPerf(perf: LlmExecutionPerfState): void {
+  const round = (value: number | null): number | null => value == null ? null : Math.max(0, Math.round(value * 10) / 10)
+  const firstProviderStartedAt = perf.firstProviderStartedAt
+  const searchToProviderMs = firstProviderStartedAt !== null && perf.searchCompletedAt !== null
+    ? firstProviderStartedAt - perf.searchCompletedAt
+    : null
+  console.info('[OrigRead][LLM Perf]', JSON.stringify({
+    task: perf.task === 'ARTICLE_ANALYSIS' ? 'article_analysis' : 'chat',
+    search_ms: round(perf.searchMs),
+    search_to_model_gap_ms: round(searchToProviderMs),
+    provider_first_start_ms: round(firstProviderStartedAt === null ? null : firstProviderStartedAt - perf.startedAt),
+    TTFB_ms: round(perf.transportTimings.TTFB ?? null),
+    first_sse_ms: round(perf.transportTimings.first_sse ?? null),
+    TTFR_ms: round(perf.transportTimings.TTFR ?? null),
+    TTFC_ms: round(perf.transportTimings.TTFC ?? null),
+    provider_rounds: perf.providerRounds,
+    tool_calls: perf.toolCalls,
+    tool_execution_total_ms: round(perf.toolExecutionTotalMs),
+    tool_execution_max_ms: round(perf.toolExecutionMaxMs),
+    tool_approval_wait_total_ms: round(perf.toolApprovalWaitTotalMs),
+    context_persist_ms: round(perf.contextPersistMs),
+    terminal_persist_ms: round(perf.terminalPersistMs),
+    streaming_snapshot_writes: perf.streamingSnapshotWrites,
+    streaming_snapshot_interval_ms: STREAMING_SNAPSHOT_PERSIST_INTERVAL_MS,
+    total_ms: round(performance.now() - perf.startedAt),
+    outcome: perf.outcome
+  }))
 }
 
 type LlmExecutionEventPayload =

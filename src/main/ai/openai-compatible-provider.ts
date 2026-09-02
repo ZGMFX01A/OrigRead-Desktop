@@ -1,6 +1,7 @@
 import type { ResolvedAiOutputTokenLimitStyle } from './ai-provider-capabilities'
 import { NETWORK_REQUEST_TIMEOUT_MS, requestSignal } from '../network/request-policy'
 import type { ProviderReasoningParameter } from '../../shared/llm'
+import { redactSensitiveText } from '../security/sensitive-text'
 
 export interface AiRuntimeConfig {
   endpoint: string
@@ -229,10 +230,12 @@ function errorDetail(body: string): string {
     const value = JSON.parse(body) as unknown
     if (isRecord(value)) {
       const nested = isRecord(value.error) ? value.error : null
-      return (stringValue(value.message) || stringValue(value.detail) || stringValue(value.description) || stringValue(nested?.message)).slice(0, 400)
+      return redactSensitiveText(
+        stringValue(value.message) || stringValue(value.detail) || stringValue(value.description) || stringValue(nested?.message)
+      ).slice(0, 400)
     }
   } catch { /* ignore */ }
-  return body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 400)
+  return redactSensitiveText(body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()).slice(0, 400)
 }
 
 function chatCompletionRequestBody(
@@ -381,7 +384,7 @@ function parseCompletionStreamPayload(payload: string): AiChatCompletionDelta | 
   try { root = JSON.parse(payload) } catch { throw new Error('AI 流式响应不是有效 JSON') }
   if (!isRecord(root)) return null
   if (isRecord(root.error)) {
-    const detail = stringValue(root.error.message) || 'AI 服务返回错误'
+    const detail = redactSensitiveText(stringValue(root.error.message) || 'AI 服务返回错误')
     throw new Error(detail)
   }
   const choice = getFirstChoice(root)
