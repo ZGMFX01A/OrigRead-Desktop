@@ -99,4 +99,21 @@ describe('McpLocalClientManager', () => {
       database.close()
     }
   })
+
+  it('redacts secret-shaped stdio errors before rejection/state reaches Renderer', async () => {
+    const { database, serverId, manager } = setup(() => connector({
+      connect: async () => { throw new Error('Authorization: Bearer stdio-secret TOKEN=env-secret') }
+    }))
+    try {
+      await expect(manager.connect(serverId)).rejects.toThrow('[redacted]')
+      const state = manager.state(serverId)
+      expect(state.status).toBe('ERROR')
+      expect(state.errorMessage).toContain('[redacted]')
+      expect(state.errorMessage).not.toContain('stdio-secret')
+      expect(state.errorMessage).not.toContain('env-secret')
+    } finally {
+      await manager.disconnectAll()
+      database.close()
+    }
+  })
 })

@@ -28,5 +28,7 @@ export type LlmToolResult =
   | { status: 'CONFIRMATION_REQUIRED'; descriptor: LlmToolDescriptor }
 
 export function toolRequiresConfirmation(descriptor: LlmToolDescriptor): boolean {
-  return descriptor.risk !== 'READ_ONLY'
+  // MCP annotations are remote, untrusted hints. They may describe a Tool as read-only
+  // for UI/risk purposes, but they must never grant authorization-free execution.
+  return descriptor.source === 'MCP' || descriptor.risk !== 'READ_ONLY'
 }

@@ -1,4 +1,5 @@
 import { requestSignal } from '../network/request-policy'
+import { redactSensitiveText } from '../security/sensitive-text'
 import {
   webSearchProviderDefinition,
   type WebSearchProviderKind,
@@ -388,7 +389,7 @@ function searchErrorSuffix(text: string): string {
     const root = JSON.parse(text) as unknown
     if (!isRecord(root)) return ''
     const message = stringValue(root.detail) || stringValue(root.message) || stringValue(root.error)
-    return message ? `：${message.slice(0, 240)}` : ''
+    return message ? `：${redactSensitiveText(message).slice(0, 240)}` : ''
   } catch {
     return ''
   }

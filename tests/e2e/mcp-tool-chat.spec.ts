@@ -63,12 +63,20 @@ test('Reader AI approves a risky Remote MCP tool before tools/call and continues
     await expect(toolCard.locator('.reader-ai-tool-arguments')).toContainText('Weekly')
     await expect(toolCard.locator('.reader-ai-tool-arguments')).toContainText('[redacted]')
     await expect(toolCard.locator('.reader-ai-tool-arguments')).not.toContainText('fixture-secret-key')
+    await toolCard.evaluate((element) => { (element as HTMLElement).dataset.motionIdentity = 'stable-tool-card' })
+    const pendingMotion = await toolCard.evaluate((element) => {
+      const style = getComputedStyle(element as HTMLElement)
+      return { animationName: style.animationName, transitionProperty: style.transitionProperty }
+    })
+    expect(pendingMotion.animationName).toBe('motion-feedback-enter')
+    expect(pendingMotion.transitionProperty).toContain('background-color')
     expect(fixture.toolCalls).toHaveLength(0)
 
     const allowButton = toolCard.getByRole('button', { name: '允许这一次' })
     await expect(allowButton).toBeEnabled()
     await allowButton.click()
     await expect(toolCard).toContainText('已完成')
+    await expect(toolCard).toHaveAttribute('data-motion-identity', 'stable-tool-card')
     const assistant = page.locator('.reader-ai-message.assistant').last()
     await expect(assistant).toContainText('Published after approval')
     await expect(assistant.locator('.reader-ai-inline-citation')).toHaveCount(1)

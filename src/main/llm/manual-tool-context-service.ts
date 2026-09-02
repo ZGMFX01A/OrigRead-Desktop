@@ -6,6 +6,7 @@ import { toolRequiresConfirmation } from '../../shared/llm-tool'
 import type { BuiltLlmEvidenceBlock } from './evidence-block-builder'
 import type { LlmToolRuntime } from './tool-runtime'
 import { MANUAL_TOOL_CONTEXT_PRIORITY } from './context-priority'
+import { redactLlmToolPreviewText } from './tool-approval-view'
 
 const MAX_PENDING_CONTEXTS = 40
 const CONTEXT_TTL_MS = 30 * 60_000
@@ -152,15 +153,15 @@ export class ManualToolContextService {
 }
 
 function publicView(entry: PendingManualToolContext): LlmManualToolContextView {
-  const truncated = entry.content.length > MAX_RESULT_PREVIEW_CHARS
+  const preview = redactLlmToolPreviewText(entry.content, MAX_RESULT_PREVIEW_CHARS)
   return {
     contextId: entry.contextId,
     conversationId: entry.conversationId,
     toolId: entry.toolId,
     name: entry.name,
     risk: entry.risk,
-    resultPreview: truncated ? `${entry.content.slice(0, MAX_RESULT_PREVIEW_CHARS)}\n…` : entry.content,
-    resultTruncated: truncated,
+    resultPreview: preview.text,
+    resultTruncated: preview.truncated,
     createdAt: entry.createdAt
   }
 }

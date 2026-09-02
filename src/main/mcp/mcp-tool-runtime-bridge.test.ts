@@ -56,7 +56,8 @@ describe('McpToolRuntimeBridge', () => {
       const read = descriptors.find((descriptor) => descriptor.id.endsWith(':read_doc'))!
       await expect(runtime.execute(
         { id: 'call-1', toolId: read.id, argumentsJson: '{"id":"doc-1"}' },
-        { enabledToolIds: new Set([read.id]) }
+        { enabledToolIds: new Set([read.id]) },
+        { confirmed: true }
       )).resolves.toEqual({ status: 'SUCCESS', content: 'document body' })
       expect(calls).toEqual([{ requestedServerId: serverId, name: 'read_doc', argumentsValue: { id: 'doc-1' } }])
     } finally { database.close() }
@@ -91,7 +92,8 @@ describe('McpToolRuntimeBridge', () => {
       const read = runtime.descriptors().find((descriptor) => descriptor.id.endsWith(':read_doc'))!
       await expect(runtime.execute(
         { id: 'call-2', toolId: read.id, argumentsJson: '[]' },
-        { enabledToolIds: new Set([read.id]) }
+        { enabledToolIds: new Set([read.id]) },
+        { confirmed: true }
       )).resolves.toMatchObject({ status: 'FAILURE', message: 'MCP Tool 参数必须是 JSON object' })
       expect(calls).toBe(0)
     } finally { database.close() }

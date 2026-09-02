@@ -21,7 +21,7 @@ function mcpTool(id: string, risk: LlmTool['descriptor']['risk'], execute: LlmTo
 }
 
 describe('ManualToolContextService', () => {
-  it('lists only executable MCP tools and runs read-only tools without a confirmation flag', async () => {
+  it('lists only executable MCP tools and requires confirmation even for read-only MCP hints', async () => {
     const runtime = new LlmToolRuntime()
     runtime.register(mcpTool('mcp:read', 'READ_ONLY', async () => ({ status: 'SUCCESS', content: 'manual result' })))
     runtime.register({
@@ -34,7 +34,9 @@ describe('ManualToolContextService', () => {
     const service = new ManualToolContextService(runtime)
     expect(service.listTools().map((tool) => tool.id)).toEqual(['mcp:read'])
 
-    const executed = await service.execute({ conversationId: 'conversation-1', toolId: 'mcp:read', argumentsJson: '{}', confirmed: false })
+    await expect(service.execute({ conversationId: 'conversation-1', toolId: 'mcp:read', argumentsJson: '{}', confirmed: false }))
+      .rejects.toThrow('明确确认')
+    const executed = await service.execute({ conversationId: 'conversation-1', toolId: 'mcp:read', argumentsJson: '{}', confirmed: true })
     expect(executed).toMatchObject({ conversationId: 'conversation-1', toolId: 'mcp:read', risk: 'READ_ONLY', resultPreview: 'manual result' })
     const consumed = service.consume('conversation-1', [executed.contextId])
     expect(consumed.contextItems).toMatchObject([{
@@ -65,8 +67,21 @@ describe('ManualToolContextService', () => {
     const runtime = new LlmToolRuntime()
     runtime.register(mcpTool('mcp:read', 'READ_ONLY', async () => ({ status: 'SUCCESS', content: 'kept' })))
     const service = new ManualToolContextService(runtime)
-    const executed = await service.execute({ conversationId: 'owner', toolId: 'mcp:read', argumentsJson: '{}', confirmed: false })
+    const executed = await service.execute({ conversationId: 'owner', toolId: 'mcp:read', argumentsJson: '{}', confirmed: true })
     expect(() => service.consume('attacker', [executed.contextId])).toThrow('不属于当前会话')
     expect(service.consume('owner', [executed.contextId]).contextItems[0]?.content).toBe('kept')
+  })
+
+  it('redacts secret-shaped manual Tool previews while preserving full Main-owned context', async () => {
+    const runtime = new LlmToolRuntime()
+    runtime.register(mcpTool('mcp:read', 'READ_ONLY', async () => ({
+      status: 'SUCCESS',
+      content: JSON.stringify({ value: 'kept', token: 'renderer-secret' })
+    })))
+    const service = new ManualToolContextService(runtime)
+    const executed = await service.execute({ conversationId: 'owner', toolId: 'mcp:read', argumentsJson: '{}', confirmed: true })
+    expect(executed.resultPreview).toContain('[redacted]')
+    expect(executed.resultPreview).not.toContain('renderer-secret')
+    expect(service.consume('owner', [executed.contextId]).contextItems[0]?.content).toContain('renderer-secret')
   })
 })

@@ -11,6 +11,7 @@ import type {
   McpServerIdentity
 } from '../../shared/mcp'
 import type { McpLocalRepository } from './mcp-local-repository'
+import { redactErrorForBoundary, redactSensitiveText } from '../security/sensitive-text'
 
 const HEALTH_REQUEST_TIMEOUT_MS = 10_000
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000
@@ -78,7 +79,7 @@ export class McpLocalClientManager {
     } catch (error) {
       await safeClose(connector)
       this.setErrorState(server.id, error)
-      throw error
+      throw redactErrorForBoundary(error)
     }
   }
 
@@ -104,7 +105,7 @@ export class McpLocalClientManager {
       return await connection.connector.listTools(signal)
     } catch (error) {
       await this.markConnectionError(serverId, error)
-      throw error
+      throw redactErrorForBoundary(error)
     }
   }
 
@@ -119,7 +120,7 @@ export class McpLocalClientManager {
       return await connection.connector.callTool(name, argumentsValue, signal)
     } catch (error) {
       await this.markConnectionError(serverId, error)
-      throw error
+      throw redactErrorForBoundary(error)
     }
   }
 
@@ -141,6 +142,8 @@ export class McpLocalClientManager {
         serverInfo: info.serverInfo,
         toolCount: result.tools.length
       }
+    } catch (error) {
+      throw redactErrorForBoundary(error)
     } finally {
       await safeClose(connector)
     }
@@ -239,8 +242,8 @@ export function createSdkMcpLocalConnectorFactory(
       } catch (error) {
         const detail = stderrTail.trim()
         await closeCurrent()
-        if (detail) throw new Error(`${errorMessage(error)}\n\nServer stderr:\n${detail}`)
-        throw error
+        if (detail) throw new Error(`${errorMessage(error)}\n\nServer stderr:\n${redactSensitiveText(detail)}`)
+        throw redactErrorForBoundary(error)
       }
     }
 
@@ -341,5 +344,5 @@ function tail(value: string, maxChars: number): string {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  return redactSensitiveText(error instanceof Error ? error.message : String(error))
 }

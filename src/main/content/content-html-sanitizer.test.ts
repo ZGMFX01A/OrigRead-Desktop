@@ -20,6 +20,25 @@ describe('sanitizeContentHtml', () => {
     expect(html).not.toContain('srcdoc=')
   })
 
+  it('removes document metadata and active namespaces from untrusted article HTML', () => {
+    const html = sanitizeContentHtml(`
+      <base href="https://evil.example/">
+      <meta http-equiv="refresh" content="0;url=https://evil.example/">
+      <link rel="stylesheet" href="https://evil.example/style.css">
+      <svg><a href="javascript:alert(1)"><text>unsafe svg</text></a></svg>
+      <math><mi>x</mi></math>
+      <p>kept text</p>
+    `, 'https://news.example.com/article')
+
+    expect(html).toContain('kept text')
+    expect(html).not.toContain('<base')
+    expect(html).not.toContain('<meta')
+    expect(html).not.toContain('<link')
+    expect(html).not.toContain('<svg')
+    expect(html).not.toContain('<math')
+    expect(html).not.toContain('javascript:')
+  })
+
   it('resolves relative resources and removes non-http urls', () => {
     const html = sanitizeContentHtml(`
       <p><a href="/docs/guide">Guide</a></p>

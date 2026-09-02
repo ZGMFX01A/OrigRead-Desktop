@@ -10,6 +10,7 @@ import type {
 } from '../../shared/mcp'
 import type { McpOAuthProviderSession } from './mcp-oauth-provider'
 import type { McpRemoteRepository } from './mcp-remote-repository'
+import { redactErrorForBoundary, redactSensitiveText } from '../security/sensitive-text'
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000
 const HEALTH_REQUEST_TIMEOUT_MS = 10_000
@@ -73,7 +74,7 @@ export class McpRemoteClientManager {
     } catch (error) {
       await safeClose(connector)
       this.setErrorState(server.id, error)
-      throw error
+      throw redactErrorForBoundary(error)
     }
   }
 
@@ -99,7 +100,7 @@ export class McpRemoteClientManager {
     } catch (error) {
       await safeClose(connector)
       this.setErrorState(server.id, error)
-      throw error
+      throw redactErrorForBoundary(error)
     } finally {
       const pending = this.pendingAuthorizations.get(server.id)
       if (pending?.connector === connector) this.pendingAuthorizations.delete(server.id)
@@ -135,7 +136,7 @@ export class McpRemoteClientManager {
       return await connection.connector.listTools(signal)
     } catch (error) {
       await this.markConnectionError(serverId, error)
-      throw error
+      throw redactErrorForBoundary(error)
     }
   }
 
@@ -150,7 +151,7 @@ export class McpRemoteClientManager {
       return await connection.connector.callTool(name, argumentsValue, signal)
     } catch (error) {
       await this.markConnectionError(serverId, error)
-      throw error
+      throw redactErrorForBoundary(error)
     }
   }
 
@@ -170,6 +171,8 @@ export class McpRemoteClientManager {
         serverInfo: info.serverInfo,
         toolCount: result.tools.length
       }
+    } catch (error) {
+      throw redactErrorForBoundary(error)
     } finally {
       await safeClose(connector)
     }
@@ -380,6 +383,6 @@ async function safeClose(connector: McpRemoteConnector): Promise<void> {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  return redactSensitiveText(error instanceof Error ? error.message : String(error))
 }
 

@@ -25,6 +25,23 @@ function connector(overrides: Partial<McpRemoteConnector> = {}): McpRemoteConnec
 }
 
 describe('McpRemoteClientManager', () => {
+  it('redacts secret-shaped Remote MCP errors before rejection/state reaches Renderer', async () => {
+    const { database, serverId, manager } = setup(() => connector({
+      connect: async () => { throw new Error('Authorization: Bearer remote-secret api_key=header-secret') }
+    }))
+    try {
+      await expect(manager.connect(serverId)).rejects.toThrow('[redacted]')
+      const state = manager.state(serverId)
+      expect(state.status).toBe('ERROR')
+      expect(state.errorMessage).toContain('[redacted]')
+      expect(state.errorMessage).not.toContain('remote-secret')
+      expect(state.errorMessage).not.toContain('header-secret')
+    } finally {
+      await manager.disconnectAll()
+      database.close()
+    }
+  })
+
   it('lazily connects, reuses a healthy connection, and invalidates it after config changes', async () => {
     let createdConnectors = 0
     let closes = 0

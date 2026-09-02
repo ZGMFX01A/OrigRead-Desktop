@@ -45,7 +45,7 @@ describe('LlmToolRuntime', () => {
     expect(runtime.resolveAllowed(new Set(['off', 'b', 'missing', 'a'])).map((item) => item.id)).toEqual(['a', 'b'])
   })
 
-  it('auto-executes explicitly enabled read-only tools and gates sensitive/write tools', async () => {
+  it('auto-executes only trusted internal read-only tools and gates sensitive/write/MCP tools', async () => {
     const runtime = new LlmToolRuntime()
     runtime.register(tool('read'))
     runtime.register(tool('sensitive', { risk: 'SENSITIVE' }))
@@ -54,7 +54,12 @@ describe('LlmToolRuntime', () => {
 
     await expect(runtime.execute({ id: '1', toolId: 'read', argumentsJson: '{}' }, policy)).resolves.toEqual({ status: 'SUCCESS', content: '{}' })
     await expect(runtime.execute({ id: '2', toolId: 'sensitive', argumentsJson: '{}' }, policy)).resolves.toMatchObject({ status: 'CONFIRMATION_REQUIRED' })
-    await expect(runtime.execute({ id: '3', toolId: 'mcp:read', argumentsJson: '{}' }, policy)).resolves.toEqual({ status: 'SUCCESS', content: '{}' })
+    await expect(runtime.execute({ id: '3', toolId: 'mcp:read', argumentsJson: '{}' }, policy)).resolves.toMatchObject({ status: 'CONFIRMATION_REQUIRED' })
+    await expect(runtime.execute(
+      { id: '4', toolId: 'mcp:read', argumentsJson: '{}' },
+      policy,
+      { confirmed: true }
+    )).resolves.toEqual({ status: 'SUCCESS', content: '{}' })
   })
 
   it('never executes a tool omitted from the request authorization set', async () => {

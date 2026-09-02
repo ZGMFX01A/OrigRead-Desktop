@@ -53,6 +53,12 @@ test('Reader AI Chat exposes Dedicated Web Search activity, frozen results, one-
     await expect(activity).toContainText('已搜索网页')
     await expect(activity).toContainText('Fixture Search')
     await expect(activity).toContainText('2 条结果')
+    const searchFeedback = await activity.evaluate((element) => {
+      const style = getComputedStyle(element as HTMLElement)
+      return { animationName: style.animationName, transitionProperty: style.transitionProperty }
+    })
+    expect(searchFeedback.animationName).toBe('motion-feedback-enter')
+    expect(searchFeedback.transitionProperty).toContain('background-color')
     await expect.poll(()=>fixture.searchRequests.length).toBe(1)
     const sentQuery = JSON.parse(fixture.searchRequests[0]!.body).query as string
     await expect(activity).toContainText(sentQuery)

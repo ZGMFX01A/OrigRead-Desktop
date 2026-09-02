@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio'
 import type { AnyNode } from 'domhandler'
 
-const REMOVED_ELEMENTS = 'script, style, noscript, template, iframe, object, embed, form, input, button, nav, footer, aside'
+const REMOVED_ELEMENTS = 'script, style, noscript, template, iframe, object, embed, form, input, button, nav, footer, aside, base, link, meta, svg, math'
 const ALLOWED_URL_SCHEMES = new Set(['http:', 'https:'])
 
 /** 对齐 Android ContentHtmlSanitizer：移除可执行/交互节点并补全安全网络 URL。 */

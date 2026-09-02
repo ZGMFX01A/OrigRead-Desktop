@@ -1,4 +1,5 @@
 import { BrowserWindow } from 'electron'
+import { randomUUID } from 'node:crypto'
 import {
   isAllowedDynamicNavigation,
   requiresInteractiveVerification,
@@ -41,10 +42,12 @@ export class ElectronDynamicWebsiteRenderer implements DynamicWebsiteRenderer {
           contextIsolation: true,
           sandbox: true,
           webSecurity: true,
-          devTools: false
+          devTools: false,
+          partition: `origread-dynamic-website-${randomUUID()}`
         }
       })
       window.webContents.setAudioMuted(true)
+      window.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
       window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
 
       const cleanup = (): void => {

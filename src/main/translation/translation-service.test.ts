@@ -117,6 +117,29 @@ describe('translation providers Android parity',()=>{
     }finally{await new Promise<void>((resolve)=>server.close(()=>resolve()))}
   })
 
+  it('redacts credential-shaped values echoed by translation HTTP errors',async()=>{
+    const server=createServer((_req,res)=>{
+      res.writeHead(401,{'content-type':'text/plain'})
+      res.end('api_key=translation-secret Authorization: Bearer echoed-translation-secret trace=xyz')
+    })
+    await new Promise<void>((resolve)=>server.listen(0,'127.0.0.1',resolve))
+    const address=server.address();if(!address||typeof address==='string')throw new Error('no port')
+    try{
+      await expect(new DeepLTranslationProvider().translate(
+        ['Hello'],null,'zh-CN',
+        {endpoint:`http://127.0.0.1:${address.port}/v2/translate`,apiKey:'client-translation-secret',region:''}
+      )).rejects.toSatisfy((error:unknown)=>{
+        const message=error instanceof Error?error.message:String(error)
+        return message.includes('api_key=[redacted]')
+          && message.includes('Bearer [redacted]')
+          && message.includes('trace=xyz')
+          && !message.includes('translation-secret')
+          && !message.includes('echoed-translation-secret')
+          && !message.includes('client-translation-secret')
+      })
+    }finally{await new Promise<void>((resolve)=>server.close(()=>resolve()))}
+  })
+
   it('keeps DeepL connectivity test and quota query as separate requests',async()=>{
     const requests:string[]=[]
     const server=createServer(async(req,res)=>{

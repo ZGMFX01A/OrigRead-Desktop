@@ -100,6 +100,31 @@ describe('Dedicated Search provider adapters', () => {
     expect(response.results).toHaveLength(5)
     expect(response.results[0]).toMatchObject({ title: 'Result 0', snippet: 'snippet 0', publishedAt: '2026-09-01' })
   })
+
+  it('redacts credential-shaped values echoed by a search provider error', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(401, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ detail: 'api_key=server-search-secret Authorization: Bearer echoed-search-secret trace=abc' }))
+    })
+    servers.push(server)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('fixture port missing')
+
+    await expect(new TavilyWebSearchAdapter().search(
+      profile('TAVILY', `http://127.0.0.1:${address.port}/search`),
+      'client-search-secret',
+      request()
+    )).rejects.toSatisfy((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      return message.includes('api_key=[redacted]')
+        && message.includes('Bearer [redacted]')
+        && message.includes('trace=abc')
+        && !message.includes('server-search-secret')
+        && !message.includes('echoed-search-secret')
+        && !message.includes('client-search-secret')
+    })
+  })
 })
 
 function request(): WebSearchRequest {

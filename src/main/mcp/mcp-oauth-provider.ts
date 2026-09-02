@@ -97,6 +97,9 @@ class ElectronMcpOAuthProvider implements McpOAuthProviderSession {
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
     if (!this.interactiveAllowed) throw new McpOAuthAuthorizationRequiredError()
+    if (authorizationUrl.protocol !== 'http:' && authorizationUrl.protocol !== 'https:') {
+      throw new Error('MCP OAuth 授权地址必须使用 HTTP/HTTPS')
+    }
     await this.options.openExternal(authorizationUrl.toString())
     this.authorizationRedirected = true
   }

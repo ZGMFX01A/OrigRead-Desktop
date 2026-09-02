@@ -90,22 +90,35 @@ test('Local MCP stdio stays lazy, keeps env secrets out of settings, refreshes t
     expect(JSON.stringify(catalog)).not.toContain('local-secret-value')
 
     // A local catalog entry is the same executable ToolRuntime surface used by Remote MCP.
-    // The read-only manual path proves stdio tools/call without requiring model tool-calling support.
+    // MCP annotations may describe this tool as READ_ONLY, but they must never grant execution
+    // permission by themselves: the manual path still requires explicit user confirmation.
     const manualResult = await page.evaluate(async () => {
       const conversation = await window.origread.createLlmConversation({ title: 'Local MCP E2E' })
       const tools = await window.origread.listLlmManualTools()
       const tool = tools.find((item) => item.name.includes('read_local_note'))
       if (!tool) throw new Error('Local MCP read tool missing from Manual Tool catalog')
+      let rejectedWithoutConfirmation = false
+      try {
+        await window.origread.executeLlmManualTool({
+          conversationId: conversation.id,
+          toolId: tool.id,
+          argumentsJson: JSON.stringify({ id: 'note-7' }),
+          confirmed: false
+        })
+      } catch {
+        rejectedWithoutConfirmation = true
+      }
       const context = await window.origread.executeLlmManualTool({
         conversationId: conversation.id,
         toolId: tool.id,
         argumentsJson: JSON.stringify({ id: 'note-7' }),
-        confirmed: false
+        confirmed: true
       })
       await window.origread.discardLlmManualToolContext(context.contextId)
-      return { tool, context }
+      return { tool, context, rejectedWithoutConfirmation }
     })
     expect(manualResult.tool).toMatchObject({ risk: 'READ_ONLY' })
+    expect(manualResult.rejectedWithoutConfirmation).toBe(true)
     expect(manualResult.context.resultPreview).toBe('read_local_note:ok:note-7')
     const executionEvents = await readFixtureEvents(logPath)
     expect(executionEvents).toContainEqual(expect.objectContaining({

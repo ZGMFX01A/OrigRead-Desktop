@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, powerMonitor, shell, type IpcMainInvokeEvent } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { IPC_CHANNELS, type AppInfo, type FeedSettingsPatch } from '../shared/contracts'
 import { resolveBrandName } from '../shared/locale'
@@ -46,6 +47,7 @@ import {
 import type { OriginalNavigationAction } from '../shared/original-view'
 import { PeriodicSyncScheduler } from './sync/periodic-sync-scheduler'
 import { ElectronSecretStore } from './security/secret-store'
+import { isAllowedRendererUrl } from './security/renderer-trust'
 import { AiSettingsRepository } from './ai/ai-settings-repository'
 import { AiSummaryService } from './ai/ai-summary-service'
 import { TranslationSettingsRepository } from './translation/translation-settings-repository'
@@ -120,6 +122,7 @@ import { McpCombinedRuntime } from './mcp/mcp-combined-runtime'
 import type { McpLocalServerPatch, McpRemoteServerPatch } from '../shared/mcp'
 
 const isDevelopment = Boolean(process.env.ELECTRON_RENDERER_URL)
+const productionRendererUrl = pathToFileURL(join(__dirname, '../renderer/index.html')).toString()
 if (process.env.ORIGREAD_E2E_USER_DATA_DIR) {
   app.setPath('userData', process.env.ORIGREAD_E2E_USER_DATA_DIR)
 }
@@ -235,10 +238,10 @@ function showSaveDialog(options: Electron.SaveDialogOptions): Promise<Electron.S
 }
 
 function isTrustedRendererUrl(url: string): boolean {
-  if (isDevelopment && process.env.ELECTRON_RENDERER_URL) {
-    return url.startsWith(process.env.ELECTRON_RENDERER_URL)
-  }
-  return url.startsWith('file:')
+  return isAllowedRendererUrl(url, {
+    developmentUrl: isDevelopment ? process.env.ELECTRON_RENDERER_URL : null,
+    productionUrl: productionRendererUrl
+  })
 }
 
 function createMainWindow(): BrowserWindow {
@@ -1320,7 +1323,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.listLlmArticleContextCandidates, (event, query?: unknown) => {
     assertTrustedSender(event)
     if (!libraryRepository) throw new Error('OrigRead database is not ready')
-    const normalizedQuery = query == null ? '' : validateText(query, 'query', 200).trim()
+    const normalizedQuery = query == null || query === '' ? '' : validateText(query, 'query', 200).trim()
     return libraryRepository.listArticleMetadata(30, normalizedQuery)
       .map((article) => ({
         articleId: article.id,
@@ -2223,7 +2226,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
         serverId: server.id,
         clientName: 'OrigRead Desktop',
         secrets: secretStore,
-        openExternal: (url) => shell.openExternal(url)
+        openExternal: (url) => shell.openExternal(validateExternalHttpUrl(url))
       })
     )
   )
@@ -2330,7 +2333,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     app.getVersion(), libraryRepository, settingsRepository, websiteRuleRepository, jsonRuleRepository,
     articleFilterRepository, websitePreferenceRepository, rssHubSettingsRepository, translationSettingsRepository, aiSettingsRepository,
     accountRepository, llmSkillRepository, llmQuickMessageRepository, llmCustomizationSettingsRepository, webSearchRepository,
-    mcpRemoteRepository, mcpLocalRepository
+    mcpRemoteRepository, mcpLocalRepository, desktopDatabase.connection, secretStore
   )
   sourceSyncService = new SourceSyncService(
     libraryRepository,

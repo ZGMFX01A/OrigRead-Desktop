@@ -32,6 +32,19 @@ describe('buildLlmToolActivityView', () => {
     expect(view.argumentsPreview.length).toBeLessThan(4_100)
   })
 
+  it('redacts secret-shaped Tool results and errors before they enter Renderer memory', () => {
+    const input = record('{}')
+    input.resultContent = JSON.stringify({ value: 'ok', token: 'result-secret', nested: { apiKey: 'api-secret' } })
+    input.errorMessage = 'Authorization: Bearer error-secret password=hunter2'
+    const view = buildLlmToolActivityView(input, descriptor)
+    expect(view.resultPreview).toContain('ok')
+    expect(view.resultPreview).toContain('[redacted]')
+    expect(view.resultPreview).not.toContain('result-secret')
+    expect(view.resultPreview).not.toContain('api-secret')
+    expect(view.errorMessage).not.toContain('error-secret')
+    expect(view.errorMessage).not.toContain('hunter2')
+  })
+
   it('falls back to WRITE when the original descriptor is no longer registered', () => {
     expect(buildLlmToolActivityView(record('{}'), null)).toMatchObject({ risk: 'WRITE', source: 'MCP' })
   })

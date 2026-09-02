@@ -56,6 +56,9 @@ describe('MCP OAuth provider session', () => {
       await provider.redirectToAuthorization(authorizeUrl)
       expect(openExternal).toHaveBeenCalledOnce()
       expect(openExternal).toHaveBeenCalledWith(authorizeUrl.toString())
+
+      await expect(provider.redirectToAuthorization(new URL('file:///tmp/steal'))).rejects.toThrow('HTTP/HTTPS')
+      expect(openExternal).toHaveBeenCalledOnce()
     } finally {
       await provider.close()
     }

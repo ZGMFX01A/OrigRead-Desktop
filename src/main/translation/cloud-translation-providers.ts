@@ -1,6 +1,7 @@
 import * as cheerio from 'cheerio'
 import type { TranslationProviderType } from '../../shared/translation'
 import { NETWORK_REQUEST_TIMEOUT_MS, requestSignal } from '../network/request-policy'
+import { redactSensitiveText } from '../security/sensitive-text'
 
 export interface TranslationRuntimeConfig { endpoint: string; apiKey: string; region: string }
 export interface TranslationBatchResult { texts: string[]; detectedSourceLanguage: string | null }
@@ -134,5 +135,5 @@ function decodeHtmlEntities(value:string):string{return cheerio.load(`<body>${va
 function asRecord(value:unknown):Record<string,unknown>|null{return typeof value==='object'&&value!==null&&!Array.isArray(value)?value as Record<string,unknown>:null}
 function stringValue(value:unknown):string{return typeof value==='string'?value:''}
 function ensureCount(values:string[],expected:number):void{if(values.length!==expected||values.some((item)=>!item))throw new Error('翻译服务返回的段落数量或内容无效')}
-function translationHttpError(status:number,body:string):string{const detail=body.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,240);const suffix=detail?`：${detail}`:'';if([401,403].includes(status))return`翻译服务鉴权失败（HTTP ${status}）${suffix}`;if([429,456].includes(status))return`翻译服务请求过于频繁或额度已用尽（HTTP ${status}）${suffix}`;if([404,405].includes(status))return`翻译服务地址或接口路径不正确（HTTP ${status}）${suffix}`;if([400,422].includes(status))return`翻译服务拒绝了当前请求参数（HTTP ${status}）${suffix}`;return`翻译服务请求失败（HTTP ${status}）${suffix}`}
+function translationHttpError(status:number,body:string):string{const detail=redactSensitiveText(body.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()).slice(0,240);const suffix=detail?`：${detail}`:'';if([401,403].includes(status))return`翻译服务鉴权失败（HTTP ${status}）${suffix}`;if([429,456].includes(status))return`翻译服务请求过于频繁或额度已用尽（HTTP ${status}）${suffix}`;if([404,405].includes(status))return`翻译服务地址或接口路径不正确（HTTP ${status}）${suffix}`;if([400,422].includes(status))return`翻译服务拒绝了当前请求参数（HTTP ${status}）${suffix}`;return`翻译服务请求失败（HTTP ${status}）${suffix}`}
 

@@ -1,6 +1,7 @@
 import type { LlmToolCallRecord } from '../../shared/llm-chat'
 import type { LlmToolActivityView } from '../../shared/llm-ipc'
 import type { LlmToolDescriptor } from '../../shared/llm-tool'
+import { redactSensitiveText } from '../security/sensitive-text'
 
 const MAX_PREVIEW_CHARS = 4_000
 const MAX_STRING_CHARS = 1_000
@@ -11,7 +12,8 @@ const SENSITIVE_KEY = /(?:authorization|cookie|credential|password|passwd|secret
 
 export function buildLlmToolActivityView(record: LlmToolCallRecord, descriptor: LlmToolDescriptor | null): LlmToolActivityView {
   const argumentsPreview = safeJsonPreview(record.argumentsJson)
-  const result = record.resultContent == null ? null : boundedText(record.resultContent)
+  const result = record.resultContent == null ? null : redactLlmToolPreviewText(record.resultContent)
+  const error = record.errorMessage == null ? null : redactLlmToolPreviewText(record.errorMessage)
   return {
     toolCallId: record.id,
     assistantMessageId: record.assistantMessageId,
@@ -25,17 +27,21 @@ export function buildLlmToolActivityView(record: LlmToolCallRecord, descriptor: 
     argumentsPreview: argumentsPreview.text,
     argumentsTruncated: argumentsPreview.truncated,
     resultPreview: result?.text ?? null,
-    errorMessage: record.errorMessage
+    errorMessage: error?.text ?? null
   }
 }
 
 function safeJsonPreview(value: string): { text: string; truncated: boolean } {
+  return redactLlmToolPreviewText(value)
+}
+
+export function redactLlmToolPreviewText(value: string, maxChars = MAX_PREVIEW_CHARS): { text: string; truncated: boolean } {
   try {
     const parsed = JSON.parse(value) as unknown
     const sanitized = sanitizeValue(parsed, 0)
-    return boundedText(JSON.stringify(sanitized, null, 2))
+    return boundedText(JSON.stringify(sanitized, null, 2), maxChars)
   } catch {
-    return boundedText(value)
+    return boundedText(redactSensitiveText(value), maxChars)
   }
 }
 
@@ -58,8 +64,8 @@ function sanitizeValue(value: unknown, depth: number): unknown {
   return result
 }
 
-function boundedText(value: string): { text: string; truncated: boolean } {
+function boundedText(value: string, maxChars = MAX_PREVIEW_CHARS): { text: string; truncated: boolean } {
   const normalized = value.replace(/\r\n/g, '\n')
-  if (normalized.length <= MAX_PREVIEW_CHARS) return { text: normalized, truncated: false }
-  return { text: `${normalized.slice(0, MAX_PREVIEW_CHARS)}\n…`, truncated: true }
+  if (normalized.length <= maxChars) return { text: normalized, truncated: false }
+  return { text: `${normalized.slice(0, maxChars)}\n…`, truncated: true }
 }
