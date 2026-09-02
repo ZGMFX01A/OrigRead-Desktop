@@ -17,6 +17,7 @@ import {
   Sparkles,
   Star,
   Languages,
+  Lightbulb,
   StepForward,
   ExternalLink,
   Headphones,
@@ -78,6 +79,7 @@ import type {
   LlmToolActivityView,
   LlmToolApprovalDecision
 } from '../../shared/llm-ipc'
+import type { LlmReasoningEffort } from '../../shared/llm'
 import { resolveQuickMessageTemplate, type LlmQuickMessage } from '../../shared/llm-quick-message'
 import type { TranslationDocument, TranslationTarget } from '../../shared/translation'
 import type { FeedCatalogEntry } from '../../shared/source-catalog'
@@ -125,6 +127,18 @@ import { displayChatAssistantContent, searchReaderAiChatMessages } from './reade
 
 type ReaderMode = 'article' | 'translation'
 type ReaderToolLoading = 'ai' | 'translation'
+
+const READER_AI_REASONING_EFFORTS = ['AUTO', 'MINIMAL', 'LOW', 'MEDIUM', 'HIGH', 'MAXIMUM'] as const satisfies readonly LlmReasoningEffort[]
+
+function readerAiReasoningEffortLabel(effort: LlmReasoningEffort): string {
+  return effort === 'AUTO' ? 'Auto'
+    : effort === 'MINIMAL' ? 'Minimal'
+      : effort === 'LOW' ? 'Low'
+        : effort === 'MEDIUM' ? 'Medium'
+          : effort === 'HIGH' ? 'High'
+            : effort === 'MAXIMUM' ? 'Maximum'
+              : 'Auto'
+}
 
 type ContextMenuState =
   | { kind: 'feed'; x: number; y: number; feedId: string }
@@ -230,6 +244,7 @@ export default function App(): React.JSX.Element {
   const [chatLocateMessageId, setChatLocateMessageId] = useState<string | null>(null)
   const [readerAiSourceFocus, setReaderAiSourceFocus] = useState<{ messageId: string; citationId: string | null; locationUnavailable: boolean } | null>(null)
   const [readerAiSourceSnapshot, setReaderAiSourceSnapshot] = useState<{ messageId: string; snapshot: LlmAssistantEvidenceSnapshot } | null>(null)
+  const [readerAiInteractionCitationSnapshot, setReaderAiInteractionCitationSnapshot] = useState<{ messageId: string; snapshot: LlmAssistantEvidenceSnapshot } | null>(null)
   const [readerAiAnswerCitationSnapshot, setReaderAiAnswerCitationSnapshot] = useState<{ messageId: string; snapshot: LlmAssistantEvidenceSnapshot } | null>(null)
   const [readerCitationTarget, setReaderCitationTarget] = useState<{ messageId: string; citation: LlmCitationRefRecord; contextRef: LlmContextRefRecord | null } | null>(null)
   const [chatActiveExecution, setChatActiveExecution] = useState<LlmExecutionIdentity | null>(null)
@@ -238,6 +253,7 @@ export default function App(): React.JSX.Element {
   const [chatDraftProviderId, setChatDraftProviderId] = useState('')
   const [chatDraftModel, setChatDraftModel] = useState('')
   const [chatForceWebSearchNext, setChatForceWebSearchNext] = useState(false)
+  const [chatReasoningEffort, setChatReasoningEffort] = useState<LlmReasoningEffort>('AUTO')
   const [aiSummaryProgress, setAiSummaryProgress] = useState<AiSummaryProgress | null>(null)
   const [aiSummaryStream, setAiSummaryStream] = useState<AiSummaryStreamUpdate | null>(null)
   const [aiSummaryStartedAt, setAiSummaryStartedAt] = useState<number | null>(null)
@@ -297,6 +313,7 @@ export default function App(): React.JSX.Element {
     firstVisibleScheduled: boolean
   } | null>(null)
   const chatConversationIdRef = useRef<string | null>(null)
+  const readerAiConversationByArticleRef = useRef(new Map<string, string>())
   const chatManualToolContextsRef = useRef<LlmManualToolContextView[]>([])
   const citationArticleNavigationRef = useRef<string | null>(null)
   const readerCitationHighlightRef = useRef<HTMLElement | null>(null)
@@ -748,6 +765,12 @@ export default function App(): React.JSX.Element {
   }, [chatConversation?.id, chatMessages.length, readerAiPanel.conversationId, readerAiPanel.open, readerAiPanel.view, selectedArticleId, t])
 
   useEffect(() => {
+    const articleId = chatConversation?.articleId?.trim()
+    if (!articleId || !chatConversation?.id) return
+    readerAiConversationByArticleRef.current.set(articleId, chatConversation.id)
+  }, [chatConversation?.articleId, chatConversation?.id])
+
+  useEffect(() => {
     if (readerToolLoading !== 'ai' || aiSummaryStartedAt === null) {
       setAiSummaryElapsedSeconds(0)
       return
@@ -846,6 +869,7 @@ export default function App(): React.JSX.Element {
       setChatConversation(null)
       setChatAttachedArticles([])
       setChatMessages([])
+      setChatToolActivity([])
       setChatManualToolContexts([])
       setChatManualToolBusy(false)
       setChatDraft('')
@@ -860,8 +884,34 @@ export default function App(): React.JSX.Element {
       setChatAiSettings(null)
       setChatDraftProviderId('')
       setChatDraftModel('')
-      setReaderAiPanel(resetReaderAiPanel())
+      setReaderAiPanel((current) => ({ ...resetReaderAiPanel(), open: current.open }))
       setReaderAiSourceFocus(null)
+      setChatHistoryLoading(true)
+      void window.origread.listLlmConversations(selectedArticleId)
+        .then((conversations) => {
+          if (cancelled) return
+          setChatConversations(conversations)
+          const rememberedConversationId = readerAiConversationByArticleRef.current.get(selectedArticleId)
+          const conversation = conversations.find((item) => item.id === rememberedConversationId)
+            ?? conversations[0]
+            ?? null
+          if (!conversation) return
+          readerAiConversationByArticleRef.current.set(selectedArticleId, conversation.id)
+          chatConversationIdRef.current = conversation.id
+          setReaderAiPanel((current) => ({
+            ...current,
+            view: 'chat',
+            conversationId: conversation.id,
+            detailView: null,
+            detailTargetId: null
+          }))
+        })
+        .catch(() => {
+          if (!cancelled) setChatError(t('conversationLoadFailed'))
+        })
+        .finally(() => {
+          if (!cancelled) setChatHistoryLoading(false)
+        })
     }
     setAiSummaryProgress(null)
     setAiSummaryStream(null)
@@ -968,6 +1018,10 @@ export default function App(): React.JSX.Element {
   ) ?? null
 
   useEffect(() => {
+    setReaderAiInteractionCitationSnapshot(null)
+  }, [latestCompletedAssistantForCitation?.id, chatConversation?.id])
+
+  useEffect(() => {
     const message = latestCompletedAssistantForCitation
     if (!message || !selectedArticleId) {
       setReaderAiAnswerCitationSnapshot(null)
@@ -985,7 +1039,12 @@ export default function App(): React.JSX.Element {
     return () => { cancelled = true }
   }, [latestCompletedAssistantForCitation?.id, latestCompletedAssistantForCitation?.updatedAt, selectedArticleId])
 
-  const readerAiVisibleCitationSnapshot = readerAiSourceSnapshot ?? readerAiAnswerCitationSnapshot
+  // Citation numbering is message-scoped. The article overlay must follow the assistant message
+  // the user is currently interacting with; otherwise a second answer can replace [10] with the
+  // same paragraph's [14] from a later message while an older inline citation is still selected.
+  const readerAiVisibleCitationSnapshot = readerAiSourceSnapshot
+    ?? readerAiInteractionCitationSnapshot
+    ?? readerAiAnswerCitationSnapshot
 
   useEffect(() => {
     const root = readerContentRef.current?.querySelector<HTMLElement>('.article-body:not(.translated-article-body)') ?? null
@@ -1035,6 +1094,7 @@ export default function App(): React.JSX.Element {
     void window.origread.getAiSettings().then((loaded) => {
       if (cancelled) return
       setChatAiSettings(loaded)
+      setChatReasoningEffort(loaded.reasoningEffort ?? 'AUTO')
       if (chatConversation) return
       const enabledProviders = loaded.providers.filter((provider) => provider.enabled)
       const selectedProvider = enabledProviders.find((provider) => provider.id === chatDraftProviderId)
@@ -1456,6 +1516,9 @@ export default function App(): React.JSX.Element {
     const result = await window.origread.deleteLlmConversation(conversationId)
     if (!result.deleted) return
     setChatConversations((current) => current.filter((item) => item.id !== conversationId))
+    for (const [articleId, rememberedConversationId] of readerAiConversationByArticleRef.current) {
+      if (rememberedConversationId === conversationId) readerAiConversationByArticleRef.current.delete(articleId)
+    }
     if (chatConversationIdRef.current === conversationId) {
       discardPendingManualToolContexts()
       chatConversationIdRef.current = null
@@ -1592,6 +1655,7 @@ export default function App(): React.JSX.Element {
           task: requestTask,
           providerId: conversation.providerId,
           model: conversation.model,
+          reasoning: { effort: chatReasoningEffort, showReasoning: true },
           ...(chatForceWebSearchNext ? { webSearchMode: 'FORCE' as const } : {})
         }
       })
@@ -1700,7 +1764,8 @@ export default function App(): React.JSX.Element {
         profile: {
           task: requestTask,
           providerId: conversation.providerId,
-          model: conversation.model
+          model: conversation.model,
+          reasoning: { effort: chatReasoningEffort, showReasoning: true }
         }
       })
       setChatActiveExecution(identity)
@@ -2196,6 +2261,7 @@ export default function App(): React.JSX.Element {
       openReaderAiSources(messageId, citation.id)
       return
     }
+    setReaderAiInteractionCitationSnapshot({ messageId, snapshot })
     const articleId = citation.locatorSnapshot?.articleId ?? contextRef?.articleId ?? null
     if (!articleId) {
       openReaderAiSources(messageId, citation.id, true)
@@ -2985,6 +3051,12 @@ export default function App(): React.JSX.Element {
         setChatError(t('conversationModelUpdateFailed'))
       }
     }
+    const changeChatReasoningEffort = (effort: LlmReasoningEffort): void => {
+      setChatReasoningEffort(effort)
+      void window.origread.updateAiSettings({ reasoningEffort: effort })
+        .then((settings) => setChatAiSettings(settings))
+        .catch(() => setChatError(t('reasoningEffortUpdateFailed')))
+    }
 
     if (readerAiPanel.detailView === 'sources') {
       const targetMessage = chatMessages.find((message) => message.id === readerAiPanel.detailTargetId && message.role === 'ASSISTANT') ?? null
@@ -3189,6 +3261,7 @@ export default function App(): React.JSX.Element {
             providerId={activeChatProviderId ?? ''}
             model={activeChatModel ?? ''}
             forceWebSearchNext={chatForceWebSearchNext}
+            reasoningEffort={chatReasoningEffort}
             locateMessageId={chatLocateMessageId}
             placeholder={t('askAboutArticle')}
             onDraftChange={setChatDraft}
@@ -3196,6 +3269,7 @@ export default function App(): React.JSX.Element {
             onProviderChange={(providerId)=>void changeChatProvider(providerId)}
             onModelChange={(model)=>void changeChatModel(model)}
             onForceWebSearchNextChange={setChatForceWebSearchNext}
+            onReasoningEffortChange={changeChatReasoningEffort}
             onOpenWebSearch={(messageId)=>setReaderAiPanel((current)=>openReaderAiPanelDetail(current,'web-search',messageId))}
             onOpenSources={(messageId)=>openReaderAiSources(messageId)}
             onOpenCitation={(messageId,citation,snapshot)=>void openReaderAiCitation(messageId,citation,snapshot)}
@@ -3254,6 +3328,7 @@ export default function App(): React.JSX.Element {
           providerId={activeChatProviderId ?? ''}
           model={activeChatModel ?? ''}
           forceWebSearchNext={chatForceWebSearchNext}
+          reasoningEffort={chatReasoningEffort}
           placeholder={t('askAboutArticle')}
           emptyContent={<div className="reader-ai-home">
             <div className="reader-ai-home-intro">
@@ -3309,6 +3384,7 @@ export default function App(): React.JSX.Element {
           onProviderChange={(providerId)=>void changeChatProvider(providerId)}
           onModelChange={(model)=>void changeChatModel(model)}
           onForceWebSearchNextChange={setChatForceWebSearchNext}
+          onReasoningEffortChange={changeChatReasoningEffort}
           onOpenWebSearch={(messageId)=>setReaderAiPanel((current)=>openReaderAiPanelDetail(current,'web-search',messageId))}
           onOpenSources={(messageId)=>openReaderAiSources(messageId)}
           onOpenCitation={(messageId,citation,snapshot)=>void openReaderAiCitation(messageId,citation,snapshot)}
@@ -4880,6 +4956,7 @@ function ReaderAiChatBody({
   providerId,
   model,
   forceWebSearchNext,
+  reasoningEffort,
   locateMessageId,
   placeholder,
   emptyContent,
@@ -4888,6 +4965,7 @@ function ReaderAiChatBody({
   onProviderChange,
   onModelChange,
   onForceWebSearchNextChange,
+  onReasoningEffortChange,
   onOpenWebSearch,
   onOpenSources,
   onOpenCitation,
@@ -4924,6 +5002,7 @@ function ReaderAiChatBody({
   providerId: string
   model: string
   forceWebSearchNext: boolean
+  reasoningEffort: LlmReasoningEffort
   locateMessageId?: string | null
   placeholder: string
   emptyContent?: React.ReactNode
@@ -4932,6 +5011,7 @@ function ReaderAiChatBody({
   onProviderChange(providerId: string): void
   onModelChange(model: string): void
   onForceWebSearchNextChange(value: boolean): void
+  onReasoningEffortChange(value: LlmReasoningEffort): void
   onOpenWebSearch(messageId: string): void
   onOpenSources(messageId: string): void
   onOpenCitation(messageId: string, citation: LlmCitationRefRecord, snapshot: LlmAssistantEvidenceSnapshot): void
@@ -4948,6 +5028,7 @@ function ReaderAiChatBody({
   const { t } = useTranslation()
   const timelineRef = useRef<HTMLDivElement>(null)
   const modelPickerRef = useRef<HTMLDetailsElement>(null)
+  const reasoningPickerRef = useRef<HTMLDetailsElement>(null)
   const articlePickerRef = useRef<HTMLDetailsElement>(null)
   const composerActionsRef = useRef<HTMLDetailsElement>(null)
   const scrollOwnershipRef = useRef(initialReaderAiChatScrollOwnership())
@@ -4973,6 +5054,12 @@ function ReaderAiChatBody({
     ? [...new Set([model, selectedProvider.defaultModel, ...selectedProvider.models].map((item) => item.trim()).filter(Boolean))]
     : model ? [model] : []
   const modelPopoverWidth = readerAiModelPopoverWidthPx(selectedProvider?.name ?? '', model)
+  const requestedReasoningIndex = READER_AI_REASONING_EFFORTS.findIndex((item) => item === reasoningEffort)
+  const reasoningIndex = requestedReasoningIndex >= 0 ? requestedReasoningIndex : 0
+  const reasoningLabel = readerAiReasoningEffortLabel(READER_AI_REASONING_EFFORTS[reasoningIndex] ?? 'AUTO')
+  const reasoningProgress = READER_AI_REASONING_EFFORTS.length > 1
+    ? (reasoningIndex / (READER_AI_REASONING_EFFORTS.length - 1)) * 100
+    : 0
   const selectedManualTool = manualTools.find((tool) => tool.id === manualToolEditorId) ?? null
   const attachedCandidates = attachedArticles.map((article) => ({
     articleId: article.articleId,
@@ -5216,6 +5303,7 @@ function ReaderAiChatBody({
 
   const submitChat = (): void => {
     modelPickerRef.current?.removeAttribute('open')
+    reasoningPickerRef.current?.removeAttribute('open')
     composerActionsRef.current?.removeAttribute('open')
     onSend()
   }
@@ -5223,6 +5311,7 @@ function ReaderAiChatBody({
   const selectQuickMessage = (message: LlmQuickMessage): void => {
     composerActionsRef.current?.removeAttribute('open')
     modelPickerRef.current?.removeAttribute('open')
+    reasoningPickerRef.current?.removeAttribute('open')
     onQuickMessage(message)
   }
 
@@ -5231,6 +5320,7 @@ function ReaderAiChatBody({
     const floatingSelector = [
       '.reader-ai-article-picker',
       '.reader-ai-composer-actions',
+      '.reader-ai-reasoning-picker',
       '.reader-ai-model-picker',
       '.reader-ai-message-usage'
     ].join(',')
@@ -5455,6 +5545,45 @@ function ReaderAiChatBody({
             <Search size={13}/>
             <span>{t(forceWebSearchNext ? 'webSearchForceArmed' : 'webSearchForceNextShort')}</span>
           </button>
+          <details className="reader-ai-reasoning-picker" ref={reasoningPickerRef}>
+            <summary
+              className={`reader-ai-reasoning-trigger ${reasoningEffort !== 'AUTO' ? 'active' : ''} ${active ? 'disabled' : ''}`}
+              aria-label={t('reasoningEffortCurrent', { value: reasoningLabel })}
+              title={t('reasoningEffortCurrent', { value: reasoningLabel })}
+              onClick={(event) => { if (active) event.preventDefault() }}
+            >
+              <Lightbulb size={14}/>
+            </summary>
+            <div className="reader-ai-reasoning-popover">
+              <div className="reader-ai-reasoning-popover-head">
+                <strong>{t('reasoningEffortTitle')}</strong>
+                <small>{t('reasoningEffortDescription')}</small>
+              </div>
+              <div className="reader-ai-reasoning-icon"><Lightbulb size={26}/></div>
+              <strong className="reader-ai-reasoning-value">{reasoningLabel}</strong>
+              <div
+                className="reader-ai-reasoning-slider-wrap"
+                style={{ '--reader-ai-reasoning-progress': `${reasoningProgress}%` } as CSSProperties}
+              >
+                <input
+                  type="range"
+                  min={0}
+                  max={READER_AI_REASONING_EFFORTS.length - 1}
+                  step={1}
+                  value={reasoningIndex}
+                  disabled={active}
+                  aria-label={t('reasoningEffortTitle')}
+                  onChange={(event) => {
+                    const nextIndex = Number(event.target.value)
+                    onReasoningEffortChange(READER_AI_REASONING_EFFORTS[nextIndex] ?? 'AUTO')
+                  }}
+                />
+                <div className="reader-ai-reasoning-ticks" aria-hidden="true">
+                  {READER_AI_REASONING_EFFORTS.map((effort, index) => <span key={effort} className={index <= reasoningIndex ? 'active' : ''}/>)}
+                </div>
+              </div>
+            </div>
+          </details>
           <details className="reader-ai-model-picker" ref={modelPickerRef}>
             <summary className="reader-ai-model-label" title={modelLabel}>{modelLabel}</summary>
             <div className="reader-ai-model-popover" style={{ width: modelPopoverWidth, maxWidth: 'calc(100cqw - 20px)' }}>

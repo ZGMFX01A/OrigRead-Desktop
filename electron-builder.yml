@@ -9,6 +9,8 @@ files:
   - package.json
   - USER_GUIDE.md
   - USER_GUIDE-zh-CN.md
+  - AI_MCP_SKILLS.md
+  - AI_MCP_SKILLS-zh-CN.md
 asar: true
 win:
   target:

@@ -1,4 +1,5 @@
 import type { AiCapabilityOverrideMode, AiOutputTokenLimitStyle, AiSummaryLength } from './ai'
+import type { LlmReasoningEffort } from './llm'
 import type { TranslationDisplayMode, TranslationProviderType, TranslationTarget } from './translation'
 import type { LlmCustomizationSettings } from './llm-customization'
 import type { McpRemoteAuthMode } from './mcp'
@@ -90,6 +91,8 @@ export interface TranslationBackup {
 }
 export interface AiBackup {
   enabled:boolean;defaultProviderId:string;outputLanguage:string;summaryLength:AiSummaryLength
+  /** Optional so backups created before the Reader AI reasoning control remain readable. */
+  reasoningEffort?:LlmReasoningEffort
   providers:Array<{
     id:string;name:string;enabled:boolean;endpoint:string;defaultModel:string;models:string[]
     streamingCapabilityOverride?:AiCapabilityOverrideMode

@@ -14,7 +14,7 @@
 </div>
 
 <div align="center">
-  RSS / Atom · RSSHub · Website parsing · JSON/API · Full-text reading · Translation · AI summaries · OPML
+  RSS / Atom · RSSHub · Website parsing · JSON/API · Full-text reading · Translation · AI Summary / Reader AI · OPML
 </div>
 <div align="center">
   <img alt="Windows" src="https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows11&logoColor=white" />
@@ -42,7 +42,8 @@ The goal is simple: **bring the sources you deliberately follow into one timelin
 - **Paste websites, not only feed URLs** — homepage, article-list, feed and API URLs can all be inspected for usable subscription methods.
 - **Multiple fallback paths** — RSS, RSSHub, JSON/API, website parsing and dynamic pages can compete as candidates instead of one failed parser ending the process.
 - **Keep both readable text and the original page** — use extracted full text for reading and open the real webpage whenever layout, comments or interactive content matter.
-- **AI stays optional** — AI is used for summaries and full-article translation, not for normal source parsing.
+- **AI stays optional and on-demand** — AI is used for summaries, full-article translation, Reader AI Q&A and article analysis; normal source parsing, sync and reading do not require AI.
+- **AI answers stay traceable to the article** — Reader AI can attach article citations to an answer. One click on a citation both navigates to and highlights the cited text, while historical answers keep their own frozen Evidence/Citation snapshots even if the active article or attachments later change.
 - **Built for a long-lived personal source library** — groups, filters, rules, OPML, configuration backup and remote accounts all support the same source-first workflow.
 
 ## Screenshots
@@ -53,11 +54,17 @@ The goal is simple: **bring the sources you deliberately follow into one timelin
 | --- | --- | --- |
 | <img src="assets/readme/screenshots/en-US/source-discovery.png" width="300" alt="OrigRead Desktop source discovery" /> | <img src="assets/readme/screenshots/en-US/reader-ai.png" width="300" alt="OrigRead Desktop reader and AI summary" /> | <img src="assets/readme/screenshots/en-US/settings.png" width="300" alt="OrigRead Desktop settings" /> |
 
+### AI screenshots (reserved)
+
+| AI configuration | Reader AI Chat | AI answer citations |
+| --- | --- | --- |
+| <img src="assets/readme/screenshots/en-US/ai-settings.png" width="300" /> | <img src="assets/readme/screenshots/en-US/ai-chat.png" width="300" /> | <img src="assets/readme/screenshots/en-US/ai-citations.png" width="300" /> |
+
 ## Documentation and other platforms
 
-| 📖 User guide | 📱 Android edition |
-| --- | --- |
-| [Open the Desktop user guide](USER_GUIDE.md) for task-based instructions on adding sources, reading, AI/translation, sync, migration and troubleshooting. | [Open OrigRead Android](https://github.com/ZGMFX01A/OrigRead) for Android phones and tablets. |
+| 📖 User guide | 🤖 AI / Search / MCP / Skills | 📱 Android edition |
+| --- | --- | --- |
+| [Open the Desktop user guide](USER_GUIDE.md) for task-based instructions on adding sources, reading, AI/translation, sync, migration and troubleshooting. | [Open the AI, Web Search, Skills and MCP guide](AI_MCP_SKILLS.md) for Reader AI, Tool approval and security boundaries. | [Open OrigRead Android](https://github.com/ZGMFX01A/OrigRead) for Android phones and tablets. |
 
 Android and Desktop are released and installed separately. They share the OrigRead product direction and aim to keep source, rule and configuration-backup workflows compatible where practical.
 
@@ -121,7 +128,7 @@ Full-text extraction does not depend on AI. Rules, Readability-style extraction 
 - Local font import and reader font selection.
 - Light, dark and system themes plus reader background colors.
 - Separate text-to-speech for article text, translation and AI summary.
-- AI summaries can replace the article or dock to the left, right, top or bottom with adjustable size.
+- Reader AI / AI Summary panels can dock to the left or right of the article, and their width can be adjusted directly by dragging the boundary between the panel and the reader.
 - Keyboard reading shortcuts; see the full list in the [Desktop user guide](USER_GUIDE.md#keyboard-shortcuts).
 
 ## Accounts and sync
@@ -161,8 +168,17 @@ AI is optional and is called only after you configure and invoke it.
 - Content-bound summary caching so changed article text does not keep an obsolete summary.
 - Visible processing stage and elapsed time, plus explicit cancellation.
 - Temporary provider/model/summary-mode selection without overwriting global defaults.
+- Reader AI Chat bound to the current reader article, with streamed reasoning and answer content.
+- Selected text can be used as one-shot context; Regenerate reuses the frozen Context from the original request instead of reading a later selection.
+- Up to five additional nearby articles can be attached to a conversation; the current article remains the separate primary article context.
+- Article citations can be clicked once to both navigate and highlight the cited text. Historical answers keep their own frozen Evidence/Citation snapshots.
+- Conversation history, in-conversation search, rename/delete, Stop, Regenerate and a dedicated Article Analysis task.
+- Dedicated Web Search with persistent AUTO/OFF settings plus a one-shot “force next request” action; Search activity and results remain visible in conversation history.
+- Quick Messages, task Skills, Remote MCP and Local stdio MCP Tools. Every MCP Tool requires explicit user approval; remote Tool metadata never bypasses authorization.
 
 AI-generated JSON rules and Website Rules are available as a confirmation-based workflow. The target is fetched, a configured Provider/model is selected, the candidate is locally parsed and health-checked, and only an explicitly confirmed candidate is saved. The UI reports each stage and shows the parsed-article count, score, model, and repair attempts.
+
+See the [AI / Search / MCP / Skills guide](AI_MCP_SKILLS.md) for the complete Reader AI, Web Search, Skill, Quick Message and MCP workflow.
 
 ## Rules and filters
 
@@ -196,6 +212,10 @@ GitHub builds can check OrigRead Desktop Releases and choose the installer for t
 - Remote webpages do not receive Node.js or Electron privileges.
 - OrigRead does not bypass login walls, CAPTCHA, paywalls or website access controls.
 - Configuration backups exclude sensitive credentials by default.
+- AI keys, Web Search keys, Remote MCP credentials/OAuth tokens and Local stdio environment values are managed by Main-process secure storage. Settings expose presence/length metadata by default and reveal plaintext only after an explicit user action.
+- Remote MCP `readOnlyHint` and related Tool metadata are descriptive only and never grant permission. Every MCP Tool execution requires explicit confirmation.
+- Local stdio MCP servers are lazy: they are not spawned at application startup, and child processes are cleaned up when OrigRead exits.
+- Skill scripts are never executed by OrigRead, and declarations such as `allowed-tools` are not treated as authorization.
 
 ## Downloads and platforms
 
@@ -249,6 +269,8 @@ Desktop is distributed under the **GNU Affero General Public License v3.0 only (
 - Issues: https://github.com/ZGMFX01A/OrigRead-Desktop/issues
 - Android edition: https://github.com/ZGMFX01A/OrigRead
 - User guide: [English](USER_GUIDE.md) · [简体中文](USER_GUIDE-zh-CN.md)
+- AI / Search / MCP / Skills: [English](AI_MCP_SKILLS.md) · [简体中文](AI_MCP_SKILLS-zh-CN.md)
+- Changes: [CHANGELOG.md](CHANGELOG.md)
 
 ## Star History
 

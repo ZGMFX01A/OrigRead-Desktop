@@ -912,6 +912,7 @@ function registerIpcHandlers(): void {
     if (value.defaultProviderId !== undefined) result = aiSettingsRepository.setDefaultProvider(validateId(value.defaultProviderId, 'providerId'))
     if (value.outputLanguage !== undefined) result = aiSettingsRepository.setOutputLanguage(validateText(value.outputLanguage, 'outputLanguage', 64))
     if (value.summaryLength !== undefined) result = aiSettingsRepository.setSummaryLength(value.summaryLength)
+    if (value.reasoningEffort !== undefined) result = aiSettingsRepository.setReasoningEffort(value.reasoningEffort)
     return result
   })
   ipcMain.handle(IPC_CHANNELS.addAiProvider, (event) => {

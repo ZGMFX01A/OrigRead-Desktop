@@ -8,6 +8,8 @@ Language: English. The Chinese version is `USER_GUIDE-zh-CN.md`.
 - [Add a source](#add-a-source)
 - [Read articles](#read-articles)
 - [Use AI summaries](#use-ai-summaries)
+- [Use Reader AI Chat](#use-reader-ai-chat)
+- [Understand AI settings](#understand-ai-settings)
 - [Translate articles](#translate-articles)
 - [Share articles as Markdown](#share-articles-as-markdown)
 - [Read articles aloud](#read-articles-aloud)
@@ -138,13 +140,10 @@ Temporary choices do not overwrite your global defaults.
 
 The AI summary can:
 
-- replace the article body;
 - dock left;
-- dock right;
-- dock above;
-- dock below.
+- dock right.
 
-Docked panels can be resized, and keyboard shortcuts are available for position and size changes.
+When the AI panel is docked left or right, drag the boundary between the panel and the article to resize it directly; there is no separate width popover. Keyboard shortcuts remain available for position and size changes.
 
 ### Generate rules with AI
 
@@ -163,6 +162,81 @@ If a page depends on JavaScript, requires login, shows a CAPTCHA or uses a paywa
 - **Local validation passed** means the list rule ran successfully against the target sample and can be saved as a candidate.
 - If the article count or sample titles are wrong, do not save; change the target address or try another model.
 - If generation fails, read the reported stage and reason. Common causes include a non-public/non-JSON target, blocked access, or selectors that return no articles.
+
+---
+
+## Use Reader AI Chat
+
+Reader AI is the article Q&A and analysis panel inside the reader. Unlike a generic blank chat, each conversation is attached to a primary article, and OrigRead persists the Context, Search results, Tool Results and Citations that were actually used by each request.
+
+### Start a conversation
+
+1. Open an article and expand Reader AI.
+2. Before the first message, choose an AI provider and model from the composer when needed. The selected values are stored on the created Conversation.
+3. Send a question. Reasoning, when supplied by the model, and answer content stream into the panel.
+4. Select Stop when you no longer need the generation. Already streamed partial output remains visible.
+
+Ordinary Reader AI factual context comes from the current article body. AI Summary and Translation are separate reading artifacts and are **not automatically fed back into normal Chat as factual context**.
+
+### Ask about selected text
+
+Select text in the article and use Ask AI. The Selection becomes a **one-shot, high-priority context** for the next request and is not repeatedly attached to later messages.
+
+Regenerate uses the frozen Context of the original request. It does not silently read a selection or attached article that you changed later.
+
+### Follow article citations
+
+Select an article Citation marker in an answer once to perform both actions:
+
+1. navigate to the corresponding article text;
+2. highlight the located text.
+
+Programmatic scrolling does not immediately clear the highlight. Historical Citations point to the Evidence frozen for that request and are not rewritten by later attachment changes.
+
+### Attach nearby articles
+
+Use the paperclip action near the composer to open recent articles or search by title.
+
+- Up to **five** extra articles can be attached.
+- The primary article does not consume that five-article quota.
+- Opening the picker with an empty query immediately loads recent articles.
+- The picker closes after a successful attachment change so it cannot cover later Tool approval UI.
+- Removing an attachment affects future requests only; old Context/Evidence remains frozen.
+
+### Web Search
+
+Configure Dedicated Web Search under **Settings → AI Reading → Web Search**. Persistent modes are **AUTO / OFF**. The Search action in the Chat composer arms FORCE for the **next request only** and then returns to the persistent setting.
+
+Search activity exposes the query, provider, result count and result list, together with which results entered model context. The default limit is five results and can be changed in settings.
+
+### Conversation history and search
+
+Reader AI supports:
+
+- starting a new conversation;
+- Conversation History for the current article;
+- renaming and deleting conversations;
+- searching and locating messages inside the current Chat;
+- reopening persisted messages, attachments, Evidence and Citations after an app restart.
+
+### Quick Messages, Skills and MCP Tools
+
+The `+` menu in the composer exposes Quick Messages and manual MCP Tools. For setup, import/binding, approval and security details, see:
+
+- [AI / Web Search / Skills / MCP Guide](AI_MCP_SKILLS.md)
+
+---
+
+## Understand AI settings
+
+**Settings → AI Reading** is split into focused workspaces:
+
+- **Reading** — AI enable switch, default provider/model, output language and default summary mode.
+- **Behavior** — Custom Instructions, Skills, Quick Messages, Remote MCP and Local MCP.
+- **Web Search** — AUTO/OFF, default Search Provider, result limit and Search Provider profiles.
+- **AI Providers** — multiple OpenAI-compatible providers with name, endpoint, API key, models, enabled state and default selection.
+
+Secrets such as API keys are not shown by default. Plaintext enters the settings UI only after an explicit reveal action and is cleared again when hidden, saved or when the settings surface is left. Configuration backup also excludes credentials by default.
 
 ---
 

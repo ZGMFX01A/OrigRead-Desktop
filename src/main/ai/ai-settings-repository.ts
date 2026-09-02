@@ -8,6 +8,7 @@ import type {
   AiSummaryLength
 } from '../../shared/ai'
 import { DEFAULT_AI_CONTEXT_WINDOW_TOKENS, DEFAULT_AI_PROVIDER_ID } from '../../shared/ai'
+import type { LlmReasoningEffort } from '../../shared/llm'
 import type { SecretStore } from '../security/secret-store'
 
 const SETTINGS_KEY = 'ai.settings'
@@ -47,6 +48,10 @@ export class AiSettingsRepository {
   setSummaryLength(value: AiSummaryLength): AiSettings {
     if (!['BRIEF', 'STANDARD', 'DETAILED'].includes(value)) throw new Error('无效的摘要长度')
     return this.save({ ...this.toStored(this.current()), summaryLength: value })
+  }
+  setReasoningEffort(value: LlmReasoningEffort): AiSettings {
+    if (!REASONING_EFFORTS.includes(value)) throw new Error('无效的模型推理强度')
+    return this.save({ ...this.toStored(this.current()), reasoningEffort: value })
   }
 
   addProvider(): AiSettings {
@@ -139,13 +144,14 @@ function defaultProvider(id = DEFAULT_AI_PROVIDER_ID, name = '默认服务'): St
   }
 }
 function defaultStoredAiSettings(defaultOutputLanguage = 'zh-CN'): StoredAiSettings {
-  return { enabled: false, providers: [defaultProvider()], defaultProviderId: DEFAULT_AI_PROVIDER_ID, outputLanguage: defaultOutputLanguage, summaryLength: 'STANDARD' }
+  return { enabled: false, providers: [defaultProvider()], defaultProviderId: DEFAULT_AI_PROVIDER_ID, outputLanguage: defaultOutputLanguage, summaryLength: 'STANDARD', reasoningEffort: 'AUTO' }
 }
 function normalizeSettings(value: NormalizableStoredAiSettings, defaultOutputLanguage = 'zh-CN'): StoredAiSettings {
   const providers = Array.isArray(value.providers) && value.providers.length ? value.providers.map(normalizeProvider) : [defaultProvider()]
   const defaultProviderId = providers.some((item) => item.id === value.defaultProviderId) ? value.defaultProviderId! : providers[0]!.id
   const summaryLength: AiSummaryLength = ['BRIEF','STANDARD','DETAILED'].includes(String(value.summaryLength)) ? value.summaryLength as AiSummaryLength : 'STANDARD'
-  return { enabled: value.enabled === true, providers, defaultProviderId, outputLanguage: String(value.outputLanguage ?? defaultOutputLanguage).trim() || defaultOutputLanguage, summaryLength }
+  const reasoningEffort = normalizeReasoningEffort(value.reasoningEffort)
+  return { enabled: value.enabled === true, providers, defaultProviderId, outputLanguage: String(value.outputLanguage ?? defaultOutputLanguage).trim() || defaultOutputLanguage, summaryLength, reasoningEffort }
 }
 function normalizeProvider(value: Partial<StoredAiProvider>): StoredAiProvider {
   const models = Array.isArray(value.models) ? [...new Set(value.models.map(String).map((item) => item.trim()).filter(Boolean))].sort() : []
@@ -171,6 +177,12 @@ function normalizeCapabilityOverride(value: unknown): AiCapabilityOverrideMode {
 
 function normalizeOutputTokenLimitStyle(value: unknown): AiOutputTokenLimitStyle {
   return value === 'MAX_TOKENS' || value === 'MAX_COMPLETION_TOKENS' ? value : 'AUTO'
+}
+
+const REASONING_EFFORTS: readonly LlmReasoningEffort[] = ['AUTO', 'MINIMAL', 'LOW', 'MEDIUM', 'HIGH', 'MAXIMUM']
+
+function normalizeReasoningEffort(value: unknown): LlmReasoningEffort {
+  return REASONING_EFFORTS.includes(value as LlmReasoningEffort) ? value as LlmReasoningEffort : 'AUTO'
 }
 
 function normalizeContextWindowTokens(value: unknown): number {

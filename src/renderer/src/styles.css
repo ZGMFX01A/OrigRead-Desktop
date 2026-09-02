@@ -1107,6 +1107,8 @@ button { color: inherit; }
   position: relative;
   overflow: hidden;
   background: #fafafd;
+  container-type: inline-size;
+  container-name: reader-stage;
 }
 
 .reader-empty-state { min-height: 0; overflow: auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 48px; text-align: center; color: var(--text); }
@@ -1287,7 +1289,7 @@ button { color: inherit; }
 .settings-nav-button.active { background: #e6e3fb; color: #5648c3; font-weight: 650; }
 .settings-nav-spacer { flex: 1; }
 .settings-nav small { padding: 0 9px; color: #9a9ca5; font-size: 9px; }
-.settings-subpage { height: 100%; min-height: 0; overflow-y: scroll; overscroll-behavior: contain; scrollbar-gutter: stable; padding-top: 34px; }
+.settings-subpage { height: 100%; min-height: 0; overflow-y: scroll; overscroll-behavior: contain; scrollbar-gutter: stable; padding-top: 34px; container-type: inline-size; container-name: settings-content; }
 .settings-page-motion { min-height: 100%; animation: motion-content-enter var(--motion-duration-normal) var(--motion-ease-enter) both; }
 .settings-subpage::-webkit-scrollbar { width: 10px; }
 .settings-subpage::-webkit-scrollbar-track { background: transparent; }
@@ -2010,6 +2012,28 @@ mark.reader-search-match.current { background: #ffc96b; outline: 2px solid #d9a2
 .reader-ai-web-search-toggle:hover:not(:disabled) { background: color-mix(in srgb,var(--reader-soft-background,#eef3f8) 82%,transparent); color: var(--reader-text-color,#455365); }
 .reader-ai-web-search-toggle.active { background: color-mix(in srgb,#4d8bd7 13%,var(--reader-soft-background,#eef3f8)); color: #3976bd; }
 .reader-ai-web-search-toggle:disabled { opacity: .45; cursor: default; }
+.reader-ai-reasoning-picker { position: relative; flex: 0 0 auto; }
+.reader-ai-reasoning-trigger { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 6px; background: transparent; color: #7c8998; list-style: none; cursor: pointer; }
+.reader-ai-reasoning-trigger::-webkit-details-marker { display: none; }
+.reader-ai-reasoning-trigger:hover,.reader-ai-reasoning-picker[open] > .reader-ai-reasoning-trigger { background: color-mix(in srgb,var(--reader-soft-background,#eef3f8) 82%,transparent); color: var(--reader-text-color,#455365); }
+.reader-ai-reasoning-trigger.active { color: var(--reader-link-color,#397fc5); }
+.reader-ai-reasoning-trigger.disabled { opacity: .45; cursor: default; }
+.reader-ai-reasoning-popover { position: absolute; z-index: 13; left: 0; bottom: calc(100% + 6px); width: clamp(220px,78cqw,280px); display: grid; justify-items: center; gap: 10px; padding: 13px 14px 14px; border: 1px solid var(--reader-border-color,#d5e3f0); border-radius: 12px; background: var(--reader-background,#fff); box-shadow: 0 10px 28px rgba(44,68,94,.16); color: var(--reader-text-color,#455365); transform-origin: bottom left; animation: motion-surface-enter-up var(--motion-duration-normal) var(--motion-ease-enter) both; }
+.reader-ai-reasoning-popover-head { width: 100%; display: grid; gap: 4px; text-align: center; }
+.reader-ai-reasoning-popover-head strong { font-size: 11px; font-weight: 680; }
+.reader-ai-reasoning-popover-head small { color: var(--reader-muted-color,#778596); font-size: 8.3px; line-height: 1.45; }
+.reader-ai-reasoning-icon { width: 52px; height: 52px; display: grid; place-items: center; border-radius: 50%; background: color-mix(in srgb,var(--reader-link-color,#397fc5) 10%,var(--reader-soft-background,#eef3f8)); color: var(--reader-link-color,#397fc5); }
+.reader-ai-reasoning-value { font-size: 13px; font-weight: 680; line-height: 1.2; }
+.reader-ai-reasoning-slider-wrap { width: 100%; display: grid; gap: 4px; }
+.reader-ai-reasoning-slider-wrap input[type='range'] { width: 100%; height: 18px; margin: 0; appearance: none; background: transparent; cursor: pointer; }
+.reader-ai-reasoning-slider-wrap input[type='range']:disabled { opacity: .45; cursor: default; }
+.reader-ai-reasoning-slider-wrap input[type='range']::-webkit-slider-runnable-track { height: 4px; border-radius: 999px; background: linear-gradient(to right,var(--reader-link-color,#397fc5) 0,var(--reader-link-color,#397fc5) var(--reader-ai-reasoning-progress),var(--reader-soft-background,#dce5ee) var(--reader-ai-reasoning-progress),var(--reader-soft-background,#dce5ee) 100%); }
+.reader-ai-reasoning-slider-wrap input[type='range']::-webkit-slider-thumb { width: 15px; height: 15px; margin-top: -5.5px; appearance: none; border: 2px solid var(--reader-background,#fff); border-radius: 50%; background: var(--reader-link-color,#397fc5); box-shadow: 0 1px 4px rgba(37,67,96,.25); }
+.reader-ai-reasoning-slider-wrap input[type='range']:focus-visible { outline: none; }
+.reader-ai-reasoning-slider-wrap input[type='range']:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px color-mix(in srgb,var(--reader-link-color,#397fc5) 24%,transparent),0 1px 4px rgba(37,67,96,.25); }
+.reader-ai-reasoning-ticks { width: calc(100% - 11px); justify-self: center; display: flex; justify-content: space-between; pointer-events: none; }
+.reader-ai-reasoning-ticks span { width: 3px; height: 3px; border-radius: 50%; background: color-mix(in srgb,var(--reader-muted-color,#7c8998) 55%,transparent); }
+.reader-ai-reasoning-ticks span.active { background: var(--reader-link-color,#397fc5); }
 .reader-ai-composer-actions { position: relative; flex: 0 0 auto; }
 .reader-ai-composer-add { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 6px; color: #7c8998; list-style: none; cursor: pointer; }
 .reader-ai-composer-add::-webkit-details-marker { display: none; }
@@ -2445,6 +2469,79 @@ mark.reader-search-match.current { background: #ffc96b; outline: 2px solid #d9a2
 .reading-share-format-note { margin: 2px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/*
+ * Settings lives inside the Reader workspace rather than owning the whole Electron viewport.
+ * In three-pane mode the window can be very wide while the Settings surface itself is only
+ * ~700-850px. Viewport media queries therefore miss the real constraint and fixed AI form
+ * columns can squeeze translated copy into one-character lines. Container queries keep the
+ * layout language-agnostic and react to the width that the Settings UI actually receives.
+ */
+@container reader-stage (max-width: 920px) {
+  .settings-nav { padding-left: 8px; padding-right: 8px; }
+  .settings-nav-title span,
+  .settings-nav-button span,
+  .settings-nav small { display: none; }
+  .settings-nav-title,
+  .settings-nav-button { justify-content: center; padding-left: 0; padding-right: 0; }
+  .settings-layout { grid-template-columns: 52px minmax(0, 1fr); }
+  .settings-subpage { padding: 30px 24px 64px; }
+}
+
+@container settings-content (max-width: 760px) {
+  .ai-settings-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ai-settings-tabs button { min-height: 40px; height: auto; padding: 7px 9px; }
+
+  .ai-settings-page .setting-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .ai-settings-page .setting-copy { width: 100%; }
+  .ai-settings-page .setting-control { width: 100%; min-width: 0; }
+  .ai-settings-page .setting-control > input,
+  .ai-settings-page .setting-control > select { width: 100%; min-width: 0; }
+
+  .ai-default-model-picker { width: 100%; min-width: 0; grid-template-columns: 1fr; }
+  .summary-mode-selector.compact { width: 100%; min-width: 0; }
+
+  .ai-provider-workspace-body { grid-template-columns: 1fr; }
+  .ai-provider-list { display: flex; gap: 4px; overflow-x: auto; border-right: 0; border-bottom: 1px solid #e9e9ee; }
+  .ai-provider-list-item { min-width: 180px; margin-bottom: 0; }
+  .ai-provider-detail-head { align-items: flex-start; flex-wrap: wrap; }
+  .ai-provider-detail-head > div:first-child { flex: 1 1 220px; }
+  .ai-provider-detail-head > .inline-controls { flex-wrap: wrap; justify-content: flex-end; }
+  .ai-provider-detail-name { width: 100%; max-width: 100%; }
+  .ai-provider-form-field { grid-template-columns: 1fr; align-items: stretch; gap: 8px; }
+  .ai-provider-model-row { flex-wrap: wrap; }
+  .ai-provider-detail-actions { flex-wrap: wrap; }
+
+  .ai-settings-page .provider-field { grid-template-columns: 1fr; align-items: stretch; gap: 6px; }
+  .ai-settings-page .provider-field > input,
+  .ai-settings-page .provider-field > select { min-width: 0; }
+  .llm-custom-instructions-row { align-items: stretch; flex-direction: column; gap: 10px; }
+  .llm-custom-instructions-row .setting-control,
+  .llm-custom-instructions-editor { width: 100%; min-width: 0; }
+  .llm-settings-toolbar { align-items: flex-start; flex-wrap: wrap; }
+  .llm-settings-toolbar > .inline-controls,
+  .web-search-toolbar .inline-controls { flex-wrap: wrap; }
+  .quick-message-row { align-items: flex-start; flex-direction: column; }
+  .quick-message-row .llm-item-actions { align-self: flex-end; }
+
+  .mcp-custom-headers-field { grid-template-columns: 1fr; gap: 10px; }
+  .mcp-oauth-field { align-items: flex-start; flex-direction: column; }
+  .mcp-tool-row { flex-direction: column; gap: 8px; }
+  .mcp-tool-hints { max-width: 100%; justify-content: flex-start; }
+  .llm-skill-create-grid { grid-template-columns: 1fr; }
+  .llm-skill-card-head { align-items: flex-start; flex-wrap: wrap; }
+}
+
+@container settings-content (max-width: 520px) {
+  .ai-settings-summary-card { grid-template-columns: 34px minmax(0, 1fr); align-items: start; }
+  .ai-settings-summary-card > .mini-action { grid-column: 2; justify-self: start; }
+  .summary-mode-selector.compact { grid-template-columns: 1fr; }
+  .ai-provider-workspace-head { align-items: flex-start; }
+}
 
 @media (max-width: 1120px) {
   .settings-layout { grid-template-columns: 52px minmax(0, 1fr); }

@@ -216,7 +216,7 @@ export class ConfigurationBackupService {
     return{feedIdMap,groupsAdded,feedsAdded,feedsUpdated}
   }
   private restoreTranslation(value:TranslationBackup,keys?:Partial<Record<TranslationProviderType,string>>):void{const fallback=TRANSLATION_PROVIDER_TYPES.includes(value.defaultProvider as TranslationProviderType)?value.defaultProvider as TranslationProviderType:'ML_KIT';this.translation.restore({defaultProvider:fallback,defaultTarget:backupTargetToTranslationTarget(value.defaultTarget,fallback),targetLanguage:value.targetLanguage,displayMode:value.displayMode,providers:TRANSLATION_PROVIDER_TYPES.map((type)=>{const source=value.providers.find((item)=>item.type===type);return{type,enabled:source?.enabled??type==='ML_KIT',endpoint:source?.endpoint??'',region:source?.region??''}})},keys)}
-  private restoreAi(value:AiBackup,keys?:Record<string,string>):void{this.ai.restore({enabled:value.enabled,defaultProviderId:value.defaultProviderId,outputLanguage:value.outputLanguage,summaryLength:value.summaryLength,providers:value.providers.map((provider)=>({...provider}))},keys)}
+  private restoreAi(value:AiBackup,keys?:Record<string,string>):void{this.ai.restore({enabled:value.enabled,defaultProviderId:value.defaultProviderId,outputLanguage:value.outputLanguage,summaryLength:value.summaryLength,reasoningEffort:value.reasoningEffort??'AUTO',providers:value.providers.map((provider)=>({...provider}))},keys)}
 }
 
 function toBackupFeed(feed:FeedRecord){return{id:feed.id,name:feed.name,icon:feed.icon,url:feed.url,groupId:feed.groupId,isNotification:feed.isNotification,isFullContent:feed.isFullContent,isBrowser:feed.isBrowser,sourceType:toAndroidSourceType(feed.sourceType)}}
@@ -224,7 +224,7 @@ function toAndroidSourceType(type:SourceType):string{return type==='rss'?'RSS':t
 function fromAndroidSourceType(value:string):SourceType{switch(value.toUpperCase()){case'RSS':return'rss';case'WEBSITE':return'website';case'JSON':return'json';default:throw new Error(`不支持的来源类型：${value}`)}}
 function normalizeDesktopSyncInterval(value:number){const allowed=[0,15,30,60,120,180,360,720,1440] as const;if(!allowed.includes(value as typeof allowed[number]))throw new Error(`不支持的同步间隔：${value}`);return value as typeof allowed[number]}
 function toTranslationBackup(value:ReturnType<TranslationSettingsRepository['current']>):TranslationBackup{return{defaultProvider:value.defaultProvider,defaultTarget:value.defaultTarget.type==='traditional'?{type:'traditional',provider:value.defaultTarget.provider}:{type:'ai',providerId:value.defaultTarget.providerId,providerName:value.defaultTarget.providerName,model:value.defaultTarget.model},targetLanguage:value.targetLanguage,displayMode:value.displayMode,providers:value.providers.map((provider)=>({type:provider.type,enabled:provider.enabled,endpoint:provider.endpoint,region:provider.region}))}}
-function toAiBackup(value:ReturnType<AiSettingsRepository['current']>):AiBackup{return{enabled:value.enabled,defaultProviderId:value.defaultProviderId,outputLanguage:value.outputLanguage,summaryLength:value.summaryLength,providers:value.providers.map(({hasApiKey:_ignored,apiKeyLength:_length,...provider})=>provider)}}
+function toAiBackup(value:ReturnType<AiSettingsRepository['current']>):AiBackup{return{enabled:value.enabled,defaultProviderId:value.defaultProviderId,outputLanguage:value.outputLanguage,summaryLength:value.summaryLength,reasoningEffort:value.reasoningEffort??'AUTO',providers:value.providers.map(({hasApiKey:_ignored,apiKeyLength:_length,...provider})=>provider)}}
 function desktopPreferences(settings:ReturnType<SettingsRepository['current']>):Record<string,unknown>{return{
   'origread.desktop.language':settings.language,
   'origread.desktop.theme':settings.theme,
@@ -289,6 +289,7 @@ function validateTranslationBackup(value:TranslationBackup):void{
 function validateAiBackup(value:AiBackup):void{
   if(!value||!Array.isArray(value.providers)||value.providers.length===0)throw new Error('备份中的 AI 配置无效')
   if(!['BRIEF','STANDARD','DETAILED'].includes(value.summaryLength))throw new Error(`备份中的 AI 摘要长度无效：${value.summaryLength}`)
+  if(value.reasoningEffort!==undefined&&!['AUTO','MINIMAL','LOW','MEDIUM','HIGH','MAXIMUM'].includes(value.reasoningEffort))throw new Error(`备份中的模型推理强度无效：${value.reasoningEffort}`)
   const ids=new Set<string>()
   const capabilityModes=new Set(['AUTO','ENABLED','DISABLED'])
   const outputTokenStyles=new Set(['AUTO','MAX_TOKENS','MAX_COMPLETION_TOKENS'])

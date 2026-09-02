@@ -1,3 +1,5 @@
+import type { LlmReasoningEffort } from './llm'
+
 export type AiSummaryLength = 'BRIEF' | 'STANDARD' | 'DETAILED'
 export type AiSummaryStatus = 'GENERATED' | 'NOT_NEEDED'
 export type AiArticleForm = 'flash' | 'release' | 'news' | 'review' | 'guide' | 'research' | 'report' | 'analysis' | 'opinion' | 'interview' | 'other'
@@ -29,6 +31,7 @@ export interface AiSettingsPatch {
   defaultProviderId?: string
   outputLanguage?: string
   summaryLength?: AiSummaryLength
+  reasoningEffort?: LlmReasoningEffort
 }
 
 export interface AiSettings {
@@ -37,6 +40,8 @@ export interface AiSettings {
   defaultProviderId: string
   outputLanguage: string
   summaryLength: AiSummaryLength
+  /** Optional for backward compatibility with settings snapshots created before reasoning controls existed. */
+  reasoningEffort?: LlmReasoningEffort
 }
 
 export interface AiProviderPatch {

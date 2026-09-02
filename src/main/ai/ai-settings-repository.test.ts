@@ -34,6 +34,18 @@ describe('AiSettingsRepository provider capabilities', () => {
         contextWindowTokens: DEFAULT_AI_CONTEXT_WINDOW_TOKENS,
         strictStreamTermination: true
       })
+      expect(repository.current().reasoningEffort).toBe('AUTO')
+    } finally {
+      database.close()
+    }
+  })
+
+  it('persists the Reader AI reasoning effort used by the composer slider', () => {
+    const { database, repository } = createRepository()
+    try {
+      expect(repository.current().reasoningEffort).toBe('AUTO')
+      expect(repository.setReasoningEffort('HIGH').reasoningEffort).toBe('HIGH')
+      expect(repository.current().reasoningEffort).toBe('HIGH')
     } finally {
       database.close()
     }

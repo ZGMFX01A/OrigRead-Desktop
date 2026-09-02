@@ -481,7 +481,12 @@ export class LlmChatExecutionService {
       const calls = (callsByAssistant.get(message.id) ?? []).filter(isProviderHistoryToolCall)
       result.push({
         role: 'assistant',
-        content: message.content,
+        // Citation protocol IDs (for example [[E1]]) are request-local. Replaying them verbatim
+        // into a later turn makes historical E1/E2 tokens collide with the new turn's evidence
+        // map, which can make the model cite the right-looking number but resolve it to the wrong
+        // paragraph. Keep the conversational prose, but remove the previous turn's transport-only
+        // citation tokens before building provider history.
+        content: stripHistoricalCitationProtocolTokens(message.content),
         toolCalls: calls.length > 0 ? calls.map((call) => ({
           id: call.providerCallId,
           name: call.apiName,
@@ -786,6 +791,17 @@ export class LlmChatExecutionService {
 
 function llmAbortReason(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new DOMException('LLM request cancelled', 'AbortError')
+}
+
+/**
+ * `[[E<number>]]` is an OrigRead request-local transport token, not durable conversation content.
+ * Historical answers retain the raw token in storage so their own CitationRefs can still render
+ * correctly in the UI, but a later provider request must not see those old IDs.
+ */
+export function stripHistoricalCitationProtocolTokens(content: string): string {
+  return content
+    .replace(/\s*\[\[E\d+\]\]/g, '')
+    .replace(/[ \t]+([,.;:!?，。；：！？])/g, '$1')
 }
 
 async function raceAbortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {

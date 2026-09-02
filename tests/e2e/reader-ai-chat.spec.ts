@@ -307,6 +307,17 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     ])
     await expect(page.locator('.reader-ai-message.assistant')).toHaveCount(2)
     await expect(page.locator('.reader-ai-message.assistant').last()).toContainText('Revenue rose')
+    await expect(page.locator('.reader-ai-message.assistant').last().locator('.reader-ai-inline-citation')).toHaveText(['1', '2'])
+    const revenueParagraph = page.locator('.article-body:not(.translated-article-body) p').filter({ hasText: 'Revenue rose by 20 percent' })
+    await expect(revenueParagraph.locator('.origread-reader-citation-marker')).toHaveText('[2]')
+
+    // Citation numbers are scoped to each Assistant message. Once the second answer exists the
+    // Reader defaults to that answer's marker projection ([2] for Revenue). Clicking the first
+    // answer's inline [1] must switch the Reader projection back to that message before locating
+    // the paragraph, otherwise the UI displays [2] beside a clicked [1].
+    await firstAssistant.locator('.reader-ai-inline-citation').click()
+    await expect(revenueParagraph.locator('.origread-reader-citation-marker')).toHaveText('[1]')
+    await expect(page.locator('.article-body:not(.translated-article-body) .origread-reader-citation-marker')).toHaveCount(1)
     const afterFollowUp = await page.evaluate(async (id) => {
       const conversations = await window.origread.listLlmConversations(id)
       if (!conversations[0]) throw new Error('Conversation missing after follow-up')
@@ -440,13 +451,15 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     expect(chatStreamingStability.widths.length).toBeGreaterThan(0)
     expect(Math.max(...chatStreamingStability.widths) - Math.min(...chatStreamingStability.widths)).toBeLessThan(1)
 
-    // Renderer restart does not lose article conversations; History can reopen the old branch and delete another one safely.
+    // Renderer restart restores the latest persisted conversation for the article automatically;
+    // History can still reopen the older branch and delete another one safely.
     await page.reload()
     const reloadedArticle = page.locator(`.article-item[data-article-id="${articleId}"]`)
     await expect(reloadedArticle).toBeVisible()
     await reloadedArticle.click()
     await page.keyboard.press('a')
-    await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-view', 'home')
+    await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-view', 'chat')
+    await expect(page.locator('.reader-ai-user-bubble')).toContainText('slow question')
     await page.getByRole('button', { name: '对话历史' }).click()
     await expect(page.locator('.reader-ai-history-item')).toHaveCount(2)
     const reloadSearch = page.getByRole('textbox', { name: '搜索对话' })
@@ -486,6 +499,7 @@ async function startFixtureServer(): Promise<Server> {
       request.on('data', (chunk) => { body += chunk })
       request.on('end', () => {
         const slow = body.includes('slow question')
+        const followUp = body.includes('And why?')
         response.writeHead(200, {
           'content-type': 'text/event-stream',
           'cache-control': 'no-cache',
@@ -494,7 +508,8 @@ async function startFixtureServer(): Promise<Server> {
         response.write(`data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'checking article' }, finish_reason: null }] })}\n\n`)
         const finish = (): void => {
           if (response.destroyed || response.writableEnded) return
-          response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Revenue rose [[E2]]' }, finish_reason: null }] })}\n\n`)
+          const content = followUp ? 'Results [[E1]] Revenue rose [[E2]]' : 'Revenue rose [[E2]]'
+          response.write(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: null }] })}\n\n`)
           response.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`)
           response.end('data: [DONE]\n\n')
         }

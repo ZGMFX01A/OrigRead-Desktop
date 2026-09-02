@@ -9,7 +9,7 @@ import { LlmRuntime } from './execution-runtime'
 import { LlmContextComposer } from './context-composer'
 import { LlmToolRuntime, type LlmTool } from './tool-runtime'
 import { LlmExecutionRegistry } from './execution-registry'
-import { LlmChatExecutionService } from './chat-execution-service'
+import { LlmChatExecutionService, stripHistoricalCitationProtocolTokens } from './chat-execution-service'
 import { buildArticleEvidenceBlocks } from './evidence-block-builder'
 import type { LlmExecutionEvent } from '../../shared/llm-ipc'
 import type { WebSearchRouter, PreparedWebSearchExecution } from '../search/web-search-router'
@@ -167,6 +167,12 @@ function readOnlyTool(id = 'lookup'): LlmTool {
 }
 
 describe('LlmChatExecutionService D2 pipeline', () => {
+  it('removes prior-turn request-local citation tokens before reusing assistant text as provider history', () => {
+    expect(stripHistoricalCitationProtocolTokens('First claim [[E1]], second claim [[E12]].')).toBe('First claim, second claim.')
+    expect(stripHistoricalCitationProtocolTokens('结论一 [[E2]]，结论二[[E3]]。')).toBe('结论一，结论二。')
+    expect(stripHistoricalCitationProtocolTokens('No citation tokens here.')).toBe('No citation tokens here.')
+  })
+
   it('records D8.1 end-to-end performance without logging request content or secrets', async () => {
     const transport = new QueueTransport([
       async ({ config }) => {
@@ -302,6 +308,60 @@ describe('LlmChatExecutionService D2 pipeline', () => {
     ])
     expect(events.map((event) => event.type)).toEqual(['STARTED', 'REASONING_DELTA', 'CONTENT_DELTA', 'CONTENT_DELTA', 'TERMINAL'])
     expect(events.at(-1)).toMatchObject({ type: 'TERMINAL', finishReason: 'STOP' })
+    env.database.close()
+  })
+
+  it('keeps second-turn citation IDs scoped to the new request instead of colliding with prior assistant tokens', async () => {
+    const transport = new QueueTransport([
+      async ({ messages, onDelta }) => {
+        const historicalAssistant = messages.find((message) => message.role === 'assistant')
+        expect(historicalAssistant?.content).toBe('Earlier supported claim.')
+        expect(historicalAssistant?.content).not.toContain('[[E1]]')
+        expect(messages[0]?.content).toContain('[ORIGREAD_EVIDENCE id="E1"]')
+        onDelta({ content: 'Follow-up answer [[E1]]', reasoning: '', finishReason: 'stop', toolCalls: [] })
+        return { content: 'Follow-up answer [[E1]]', reasoning: null, finishReason: 'stop', toolCalls: [] }
+      }
+    ])
+    const env = setup(transport)
+    const conversationId = 'conversation-multi-turn-citations'
+    env.repository.createConversation({ id: conversationId, title: 'Citation follow-up', articleId: 'article-1', articleTitle: 'Article', now: 10 })
+    env.repository.appendMessage(conversationId, { id: 'user-old', role: 'USER', content: 'First question', now: 20 })
+    env.repository.appendMessage(conversationId, {
+      id: 'assistant-old',
+      role: 'ASSISTANT',
+      content: 'Earlier supported claim [[E1]].',
+      status: 'COMPLETE',
+      now: 30
+    })
+    env.repository.appendMessage(conversationId, { id: 'user-new', role: 'USER', content: 'Follow up', now: 40 })
+    env.repository.appendMessage(conversationId, { id: 'assistant-new', role: 'ASSISTANT', content: '', status: 'STREAMING', now: 50 })
+    const blocks = buildArticleEvidenceBlocks('<p>Current-turn evidence.</p>', {
+      articleId: 'article-1',
+      sourceUrl: 'https://example.com/article'
+    })
+
+    await env.service.execute({
+      conversationId,
+      assistantMessageId: 'assistant-new',
+      requestId: 'request-second-turn',
+      ownerId: 'renderer-1',
+      contextItems: [{
+        id: 'article:article-1',
+        type: 'ARTICLE',
+        content: blocks.map((block) => block.content).join('\n\n'),
+        title: 'Article',
+        sourceId: 'https://example.com/article',
+        internalArticleId: 'article-1',
+        reserveEvidenceBudget: true,
+        evidenceBlocks: blocks,
+        priority: 100
+      }],
+      evidenceGroups: [{ contextId: 'article:article-1', blocks }]
+    }, () => undefined)
+
+    expect(env.repository.getCitationRefsForAssistant('assistant-new')).toMatchObject([
+      { protocolId: 'E1', displayOrder: 1, quoteSnapshot: 'Current-turn evidence.' }
+    ])
     env.database.close()
   })
 

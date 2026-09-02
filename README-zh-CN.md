@@ -14,7 +14,7 @@
 </div>
 
 <div align="center">
-  RSS / Atom · RSSHub · 网页解析 · JSON/API · 全文阅读 · 翻译 · AI 摘要 · OPML
+  RSS / Atom · RSSHub · 网页解析 · JSON/API · 全文阅读 · 翻译 · AI 摘要 / Reader AI · OPML
 </div>
 <div align="center">
   <img alt="Windows" src="https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows11&logoColor=white" />
@@ -42,7 +42,8 @@
 - **不只接受 RSS 地址**：可以直接粘贴网站首页、文章列表页、Feed、API 等地址，让应用判断可用方式。
 - **解析失败有退路**：RSS、RSSHub、JSON/API、网页解析和动态页面可以作为不同候选，而不是一种方式失败就彻底结束。
 - **全文和原文都保留**：适合阅读时用提取后的正文；需要确认排版、评论或交互内容时随时打开原网页。
-- **AI 只是辅助工具**：AI 用于摘要和全文翻译，不参与普通来源解析，也不会把阅读器变成聊天客户端。
+- **AI 只是按需辅助工具**：AI 用于摘要、全文翻译、Reader AI 问答和文章分析；普通来源解析、同步和阅读不依赖 AI。
+- **AI 回答可追溯到正文**：Reader AI 的回答可以携带正文 Citation；点击引用标记一次，就会跳到对应正文并高亮。历史回答冻结自己的 Evidence/Citation 快照，后续切换文章或附件也不会改写旧引用。
 - **适合长期整理自己的来源**：分组、过滤、规则、OPML、完整配置备份和远端账户同步都围绕“自己的信息源”展开。
 
 ## 软件截图
@@ -53,11 +54,17 @@
 | --- | --- | --- |
 | <img src="assets/readme/screenshots/zh-CN/source-discovery.png" width="300" alt="原读 Desktop 添加来源" /> | <img src="assets/readme/screenshots/zh-CN/reader-ai.png" width="300" alt="原读 Desktop 阅读与 AI 摘要" /> | <img src="assets/readme/screenshots/zh-CN/settings.png" width="300" alt="原读 Desktop 设置" /> |
 
+### AI 功能截图（预留）
+
+| AI 配置 | Reader AI Chat | AI 回答引用 |
+| --- | --- | --- |
+| <img src="assets/readme/screenshots/zh-CN/ai-settings.png" width="300"/> | <img src="assets/readme/screenshots/zh-CN/ai-chat.png" width="300"/> | <img src="assets/readme/screenshots/zh-CN/ai-citations.png" width="300"/> |
+
 ## 文档与其他平台
 
-| 📖 操作手册 | 📱 Android 版本 |
-| --- | --- |
-| [查看 Desktop 操作手册](USER_GUIDE-zh-CN.md)，按“添加来源、阅读、AI/翻译、同步、迁移、故障处理”等实际任务查找。 | [前往 OrigRead Android](https://github.com/ZGMFX01A/OrigRead)，适用于 Android 手机和平板。 |
+| 📖 操作手册 | 🤖 AI / Search / MCP / Skill | 📱 Android 版本 |
+| --- | --- | --- |
+| [查看 Desktop 操作手册](USER_GUIDE-zh-CN.md)，按“添加来源、阅读、AI/翻译、同步、迁移、故障处理”等实际任务查找。 | [查看 AI、Web Search、Skill 与 MCP 指南](AI_MCP_SKILLS-zh-CN.md)，包含 Reader AI、Tool 审批和安全边界。 | [前往 OrigRead Android](https://github.com/ZGMFX01A/OrigRead)，适用于 Android 手机和平板。 |
 
 Android 与 Desktop 独立发布、分别安装；两端共享 OrigRead 的产品方向，并尽量保持来源、规则和配置备份的使用体验兼容。
 
@@ -121,7 +128,7 @@ JSON / API / WordPress / Next.js / Nuxt
 - 本地字体导入和阅读字体切换。
 - 浅色、深色、跟随系统以及阅读背景色。
 - 正文、译文和 AI 摘要分别朗读。
-- AI 摘要可以替换正文，也可以停靠在左、右、上、下并调整大小。
+- Reader AI / AI 摘要面板可以停靠在正文左侧或右侧，并直接拖动面板与正文之间的边缘调整宽度。
 - 键盘阅读快捷键，完整列表见 [Desktop 操作手册](USER_GUIDE-zh-CN.md#键盘快捷键)。
 
 ## 账户与同步
@@ -161,8 +168,17 @@ AI 是可选能力，只有配置并主动使用时才会调用。
 - 摘要和文章内容绑定缓存，正文变化后不会继续误用旧摘要。
 - 生成时显示实际处理阶段和已等待时间，并支持停止当前请求。
 - 可以临时换 Provider、模型和摘要档位，不必修改全局默认设置。
+- Reader AI Chat 与当前阅读文章绑定，可流式显示 Reasoning 和正文回答。
+- 选中文字后可作为一次性上下文提问；重生成会沿用原请求冻结下来的 Context，而不是读取你后来切换的选择。
+- 每个对话最多额外挂 5 篇附近文章；当前文章始终单独作为主文章上下文。
+- 回答中的正文 Citation 可以单击一次完成跳转和高亮；历史回答保存自己的 Evidence/Citation 快照，不会被后续文章或附件变化改写。
+- 支持对话历史、对话内搜索、重命名/删除、停止生成、重生成，以及专门的文章分析任务。
+- Dedicated Web Search 可配置为自动模式，也可以只对下一条消息强制搜索；搜索过程和命中结果会在对话里可见并保存。
+- 支持 Quick Messages、任务 Skill，以及 Remote MCP / Local stdio MCP Tool。所有 MCP Tool 都必须经过显式用户批准，远端 Tool metadata 不会绕过审批。
 
 AI 生成 JSON 规则和网站解析规则已经接入确认式流程：抓取目标后选择已配置的 Provider / 模型，由模型生成候选，再由本地解析器和健康检查验证，只有用户明确确认后才保存。界面会反馈各阶段，并显示解析文章数、评分、实际模型和修复次数。
+
+Reader AI、Web Search、Skill、Quick Messages、Remote MCP 和 Local stdio MCP 的完整使用方式见 [AI / Search / MCP / Skill 指南](AI_MCP_SKILLS-zh-CN.md)。
 
 ## 规则与过滤
 
@@ -196,6 +212,10 @@ GitHub 版本可以检查 OrigRead Desktop Releases，并根据当前系统选�
 - 远程网页不会直接获得 Node.js / Electron 高权限。
 - 原读不会绕过登录、验证码、付费墙或网站访问控制。
 - 完整配置备份默认不导出敏感凭据。
+- AI Key、Web Search Key、Remote MCP Credential/OAuth Token、Local stdio env 等敏感值由 Main Process 的安全存储管理；设置页默认只看到“是否已保存/长度”等状态，只有用户主动 reveal 时才暂时显示明文。
+- Remote MCP Tool 的 `readOnlyHint` 等 metadata 只用于风险说明，不能授予权限；所有 MCP Tool 执行都需要显式确认。
+- Local stdio MCP 不会在应用启动时自动拉起；只有测试、刷新 Tool 或实际执行时才按需启动，退出应用时会清理子进程。
+- Skill 中的脚本不会被 OrigRead 执行；`allowed-tools` 等声明也不会被当作授权依据。
 
 ## 下载与平台
 
@@ -249,6 +269,8 @@ Desktop 使用 **GNU Affero General Public License v3.0 only（AGPL-3.0-only）*
 - 问题反馈：https://github.com/ZGMFX01A/OrigRead-Desktop/issues
 - Android 版本：https://github.com/ZGMFX01A/OrigRead
 - 操作手册：[简体中文](USER_GUIDE-zh-CN.md) · [English](USER_GUIDE.md)
+- AI / Search / MCP / Skill：[简体中文](AI_MCP_SKILLS-zh-CN.md) · [English](AI_MCP_SKILLS.md)
+- 版本变更：[CHANGELOG.md](CHANGELOG.md)
 
 ## Star History
 
