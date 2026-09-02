@@ -21,12 +21,58 @@ export interface ArticleEvidenceSource {
   sourceUrl?: string | null
 }
 
+export function buildSelectionEvidenceBlock(content: string, source: ArticleEvidenceSource = {}): BuiltLlmEvidenceBlock | null {
+  const normalized = normalizeEvidenceText(content)
+  if (!normalized) return null
+  const normalizedSha256 = sha256(normalized)
+  const stableLocatorKey = `SELECTION:${normalizedSha256.slice(0, 24)}:0`
+  return {
+    stableLocatorKey,
+    content: normalized,
+    kind: 'SELECTION',
+    ordinal: 0,
+    normalizedSha256,
+    locator: {
+      version: 1,
+      sourceKind: 'SELECTION',
+      stableLocatorKey,
+      articleId: source.articleId?.trim() || null,
+      sourceUrl: source.sourceUrl?.trim() || null,
+      normalizedHash: normalizedSha256
+    },
+    schemaVersion: LLM_EVIDENCE_SCHEMA_VERSION
+  }
+}
+
 const SEMANTIC_SELECTOR = 'h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,tr'
 const CONTAINER_SELECTOR = 'p,li,blockquote,pre,tr'
 
 /** Build frozen, semantically-addressable blocks from the sanitized Reader HTML. */
 export function buildArticleEvidenceBlocks(html: string, source: ArticleEvidenceSource = {}): BuiltLlmEvidenceBlock[] {
-  const $ = cheerio.load(html || '')
+  const $ = cheerio.load(html || '', undefined, false)
+  return collectArticleEvidenceBlocks($, source)
+}
+
+/** Add invisible Reader DOM anchors to exactly the same semantic blocks used as LLM evidence. */
+export function annotateArticleEvidenceHtml(html: string, source: ArticleEvidenceSource = {}): string {
+  const $ = cheerio.load(html || '', undefined, false)
+  collectArticleEvidenceBlocks($, source, (element, block) => {
+    const current = $(element)
+    current.attr('data-origread-block-id', block.stableLocatorKey)
+    current.attr('data-origread-block-index', String(block.ordinal))
+    current.attr('data-origread-block-hash', block.normalizedSha256)
+    if (block.locator.headingPath?.length) {
+      current.attr('data-origread-heading-path', block.locator.headingPath.join('\u001f'))
+    }
+  })
+  return $.root().html() ?? ''
+}
+
+function collectArticleEvidenceBlocks(
+  $: cheerio.CheerioAPI,
+  source: ArticleEvidenceSource,
+  onBlock?: (element: AnyNode, block: BuiltLlmEvidenceBlock) => void
+): BuiltLlmEvidenceBlock[] {
   const blocks: BuiltLlmEvidenceBlock[] = []
   const headingStack: Array<{ level: number; text: string }> = []
   const duplicateCounters = new Map<string, number>()
@@ -61,7 +107,7 @@ export function buildArticleEvidenceBlocks(html: string, source: ArticleEvidence
     duplicateCounters.set(identityBase, occurrence + 1)
     const stableLocatorKey = `${identityBase}:${occurrence}`
     const ordinal = blocks.length
-    blocks.push({
+    const block: BuiltLlmEvidenceBlock = {
       stableLocatorKey,
       content,
       kind,
@@ -70,6 +116,7 @@ export function buildArticleEvidenceBlocks(html: string, source: ArticleEvidence
       locator: {
         version: 1,
         sourceKind: 'ARTICLE',
+        stableLocatorKey,
         blockIndex: ordinal,
         headingPath: [...headingPath],
         articleId: source.articleId?.trim() || null,
@@ -77,15 +124,18 @@ export function buildArticleEvidenceBlocks(html: string, source: ArticleEvidence
         normalizedHash: normalizedSha256
       },
       schemaVersion: LLM_EVIDENCE_SCHEMA_VERSION
-    })
+    }
+    blocks.push(block)
+    onBlock?.(element, block)
   })
 
   if (blocks.length === 0) {
     const fallback = normalizeEvidenceText($.root().text())
     if (!fallback) return []
     const normalizedSha256 = sha256(fallback)
+    const stableLocatorKey = `PARAGRAPH:root:${normalizedSha256.slice(0, 20)}:0`
     return [{
-      stableLocatorKey: `PARAGRAPH:root:${normalizedSha256.slice(0, 20)}:0`,
+      stableLocatorKey,
       content: fallback,
       kind: 'PARAGRAPH',
       ordinal: 0,
@@ -93,6 +143,7 @@ export function buildArticleEvidenceBlocks(html: string, source: ArticleEvidence
       locator: {
         version: 1,
         sourceKind: 'ARTICLE',
+        stableLocatorKey,
         blockIndex: 0,
         headingPath: [],
         articleId: source.articleId?.trim() || null,

@@ -222,6 +222,19 @@ test('reader generates AI summary and full-article translation through main-proc
     await expect(page.getByRole('button', { name: '朗读摘要' })).toBeVisible()
     expect(fixture.translationRequests()).toBeGreaterThan(0)
 
+    // D7.3：翻译结果是派生 Artifact，不能继续被当成“原文选区”送入 AI。
+    await page.locator('.translated-article-body').evaluate((body) => {
+      const textNode = document.createTreeWalker(body, NodeFilter.SHOW_TEXT).nextNode()
+      if (!textNode || !textNode.textContent?.trim()) throw new Error('Translated selection fixture text is missing')
+      const range = document.createRange()
+      range.selectNodeContents(textNode)
+      const selection = window.getSelection()
+      selection?.removeAllRanges()
+      selection?.addRange(range)
+      body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    })
+    await expect(page.getByRole('button', { name: '问 AI' })).toHaveCount(0)
+
     // DL-5：Translation 与已缓存 Summary 同样必须跨布局保留，不能因为 Workspace 子树替换而回到正文模式。
     await page.locator('.settings-button').click()
     await page.locator('.layout-mode-option[data-layout-mode="two-pane"]').click()
@@ -243,6 +256,27 @@ test('reader generates AI summary and full-article translation through main-proc
     await expect(page.locator('.article-heading h1')).toContainText('译文：OrigRead AI E2E Article 1')
     await expect(page.getByRole('button', { name: '朗读正文' })).toBeVisible()
     await expect(page.getByRole('button', { name: '朗读摘要' })).toBeVisible()
+
+    // D7.2 修正：Summary / Translation 是派生 UI Artifact，普通对话不能继续把派生文本当事实源。
+    // Chat 只自动使用 Main-owned 原始 ARTICLE；后续 D7.3 的显式原文选区才允许额外进入 SELECTED_TEXT。
+    await page.getByRole('button', { name: '继续提问' }).click()
+    const contextComposer = page.getByRole('textbox', { name: '问问这篇文章……' })
+    await contextComposer.fill('Use the current reader context.')
+    await contextComposer.press('Enter')
+    await expect(page.locator('.reader-ai-message.assistant').last()).toContainText('核心结论来自本地 Mock', { timeout: 15_000 })
+    const currentContext = await page.evaluate(async (targetArticleId) => {
+      const conversation = (await window.origread.listLlmConversations(targetArticleId))[0]
+      if (!conversation) throw new Error('D7.2 conversation was not created')
+      const messages = await window.origread.getLlmMessages(conversation.id)
+      const assistant = messages.filter((message) => message.role === 'ASSISTANT').at(-1)
+      if (!assistant) throw new Error('D7.2 assistant message is missing')
+      return window.origread.getLlmAssistantEvidence(assistant.id)
+    }, articleId)
+    const contextByType = new Map(currentContext.contextRefs.map((ref) => [ref.type, ref]))
+    expect(contextByType.get('ARTICLE')).toMatchObject({ articleId, includedInPrompt: true })
+    expect(contextByType.get('ARTICLE')?.contentSnapshot).toContain('Original full article body one')
+    expect(contextByType.has('ARTICLE_SUMMARY')).toBe(false)
+    expect(contextByType.has('ARTICLE_TRANSLATION')).toBe(false)
 
     const conciseArticleId = await page.evaluate(async () => {
       const article = (await window.origread.listArticles(100)).find((item) => item.title === 'OrigRead Concise Flash')

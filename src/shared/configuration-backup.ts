@@ -1,6 +1,7 @@
 import type { AiCapabilityOverrideMode, AiOutputTokenLimitStyle, AiSummaryLength } from './ai'
 import type { TranslationDisplayMode, TranslationProviderType, TranslationTarget } from './translation'
 import type { LlmCustomizationSettings } from './llm-customization'
+import type { McpRemoteAuthMode } from './mcp'
 import type { PersistentWebSearchMode, WebSearchProviderKind } from './web-search'
 
 export interface ConfigurationBackup {
@@ -21,6 +22,7 @@ export interface ConfigurationBackup {
   ai: AiBackup
   llm?: LlmBackup
   webSearch?: WebSearchBackup
+  mcp?: McpBackup
   encryptedSecrets: EncryptedBackupSecrets | null
 }
 
@@ -35,6 +37,36 @@ export interface WebSearchBackup {
   providers: Array<{id:string;kind:WebSearchProviderKind;name:string;endpoint:string;enabled:boolean}>
   defaultProviderId: string | null
   maxResults: number
+}
+
+export interface McpBackup {
+  remote: {
+    servers: Array<{
+      id: string
+      name: string
+      url: string
+      enabled: boolean
+      transport: 'STREAMABLE_HTTP'
+      authMode: McpRemoteAuthMode
+      oauthScopes: string
+    }>
+  }
+  local: {
+    servers: Array<{
+      id: string
+      name: string
+      enabled: boolean
+      command: string
+      args: string[]
+      cwd: string
+    }>
+  }
+}
+
+export interface McpRemoteOAuthBackupSecrets {
+  client?: string
+  tokens?: string
+  discovery?: string
 }
 
 export interface AccountSettingsBackup {
@@ -74,6 +106,12 @@ export interface ConfigurationBackupSecrets {
   aiApiKeys:Record<string,string>
   /** Optional so encrypted backups created before D5 remain readable. */
   webSearchApiKeys?:Record<string,string>
+  /** Optional so encrypted backups created before D6 remain readable. */
+  mcpRemoteCredentials?:Record<string,string>
+  /** Transient PKCE verifier/state are intentionally never backed up. */
+  mcpRemoteOAuth?:Record<string,McpRemoteOAuthBackupSecrets>
+  /** Local stdio environment values are encrypted separately from portable process profiles. */
+  mcpLocalEnvironments?:Record<string,string>
 }
 export interface ConfigurationRestoreResult { groupsAdded:number;feedsAdded:number;feedsUpdated:number;filterRulesRestored:number;credentialsRestored:boolean }
 export interface ConfigurationBackupFileResult { ok:boolean;cancelled:boolean;path:string|null;restoreResult?:ConfigurationRestoreResult;error:string|null }

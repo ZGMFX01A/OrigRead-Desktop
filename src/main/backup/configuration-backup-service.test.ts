@@ -21,6 +21,8 @@ import { LlmSkillRepository } from '../llm/skill-repository'
 import { LlmQuickMessageRepository } from '../llm/quick-message-repository'
 import { LlmCustomizationSettingsRepository } from '../llm/customization-settings-repository'
 import { WebSearchRepository } from '../search/web-search-repository'
+import { McpRemoteRepository, mcpOAuthSecretKey } from '../mcp/mcp-remote-repository'
+import { McpLocalRepository } from '../mcp/mcp-local-repository'
 
 const dirs: string[] = []
 afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })))
@@ -188,6 +190,174 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     expect(() => fixture.backup.restoreBackup(JSON.stringify(dangling), 'backup-pass')).toThrow('Web Search 凭据引用了不存在的 Provider')
   })
 
+  it('round-trips Remote/Local MCP profiles and encrypted secrets without restoring transient OAuth state', () => {
+    const fixture = createFixture()
+    const firstRemote = fixture.mcpRemote.addServer().servers[0]!
+    fixture.mcpRemote.updateServer({
+      id: firstRemote.id,
+      name: 'Backup bearer MCP',
+      url: 'https://mcp.example/stream',
+      enabled: true,
+      authMode: 'BEARER',
+      credential: 'remote-bearer-secret'
+    })
+    const secondRemote = fixture.mcpRemote.addServer().servers.at(-1)!
+    fixture.mcpRemote.updateServer({
+      id: secondRemote.id,
+      name: 'Backup OAuth MCP',
+      url: 'https://oauth-mcp.example/mcp',
+      enabled: true,
+      authMode: 'OAUTH',
+      oauthScopes: 'tools.read tools.write'
+    })
+    fixture.secrets.put(mcpOAuthSecretKey(secondRemote.id, 'client'), JSON.stringify({ issuer: 'https://auth.example', value: { client_id: 'client-1' } }))
+    fixture.secrets.put(mcpOAuthSecretKey(secondRemote.id, 'tokens'), JSON.stringify({ issuer: 'https://auth.example', value: { access_token: 'oauth-access-secret', refresh_token: 'oauth-refresh-secret' } }))
+    fixture.secrets.put(mcpOAuthSecretKey(secondRemote.id, 'discovery'), JSON.stringify({ authorizationServerUrl: 'https://auth.example' }))
+    fixture.secrets.put(mcpOAuthSecretKey(secondRemote.id, 'verifier'), 'transient-verifier')
+    fixture.secrets.put(mcpOAuthSecretKey(secondRemote.id, 'state'), 'transient-state')
+
+    const local = fixture.mcpLocal.addServer().servers[0]!
+    fixture.mcpLocal.updateServer({
+      id: local.id,
+      name: 'Backup local MCP',
+      command: process.execPath,
+      args: ['fixture-server.cjs', '--stdio'],
+      cwd: fixture.dir,
+      environment: 'LOCAL_TOKEN=local-env-secret\nLOCAL_MODE=backup',
+      enabled: true
+    })
+
+    const content = fixture.backup.exportBackup('backup-pass')
+    const exported = JSON.parse(content) as ConfigurationBackup
+    expect(exported.mcp).toMatchObject({
+      remote: { servers: [
+        { id: firstRemote.id, name: 'Backup bearer MCP', authMode: 'BEARER', enabled: true },
+        { id: secondRemote.id, name: 'Backup OAuth MCP', authMode: 'OAUTH', oauthScopes: 'tools.read tools.write', enabled: true }
+      ] },
+      local: { servers: [{ id: local.id, name: 'Backup local MCP', command: process.execPath, enabled: true }] }
+    })
+    expect(JSON.stringify(exported.mcp)).not.toContain('remote-bearer-secret')
+    expect(JSON.stringify(exported.mcp)).not.toContain('local-env-secret')
+    expect(content).not.toContain('remote-bearer-secret')
+    expect(content).not.toContain('oauth-access-secret')
+    expect(content).not.toContain('local-env-secret')
+
+    fixture.mcpRemote.removeServer(firstRemote.id)
+    fixture.mcpRemote.removeServer(secondRemote.id)
+    fixture.mcpLocal.removeServer(local.id)
+    fixture.backup.restoreBackup(content, 'backup-pass')
+
+    expect(fixture.mcpRemote.current().servers).toMatchObject([
+      { id: firstRemote.id, name: 'Backup bearer MCP', authMode: 'BEARER', hasCredential: true },
+      { id: secondRemote.id, name: 'Backup OAuth MCP', authMode: 'OAUTH', oauthAuthorized: true }
+    ])
+    expect(fixture.mcpRemote.getCredential(firstRemote.id)).toBe('remote-bearer-secret')
+    expect(fixture.secrets.get(mcpOAuthSecretKey(secondRemote.id, 'client'))).toContain('client-1')
+    expect(fixture.secrets.get(mcpOAuthSecretKey(secondRemote.id, 'tokens'))).toContain('oauth-refresh-secret')
+    expect(fixture.secrets.get(mcpOAuthSecretKey(secondRemote.id, 'discovery'))).toContain('authorizationServerUrl')
+    expect(fixture.secrets.get(mcpOAuthSecretKey(secondRemote.id, 'verifier'))).toBe('')
+    expect(fixture.secrets.get(mcpOAuthSecretKey(secondRemote.id, 'state'))).toBe('')
+    expect(fixture.mcpLocal.current().servers[0]).toMatchObject({ id: local.id, name: 'Backup local MCP', enabled: true, hasEnvironment: true })
+    expect(fixture.mcpLocal.getEnvironment(local.id)).toContain('LOCAL_TOKEN=local-env-secret')
+
+    const dangling = { ...exported }
+    dangling.encryptedSecrets = encryptConfigurationSecrets({
+      translationApiKeys: {},
+      aiApiKeys: {},
+      mcpRemoteCredentials: { 'missing-mcp-server': 'bad-secret' }
+    }, 'backup-pass')
+    expect(() => fixture.backup.restoreBackup(JSON.stringify(dangling), 'backup-pass')).toThrow('Remote MCP 凭据引用了不存在的 Server')
+  })
+
+  it('rejects MCP secrets when the backup has no MCP profiles', () => {
+    const fixture = createFixture()
+    const legacy = androidBackup(fixture)
+    legacy.encryptedSecrets = encryptConfigurationSecrets({
+      translationApiKeys: {},
+      aiApiKeys: {},
+      mcpLocalEnvironments: { 'orphan-local-server': 'TOKEN=orphan-secret' }
+    }, 'backup-pass')
+
+    expect(() => fixture.backup.restoreBackup(JSON.stringify(legacy), 'backup-pass'))
+      .toThrow('MCP 凭据存在，但备份缺少对应的 MCP 配置')
+  })
+
+  it('restores plain MCP profiles without inheriting stale credentials from matching server IDs', () => {
+    const fixture = createFixture()
+    const remote = fixture.mcpRemote.addServer().servers[0]!
+    fixture.mcpRemote.updateServer({
+      id: remote.id,
+      name: 'Plain bearer MCP',
+      url: 'https://mcp.example/plain',
+      enabled: true,
+      authMode: 'BEARER',
+      credential: 'backup-time-secret'
+    })
+    const local = fixture.mcpLocal.addServer().servers[0]!
+    fixture.mcpLocal.updateServer({
+      id: local.id,
+      name: 'Plain local MCP',
+      command: process.execPath,
+      environment: 'LOCAL_TOKEN=backup-time-secret',
+      enabled: true
+    })
+
+    const content = fixture.backup.exportBackup('')
+    const exported = JSON.parse(content) as ConfigurationBackup
+    expect(exported.mcp).toBeDefined()
+    expect(exported.encryptedSecrets).toBeNull()
+
+    fixture.mcpRemote.updateServer({ id: remote.id, credential: 'restore-target-secret' })
+    fixture.mcpLocal.updateServer({ id: local.id, environment: 'LOCAL_TOKEN=restore-target-secret' })
+    fixture.backup.restoreBackup(content)
+
+    expect(fixture.mcpRemote.getCredential(remote.id)).toBe('')
+    expect(fixture.mcpRemote.current().servers[0]).toMatchObject({ id: remote.id, hasCredential: false })
+    expect(fixture.mcpLocal.getEnvironment(local.id)).toBe('')
+    expect(fixture.mcpLocal.current().servers[0]).toMatchObject({ id: local.id, hasEnvironment: false })
+  })
+
+  it('round-trips Remote MCP Custom Headers only through encrypted backup secrets', () => {
+    const fixture = createFixture()
+    const remote = fixture.mcpRemote.addServer().servers[0]!
+    fixture.mcpRemote.updateServer({
+      id: remote.id,
+      name: 'Custom Header MCP',
+      url: 'https://mcp.example/custom-headers',
+      enabled: true,
+      authMode: 'CUSTOM_HEADERS',
+      credential: 'X-Api-Key: custom-header-secret\nX-Client: OrigRead'
+    })
+
+    const content = fixture.backup.exportBackup('backup-pass')
+    const exported = JSON.parse(content) as ConfigurationBackup
+    expect(exported.mcp?.remote.servers[0]).toMatchObject({
+      id: remote.id,
+      authMode: 'CUSTOM_HEADERS',
+      enabled: true
+    })
+    expect(JSON.stringify(exported.mcp)).not.toContain('custom-header-secret')
+    expect(content).not.toContain('custom-header-secret')
+
+    fixture.mcpRemote.removeServer(remote.id)
+    fixture.backup.restoreBackup(content, 'backup-pass')
+    expect(fixture.mcpRemote.current().servers[0]).toMatchObject({ id: remote.id, authMode: 'CUSTOM_HEADERS', hasCredential: true })
+    expect(fixture.mcpRemote.getCredential(remote.id)).toContain('X-Api-Key: custom-header-secret')
+  })
+
+  it('keeps current MCP settings when restoring a pre-D6 backup without MCP fields', () => {
+    const fixture = createFixture()
+    const remote = fixture.mcpRemote.addServer().servers[0]!
+    fixture.mcpRemote.updateServer({ id: remote.id, name: 'Keep remote', url: 'https://mcp.example/mcp', enabled: true })
+    const local = fixture.mcpLocal.addServer().servers[0]!
+    fixture.mcpLocal.updateServer({ id: local.id, name: 'Keep local', command: process.execPath, enabled: true })
+
+    fixture.backup.restoreBackup(JSON.stringify(androidBackup(fixture)), 'backup-pass')
+
+    expect(fixture.mcpRemote.current().servers[0]).toMatchObject({ id: remote.id, name: 'Keep remote' })
+    expect(fixture.mcpLocal.current().servers[0]).toMatchObject({ id: local.id, name: 'Keep local' })
+  })
+
   it('keeps current Web Search settings when restoring a pre-D5 backup without Search fields', () => {
     const fixture = createFixture()
     const added = fixture.webSearch.addProvider('KEENABLE')
@@ -219,11 +389,13 @@ function createFixture() {
   const quickMessages = new LlmQuickMessageRepository(database.connection)
   const customization = new LlmCustomizationSettingsRepository(database.connection)
   const webSearch = new WebSearchRepository(database.connection, secrets)
+  const mcpRemote = new McpRemoteRepository(database.connection, secrets)
+  const mcpLocal = new McpLocalRepository(database.connection, secrets)
   const backup = new ConfigurationBackupService(
     '0.1.0', library, settings, websiteRules, jsonRules, filters, websitePreferences, rssHub, translation, ai,
-    undefined, skills, quickMessages, customization, webSearch
+    undefined, skills, quickMessages, customization, webSearch, mcpRemote, mcpLocal
   )
-  return { dir, database, library, settings, websiteRules, jsonRules, filters, websitePreferences, rssHub, translation, ai, skills, quickMessages, customization, webSearch, backup }
+  return { dir, database, library, settings, websiteRules, jsonRules, filters, websitePreferences, rssHub, translation, ai, skills, quickMessages, customization, webSearch, mcpRemote, mcpLocal, secrets, backup }
 }
 
 function androidBackup(fixture: ReturnType<typeof createFixture>): ConfigurationBackup {

@@ -223,6 +223,41 @@ describe('LibraryRepository', () => {
     database.close()
   })
 
+  it('lists lightweight recent article metadata and searches titles only', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const feed = createFeed()
+    repository.upsertFeed(feed)
+    repository.upsertArticle({
+      ...createArticle(feed.id),
+      id: 'metadata-older',
+      title: 'Older article',
+      description: 'Hidden title query marker',
+      contentHtml: '<p>Body-only query marker</p>',
+      publishedAt: 10
+    })
+    repository.upsertArticle({
+      ...createArticle(feed.id),
+      id: 'metadata-newer',
+      title: 'Target title article',
+      contentHtml: '<p>Large body should not be part of metadata result.</p>',
+      publishedAt: 20
+    })
+
+    expect(repository.listArticleMetadata(10)).toEqual([
+      { id: 'metadata-newer', feedName: 'Example', title: 'Target title article', url: 'https://example.com/article', publishedAt: 20 },
+      { id: 'metadata-older', feedName: 'Example', title: 'Older article', url: 'https://example.com/article', publishedAt: 10 }
+    ])
+    expect(repository.listArticleMetadata(10, 'Target title')).toEqual([
+      { id: 'metadata-newer', feedName: 'Example', title: 'Target title article', url: 'https://example.com/article', publishedAt: 20 }
+    ])
+    expect(repository.listArticleMetadata(10, 'Body-only')).toEqual([])
+    expect(repository.getArticleMetadataById('metadata-newer')).toEqual(
+      { id: 'metadata-newer', feedName: 'Example', title: 'Target title article', url: 'https://example.com/article', publishedAt: 20 }
+    )
+    database.close()
+  })
+
   it('batch-queries existing article ids across the 800-parameter chunk boundary', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)

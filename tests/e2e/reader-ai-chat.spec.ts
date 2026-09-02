@@ -59,12 +59,46 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     await expect(page.getByRole('textbox', { name: '问问这篇文章……' })).toBeVisible()
     expect(await page.evaluate(async (id) => (await window.origread.listLlmConversations(id)).length, articleId)).toBe(0)
 
+    const refreshedAlternateModels = [
+      'fixture-alt-model',
+      'deepseek-v4-flash-0731',
+      'deepseek-v4-pro-0813',
+      'gemini-2.5-pro-1m',
+      'gemini-3.1-pro-preview',
+      'glm-5.2',
+      'gpt-5.6-luna',
+      'grok-4.5',
+      'grok-4.6',
+      'this-is-an-extremely-long-model-name-that-must-not-stretch-the-picker-until-selected'
+    ]
+    // Reproduce the real bug: the AI panel is already open when Settings updates the provider model cache.
+    await page.evaluate(async ({ providerId, models }) => {
+      await window.origread.updateAiProvider({ id: providerId, models })
+    }, { providerId: alternateProviderId, models: refreshedAlternateModels })
+    await page.locator('.settings-button').click()
+    await expect(page.locator('.settings-layout')).toBeVisible()
+    await page.locator('.settings-close-button').click()
+    await expect(page.locator('.reader-ai-panel')).toBeVisible()
+
     await page.locator('.reader-ai-model-label').click()
     const providerSelect = page.getByRole('combobox', { name: 'AI Provider' })
     const modelSelect = page.getByRole('combobox', { name: '默认模型' })
     await expect(providerSelect).toBeVisible()
     await providerSelect.selectOption(alternateProviderId)
     await expect(modelSelect).toHaveValue('fixture-alt-model')
+    await expect(modelSelect.locator('option')).toHaveCount(refreshedAlternateModels.length)
+    for (const modelName of refreshedAlternateModels) await expect(modelSelect.locator('option', { hasText: modelName })).toHaveCount(1)
+    const modelPopoverWidth = await page.locator('.reader-ai-model-popover').evaluate((element) => element.getBoundingClientRect().width)
+    expect(modelPopoverWidth).toBeGreaterThanOrEqual(208)
+    expect(modelPopoverWidth).toBeLessThan(300)
+
+    await modelSelect.selectOption('grok-4.6')
+    await expect(page.locator('.reader-ai-model-popover')).toBeHidden()
+    await expect(page.locator('.reader-ai-model-label')).toContainText('grok-4.6')
+    await page.locator('.reader-ai-model-label').click()
+    await page.getByRole('combobox', { name: '默认模型' }).selectOption('fixture-alt-model')
+    await expect(page.locator('.reader-ai-model-popover')).toBeHidden()
+    await expect(page.locator('.reader-ai-model-label')).toContainText('fixture-alt-model')
 
     const composer = page.getByRole('textbox', { name: '问问这篇文章……' })
     await composer.fill('What changed?')
@@ -72,7 +106,7 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-view', 'chat')
     await expect(page.locator('.reader-ai-user-bubble')).toContainText('What changed?')
     await expect(page.locator('.reader-ai-message.assistant')).toContainText('Revenue rose')
-    await expect(page.locator('.reader-ai-message.assistant')).toContainText('[1]')
+    await expect(page.locator('.reader-ai-message.assistant .reader-ai-inline-citation')).toHaveText('1')
     await expect(page.locator('.reader-ai-message.assistant')).not.toContainText('[[E2]]')
     await expect(page.locator('.reader-ai-model-label')).toContainText('Alternate fixture · fixture-alt-model')
 
@@ -170,6 +204,34 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     expect(afterRegenerate).toHaveLength(5)
     expect(afterRegenerate.find((message) => message.id === supersededAssistantId)).toMatchObject({ historyActive: false })
     expect(afterRegenerate.at(-1)).toMatchObject({ role: 'ASSISTANT', historyActive: true, status: 'COMPLETE' })
+
+    const scrollStage = page.locator('.reader-ai-chat-scroll-stage')
+    const timeline = page.locator('.reader-ai-chat-timeline')
+    await scrollStage.evaluate((element) => { (element as HTMLElement).style.height = '150px' })
+    await timeline.evaluate((element) => {
+      const node = element as HTMLElement
+      node.scrollTop = Math.max(1, (node.scrollHeight - node.clientHeight) / 2)
+      node.dispatchEvent(new Event('scroll', { bubbles: true }))
+    })
+    const jumpTop = page.getByRole('button', { name: '回到顶部' })
+    const jumpBottom = page.getByRole('button', { name: '回到底部' })
+    await expect(jumpTop).toBeVisible()
+    await expect(jumpBottom).toBeVisible()
+    const [stageBox, jumpsBox] = await Promise.all([
+      scrollStage.boundingBox(),
+      page.locator('.reader-ai-scroll-jumps').boundingBox()
+    ])
+    if (!stageBox || !jumpsBox) throw new Error('Scroll jump geometry missing')
+    expect(Math.abs((jumpsBox.y + jumpsBox.height / 2) - (stageBox.y + stageBox.height / 2))).toBeLessThan(3)
+    expect(stageBox.x + stageBox.width - (jumpsBox.x + jumpsBox.width)).toBeLessThan(10)
+    await jumpTop.click()
+    await expect.poll(() => timeline.evaluate((element) => (element as HTMLElement).scrollTop)).toBeLessThan(5)
+    await expect(jumpBottom).toBeVisible()
+    await jumpBottom.click()
+    await expect.poll(() => timeline.evaluate((element) => {
+      const node = element as HTMLElement
+      return Math.abs(node.scrollHeight - node.clientHeight - node.scrollTop)
+    })).toBeLessThan(5)
 
     await page.keyboard.press('a')
     await expect(page.locator('.reader-ai-panel')).toBeHidden()

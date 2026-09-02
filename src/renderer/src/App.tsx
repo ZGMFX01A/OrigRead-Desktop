@@ -1,15 +1,18 @@
 import {
   ArrowLeft,
   ArrowRight,
+  ArrowUp,
   BookOpenText,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
   Compass,
   Download,
   Maximize2,
   Minimize2,
   MoreHorizontal,
+  Paperclip,
   Plus,
   Sparkles,
   Star,
@@ -17,9 +20,12 @@ import {
   StepForward,
   ExternalLink,
   Headphones,
+  History,
   Pause,
+  Pencil,
   Play,
   RefreshCw,
+  Search,
   Share2,
   Settings,
   SquareArrowOutUpRight,
@@ -29,7 +35,7 @@ import {
   Volume2,
   X
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AppInfo } from '../../shared/contracts'
 import { resolveDesktopLanguage } from '../../shared/locale'
@@ -50,7 +56,27 @@ import type { SyncRuntimeState } from '../../shared/sync-runtime'
 import type { OriginalArticleViewState, OriginalViewBounds } from '../../shared/original-view'
 import { SettingsPanel, type SettingsPage } from './SettingsPanel'
 import { UpdateAvailableDialog } from './UpdateAvailableDialog'
-import type { AiSummaryDocument, AiSummaryProgress, AiSummaryProgressStage } from '../../shared/ai'
+import type { AiProviderProfile, AiSettings, AiSummaryDocument, AiSummaryLength, AiSummaryProgress, AiSummaryProgressStage, AiSummaryStreamUpdate } from '../../shared/ai'
+import type {
+  LlmCitationRefRecord,
+  LlmContextRefRecord,
+  LlmConversationArticleRecord,
+  LlmConversationRecord,
+  LlmEvidenceBlockRecord,
+  LlmMessageRecord
+} from '../../shared/llm-chat'
+import type {
+  LlmAssistantEvidenceSnapshot,
+  LlmArticleContextCandidate,
+  LlmExecutionEvent,
+  LlmExecutionIdentity,
+  LlmManualToolContextView,
+  LlmManualToolView,
+  LlmReaderContextSnapshot,
+  LlmToolActivityView,
+  LlmToolApprovalDecision
+} from '../../shared/llm-ipc'
+import { resolveQuickMessageTemplate, type LlmQuickMessage } from '../../shared/llm-quick-message'
 import type { TranslationDocument, TranslationTarget } from '../../shared/translation'
 import type { FeedCatalogEntry } from '../../shared/source-catalog'
 import { SourceDiscoveryPanel } from './SourceDiscoveryPanel'
@@ -77,19 +103,50 @@ import { TwoPaneReadingLayout } from './TwoPaneReadingLayout'
 import { SourceSwitcherPopover } from './SourceSwitcherPopover'
 import { SourceManagerOverlay } from './SourceManagerOverlay'
 import { THREE_PANE_BREAKPOINT, resolveResponsivePaneLayout } from './responsive-layout'
+import { ReaderAiPanelShell } from './ReaderAiPanel'
+import {
+  INITIAL_READER_AI_PANEL_STATE,
+  closeReaderAiPanel,
+  closeReaderAiPanelDetail,
+  openReaderAiPanel,
+  openReaderAiPanelDetail,
+  resetReaderAiPanel,
+  type ReaderAiPanelState
+} from './reader-ai-panel-state'
+import {
+  initialReaderAiChatScrollOwnership,
+  pauseReaderAiChatScroll,
+  resumeReaderAiChatScroll,
+  updateReaderAiChatScrollOwnership
+} from './reader-ai-chat-scroll'
+import { displayChatAssistantContent, searchReaderAiChatMessages } from './reader-ai-chat-search'
 
-type ReaderMode = 'article' | 'ai' | 'translation'
+type ReaderMode = 'article' | 'translation'
+type ReaderToolLoading = 'ai' | 'translation'
 
 type ContextMenuState =
   | { kind: 'feed'; x: number; y: number; feedId: string }
   | { kind: 'article'; x: number; y: number; articleId: string }
 
+interface ReaderAiSelection {
+  articleId: string
+  text: string
+  truncated: boolean
+}
+
+interface ReaderAiSelectionCandidate extends ReaderAiSelection {
+  x: number
+  y: number
+  placement: 'above' | 'below'
+}
+
 const sourceDiscoveryStageOrder: SourceDiscoveryStage[] = ['rss', 'rsshub', 'json', 'website', 'dynamic_website', 'ranking']
-const aiSummaryPlacementOrder: AiSummaryPlacement[] = ['replace', 'left', 'right', 'top', 'bottom']
+const aiSummaryPlacementOrder: AiSummaryPlacement[] = ['left', 'right']
 const AI_SUMMARY_PANEL_MIN = 220
 const AI_SUMMARY_PANEL_MAX = 640
 const AI_SUMMARY_PANEL_KEYBOARD_STEP = 20
 const RECENT_SOURCE_SCOPE_LIMIT = 5
+const READER_AI_SELECTION_MAX_CHARS = 20_000
 
 export default function App(): React.JSX.Element {
   const { t, i18n } = useTranslation()
@@ -142,15 +199,45 @@ export default function App(): React.JSX.Element {
   const [readerContentLoading, setReaderContentLoading] = useState(false)
   const [readerContentError, setReaderContentError] = useState<string | null>(null)
   const [readerMode, setReaderMode] = useState<ReaderMode>('article')
+  const [readerAiSelection, setReaderAiSelection] = useState<ReaderAiSelection | null>(null)
+  const [readerAiSelectionCandidate, setReaderAiSelectionCandidate] = useState<ReaderAiSelectionCandidate | null>(null)
   const [aiSummary, setAiSummary] = useState<AiSummaryDocument | null>(null)
-  const [aiSummaryVisible, setAiSummaryVisible] = useState(false)
+  const [readerAiPanel, setReaderAiPanel] = useState<ReaderAiPanelState>(INITIAL_READER_AI_PANEL_STATE)
+  const [chatConversation, setChatConversation] = useState<LlmConversationRecord | null>(null)
+  const [chatAttachedArticles, setChatAttachedArticles] = useState<LlmConversationArticleRecord[]>([])
+  const [chatMessages, setChatMessages] = useState<LlmMessageRecord[]>([])
+  const [chatToolActivity, setChatToolActivity] = useState<LlmToolActivityView[]>([])
+  const [chatToolDecisionBusy, setChatToolDecisionBusy] = useState<Record<string, boolean>>({})
+  const [chatManualTools, setChatManualTools] = useState<LlmManualToolView[]>([])
+  const [chatManualToolContexts, setChatManualToolContexts] = useState<LlmManualToolContextView[]>([])
+  const [chatManualToolBusy, setChatManualToolBusy] = useState(false)
+  const [chatDraft, setChatDraft] = useState('')
+  const [chatError, setChatError] = useState<string | null>(null)
+  const [chatHistoryLoading, setChatHistoryLoading] = useState(false)
+  const [chatConversations, setChatConversations] = useState<LlmConversationRecord[]>([])
+  const [chatConversationHistoryLoading, setChatConversationHistoryLoading] = useState(false)
+  const [chatConversationHistoryError, setChatConversationHistoryError] = useState<string | null>(null)
+  const [chatConversationHistoryQuery, setChatConversationHistoryQuery] = useState('')
+  const [chatLocateMessageId, setChatLocateMessageId] = useState<string | null>(null)
+  const [readerAiSourceFocus, setReaderAiSourceFocus] = useState<{ messageId: string; citationId: string | null; locationUnavailable: boolean } | null>(null)
+  const [readerAiSourceSnapshot, setReaderAiSourceSnapshot] = useState<{ messageId: string; snapshot: LlmAssistantEvidenceSnapshot } | null>(null)
+  const [readerAiAnswerCitationSnapshot, setReaderAiAnswerCitationSnapshot] = useState<{ messageId: string; snapshot: LlmAssistantEvidenceSnapshot } | null>(null)
+  const [readerCitationTarget, setReaderCitationTarget] = useState<{ messageId: string; citation: LlmCitationRefRecord; contextRef: LlmContextRefRecord | null } | null>(null)
+  const [chatActiveExecution, setChatActiveExecution] = useState<LlmExecutionIdentity | null>(null)
+  const [chatAiSettings, setChatAiSettings] = useState<AiSettings | null>(null)
+  const [chatQuickMessages, setChatQuickMessages] = useState<LlmQuickMessage[]>([])
+  const [chatDraftProviderId, setChatDraftProviderId] = useState('')
+  const [chatDraftModel, setChatDraftModel] = useState('')
+  const [chatForceWebSearchNext, setChatForceWebSearchNext] = useState(false)
   const [aiSummaryProgress, setAiSummaryProgress] = useState<AiSummaryProgress | null>(null)
+  const [aiSummaryStream, setAiSummaryStream] = useState<AiSummaryStreamUpdate | null>(null)
   const [aiSummaryStartedAt, setAiSummaryStartedAt] = useState<number | null>(null)
   const [aiSummaryElapsedSeconds, setAiSummaryElapsedSeconds] = useState(0)
   const [translationDocument, setTranslationDocument] = useState<TranslationDocument | null>(null)
-  const [readerToolLoading, setReaderToolLoading] = useState<ReaderMode | null>(null)
+  const [readerToolLoading, setReaderToolLoading] = useState<ReaderToolLoading | null>(null)
   const [readerToolNotice, setReaderToolNotice] = useState<ReaderToolFeedback | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsUnsaved, setSettingsUnsaved] = useState(false)
   const [settingsInitialPage, setSettingsInitialPage] = useState<SettingsPage>('general')
   const [startupUpdate, setStartupUpdate] = useState<UpdateCheckResult | null>(null)
   const [sourceCatalogOpen, setSourceCatalogOpen] = useState(false)
@@ -177,11 +264,28 @@ export default function App(): React.JSX.Element {
   const [readerFonts, setReaderFonts] = useState<ReaderFontEntry[]>([])
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [syncRuntimeState, setSyncRuntimeState] = useState<SyncRuntimeState | null>(null)
+
+  const closeSettingsIfAllowed = (): boolean => {
+    if (!settingsOpen) return true
+    if (settingsUnsaved && !window.confirm(t('customInstructionsDiscardConfirm'))) return false
+    setSettingsUnsaved(false)
+    setSettingsOpen(false)
+    return true
+  }
   const [originalViewState, setOriginalViewState] = useState<OriginalArticleViewState>(closedOriginalState())
   const readerPaneRef = useRef<HTMLElement>(null)
   const readerStageRef = useRef<HTMLDivElement>(null)
   const readerContentRef = useRef<HTMLDivElement>(null)
   const readerSearchInputRef = useRef<HTMLInputElement>(null)
+  const chatSearchInputRef = useRef<HTMLInputElement>(null)
+  const chatComposerInputRef = useRef<HTMLTextAreaElement>(null)
+  const chatActiveRequestIdRef = useRef<string | null>(null)
+  const chatActiveRequestTaskRef = useRef<'CHAT' | 'ARTICLE_ANALYSIS'>('CHAT')
+  const chatConversationIdRef = useRef<string | null>(null)
+  const chatManualToolContextsRef = useRef<LlmManualToolContextView[]>([])
+  const citationArticleNavigationRef = useRef<string | null>(null)
+  const readerCitationHighlightRef = useRef<HTMLElement | null>(null)
+  const readerCitationHighlightTimerRef = useRef<number | null>(null)
   const articleSearchInputRef = useRef<HTMLInputElement>(null)
   const adaptiveSourceOverlayCloseRef = useRef<HTMLButtonElement>(null)
   const sourceSwitcherTriggerRef = useRef<HTMLButtonElement>(null)
@@ -192,9 +296,28 @@ export default function App(): React.JSX.Element {
   const selectedArticleIdRef = useRef<string | null>(null)
   const sourceDiscoveryRequestIdRef = useRef<string | null>(null)
   const aiSummaryRunRef = useRef(0)
+  const aiSummaryPerfRunRef = useRef<{ runId: number; articleId: string; startedAt: number } | null>(null)
+  const aiSummaryUiTtfvRecordedRef = useRef(false)
+  const translationRunRef = useRef(0)
+  const translationRequestArticleRef = useRef<string | null>(null)
   const lastObservedSyncFinish = useRef<number | null>(null)
   const autoUpdateCheckedRef = useRef(false)
   const speech = useReaderSpeech(settings?.ttsVoiceURI ?? '')
+
+  useEffect(() => {
+    setReaderAiSelectionCandidate(null)
+  }, [readerMode, originalViewState.open, settingsOpen])
+
+  useEffect(() => {
+    if (!readerAiSelectionCandidate) return
+    const dismiss = (event: PointerEvent): void => {
+      const target = event.target
+      if (target instanceof Element && target.closest('.reader-ai-selection-action')) return
+      setReaderAiSelectionCandidate(null)
+    }
+    window.addEventListener('pointerdown', dismiss, true)
+    return () => window.removeEventListener('pointerdown', dismiss, true)
+  }, [readerAiSelectionCandidate])
 
   /** 关闭双栏快速来源切换器；普通关闭后把键盘焦点还给触发按钮。 */
   const closeSourceSwitcher = useCallback((restoreFocus = true): void => {
@@ -479,6 +602,39 @@ export default function App(): React.JSX.Element {
     const unsubscribeAiProgress = window.origread.onAiSummaryProgress((progress) => {
       if (progress.articleId === selectedArticleIdRef.current) setAiSummaryProgress(progress)
     })
+    const unsubscribeAiStream = window.origread.onAiSummaryStreamUpdate((update) => {
+      if (update.articleId === selectedArticleIdRef.current) setAiSummaryStream(update)
+    })
+    const unsubscribeLlmExecution = window.origread.onLlmExecutionEvent((event) => {
+      if (event.requestId !== chatActiveRequestIdRef.current) return
+      chatConversationIdRef.current = event.conversationId
+      setChatActiveExecution({
+        requestId: event.requestId,
+        conversationId: event.conversationId,
+        assistantMessageId: event.assistantMessageId
+      })
+      setChatMessages((current) => applyLlmExecutionEvent(current, event, chatActiveRequestTaskRef.current))
+      if (event.type === 'TOOL_STATE') {
+        void window.origread.getLlmToolActivity(event.conversationId)
+          .then((activity) => {
+            if (chatConversationIdRef.current === event.conversationId) setChatToolActivity(activity)
+          })
+          .catch(() => undefined)
+      }
+      if (event.type === 'TERMINAL' || event.type === 'ERROR') {
+        chatActiveRequestIdRef.current = null
+        chatActiveRequestTaskRef.current = 'CHAT'
+        setChatActiveExecution(null)
+        void Promise.all([window.origread.getLlmMessages(event.conversationId), window.origread.getLlmToolActivity(event.conversationId)])
+          .then(([messages, activity]) => {
+            if (chatConversationIdRef.current === event.conversationId) {
+              setChatMessages(messages)
+              setChatToolActivity(activity)
+            }
+          })
+          .catch(() => undefined)
+      }
+    })
     const unsubscribeSourceDiscoveryProgress = window.origread.onSourceDiscoveryProgress((progress) => {
       if (progress.requestId !== sourceDiscoveryRequestIdRef.current) return
       setSourceDiscoveryStages((current) => ({ ...current, [progress.stage]: progress.state }))
@@ -487,6 +643,8 @@ export default function App(): React.JSX.Element {
       unsubscribeSync()
       unsubscribeOriginal()
       unsubscribeAiProgress()
+      unsubscribeAiStream()
+      unsubscribeLlmExecution()
       unsubscribeSourceDiscoveryProgress()
     }
   }, [reloadCurrentScope, reloadLibrary])
@@ -503,6 +661,37 @@ export default function App(): React.JSX.Element {
     const timer = window.setInterval(update, 1_000)
     return () => window.clearInterval(timer)
   }, [sourceDiscoveryRequestId, sourceDiscoveryStartedAt])
+
+  useEffect(() => {
+    const conversationId = readerAiPanel.conversationId
+    if (!readerAiPanel.open || readerAiPanel.view !== 'chat' || !conversationId || !selectedArticleId) return
+    if (chatConversation?.id === conversationId && chatMessages.length > 0) return
+    let cancelled = false
+    setChatHistoryLoading(true)
+    void Promise.all([
+      window.origread.listLlmConversations(selectedArticleId),
+      window.origread.getLlmMessages(conversationId),
+      window.origread.getLlmToolActivity(conversationId),
+      window.origread.getLlmConversationArticles(conversationId)
+    ]).then(([conversations, messages, activity, attachedArticles]) => {
+      if (cancelled) return
+      const conversation = conversations.find((item) => item.id === conversationId) ?? null
+      if (!conversation) {
+        setChatError(t('conversationUnavailable'))
+        return
+      }
+      chatConversationIdRef.current = conversationId
+      setChatConversation(conversation)
+      setChatAttachedArticles(attachedArticles)
+      setChatMessages(messages)
+      setChatToolActivity(activity)
+    }).catch(() => {
+      if (!cancelled) setChatError(t('conversationLoadFailed'))
+    }).finally(() => {
+      if (!cancelled) setChatHistoryLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [chatConversation?.id, chatMessages.length, readerAiPanel.conversationId, readerAiPanel.open, readerAiPanel.view, selectedArticleId, t])
 
   useEffect(() => {
     if (readerToolLoading !== 'ai' || aiSummaryStartedAt === null) {
@@ -562,6 +751,17 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     let cancelled = false
+    const translatingArticleId = translationRequestArticleRef.current
+    if (translatingArticleId && translatingArticleId !== selectedArticleId) {
+      translationRunRef.current += 1
+      translationRequestArticleRef.current = null
+      void window.origread.stopTranslation(translatingArticleId).catch(() => undefined)
+      setReaderToolLoading((current) => current === 'translation' ? null : current)
+    }
+    if (aiSummaryPerfRunRef.current && aiSummaryPerfRunRef.current.articleId !== selectedArticleId) {
+      aiSummaryPerfRunRef.current = null
+      aiSummaryUiTtfvRecordedRef.current = false
+    }
     if (!selectedArticleId) {
       setReaderContent(null)
       setReaderContentError(null)
@@ -569,12 +769,48 @@ export default function App(): React.JSX.Element {
       return () => { cancelled = true }
     }
 
+    const preserveAiForCitation = citationArticleNavigationRef.current === selectedArticleId
+    if (preserveAiForCitation) citationArticleNavigationRef.current = null
+
     setReaderContent(null)
     setReaderContentError(null)
     setReaderMode('article')
-    setAiSummary(null)
-    setAiSummaryVisible(false)
+    setReaderAiSelection(null)
+    setReaderAiSelectionCandidate(null)
+    if (!preserveAiForCitation) {
+      setAiSummary(null)
+      if (chatActiveRequestIdRef.current) {
+        void window.origread.cancelLlmExecution(chatActiveRequestIdRef.current).catch(() => undefined)
+      }
+      const pendingManualContexts = chatManualToolContextsRef.current
+      chatManualToolContextsRef.current = []
+      for (const context of pendingManualContexts) {
+        void window.origread.discardLlmManualToolContext(context.contextId).catch(() => undefined)
+      }
+      chatActiveRequestIdRef.current = null
+      chatConversationIdRef.current = null
+      setChatConversation(null)
+      setChatAttachedArticles([])
+      setChatMessages([])
+      setChatManualToolContexts([])
+      setChatManualToolBusy(false)
+      setChatDraft('')
+      setChatError(null)
+      setChatHistoryLoading(false)
+      setChatConversations([])
+      setChatConversationHistoryLoading(false)
+      setChatConversationHistoryError(null)
+      setChatConversationHistoryQuery('')
+      setChatLocateMessageId(null)
+      setChatActiveExecution(null)
+      setChatAiSettings(null)
+      setChatDraftProviderId('')
+      setChatDraftModel('')
+      setReaderAiPanel(resetReaderAiPanel())
+      setReaderAiSourceFocus(null)
+    }
     setAiSummaryProgress(null)
+    setAiSummaryStream(null)
     setAiSummaryStartedAt(null)
     setTranslationDocument(null)
     setReaderToolNotice(null)
@@ -604,6 +840,193 @@ export default function App(): React.JSX.Element {
 
     return () => { cancelled = true }
   }, [selectedArticleFeedId, selectedArticleId, selectedFeedRequiresFullContent, t])
+
+  useEffect(() => {
+    const target = readerCitationTarget
+    if (!target || readerContentLoading || readerMode !== 'article') return
+    const targetArticleId = target.citation.locatorSnapshot?.articleId ?? target.contextRef?.articleId ?? null
+    if (!targetArticleId || targetArticleId !== selectedArticleId || !readerContent?.html) return
+    let cancelled = false
+    let attempt = 0
+    let timer: number | null = null
+    const locate = (): void => {
+      if (cancelled) return
+      const articleBody = readerContentRef.current?.querySelector<HTMLElement>('.article-body:not(.translated-article-body)') ?? null
+      const element = articleBody ? findReaderCitationElement(articleBody, target.citation) : null
+      if (element) {
+        if (readerCitationHighlightTimerRef.current !== null) window.clearTimeout(readerCitationHighlightTimerRef.current)
+        readerCitationHighlightRef.current?.classList.remove('origread-citation-highlight')
+        readerCitationHighlightRef.current = element
+        element.classList.add('origread-citation-highlight')
+        element.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        readerCitationHighlightTimerRef.current = window.setTimeout(() => {
+          element.classList.remove('origread-citation-highlight')
+          if (readerCitationHighlightRef.current === element) readerCitationHighlightRef.current = null
+          readerCitationHighlightTimerRef.current = null
+        }, 2_800)
+        setReaderCitationTarget(null)
+        return
+      }
+      attempt += 1
+      if (attempt < 8) {
+        timer = window.setTimeout(locate, 60)
+        return
+      }
+      setReaderAiSourceFocus({ messageId: target.messageId, citationId: target.citation.id, locationUnavailable: true })
+      setReaderAiPanel((current) => openReaderAiPanelDetail(current, 'sources', target.messageId))
+      setReaderCitationTarget(null)
+    }
+    timer = window.setTimeout(locate, 0)
+    return () => {
+      cancelled = true
+      if (timer !== null) window.clearTimeout(timer)
+    }
+  }, [readerCitationTarget, readerContent?.html, readerContentLoading, readerMode, selectedArticleId])
+
+  useEffect(() => {
+    const messageId = readerAiPanel.open && readerAiPanel.detailView === 'sources'
+      ? readerAiPanel.detailTargetId
+      : null
+    if (!messageId) {
+      setReaderAiSourceSnapshot(null)
+      return
+    }
+    let cancelled = false
+    void window.origread.getLlmAssistantEvidence(messageId)
+      .then((snapshot) => {
+        if (!cancelled) setReaderAiSourceSnapshot({ messageId, snapshot })
+      })
+      .catch(() => {
+        if (!cancelled) setReaderAiSourceSnapshot(null)
+      })
+    return () => { cancelled = true }
+  }, [readerAiPanel.open, readerAiPanel.detailTargetId, readerAiPanel.detailView])
+
+  const latestCompletedAssistantForCitation = [...chatMessages].reverse().find((message) =>
+    message.role === 'ASSISTANT'
+    && message.historyActive
+    && message.status === 'COMPLETE'
+    && message.content.trim().length > 0
+  ) ?? null
+
+  useEffect(() => {
+    const message = latestCompletedAssistantForCitation
+    if (!message || !selectedArticleId) {
+      setReaderAiAnswerCitationSnapshot(null)
+      return
+    }
+    let cancelled = false
+    void window.origread.getLlmAssistantEvidence(message.id)
+      .then((snapshot) => {
+        if (cancelled) return
+        setReaderAiAnswerCitationSnapshot(snapshot.citations.length > 0 ? { messageId: message.id, snapshot } : null)
+      })
+      .catch(() => {
+        if (!cancelled) setReaderAiAnswerCitationSnapshot(null)
+      })
+    return () => { cancelled = true }
+  }, [latestCompletedAssistantForCitation?.id, latestCompletedAssistantForCitation?.updatedAt, selectedArticleId])
+
+  const readerAiVisibleCitationSnapshot = readerAiSourceSnapshot ?? readerAiAnswerCitationSnapshot
+
+  useEffect(() => {
+    const root = readerContentRef.current?.querySelector<HTMLElement>('.article-body:not(.translated-article-body)') ?? null
+    const clearMarkers = (): void => {
+      root?.querySelectorAll<HTMLElement>('[data-origread-citation-marker="true"]').forEach((marker) => marker.remove())
+    }
+    clearMarkers()
+    if (!root || readerMode !== 'article' || !selectedArticleId || !readerAiVisibleCitationSnapshot) return
+
+    const frame = window.requestAnimationFrame(() => {
+      clearMarkers()
+      const { snapshot } = readerAiVisibleCitationSnapshot
+      const articleCitations = snapshot.citations
+        .filter((citation) => {
+          const sourceKind = citation.locatorSnapshot?.sourceKind
+          const contextRef = snapshot.contextRefs.find((ref) => ref.id === citation.contextRefId) ?? null
+          const articleId = citation.locatorSnapshot?.articleId ?? contextRef?.articleId ?? null
+          return (sourceKind === 'ARTICLE' || sourceKind === 'SELECTION') && articleId === selectedArticleId
+        })
+        .sort((left, right) => (left.displayOrder ?? Number.MAX_SAFE_INTEGER) - (right.displayOrder ?? Number.MAX_SAFE_INTEGER))
+
+      for (const citation of articleCitations) {
+        const element = findReaderCitationElement(root, citation)
+        if (!element) continue
+        const marker = document.createElement('button')
+        const number = citation.displayOrder ?? snapshot.citations.findIndex((item) => item.id === citation.id) + 1
+        marker.type = 'button'
+        marker.className = 'origread-reader-citation-marker'
+        marker.dataset.origreadCitationMarker = 'true'
+        marker.dataset.origreadCitationId = citation.id
+        marker.textContent = `[${number}]`
+        marker.title = t('citationNumberLabel', { number, source: selectedArticle?.title ?? t('citationSourceArticle') })
+        marker.setAttribute('aria-label', marker.title)
+        element.appendChild(marker)
+      }
+    })
+
+    return () => {
+      window.cancelAnimationFrame(frame)
+      clearMarkers()
+    }
+  }, [readerAiVisibleCitationSnapshot, readerContent?.html, readerMode, readerSearchIndex, readerSearchQuery, selectedArticle?.title, selectedArticleId, t])
+
+  useEffect(() => {
+    if (!readerAiPanel.open || settingsOpen) return
+    let cancelled = false
+    void window.origread.getAiSettings().then((loaded) => {
+      if (cancelled) return
+      setChatAiSettings(loaded)
+      if (chatConversation) return
+      const enabledProviders = loaded.providers.filter((provider) => provider.enabled)
+      const selectedProvider = enabledProviders.find((provider) => provider.id === chatDraftProviderId)
+        ?? enabledProviders.find((provider) => provider.id === loaded.defaultProviderId)
+        ?? enabledProviders[0]
+        ?? null
+      if (!selectedProvider) {
+        setChatDraftProviderId('')
+        setChatDraftModel('')
+        return
+      }
+      const availableModels = new Set([selectedProvider.defaultModel, ...selectedProvider.models].filter(Boolean))
+      setChatDraftProviderId(selectedProvider.id)
+      setChatDraftModel((current) => availableModels.has(current)
+        ? current
+        : selectedProvider.defaultModel || selectedProvider.models[0] || '')
+    }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [readerAiPanel.open, chatConversation?.id, settingsOpen])
+
+  useEffect(() => {
+    if (!readerAiPanel.open) return
+    let cancelled = false
+    const language = i18n.resolvedLanguage?.startsWith('zh') ? 'zh' : 'en'
+    void window.origread.getLlmQuickMessages(language)
+      .then((messages) => {
+        if (!cancelled) setChatQuickMessages(messages.filter((message) => message.enabled))
+      })
+      .catch(() => {
+        if (!cancelled) setChatQuickMessages([])
+      })
+    return () => { cancelled = true }
+  }, [readerAiPanel.open, i18n.resolvedLanguage])
+
+  useEffect(() => {
+    if (!readerAiPanel.open || settingsOpen) return
+    let cancelled = false
+    void window.origread.listLlmManualTools()
+      .then((tools) => {
+        if (!cancelled) setChatManualTools(tools)
+      })
+      .catch(() => {
+        if (!cancelled) setChatManualTools([])
+      })
+    return () => { cancelled = true }
+  }, [readerAiPanel.open, chatConversation?.id, settingsOpen])
+
+  useEffect(() => {
+    chatManualToolContextsRef.current = chatManualToolContexts
+  }, [chatManualToolContexts])
 
   useEffect(() => {
     setReaderSearchOpen(false)
@@ -720,37 +1143,504 @@ export default function App(): React.JSX.Element {
     speech.start(summarySpeechText, 'summary')
   }
 
-  const aiSummaryPlacement = settings?.aiSummaryPlacement ?? 'replace'
+  const aiSummaryPlacement = settings?.aiSummaryPlacement ?? 'right'
   const aiLoading = readerToolLoading === 'ai'
-  const aiSummaryDocked = Boolean((aiSummary || aiLoading) && aiSummaryVisible && aiSummaryPlacement !== 'replace')
+  const aiSummaryPanelOpen = readerAiPanel.open && readerAiPanel.view === 'summary'
+  const readerAiPanelDocked = Boolean(readerAiPanel.open)
+  const readerAiPanelActive = readerAiPanelDocked
 
-  const toggleAiSummaryDisplay = (): void => {
-    if (!aiSummary) { void generateAiSummary(); return }
-    if (aiSummaryPlacement === 'replace') {
-      const nextMode = readerMode === 'ai' ? 'article' : 'ai'
-      setReaderMode(nextMode)
-      setAiSummaryVisible(nextMode === 'ai')
+  const toggleReaderAiAssistant = useCallback((): void => {
+    setReaderAiPanel((current) =>
+      current.open
+        ? closeReaderAiPanel(current)
+        : openReaderAiPanel(current, current.view)
+    )
+  }, [])
+
+  const showReaderAiHome = (): void => {
+    setReaderAiPanel((current) => openReaderAiPanel(current, 'home'))
+  }
+
+  const showReaderAiChat = (): void => {
+    setReaderAiPanel((current) => openReaderAiPanel(current, 'chat'))
+    window.requestAnimationFrame(() => chatComposerInputRef.current?.focus())
+  }
+
+  const captureReaderOriginalSelection = useCallback((): void => {
+    if (readerMode !== 'article' || !selectedArticleId) {
+      setReaderAiSelectionCandidate(null)
       return
     }
-    setAiSummaryVisible((visible)=>!visible)
-    if (readerMode === 'ai') setReaderMode('article')
+    const selection = window.getSelection()
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      setReaderAiSelectionCandidate(null)
+      return
+    }
+    const range = selection.getRangeAt(0)
+    const startElement = selectionNodeElement(range.startContainer)
+    const endElement = selectionNodeElement(range.endContainer)
+    const articleBody = startElement?.closest('.article-body') ?? null
+    if (
+      !articleBody
+      || articleBody.classList.contains('translated-article-body')
+      || !endElement
+      || !articleBody.contains(endElement)
+    ) {
+      setReaderAiSelectionCandidate(null)
+      return
+    }
+    const normalized = normalizeReaderAiSelectionText(selection.toString())
+    if (!normalized) {
+      setReaderAiSelectionCandidate(null)
+      return
+    }
+    const truncated = normalized.length > READER_AI_SELECTION_MAX_CHARS
+    const text = normalized.slice(0, READER_AI_SELECTION_MAX_CHARS)
+    const clientRects = Array.from(range.getClientRects())
+    const rect = clientRects.at(-1) ?? range.getBoundingClientRect()
+    if (!Number.isFinite(rect.left) || !Number.isFinite(rect.top)) {
+      setReaderAiSelectionCandidate(null)
+      return
+    }
+    const placement: ReaderAiSelectionCandidate['placement'] = rect.top >= 64 ? 'above' : 'below'
+    setReaderAiSelectionCandidate({
+      articleId: selectedArticleId,
+      text,
+      truncated,
+      x: Math.min(Math.max(rect.left + rect.width / 2, 58), Math.max(58, window.innerWidth - 58)),
+      y: placement === 'above' ? rect.top - 8 : rect.bottom + 8,
+      placement
+    })
+  }, [readerMode, selectedArticleId])
+
+  const attachReaderSelectionToAi = (): void => {
+    const candidate = readerAiSelectionCandidate
+    if (!candidate || candidate.articleId !== selectedArticleId) return
+    setReaderAiSelection({
+      articleId: candidate.articleId,
+      text: candidate.text,
+      truncated: candidate.truncated
+    })
+    setReaderAiSelectionCandidate(null)
+    window.getSelection()?.removeAllRanges()
+    setReaderAiPanel((current) => openReaderAiPanel(current, chatConversationIdRef.current ? 'chat' : 'home'))
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => chatComposerInputRef.current?.focus()))
   }
 
-  const changeAiSummaryPlacement = async (placement: AiSummaryPlacement): Promise<void> => {
+  const openQuickSummary = (length: AiSummaryLength): void => {
+    if (aiSummary?.length === length) {
+      setReaderAiPanel((current) => openReaderAiPanel(current, 'summary'))
+      if (readerMode === 'translation') setReaderMode('article')
+      return
+    }
+    void generateAiSummary(false, { length })
+  }
+
+  const discardPendingManualToolContexts = (): void => {
+    const pending = chatManualToolContextsRef.current
+    if (pending.length === 0) return
+    chatManualToolContextsRef.current = []
+    setChatManualToolContexts([])
+    for (const context of pending) {
+      void window.origread.discardLlmManualToolContext(context.contextId).catch(() => undefined)
+    }
+  }
+
+  const discardReaderAiManualToolContext = (contextId: string): void => {
+    const id = contextId.trim()
+    if (!id) return
+    chatManualToolContextsRef.current = chatManualToolContextsRef.current.filter((item) => item.contextId !== id)
+    setChatManualToolContexts((current) => current.filter((item) => item.contextId !== id))
+    void window.origread.discardLlmManualToolContext(id).catch(() => undefined)
+  }
+
+  const executeReaderAiManualTool = async (toolId: string, argumentsJson: string): Promise<boolean> => {
+    const conversationId = chatConversationIdRef.current
+    if (!conversationId) {
+      setChatError(t('manualToolNeedsConversation'))
+      return false
+    }
+    if (chatManualToolBusy) return false
+    const tool = chatManualTools.find((item) => item.id === toolId)
+    if (!tool) {
+      setChatError(t('manualToolUnavailable'))
+      return false
+    }
+    setChatManualToolBusy(true)
+    setChatError(null)
+    try {
+      const context = await window.origread.executeLlmManualTool({
+        conversationId,
+        toolId: tool.id,
+        argumentsJson,
+        confirmed: tool.risk !== 'READ_ONLY'
+      })
+      chatManualToolContextsRef.current = [...chatManualToolContextsRef.current, context]
+      setChatManualToolContexts((current) => [...current, context])
+      return true
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : t('manualToolExecutionFailed'))
+      return false
+    } finally {
+      setChatManualToolBusy(false)
+    }
+  }
+
+  const startNewReaderAiChat = (): void => {
+    const requestId = chatActiveRequestIdRef.current
+    if (requestId) void window.origread.cancelLlmExecution(requestId).catch(() => undefined)
+    discardPendingManualToolContexts()
+    if (chatConversation?.providerId) setChatDraftProviderId(chatConversation.providerId)
+    if (chatConversation?.model) setChatDraftModel(chatConversation.model)
+    chatActiveRequestIdRef.current = null
+    chatConversationIdRef.current = null
+    setChatConversation(null)
+    setChatAttachedArticles([])
+    setChatMessages([])
+    setChatToolActivity([])
+    setChatToolDecisionBusy({})
+    setChatManualToolBusy(false)
+    setChatDraft('')
+    setChatError(null)
+    setReaderAiSelection(null)
+    setReaderAiSelectionCandidate(null)
+    setChatHistoryLoading(false)
+    setChatActiveExecution(null)
+    setReaderAiPanel((current) => ({ ...openReaderAiPanel(current, 'home'), conversationId: null }))
+  }
+
+  const loadReaderAiConversationHistory = async (): Promise<void> => {
+    if (!selectedArticleId) return
+    setChatConversationHistoryLoading(true)
+    setChatConversationHistoryError(null)
+    try {
+      setChatConversations(await window.origread.listLlmConversations(selectedArticleId))
+    } catch {
+      setChatConversationHistoryError(t('conversationHistoryLoadFailed'))
+    } finally {
+      setChatConversationHistoryLoading(false)
+    }
+  }
+
+  const showReaderAiConversationHistory = (): void => {
+    if (chatActiveRequestIdRef.current) return
+    setChatConversationHistoryQuery('')
+    setReaderAiPanel((current) => openReaderAiPanelDetail(current, 'conversation-history'))
+    void loadReaderAiConversationHistory()
+  }
+
+  const closeReaderAiConversationHistory = (): void => {
+    setReaderAiPanel((current) => closeReaderAiPanelDetail(current))
+  }
+
+  const showReaderAiChatSearch = (): void => {
+    if (!chatConversation || readerAiPanel.view !== 'chat') return
+    setReaderAiPanel((current) => openReaderAiPanelDetail(current, 'chat-search'))
+    window.setTimeout(() => {
+      chatSearchInputRef.current?.focus()
+      chatSearchInputRef.current?.select()
+    }, 0)
+  }
+
+  const closeReaderAiChatSearch = (): void => {
+    setReaderAiPanel((current) => closeReaderAiPanelDetail(current))
+  }
+
+  const locateReaderAiChatMessage = (messageId: string): void => {
+    setChatLocateMessageId(messageId)
+    setReaderAiPanel((current) => closeReaderAiPanelDetail(current))
+  }
+
+  const openReaderAiConversation = async (conversation: LlmConversationRecord): Promise<void> => {
+    if (chatActiveRequestIdRef.current) return
+    discardPendingManualToolContexts()
+    setReaderAiSelection(null)
+    setReaderAiSelectionCandidate(null)
+    setChatHistoryLoading(true)
+    setChatError(null)
+    try {
+      const [messages, activity, attachedArticles] = await Promise.all([
+        window.origread.getLlmMessages(conversation.id),
+        window.origread.getLlmToolActivity(conversation.id),
+        window.origread.getLlmConversationArticles(conversation.id)
+      ])
+      chatConversationIdRef.current = conversation.id
+      setChatConversation(conversation)
+      setChatAttachedArticles(attachedArticles)
+      setChatMessages(messages)
+      setChatToolActivity(activity)
+      setChatToolDecisionBusy({})
+      setChatDraft('')
+      setReaderAiPanel((current) => ({
+        ...openReaderAiPanel(current, 'chat'),
+        conversationId: conversation.id
+      }))
+    } catch {
+      setChatConversationHistoryError(t('conversationLoadFailed'))
+    } finally {
+      setChatHistoryLoading(false)
+    }
+  }
+
+  const renameReaderAiConversation = async (conversationId: string, title: string): Promise<void> => {
+    const updated = await window.origread.updateLlmConversation({ conversationId, title })
+    setChatConversations((current) => current.map((item) => item.id === updated.id ? updated : item))
+    setChatConversation((current) => current?.id === updated.id ? updated : current)
+  }
+
+  const deleteReaderAiConversation = async (conversationId: string): Promise<void> => {
+    const result = await window.origread.deleteLlmConversation(conversationId)
+    if (!result.deleted) return
+    setChatConversations((current) => current.filter((item) => item.id !== conversationId))
+    if (chatConversationIdRef.current === conversationId) {
+      discardPendingManualToolContexts()
+      chatConversationIdRef.current = null
+      setChatConversation(null)
+      setChatAttachedArticles([])
+      setChatMessages([])
+      setChatToolActivity([])
+      setChatToolDecisionBusy({})
+      setChatDraft('')
+      setChatError(null)
+      setReaderAiPanel((current) => ({ ...current, view: 'home', conversationId: null }))
+    }
+  }
+
+  const replaceReaderAiAttachedArticles = async (candidates: readonly LlmArticleContextCandidate[]): Promise<void> => {
+    const currentArticleId = chatConversation?.articleId ?? selectedArticle?.id ?? null
+    const unique = [...new Map(
+      candidates
+        .filter((item) => item.articleId !== currentArticleId)
+        .map((item) => [item.articleId, item] as const)
+    ).values()].slice(0, 5)
+    if (chatConversation) {
+      const persisted = await window.origread.replaceLlmConversationArticles({
+        conversationId: chatConversation.id,
+        articleIds: unique.map((item) => item.articleId)
+      })
+      setChatAttachedArticles(persisted)
+      return
+    }
+    const now = Date.now()
+    setChatAttachedArticles(unique.map((item, position) => ({
+      conversationId: '',
+      articleId: item.articleId,
+      title: item.title,
+      link: item.link,
+      originalContent: '',
+      summary: null,
+      position,
+      createdAt: now + position
+    })))
+  }
+
+  const currentReaderLlmContextSnapshot = (): LlmReaderContextSnapshot | undefined => {
+    if (!selectedArticle) return undefined
+    const contextArticleId = chatConversation?.articleId ?? selectedArticle.id
+    return {
+      articleId: contextArticleId,
+      ...(readerAiSelection?.articleId === contextArticleId && readerAiSelection.text.trim()
+        ? { selectedText: readerAiSelection.text }
+        : {})
+    }
+  }
+
+  const sendReaderAiChatMessage = async (
+    contentOverride?: string,
+    requestTask: 'CHAT' | 'ARTICLE_ANALYSIS' = 'CHAT'
+  ): Promise<void> => {
+    const content = (contentOverride ?? chatDraft).trim()
+    if (!content || !selectedArticle || !selectedArticleId || chatActiveRequestIdRef.current) return
+    setChatError(null)
+    try {
+      let conversation = chatConversation?.id === readerAiPanel.conversationId ? chatConversation : null
+      if (!conversation && readerAiPanel.conversationId) {
+        const existing = await window.origread.listLlmConversations(selectedArticleId)
+        conversation = existing.find((item) => item.id === readerAiPanel.conversationId) ?? null
+      }
+      if (!conversation) {
+        const aiSettings = chatAiSettings ?? await window.origread.getAiSettings()
+        setChatAiSettings(aiSettings)
+        const enabledProviders = aiSettings.providers.filter((item) => item.enabled)
+        const provider = enabledProviders.find((item) => item.id === chatDraftProviderId)
+          ?? enabledProviders.find((item) => item.id === aiSettings.defaultProviderId)
+          ?? enabledProviders[0]
+          ?? null
+        const model = provider
+          ? chatDraftModel || provider.defaultModel || provider.models[0] || null
+          : null
+        conversation = await window.origread.createLlmConversation({
+          title: chatConversationTitle(content),
+          providerId: provider?.id ?? null,
+          model,
+          articleId: selectedArticle.id,
+          articleTitle: selectedArticle.title,
+          articleLink: selectedArticle.url
+        })
+        if (chatAttachedArticles.length > 0) {
+          const persistedAttachments = await window.origread.replaceLlmConversationArticles({
+            conversationId: conversation.id,
+            articleIds: chatAttachedArticles.map((item) => item.articleId)
+          })
+          setChatAttachedArticles(persistedAttachments)
+        }
+      }
+      setChatConversation(conversation)
+      setChatConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)])
+      chatConversationIdRef.current = conversation.id
+      const userMessage = await window.origread.appendLlmUserMessage({
+        conversationId: conversation.id,
+        content,
+        requestTask
+      })
+      setChatMessages((current) => [...current, userMessage])
+      if (contentOverride === undefined) setChatDraft('')
+      if (requestTask === 'ARTICLE_ANALYSIS') setReaderAiSelection(null)
+      setReaderAiPanel((current) => ({
+        ...openReaderAiPanel(current, 'chat'),
+        conversationId: conversation.id
+      }))
+
+      const requestId = crypto.randomUUID()
+      chatActiveRequestIdRef.current = requestId
+      chatActiveRequestTaskRef.current = requestTask
+      const manualToolContextIds = requestTask === 'CHAT'
+        ? chatManualToolContextsRef.current.map((item) => item.contextId)
+        : []
+      const readerContext: LlmReaderContextSnapshot = requestTask === 'ARTICLE_ANALYSIS'
+        ? { articleId: selectedArticle.id }
+        : currentReaderLlmContextSnapshot() ?? { articleId: selectedArticle.id }
+      const identity = await window.origread.startLlmExecution({
+        requestId,
+        conversationId: conversation.id,
+        readerContext,
+        ...(manualToolContextIds.length > 0 ? { manualToolContextIds } : {}),
+        profile: {
+          task: requestTask,
+          providerId: conversation.providerId,
+          model: conversation.model,
+          ...(chatForceWebSearchNext ? { webSearchMode: 'FORCE' as const } : {})
+        }
+      })
+      if (manualToolContextIds.length > 0) {
+        const consumed = new Set(manualToolContextIds)
+        chatManualToolContextsRef.current = chatManualToolContextsRef.current.filter((item) => !consumed.has(item.contextId))
+        setChatManualToolContexts((current) => current.filter((item) => !consumed.has(item.contextId)))
+      }
+      if (readerContext?.selectedText) {
+        setReaderAiSelection((current) =>
+          current?.articleId === readerContext.articleId && current.text === readerContext.selectedText ? null : current
+        )
+      }
+      if (chatForceWebSearchNext) setChatForceWebSearchNext(false)
+      setChatActiveExecution(identity)
+      setChatMessages((current) => ensureChatAssistantMessage(current, identity, requestTask))
+    } catch {
+      chatActiveRequestIdRef.current = null
+      chatActiveRequestTaskRef.current = 'CHAT'
+      setChatActiveExecution(null)
+      setChatError(t('aiChatRequestFailed'))
+    }
+  }
+
+  const sendReaderAiQuickMessage = async (message: LlmQuickMessage): Promise<void> => {
+    if (!selectedArticle || chatActiveRequestIdRef.current) return
+    const resolution = resolveQuickMessageTemplate(message.content, {
+      articleTitle: selectedArticle.title,
+      articleUrl: selectedArticle.url,
+      selection: readerAiSelection?.articleId === selectedArticle.id ? readerAiSelection.text : null,
+      summary: aiSummary?.status === 'GENERATED' ? aiSummary.summary : null
+    })
+    if (resolution.unsupportedVariables.length > 0) {
+      setChatError(t('quickMessageUnsupportedVariables', {
+        items: resolution.unsupportedVariables.map((item) => `{{${item}}}`).join(', ')
+      }))
+      return
+    }
+    if (resolution.unavailableVariables.length > 0) {
+      const labels: Record<string, string> = {
+        article_title: t('quickVariableArticleTitle'),
+        article_url: t('quickVariableArticleUrl'),
+        selection: t('quickVariableSelection'),
+        summary: t('quickVariableSummary')
+      }
+      setChatError(t('quickMessageUnavailable', {
+        items: resolution.unavailableVariables.map((item) => labels[item] ?? item).join(i18n.resolvedLanguage?.startsWith('zh') ? '、' : ', ')
+      }))
+      return
+    }
+    if (!resolution.content) return
+    await sendReaderAiChatMessage(resolution.content)
+  }
+
+  const stopReaderAiChat = (): void => {
+    const requestId = chatActiveRequestIdRef.current
+    if (!requestId) return
+    void window.origread.cancelLlmExecution(requestId).catch(() => undefined)
+  }
+
+  const resolveReaderAiToolApproval = async (toolCallId: string, decision: LlmToolApprovalDecision): Promise<void> => {
+    const conversationId = chatConversationIdRef.current
+    if (!conversationId || chatToolDecisionBusy[toolCallId]) return
+    setChatToolDecisionBusy((current) => ({ ...current, [toolCallId]: true }))
+    setChatError(null)
+    try {
+      const result = await window.origread.resolveLlmToolApproval(toolCallId, decision)
+      if (!result.accepted) {
+        setChatError(t('toolApprovalExpired'))
+        setChatToolActivity(await window.origread.getLlmToolActivity(conversationId))
+      }
+    } catch {
+      setChatError(t('toolApprovalFailed'))
+    } finally {
+      setChatToolDecisionBusy((current) => ({ ...current, [toolCallId]: false }))
+    }
+  }
+
+  const regenerateReaderAiAssistant = async (assistantMessageId: string): Promise<void> => {
+    const conversation = chatConversation
+    if (!conversation || chatActiveRequestIdRef.current) return
+    const requestTask = chatMessages.find((message) => message.id === assistantMessageId)?.requestTask ?? 'CHAT'
+    setChatError(null)
+    const requestId = crypto.randomUUID()
+    chatActiveRequestIdRef.current = requestId
+    chatActiveRequestTaskRef.current = requestTask
+    setChatMessages((current) => current.map((message) =>
+      message.id === assistantMessageId ? { ...message, historyActive: false } : message
+    ))
+    try {
+      const identity = await window.origread.startLlmExecution({
+        requestId,
+        conversationId: conversation.id,
+        regenerateAssistantMessageId: assistantMessageId,
+        profile: {
+          task: requestTask,
+          providerId: conversation.providerId,
+          model: conversation.model
+        }
+      })
+      setChatActiveExecution(identity)
+      setChatMessages((current) => ensureChatAssistantMessage(current, identity, requestTask))
+    } catch {
+      chatActiveRequestIdRef.current = null
+      chatActiveRequestTaskRef.current = 'CHAT'
+      setChatActiveExecution(null)
+      setChatError(t('aiChatRegenerateFailed'))
+      void window.origread.getLlmMessages(conversation.id).then(setChatMessages).catch(() => undefined)
+    }
+  }
+
+  const changeReaderAiPanelPlacement = async (placement: AiSummaryPlacement): Promise<void> => {
     await updateDesktopSettings({ aiSummaryPlacement: placement })
-    if (!aiSummary) return
-    setAiSummaryVisible(true)
-    setReaderMode(placement === 'replace' ? 'ai' : 'article')
   }
 
-  const cycleAiSummaryPlacement = (direction: -1 | 1): void => {
+  const cycleReaderAiPanelPlacement = (direction: -1 | 1): void => {
     const currentIndex = aiSummaryPlacementOrder.indexOf(aiSummaryPlacement)
     const nextIndex = (currentIndex + direction + aiSummaryPlacementOrder.length) % aiSummaryPlacementOrder.length
-    void changeAiSummaryPlacement(aiSummaryPlacementOrder[nextIndex]!)
+    void changeReaderAiPanelPlacement(aiSummaryPlacementOrder[nextIndex]!)
   }
 
   const resizeAiSummaryPanel = (direction: -1 | 1): void => {
-    if (aiSummaryPlacement === 'replace') return
     const current = settings?.aiSummaryPanelSize ?? 360
     const next = Math.max(
       AI_SUMMARY_PANEL_MIN,
@@ -774,31 +1664,38 @@ export default function App(): React.JSX.Element {
 
   const generateAiSummary = async (forceRefresh = false, options?: AiSummaryRequestOptions): Promise<void> => {
     if (!selectedArticleId || readerToolLoading) return
+    if (!closeSettingsIfAllowed()) return
     const requestArticleId = selectedArticleId
     const runId = ++aiSummaryRunRef.current
+    aiSummaryPerfRunRef.current = { runId, articleId: requestArticleId, startedAt: performance.now() }
+    aiSummaryUiTtfvRecordedRef.current = false
     if (originalViewState.open) await closeOriginalArticle()
-    setSettingsOpen(false)
     setReaderToolLoading('ai')
     setReaderToolNotice(null)
     setAiSummaryProgress({ articleId: requestArticleId, stage: 'PREPARING' })
+    setAiSummaryStream(null)
     setAiSummaryStartedAt(Date.now())
-    setAiSummaryVisible(true)
-    if (aiSummaryPlacement !== 'replace') setReaderMode('article')
+    setReaderAiPanel((current) => openReaderAiPanel(current, 'summary'))
+    setReaderMode('article')
     try {
       const result = await window.origread.summarizeArticle(requestArticleId, forceRefresh, options)
       if (runId !== aiSummaryRunRef.current || selectedArticleIdRef.current !== requestArticleId) return
       setAiSummary(result)
-      setAiSummaryVisible(true)
-      setReaderMode((settings?.aiSummaryPlacement ?? 'replace') === 'replace' ? 'ai' : 'article')
+      setReaderAiPanel((current) => openReaderAiPanel(current, 'summary'))
+      setReaderMode('article')
     } catch (error) {
       if (runId === aiSummaryRunRef.current && selectedArticleIdRef.current === requestArticleId) {
+        aiSummaryPerfRunRef.current = null
         setReaderToolNotice(readerToolFeedback(error, 'ai'))
-        if (!aiSummary) setAiSummaryVisible(false)
+        if (!aiSummary) {
+          setReaderAiPanel((current) => openReaderAiPanel(current, 'home'))
+        }
       }
     } finally {
       if (runId === aiSummaryRunRef.current) {
         setReaderToolLoading(null)
         setAiSummaryProgress(null)
+        setAiSummaryStream(null)
         setAiSummaryStartedAt(null)
       }
     }
@@ -808,31 +1705,56 @@ export default function App(): React.JSX.Element {
     const articleId = selectedArticleIdRef.current
     if (!articleId || readerToolLoading !== 'ai') return
     aiSummaryRunRef.current += 1
+    aiSummaryPerfRunRef.current = null
+    aiSummaryUiTtfvRecordedRef.current = false
     void window.origread.stopAiSummary(articleId).catch(() => undefined)
     setReaderToolLoading(null)
     setAiSummaryProgress(null)
+    setAiSummaryStream(null)
     setAiSummaryStartedAt(null)
     setReaderToolNotice(null)
     if (!aiSummary) {
-      setAiSummaryVisible(false)
-      if (readerMode === 'ai') setReaderMode('article')
+      setReaderAiPanel((current) => openReaderAiPanel(current, 'home'))
     }
   }
 
+  const recordAiSummaryUiTtfv = useCallback((firstVisible: 'reasoning' | 'content'): void => {
+    const perfRun = aiSummaryPerfRunRef.current
+    if (!perfRun || perfRun.runId !== aiSummaryRunRef.current || aiSummaryUiTtfvRecordedRef.current) return
+    aiSummaryUiTtfvRecordedRef.current = true
+    const elapsedMs = Math.max(0, Math.round((performance.now() - perfRun.startedAt) * 10) / 10)
+    console.info('[OrigRead][AI Perf]', JSON.stringify({
+      task: 'summary',
+      metric: 'UI_TTFV',
+      UI_TTFV_ms: elapsedMs,
+      first_visible: firstVisible
+    }))
+    aiSummaryPerfRunRef.current = null
+  }, [])
+
   const translateSelectedArticle = async (forceRefresh = false, target?: TranslationTarget): Promise<void> => {
     if (!selectedArticleId || readerToolLoading) return
+    if (!closeSettingsIfAllowed()) return
+    const requestArticleId = selectedArticleId
+    const runId = ++translationRunRef.current
+    translationRequestArticleRef.current = requestArticleId
     if (originalViewState.open) await closeOriginalArticle()
-    setSettingsOpen(false)
     setReaderToolLoading('translation')
     setReaderToolNotice(null)
     try {
-      const result = await window.origread.translateArticle(selectedArticleId, target, forceRefresh)
+      const result = await window.origread.translateArticle(requestArticleId, target, forceRefresh)
+      if (runId !== translationRunRef.current || selectedArticleIdRef.current !== requestArticleId) return
       setTranslationDocument(result)
       setReaderMode('translation')
     } catch (error) {
-      setReaderToolNotice(readerToolFeedback(error, 'translation'))
+      if (runId === translationRunRef.current && selectedArticleIdRef.current === requestArticleId) {
+        setReaderToolNotice(readerToolFeedback(error, 'translation'))
+      }
     } finally {
-      setReaderToolLoading(null)
+      if (runId === translationRunRef.current) {
+        translationRequestArticleRef.current = null
+        setReaderToolLoading(null)
+      }
     }
   }
 
@@ -992,7 +1914,7 @@ export default function App(): React.JSX.Element {
       translatedHtml: readerMode === 'translation' ? translationDocument?.translatedContent ?? null : null,
       translatedDisplayMode: readerMode === 'translation' ? translationDocument?.displayMode : undefined,
       // 与 Android 一致：摘要面板关闭后，即使有历史生成结果也不参与分享。
-      summaryMarkdown: aiSummaryVisible && aiSummary?.status === 'GENERATED' ? aiSummary.summary : null,
+      summaryMarkdown: aiSummaryPanelOpen && aiSummary?.status === 'GENERATED' ? aiSummary.summary : null,
       sourceUrlLabel: t('readingShareSourceUrl'),
       summaryLabel: t('readingShareSummaryLabel'),
       preference
@@ -1058,6 +1980,7 @@ export default function App(): React.JSX.Element {
     closeSourceManager(false)
     setReaderMoreOpen(false)
     setSourceCatalogOpen(false)
+    if (!settingsOpen) setSettingsUnsaved(false)
     setSettingsInitialPage(page)
     setSettingsOpen(true)
     setReaderToolNotice(null)
@@ -1075,8 +1998,8 @@ export default function App(): React.JSX.Element {
 
   const showOriginalArticle = async (): Promise<void> => {
     if (!originalUrl || !readerStageRef.current) return
+    if (!closeSettingsIfAllowed()) return
     setReaderMoreOpen(false)
-    setSettingsOpen(false)
     setReaderContentError(null)
     try {
       const state = await window.origread.openOriginalArticle(originalUrl, boundsForElement(readerStageRef.current))
@@ -1121,8 +2044,96 @@ export default function App(): React.JSX.Element {
     }
   }
 
+  const openReaderAiSources = (messageId: string, citationId: string | null = null, locationUnavailable = false): void => {
+    setReaderAiSourceFocus({ messageId, citationId, locationUnavailable })
+    setReaderAiPanel((current) => openReaderAiPanelDetail(current, 'sources', messageId))
+  }
+
+  const clearReaderCitationHighlight = (): void => {
+    if (readerCitationHighlightTimerRef.current !== null) {
+      window.clearTimeout(readerCitationHighlightTimerRef.current)
+      readerCitationHighlightTimerRef.current = null
+    }
+    readerCitationHighlightRef.current?.classList.remove('origread-citation-highlight')
+    readerCitationHighlightRef.current = null
+  }
+
+  const revealReaderCitationNow = (citation: LlmCitationRefRecord): boolean => {
+    const articleBody = readerContentRef.current?.querySelector<HTMLElement>('.article-body:not(.translated-article-body)') ?? null
+    const element = articleBody ? findReaderCitationElement(articleBody, citation) : null
+    if (!element) return false
+    clearReaderCitationHighlight()
+    readerCitationHighlightRef.current = element
+    element.classList.add('origread-citation-highlight')
+    element.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    readerCitationHighlightTimerRef.current = window.setTimeout(() => {
+      element.classList.remove('origread-citation-highlight')
+      if (readerCitationHighlightRef.current === element) readerCitationHighlightRef.current = null
+      readerCitationHighlightTimerRef.current = null
+    }, 2_800)
+    return true
+  }
+
+  const openReaderAiCitation = async (
+    messageId: string,
+    citation: LlmCitationRefRecord,
+    snapshot: LlmAssistantEvidenceSnapshot
+  ): Promise<void> => {
+    const contextRef = snapshot.contextRefs.find((ref) => ref.id === citation.contextRefId) ?? null
+    const sourceKind = citation.locatorSnapshot?.sourceKind
+    if (sourceKind === 'WEB_SEARCH' && citation.sourceUrl) {
+      await openExternal(citation.sourceUrl)
+      return
+    }
+    if (sourceKind === 'TOOL_RESULT') {
+      if (citation.sourceUrl) await openExternal(citation.sourceUrl)
+      else openReaderAiSources(messageId, citation.id)
+      return
+    }
+    if (sourceKind !== 'ARTICLE' && sourceKind !== 'SELECTION') {
+      openReaderAiSources(messageId, citation.id)
+      return
+    }
+    const articleId = citation.locatorSnapshot?.articleId ?? contextRef?.articleId ?? null
+    if (!articleId) {
+      openReaderAiSources(messageId, citation.id, true)
+      return
+    }
+    setReaderAiSourceFocus({ messageId, citationId: citation.id, locationUnavailable: false })
+    setReaderMode('article')
+    if (selectedArticleId === articleId && readerMode === 'article' && revealReaderCitationNow(citation)) {
+      setReaderCitationTarget(null)
+      return
+    }
+    setReaderCitationTarget({ messageId, citation, contextRef })
+    if (selectedArticleId === articleId) return
+    try {
+      const article = await window.origread.getArticleById(articleId)
+      if (!article) {
+        openReaderAiSources(messageId, citation.id, true)
+        setReaderCitationTarget(null)
+        return
+      }
+      citationArticleNavigationRef.current = articleId
+      setSelectedArticleRecord(article)
+      setSelectedArticleId(articleId)
+    } catch {
+      openReaderAiSources(messageId, citation.id, true)
+      setReaderCitationTarget(null)
+    }
+  }
+
   const handleReaderHtmlClick = (event: React.MouseEvent<HTMLDivElement>): void => {
     const target = event.target as HTMLElement
+    const citationMarker = target.closest<HTMLButtonElement>('button[data-origread-citation-id]')
+    if (citationMarker && readerAiVisibleCitationSnapshot) {
+      const citation = readerAiVisibleCitationSnapshot.snapshot.citations.find((item) => item.id === citationMarker.dataset.origreadCitationId)
+      if (citation) {
+        event.preventDefault()
+        void openReaderAiCitation(readerAiVisibleCitationSnapshot.messageId, citation, readerAiVisibleCitationSnapshot.snapshot)
+        return
+      }
+    }
     const anchor = target.closest('a[href]')
     if (!anchor) return
     const url = normalizeHttpUrl(anchor.getAttribute('href'))
@@ -1132,6 +2143,7 @@ export default function App(): React.JSX.Element {
   }
 
   const selectArticle = (article: ArticleRecord): void => {
+    if (!closeSettingsIfAllowed()) return
     const readerArticle = article.isUnread ? { ...article, isUnread: false } : article
     if (article.isUnread) {
       setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isUnread: false } : item))
@@ -1148,7 +2160,6 @@ export default function App(): React.JSX.Element {
       if (url) void openExternal(url)
       return
     }
-    if (settingsOpen) setSettingsOpen(false)
     if (originalViewState.open) void closeOriginalArticle()
     setSelectedArticleRecord(readerArticle)
     setSelectedArticleId(article.id)
@@ -1260,10 +2271,28 @@ export default function App(): React.JSX.Element {
         openGlobalSearch()
         return
       }
+      if (
+        (event.ctrlKey || event.metaKey)
+        && key === 'f'
+        && readerAiPanel.open
+        && readerAiPanel.view === 'chat'
+        && (readerAiPanel.detailView === null || readerAiPanel.detailView === 'chat-search')
+        && chatConversation?.id
+        && !settingsOpen
+        && !sourceCatalogOpen
+        && !originalViewState.open
+      ) {
+        event.preventDefault()
+        setReaderAiPanel((current) => openReaderAiPanelDetail(current, 'chat-search'))
+        window.setTimeout(() => {
+          chatSearchInputRef.current?.focus()
+          chatSearchInputRef.current?.select()
+        }, 0)
+        return
+      }
       if ((event.ctrlKey || event.metaKey) && key === 'f' && selectedArticleId && !settingsOpen && !sourceCatalogOpen && !originalViewState.open) {
         if (interactiveTarget && !readerSearchOpen) return
         event.preventDefault()
-        if (readerMode === 'ai') setReaderMode('article')
         setReaderSearchOpen(true)
         window.setTimeout(() => readerSearchInputRef.current?.focus(), 0)
         return
@@ -1306,6 +2335,11 @@ export default function App(): React.JSX.Element {
         setReaderSearchQuery('')
         setReaderSearchCount(0)
         setReaderSearchIndex(0)
+        return
+      }
+      if (event.key === 'Escape' && readerAiPanel.detailView === 'chat-search') {
+        event.preventDefault()
+        setReaderAiPanel((current) => closeReaderAiPanelDetail(current))
         return
       }
       // Focus Reading 是全局布局快捷键；按钮/链接持焦点时仍可触发，只在真实输入控件中避让。
@@ -1359,7 +2393,10 @@ export default function App(): React.JSX.Element {
         return
       }
       if (!selectedArticle || event.repeat) return
-      if (key === 'm') {
+      if (key === 'a') {
+        event.preventDefault()
+        toggleReaderAiAssistant()
+      } else if (key === 'm') {
         event.preventDefault()
         toggleUnread(selectedArticle)
       } else if (key === 's') {
@@ -1368,17 +2405,17 @@ export default function App(): React.JSX.Element {
       } else if (key === 'u' && originalUrl) {
         event.preventDefault()
         void showOriginalArticle()
-      } else if ((event.code === 'Comma' || event.code === 'Period') && aiSummaryVisible && (aiSummary || aiLoading)) {
+      } else if ((event.code === 'Comma' || event.code === 'Period') && readerAiPanel.open) {
         event.preventDefault()
-        cycleAiSummaryPlacement(event.code === 'Comma' ? -1 : 1)
-      } else if ((key === '-' || key === '=' || key === '+') && aiSummaryVisible && (aiSummary || aiLoading)) {
+        cycleReaderAiPanelPlacement(event.code === 'Comma' ? -1 : 1)
+      } else if ((key === '-' || key === '=' || key === '+') && readerAiPanel.open) {
         event.preventDefault()
         resizeAiSummaryPanel(key === '-' ? -1 : 1)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [aiLoading, aiSummary, aiSummaryPlacement, aiSummaryVisible, focusReading, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerMode, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settings?.layoutMode, settings?.workspaceCollapsed, settingsOpen, sourceCatalogOpen, sourceManagerOpen, sourceSwitcherOpen, subscriptionMenuOpen, toggleFocusReading, visibleArticles])
+  }, [aiSummaryPlacement, chatConversation?.id, focusReading, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerAiPanel.detailView, readerAiPanel.open, readerAiPanel.view, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settings?.layoutMode, settings?.workspaceCollapsed, settingsOpen, sourceCatalogOpen, sourceManagerOpen, sourceSwitcherOpen, subscriptionMenuOpen, toggleFocusReading, toggleReaderAiAssistant, visibleArticles])
 
   const openAddSource = (): void => {
     closeSourceSwitcher(false)
@@ -1441,11 +2478,11 @@ export default function App(): React.JSX.Element {
   }
 
   const showSourceCatalog = async (): Promise<void> => {
+    if (!closeSettingsIfAllowed()) return
     if (originalViewState.open) await closeOriginalArticle()
     closeSourceSwitcher(false)
     closeSourceManager(false)
     setReaderMoreOpen(false)
-    setSettingsOpen(false)
     setSourceCatalogOpen(true)
   }
 
@@ -1770,26 +2807,372 @@ export default function App(): React.JSX.Element {
     />
   )
 
-  const renderAiSummaryPanel = (replaceMode = false): React.JSX.Element | null => aiSummary || aiLoading ? (
-    <AiSummaryPanel
-      summary={aiSummary}
-      loading={aiLoading}
-      progressStage={aiSummaryProgress?.stage ?? null}
-      elapsedSeconds={aiSummaryElapsedSeconds}
-      placement={aiSummaryPlacement}
-      panelSize={settings?.aiSummaryPanelSize ?? 360}
-      speechActive={speech.state.domain==='summary'}
-      speechStatus={speech.state.status}
-      onToggleSpeech={toggleSummarySpeech}
-      onStopSpeech={speech.stop}
-      onPlacementChange={(placement)=>void changeAiSummaryPlacement(placement)}
-      onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
-      onRegenerate={()=>{if(!aiLoading)setAiOptionsOpen(true)}}
-      onStop={stopAiSummary}
-      onClose={()=>{if(speech.state.domain==='summary')speech.stop();setAiSummaryVisible(false);if(readerMode==='ai')setReaderMode('article')}}
-      replaceMode={replaceMode}
-    />
-  ) : null
+  const closeReaderAiAssistant = (): void => {
+    if (speech.state.domain === 'summary') speech.stop()
+    setReaderAiPanel((current) => closeReaderAiPanel(current))
+  }
+
+  const renderReaderAiPanel = (): React.JSX.Element | null => {
+    if (!readerAiPanel.open || !selectedArticle) return null
+
+    const enabledChatProviders = chatAiSettings?.providers.filter((provider) => provider.enabled) ?? []
+    const activeChatProviderId = chatConversation?.providerId ?? chatDraftProviderId
+    const activeChatProvider = chatAiSettings?.providers.find((provider) => provider.id === activeChatProviderId) ?? null
+    const activeChatModel = chatConversation?.model ?? chatDraftModel
+    const chatModelLabel = [activeChatProvider?.name, activeChatModel].filter(Boolean).join(' · ') || t('defaultModel')
+    const changeChatProvider = async (providerId: string): Promise<void> => {
+      const provider = enabledChatProviders.find((item) => item.id === providerId)
+      const nextModel = provider?.defaultModel || provider?.models[0] || ''
+      setChatDraftProviderId(providerId)
+      setChatDraftModel(nextModel)
+      if (!chatConversation) return
+      try {
+        const updated = await window.origread.updateLlmConversation({
+          conversationId: chatConversation.id,
+          providerId,
+          model: nextModel || null
+        })
+        setChatConversation(updated)
+        setChatConversations((current) => current.map((item) => item.id === updated.id ? updated : item))
+      } catch {
+        setChatError(t('conversationModelUpdateFailed'))
+      }
+    }
+    const changeChatModel = async (model: string): Promise<void> => {
+      setChatDraftModel(model)
+      if (!chatConversation) return
+      try {
+        const updated = await window.origread.updateLlmConversation({ conversationId: chatConversation.id, model: model || null })
+        setChatConversation(updated)
+        setChatConversations((current) => current.map((item) => item.id === updated.id ? updated : item))
+      } catch {
+        setChatError(t('conversationModelUpdateFailed'))
+      }
+    }
+
+    if (readerAiPanel.detailView === 'sources') {
+      const targetMessage = chatMessages.find((message) => message.id === readerAiPanel.detailTargetId && message.role === 'ASSISTANT') ?? null
+      const focusedSource = readerAiSourceFocus?.messageId === targetMessage?.id ? readerAiSourceFocus : null
+      return (
+        <ReaderAiPanelShell
+          view={readerAiPanel.view}
+          detailView="sources"
+          placement={aiSummaryPlacement}
+          panelSize={settings?.aiSummaryPanelSize ?? 360}
+          leading={<Share2 size={17}/>}
+          title={t('contextSources')}
+          subtitle={targetMessage ? t('contextSourcesDescription') : chatConversation?.title || selectedArticle.title}
+          actions={<button type="button" className="icon-button" title={t('back')} aria-label={t('back')} onClick={()=>{setReaderAiSourceFocus(null);setReaderAiPanel((current)=>closeReaderAiPanelDetail(current))}}><ArrowLeft size={15}/></button>}
+          onPlacementChange={(placement)=>void changeReaderAiPanelPlacement(placement)}
+          onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
+          onClose={closeReaderAiAssistant}
+        >
+          <ReaderAiSourcesDetailBody
+            message={targetMessage}
+            focusCitationId={focusedSource?.citationId ?? null}
+            locationUnavailable={focusedSource?.locationUnavailable ?? false}
+            onOpenCitation={(citation,snapshot)=>targetMessage ? void openReaderAiCitation(targetMessage.id,citation,snapshot) : undefined}
+            onOpenExternal={(url)=>void openExternal(url)}
+          />
+        </ReaderAiPanelShell>
+      )
+    }
+
+    if (readerAiPanel.detailView === 'web-search') {
+      const targetMessage = chatMessages.find((message)=>message.id===readerAiPanel.detailTargetId&&message.role==='ASSISTANT')??null
+      return (
+        <ReaderAiPanelShell
+          view={readerAiPanel.view}
+          detailView="web-search"
+          placement={aiSummaryPlacement}
+          panelSize={settings?.aiSummaryPanelSize ?? 360}
+          leading={<Search size={17}/>}
+          title={t('webSearchResults')}
+          subtitle={targetMessage?.webSearchProviderName||chatConversation?.title||selectedArticle.title}
+          actions={<button type="button" className="icon-button" title={t('back')} aria-label={t('back')} onClick={()=>setReaderAiPanel((current)=>closeReaderAiPanelDetail(current))}><ArrowLeft size={15}/></button>}
+          onPlacementChange={(placement)=>void changeReaderAiPanelPlacement(placement)}
+          onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
+          onClose={closeReaderAiAssistant}
+        >
+          <ReaderAiWebSearchDetailBody message={targetMessage}/>
+        </ReaderAiPanelShell>
+      )
+    }
+
+    if (readerAiPanel.detailView === 'chat-search') {
+      return (
+        <ReaderAiPanelShell
+          view={readerAiPanel.view}
+          detailView="chat-search"
+          placement={aiSummaryPlacement}
+          panelSize={settings?.aiSummaryPanelSize ?? 360}
+          leading={<Search size={17}/>}
+          title={t('findInCurrentChat')}
+          subtitle={chatConversation?.title || selectedArticle.title}
+          actions={<button type="button" className="icon-button" title={t('back')} aria-label={t('back')} onClick={closeReaderAiChatSearch}><ArrowLeft size={15}/></button>}
+          onPlacementChange={(placement)=>void changeReaderAiPanelPlacement(placement)}
+          onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
+          onClose={closeReaderAiAssistant}
+        >
+          <ReaderAiChatSearchBody
+            messages={chatMessages}
+            inputRef={chatSearchInputRef}
+            onOpenMessage={locateReaderAiChatMessage}
+          />
+        </ReaderAiPanelShell>
+      )
+    }
+
+    if (readerAiPanel.detailView === 'conversation-history') {
+      return (
+        <ReaderAiPanelShell
+          view={readerAiPanel.view}
+          detailView="conversation-history"
+          placement={aiSummaryPlacement}
+          panelSize={settings?.aiSummaryPanelSize ?? 360}
+          leading={<History size={17}/>}
+          title={t('conversationHistory')}
+          subtitle={selectedArticle.title}
+          actions={<>
+            <button type="button" className="icon-button" title={t('back')} aria-label={t('back')} onClick={closeReaderAiConversationHistory}>
+              <ArrowLeft size={15}/>
+            </button>
+            <button type="button" className="icon-button" title={t('newChat')} aria-label={t('newChat')} onClick={startNewReaderAiChat}>
+              <Plus size={15}/>
+            </button>
+          </>}
+          onPlacementChange={(placement)=>void changeReaderAiPanelPlacement(placement)}
+          onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
+          onClose={closeReaderAiAssistant}
+        >
+          <ReaderAiConversationHistoryBody
+            conversations={chatConversations}
+            activeConversationId={readerAiPanel.conversationId}
+            query={chatConversationHistoryQuery}
+            loading={chatConversationHistoryLoading}
+            error={chatConversationHistoryError}
+            onQueryChange={setChatConversationHistoryQuery}
+            onOpen={(conversation)=>void openReaderAiConversation(conversation)}
+            onRename={(conversationId,title)=>renameReaderAiConversation(conversationId,title)}
+            onDelete={(conversationId)=>deleteReaderAiConversation(conversationId)}
+          />
+        </ReaderAiPanelShell>
+      )
+    }
+
+    if (readerAiPanel.view === 'summary' && (aiSummary || aiLoading)) {
+      return (
+        <AiSummaryView
+          panelState={readerAiPanel}
+          summary={aiSummary}
+          loading={aiLoading}
+          progressStage={aiSummaryProgress?.stage ?? null}
+          streamUpdate={aiSummaryStream}
+          elapsedSeconds={aiSummaryElapsedSeconds}
+          placement={aiSummaryPlacement}
+          panelSize={settings?.aiSummaryPanelSize ?? 360}
+          speechActive={speech.state.domain==='summary'}
+          speechStatus={speech.state.status}
+          onToggleSpeech={toggleSummarySpeech}
+          onStopSpeech={speech.stop}
+          onPlacementChange={(placement)=>void changeReaderAiPanelPlacement(placement)}
+          onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
+          onRegenerate={()=>{if(!aiLoading)setAiOptionsOpen(true)}}
+          onStop={stopAiSummary}
+          onFirstVisibleValue={recordAiSummaryUiTtfv}
+          onBackToHome={showReaderAiHome}
+          onContinueChat={showReaderAiChat}
+          onClose={closeReaderAiAssistant}
+        />
+      )
+    }
+
+    if (readerAiPanel.view === 'chat') {
+      return (
+        <ReaderAiPanelShell
+          view="chat"
+          detailView={readerAiPanel.detailView}
+          placement={aiSummaryPlacement}
+          panelSize={settings?.aiSummaryPanelSize ?? 360}
+          leading={<AiSummaryAccentIcon variant="panel"/>}
+          title={t('aiChat')}
+          subtitle={chatConversation?.title || selectedArticle.title}
+          actions={<>
+            <button type="button" className="icon-button" title={t('backToAiHome')} aria-label={t('backToAiHome')} onClick={showReaderAiHome}>
+              <ArrowLeft size={15}/>
+            </button>
+            <button type="button" className="icon-button" title={t('findInCurrentChat')} aria-label={t('findInCurrentChat')} disabled={!chatConversation} onClick={showReaderAiChatSearch}>
+              <Search size={15}/>
+            </button>
+            <button type="button" className="icon-button" title={t('conversationHistory')} aria-label={t('conversationHistory')} disabled={Boolean(chatActiveRequestIdRef.current)} onClick={showReaderAiConversationHistory}>
+              <History size={15}/>
+            </button>
+            <button type="button" className="icon-button" title={t('newChat')} aria-label={t('newChat')} onClick={startNewReaderAiChat}>
+              <Plus size={15}/>
+            </button>
+          </>}
+          onPlacementChange={(placement)=>void changeReaderAiPanelPlacement(placement)}
+          onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
+          onClose={closeReaderAiAssistant}
+        >
+          <ReaderAiChatBody
+            messages={chatMessages}
+            toolActivity={chatToolActivity}
+            toolDecisionBusy={chatToolDecisionBusy}
+            manualTools={chatManualTools}
+            manualToolContexts={chatManualToolContexts}
+            manualToolBusy={chatManualToolBusy}
+            manualToolConversationReady={Boolean(chatConversation)}
+            attachedArticles={chatAttachedArticles}
+            currentArticleId={selectedArticle.id}
+            summaryArtifact={aiSummary?.articleId === selectedArticle.id ? aiSummary : null}
+            draft={chatDraft}
+            selectionText={readerAiSelection?.articleId === selectedArticle.id ? readerAiSelection.text : null}
+            selectionTruncated={readerAiSelection?.articleId === selectedArticle.id ? readerAiSelection.truncated : false}
+            composerRef={chatComposerInputRef}
+            quickMessages={chatQuickMessages}
+            active={Boolean(chatActiveExecution || chatActiveRequestIdRef.current || chatManualToolBusy)}
+            loading={chatHistoryLoading}
+            error={chatError}
+            modelLabel={chatModelLabel}
+            providers={enabledChatProviders}
+            providerId={activeChatProviderId ?? ''}
+            model={activeChatModel ?? ''}
+            forceWebSearchNext={chatForceWebSearchNext}
+            locateMessageId={chatLocateMessageId}
+            placeholder={t('askAboutArticle')}
+            onDraftChange={setChatDraft}
+            onClearSelection={()=>setReaderAiSelection(null)}
+            onProviderChange={(providerId)=>void changeChatProvider(providerId)}
+            onModelChange={(model)=>void changeChatModel(model)}
+            onForceWebSearchNextChange={setChatForceWebSearchNext}
+            onOpenWebSearch={(messageId)=>setReaderAiPanel((current)=>openReaderAiPanelDetail(current,'web-search',messageId))}
+            onOpenSources={(messageId)=>openReaderAiSources(messageId)}
+            onOpenCitation={(messageId,citation,snapshot)=>void openReaderAiCitation(messageId,citation,snapshot)}
+            onSend={()=>void sendReaderAiChatMessage()}
+            onQuickMessage={(message)=>void sendReaderAiQuickMessage(message)}
+            onStop={stopReaderAiChat}
+            onToolApproval={(toolCallId,decision)=>void resolveReaderAiToolApproval(toolCallId,decision)}
+            onManualToolExecute={(toolId,argumentsJson)=>executeReaderAiManualTool(toolId,argumentsJson)}
+            onDiscardManualToolContext={discardReaderAiManualToolContext}
+            onAttachedArticlesChange={replaceReaderAiAttachedArticles}
+            onRegenerate={(assistantMessageId)=>void regenerateReaderAiAssistant(assistantMessageId)}
+            onLocateMessageHandled={()=>setChatLocateMessageId(null)}
+          />
+        </ReaderAiPanelShell>
+      )
+    }
+
+    if (readerAiPanel.view !== 'home') return null
+
+    return (
+      <ReaderAiPanelShell
+        view="home"
+        detailView={null}
+        placement={aiSummaryPlacement}
+        panelSize={settings?.aiSummaryPanelSize ?? 360}
+        leading={<AiSummaryAccentIcon variant="panel"/>}
+        title={t('aiAssistant')}
+        subtitle={selectedArticle.title}
+        actions={<button type="button" className="icon-button" title={t('conversationHistory')} aria-label={t('conversationHistory')} disabled={Boolean(chatActiveRequestIdRef.current)} onClick={showReaderAiConversationHistory}><History size={15}/></button>}
+        onPlacementChange={(placement)=>void changeReaderAiPanelPlacement(placement)}
+        onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
+        onClose={closeReaderAiAssistant}
+      >
+        <ReaderAiChatBody
+          messages={[]}
+          toolActivity={[]}
+          toolDecisionBusy={{}}
+          manualTools={chatManualTools}
+          manualToolContexts={[]}
+          manualToolBusy={chatManualToolBusy}
+          manualToolConversationReady={false}
+          attachedArticles={chatAttachedArticles}
+          currentArticleId={selectedArticle.id}
+          summaryArtifact={null}
+          draft={chatDraft}
+          selectionText={readerAiSelection?.articleId === selectedArticle.id ? readerAiSelection.text : null}
+          selectionTruncated={readerAiSelection?.articleId === selectedArticle.id ? readerAiSelection.truncated : false}
+          composerRef={chatComposerInputRef}
+          quickMessages={chatQuickMessages}
+          active={Boolean(chatActiveExecution || chatActiveRequestIdRef.current || chatManualToolBusy)}
+          loading={chatHistoryLoading}
+          error={chatError}
+          modelLabel={chatModelLabel}
+          providers={enabledChatProviders}
+          providerId={activeChatProviderId ?? ''}
+          model={activeChatModel ?? ''}
+          forceWebSearchNext={chatForceWebSearchNext}
+          placeholder={t('askAboutArticle')}
+          emptyContent={<div className="reader-ai-home">
+            <div className="reader-ai-home-intro">
+              <strong>{t('aiAssistantHomeTitle')}</strong>
+              <span>{t('aiAssistantHomeDescription')}</span>
+            </div>
+            <div className="reader-ai-home-actions">
+              <section className="reader-ai-home-action reader-ai-summary-action" aria-labelledby="reader-ai-summary-action-title">
+                <div className="reader-ai-summary-action-head">
+                  <AiSummaryAccentIcon variant="panel" loading={aiLoading}/>
+                  <span>
+                    <strong id="reader-ai-summary-action-title">{t('quickSummary')}</strong>
+                    <small>{t('quickSummaryDescription')}</small>
+                  </span>
+                </div>
+                {aiSummary ? <div className="reader-ai-summary-existing">{t('summaryAvailable', { length: t(summaryLengthLabelKey(aiSummary.length)) })}</div> : null}
+                <div className="reader-ai-summary-length-actions" role="group" aria-label={t('summaryLengthActions')}>
+                  {([
+                    ['BRIEF', 'summaryModeQuick'],
+                    ['STANDARD', 'summaryModeBalanced'],
+                    ['DETAILED', 'summaryModeDeep']
+                  ] as const).map(([length, labelKey]) => (
+                    <button
+                      type="button"
+                      key={length}
+                      className="reader-ai-summary-length-action"
+                      disabled={aiLoading}
+                      title={t('generateSummaryLength', { length: t(labelKey) })}
+                      aria-label={t('generateSummaryLength', { length: t(labelKey) })}
+                      onClick={() => openQuickSummary(length)}
+                    >
+                      {t(labelKey)}
+                    </button>
+                  ))}
+                </div>
+              </section>
+              <button
+                type="button"
+                className="reader-ai-home-action reader-ai-analysis-action"
+                disabled={Boolean(chatActiveExecution || chatActiveRequestIdRef.current || chatManualToolBusy)}
+                onClick={()=>void sendReaderAiChatMessage(t('articleAnalysisRequest'), 'ARTICLE_ANALYSIS')}
+              >
+                <span className="reader-ai-home-action-icon"><Sparkles size={17}/></span>
+                <span>
+                  <strong>{t('articleAnalysis')}</strong>
+                  <small>{t('articleAnalysisDescription')}</small>
+                </span>
+              </button>
+            </div>
+          </div>}
+          onDraftChange={setChatDraft}
+          onClearSelection={()=>setReaderAiSelection(null)}
+          onProviderChange={(providerId)=>void changeChatProvider(providerId)}
+          onModelChange={(model)=>void changeChatModel(model)}
+          onForceWebSearchNextChange={setChatForceWebSearchNext}
+          onOpenWebSearch={(messageId)=>setReaderAiPanel((current)=>openReaderAiPanelDetail(current,'web-search',messageId))}
+          onOpenSources={(messageId)=>openReaderAiSources(messageId)}
+          onOpenCitation={(messageId,citation,snapshot)=>void openReaderAiCitation(messageId,citation,snapshot)}
+          onSend={()=>void sendReaderAiChatMessage()}
+          onQuickMessage={(message)=>void sendReaderAiQuickMessage(message)}
+          onStop={stopReaderAiChat}
+          onRegenerate={(assistantMessageId)=>void regenerateReaderAiAssistant(assistantMessageId)}
+          onToolApproval={()=>undefined}
+          onManualToolExecute={(toolId,argumentsJson)=>executeReaderAiManualTool(toolId,argumentsJson)}
+          onDiscardManualToolContext={discardReaderAiManualToolContext}
+          onAttachedArticlesChange={replaceReaderAiAttachedArticles}
+        />
+      </ReaderAiPanelShell>
+    )
+  }
 
   return (
     <main
@@ -1978,7 +3361,7 @@ export default function App(): React.JSX.Element {
               </button>
             )}
             {settingsOpen ? (
-              <button type="button" className="settings-close-button" aria-label={t('closeSettings')} title={t('closeSettings')} onClick={() => setSettingsOpen(false)}>
+              <button type="button" className="settings-close-button" aria-label={t('closeSettings')} title={t('closeSettings')} onClick={() => { closeSettingsIfAllowed() }}>
                 <X size={17} /><span>{t('closeSettings')}</span>
               </button>
             ) : sourceCatalogOpen ? (
@@ -2008,14 +3391,14 @@ export default function App(): React.JSX.Element {
                 <div className={`reader-tool-split reader-tool-split-ai ${aiOptionsOpen ? 'options-open' : ''}`}>
                   <button
                     type="button"
-                    className={`ai-summary-button reader-tool-split-main ${(readerMode === 'ai' || aiSummaryDocked) && aiSummaryVisible ? 'active' : ''}`}
+                    className={`ai-summary-button reader-tool-split-main ${readerAiPanelActive ? 'active' : ''}`}
                     disabled={!selectedArticle || readerToolLoading !== null}
-                    title={t('aiSummary')}
-                    aria-label={t('aiSummary')}
-                    onClick={toggleAiSummaryDisplay}
+                    title={`${t('aiAssistant')} (A)`}
+                    aria-label={t('aiAssistant')}
+                    onClick={toggleReaderAiAssistant}
                   >
                     <AiSummaryAccentIcon variant="toolbar" loading={readerToolLoading === 'ai'} />
-                    <span>{t('aiSummary')}</span>
+                    <span>{t('aiAssistantShort')}</span>
                   </button>
                   <button
                     type="button"
@@ -2158,6 +3541,7 @@ export default function App(): React.JSX.Element {
               syncState={syncRuntimeState}
               initialPage={settingsInitialPage}
               onChange={(patch) => void updateDesktopSettings(patch)}
+              onUnsavedChange={setSettingsUnsaved}
               onConfigurationRestored={() => void handleConfigurationRestored()}
               onAccountChanged={() => void handleAccountChanged()}
             />
@@ -2165,10 +3549,15 @@ export default function App(): React.JSX.Element {
         ) : sourceCatalogOpen ? (
           <SourceDiscoveryPanel onSubscribe={(feed)=>void subscribeCatalogFeed(feed)}/>
         ) : selectedArticle ? (
-          <div className={`reader-composite ${aiSummaryDocked ? `summary-docked summary-${aiSummaryPlacement}` : ''}`}>
-          {aiSummaryDocked && (aiSummaryPlacement==='left'||aiSummaryPlacement==='top') && renderAiSummaryPanel()}
-          <div ref={readerContentRef} className={`reader-content reader-mode-${readerMode}`}>
-            {readerSearchOpen && readerMode !== 'ai' && (
+          <div className={`reader-composite ${readerAiPanelDocked ? `summary-docked summary-${aiSummaryPlacement}` : ''}`}>
+          <div
+            ref={readerContentRef}
+            className={`reader-content reader-mode-${readerMode}`}
+            onMouseUp={captureReaderOriginalSelection}
+            onKeyUp={captureReaderOriginalSelection}
+            onScroll={()=>{setReaderAiSelectionCandidate(null);clearReaderCitationHighlight()}}
+          >
+            {readerSearchOpen && (
               <ReaderSearchBar
                 query={readerSearchQuery}
                 count={readerSearchCount}
@@ -2202,12 +3591,7 @@ export default function App(): React.JSX.Element {
                 <button type="button" className="reader-tool-notice-close" aria-label={t('close')} onClick={()=>setReaderToolNotice(null)}><X size={14}/></button>
               </div>
             )}
-            {aiLoading && aiSummaryPlacement === 'replace' && !aiSummary && (
-              <AiSummaryProgressBanner stage={aiSummaryProgress?.stage ?? null} elapsedSeconds={aiSummaryElapsedSeconds} onStop={stopAiSummary}/>
-            )}
-            {readerMode === 'ai' && aiSummary && aiSummaryVisible ? (
-              renderAiSummaryPanel(true)
-            ) : readerMode === 'translation' && translationDocument ? (
+            {readerMode === 'translation' && translationDocument ? (
               <>
                 <div className="translation-result-meta">{translationTargetLabel(translationDocument.target)} · {translationDocument.targetLanguage} · {translationDocument.displayMode === 'BILINGUAL' ? t('bilingual') : t('translatedOnly')}</div>
                 <SearchableHtml
@@ -2259,7 +3643,20 @@ export default function App(): React.JSX.Element {
               </section>
             )}
           </div>
-          {aiSummaryDocked && (aiSummaryPlacement==='right'||aiSummaryPlacement==='bottom') && renderAiSummaryPanel()}
+          {readerAiSelectionCandidate?.articleId === selectedArticle.id ? (
+            <button
+              type="button"
+              className={`reader-ai-selection-action placement-${readerAiSelectionCandidate.placement}`}
+              style={{ left: readerAiSelectionCandidate.x, top: readerAiSelectionCandidate.y }}
+              aria-label={t('askSelectedText')}
+              title={t('askSelectedText')}
+              onPointerDown={(event)=>event.preventDefault()}
+              onClick={attachReaderSelectionToAi}
+            >
+              <Sparkles size={13}/><span>{t('askSelectedText')}</span>
+            </button>
+          ) : null}
+          {readerAiPanelDocked && renderReaderAiPanel()}
           </div>
         ) : (
           <div className="reader-empty-state">
@@ -2290,6 +3687,7 @@ export default function App(): React.JSX.Element {
                   <span><kbd>M</kbd>{t('shortcutToggleRead')}</span>
                   <span><kbd>S</kbd>{t('shortcutToggleStar')}</span>
                   <span><kbd>U</kbd>{t('shortcutOriginal')}</span>
+                  <span><kbd>A</kbd>{t('shortcutAiAssistant')}</span>
                   <span><kbd>[</kbd>{t('shortcutSidebar')}</span>
                   <span><kbd>{'<'}</kbd>{t('shortcutSummaryPlacementPrevious')}</span>
                   <span><kbd>{'>'}</kbd>{t('shortcutSummaryPlacementNext')}</span>
@@ -2670,10 +4068,1371 @@ function AiSummaryAccentIcon({
   )
 }
 
-function AiSummaryPanel({
+function ReaderAiConversationHistoryBody({
+  conversations,
+  activeConversationId,
+  query,
+  loading,
+  error,
+  onQueryChange,
+  onOpen,
+  onRename,
+  onDelete
+}: {
+  conversations: LlmConversationRecord[]
+  activeConversationId: string | null
+  query: string
+  loading: boolean
+  error: string | null
+  onQueryChange(value: string): void
+  onOpen(conversation: LlmConversationRecord): void
+  onRename(conversationId: string, title: string): Promise<void>
+  onDelete(conversationId: string): Promise<void>
+}): React.JSX.Element {
+  const { t, i18n } = useTranslation()
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingTitle, setEditingTitle] = useState('')
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const visible = normalizedQuery
+    ? conversations.filter((conversation) => conversation.title.toLocaleLowerCase().includes(normalizedQuery))
+    : conversations
+  const locale = i18n.resolvedLanguage?.startsWith('zh') ? 'zh-CN' : 'en-US'
+
+  const beginRename = (conversation: LlmConversationRecord): void => {
+    setPendingDeleteId(null)
+    setActionError(null)
+    setEditingId(conversation.id)
+    setEditingTitle(conversation.title)
+  }
+
+  const submitRename = async (conversationId: string): Promise<void> => {
+    const title = editingTitle.trim()
+    if (!title || busyId) return
+    setBusyId(conversationId)
+    setActionError(null)
+    try {
+      await onRename(conversationId, title)
+      setEditingId(null)
+      setEditingTitle('')
+    } catch {
+      setActionError(t('conversationRenameFailed'))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const confirmDelete = async (conversationId: string): Promise<void> => {
+    if (pendingDeleteId !== conversationId) {
+      setEditingId(null)
+      setPendingDeleteId(conversationId)
+      setActionError(null)
+      return
+    }
+    if (busyId) return
+    setBusyId(conversationId)
+    try {
+      await onDelete(conversationId)
+      setPendingDeleteId(null)
+    } catch {
+      setActionError(t('conversationDeleteFailed'))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  return <div className="reader-ai-conversation-history">
+    <label className="reader-ai-history-search">
+      <Search size={14}/>
+      <input value={query} onChange={(event)=>onQueryChange(event.target.value)} placeholder={t('searchConversations')} aria-label={t('searchConversations')}/>
+    </label>
+    {loading ? <div className="reader-ai-chat-state"><RefreshCw size={15} className="spinning"/><span>{t('loadingConversationHistory')}</span></div> : null}
+    {error ? <div className="reader-ai-chat-error" role="alert">{error}</div> : null}
+    {actionError ? <div className="reader-ai-chat-error" role="alert">{actionError}</div> : null}
+    {!loading && visible.length === 0 ? <div className="reader-ai-history-empty">{t(normalizedQuery ? 'noMatchingConversations' : 'noConversationsYet')}</div> : null}
+    <div className="reader-ai-history-list">
+      {visible.map((conversation) => {
+        const editing = editingId === conversation.id
+        const deleting = pendingDeleteId === conversation.id
+        const busy = busyId === conversation.id
+        return <div className={`reader-ai-history-item ${conversation.id === activeConversationId ? 'active' : ''}`} key={conversation.id}>
+          {editing ? <form className="reader-ai-history-edit" onSubmit={(event)=>{event.preventDefault();void submitRename(conversation.id)}}>
+            <input autoFocus value={editingTitle} maxLength={120} onChange={(event)=>setEditingTitle(event.target.value)} aria-label={t('conversationTitle')}/>
+            <button type="submit" disabled={!editingTitle.trim() || busy}>{t('save')}</button>
+            <button type="button" onClick={()=>setEditingId(null)}>{t('cancel')}</button>
+          </form> : <button type="button" className="reader-ai-history-main" onClick={()=>onOpen(conversation)}>
+            <span className="reader-ai-history-title">{conversation.title}</span>
+            <span className="reader-ai-history-meta">
+              {conversation.id === activeConversationId ? <strong>{t('currentConversation')}</strong> : null}
+              <span>{new Date(conversation.updatedAt).toLocaleString(locale)}</span>
+            </span>
+          </button>}
+          {!editing ? <div className="reader-ai-history-actions">
+            <button type="button" className="icon-button" title={t('rename')} aria-label={t('rename')} disabled={busy} onClick={()=>beginRename(conversation)}><Pencil size={13}/></button>
+            <button type="button" className={`reader-ai-history-delete ${deleting ? 'confirm' : ''}`} disabled={busy} onClick={()=>void confirmDelete(conversation.id)}>{deleting ? t('confirmDelete') : <Trash2 size={13}/>}</button>
+          </div> : null}
+        </div>
+      })}
+    </div>
+  </div>
+}
+
+function ReaderAiChatSearchBody({
+  messages,
+  inputRef,
+  onOpenMessage
+}: {
+  messages: LlmMessageRecord[]
+  inputRef: RefObject<HTMLInputElement | null>
+  onOpenMessage(messageId: string): void
+}): React.JSX.Element {
+  const { t } = useTranslation()
+  const [query, setQuery] = useState('')
+  const results = useMemo(() => searchReaderAiChatMessages(messages, query), [messages, query])
+  const hasQuery = Boolean(query.trim())
+
+  return <div className="reader-ai-chat-search">
+    <label className="reader-ai-chat-search-input-wrap">
+      <Search size={14}/>
+      <input
+        ref={inputRef}
+        className="reader-ai-chat-search-input"
+        autoFocus
+        value={query}
+        placeholder={t('searchCurrentChat')}
+        aria-label={t('searchCurrentChat')}
+        onChange={(event)=>setQuery(event.target.value)}
+        onKeyDown={(event)=>{
+          if (event.key === 'Enter' && results[0]) {
+            event.preventDefault()
+            onOpenMessage(results[0].messageId)
+          }
+        }}
+      />
+    </label>
+    {hasQuery ? <div className="reader-ai-chat-search-count">{t('chatSearchResults', { count: results.length })}</div> : null}
+    {hasQuery && results.length === 0 ? <div className="reader-ai-chat-search-empty">{t('noMatchingMessages')}</div> : null}
+    <div className="reader-ai-chat-search-results">
+      {results.map((result)=><button
+        type="button"
+        className="reader-ai-chat-search-result"
+        key={result.messageId}
+        onClick={()=>onOpenMessage(result.messageId)}
+      >
+        <span className="reader-ai-chat-search-role">{t(result.role === 'USER' ? 'chatRoleYou' : 'chatRoleAssistant')}</span>
+        <span className="reader-ai-chat-search-snippet">{result.snippet}</span>
+      </button>)}
+    </div>
+  </div>
+}
+
+function ReaderAiWebSearchActivity({message,onOpen}:{message:LlmMessageRecord;onOpen():void}):React.JSX.Element|null{
+  const {t}=useTranslation()
+  const status=message.webSearchStatus
+  if(!status||status==='NOT_NEEDED')return null
+  const label=status==='TRIGGERED'?t('webSearchSearching')
+    :status==='SUCCESS'?t('webSearchSucceeded')
+    :status==='EMPTY_RESULT'?t('webSearchEmpty')
+    :status==='FAILED_FALLBACK'?t('webSearchFailedFallback')
+    :status==='FAILED_REQUIRED'?t('webSearchFailedRequired')
+    :t('webSearchCancelled')
+  const count=status==='SUCCESS'&&message.webSearchResultCount!=null?t('webSearchResultCount',{count:message.webSearchResultCount}):null
+  return <div className={`reader-ai-web-search-activity status-${status.toLowerCase()}`}>
+    <div className="reader-ai-web-search-activity-head">
+      <span className="reader-ai-web-search-activity-label">{status==='TRIGGERED'?<RefreshCw size={12} className="spinning"/>:<Search size={12}/>}<strong>{label}</strong></span>
+      {status==='SUCCESS'&&(message.webSearchResultCount??0)>0?<button type="button" className="reader-ai-message-action" onClick={onOpen}>{t('webSearchViewResults')}</button>:null}
+    </div>
+    <div className="reader-ai-web-search-activity-meta">
+      {message.webSearchQuery?<span title={message.webSearchQuery}>{message.webSearchQuery}</span>:null}
+      <small>{[message.webSearchProviderName,count].filter(Boolean).join(' · ')}</small>
+      {(status==='FAILED_FALLBACK'||status==='FAILED_REQUIRED')&&message.webSearchErrorMessage?<small className="error">{message.webSearchErrorMessage}</small>:null}
+    </div>
+  </div>
+}
+
+function ReaderAiWebSearchDetailBody({message}:{message:LlmMessageRecord|null}):React.JSX.Element{
+  const {t}=useTranslation()
+  const [snapshot,setSnapshot]=useState<LlmAssistantEvidenceSnapshot|null>(null)
+  const [error,setError]=useState<string|null>(null)
+  useEffect(()=>{
+    if(!message)return
+    let cancelled=false
+    setSnapshot(null);setError(null)
+    void window.origread.getLlmAssistantEvidence(message.id)
+      .then((value)=>{if(!cancelled)setSnapshot(value)})
+      .catch((reason)=>{if(!cancelled)setError(reason instanceof Error?reason.message:String(reason))})
+    return()=>{cancelled=true}
+  },[message?.id])
+  if(!message)return <div className="reader-ai-chat-state"><span>{t('webSearchResultsUnavailable')}</span></div>
+  const refs=snapshot?.contextRefs.filter((ref)=>ref.type==='WEB_SEARCH_RESULT')??[]
+  return <div className="reader-ai-web-search-detail">
+    <div className="reader-ai-web-search-detail-summary">
+      {message.webSearchQuery?<div><span>{t('webSearchQuery')}</span><strong>{message.webSearchQuery}</strong></div>:null}
+      {message.webSearchProviderName?<div><span>{t('webSearchProvider')}</span><strong>{message.webSearchProviderName}</strong></div>:null}
+      <div><span>{t('webSearchResultCountLabel')}</span><strong>{message.webSearchResultCount??refs.length}</strong></div>
+    </div>
+    {error?<div className="reader-ai-chat-error" role="alert">{error}</div>:null}
+    {!snapshot&&!error?<div className="reader-ai-chat-state"><RefreshCw size={14} className="spinning"/><span>{t('loading')}</span></div>:null}
+    {snapshot&&refs.length===0?<div className="reader-ai-history-empty">{t('webSearchResultsUnavailable')}</div>:null}
+    <div className="reader-ai-web-search-results">
+      {refs.map((ref,index)=>{
+        const url=ref.sourceUrl??ref.sourceId
+        const domain=webSearchDomain(url)
+        const usage=ref.includedInPrompt?(ref.truncatedInPrompt?'USED_TRUNCATED':'USED'):'OMITTED'
+        return <article className="reader-ai-web-search-result" key={ref.id}>
+          <div className="reader-ai-web-search-result-head"><span className="reader-ai-web-search-result-index">{index+1}</span><div><strong>{ref.title||domain||url||t('webSearchUntitledResult')}</strong>{domain?<small>{domain}</small>:null}</div><span className={`reader-ai-web-search-usage usage-${usage.toLowerCase()}`}>{t(`webSearchUsage${usage}`)}</span></div>
+          <p>{webSearchResultSnippet(ref.contentSnapshot)}</p>
+          {url?<button type="button" className="reader-ai-web-search-open" onClick={()=>void window.origread.openExternalUrl(url)}><ExternalLink size={12}/>{t('openLink')}</button>:null}
+        </article>
+      })}
+    </div>
+  </div>
+}
+
+function ReaderAiAssistantAnswer({
+  message,
+  onOpenSources,
+  onOpenCitation
+}: {
+  message: LlmMessageRecord
+  onOpenSources(messageId: string): void
+  onOpenCitation(messageId: string, citation: LlmCitationRefRecord, snapshot: LlmAssistantEvidenceSnapshot): void
+}): React.JSX.Element {
+  const { t } = useTranslation()
+  const [snapshot, setSnapshot] = useState<LlmAssistantEvidenceSnapshot | null>(null)
+
+  useEffect(() => {
+    if (message.status === 'STREAMING') {
+      setSnapshot(null)
+      return
+    }
+    let cancelled = false
+    void window.origread.getLlmAssistantEvidence(message.id)
+      .then((value) => { if (!cancelled) setSnapshot(value) })
+      .catch(() => { if (!cancelled) setSnapshot(null) })
+    return () => { cancelled = true }
+  }, [message.id, message.status, message.updatedAt])
+
+  const citationByProtocol = new Map(snapshot?.citations.map((citation) => [citation.protocolId, citation] as const) ?? [])
+  const contextById = new Map(snapshot?.contextRefs.map((ref) => [ref.id, ref] as const) ?? [])
+  const citedContextCount = new Set(snapshot?.citations.map((citation) => citation.contextRefId) ?? []).size
+  const usedContextCount = snapshot?.contextRefs.filter((ref) => ref.includedInPrompt).length ?? 0
+
+  return <>
+    <CitationMarkdown
+      text={message.content}
+      renderCitation={(protocolId) => {
+        const citation = citationByProtocol.get(protocolId)
+        if (!citation || !snapshot) return null
+        const contextRef = contextById.get(citation.contextRefId) ?? null
+        const number = citation.displayOrder ?? snapshot.citations.findIndex((item) => item.id === citation.id) + 1
+        const source = citationSourceName(citation, contextRef, t)
+        const preview = citationPreview(citation.quoteSnapshot)
+        return <span className="reader-ai-inline-citation-wrap" key={`${citation.id}-${protocolId}`}>
+          <button
+            type="button"
+            className="reader-ai-inline-citation"
+            aria-label={t('citationNumberLabel', { number, source })}
+            onClick={()=>onOpenCitation(message.id, citation, snapshot)}
+          >{number}</button>
+          <span className="reader-ai-inline-citation-popover" role="tooltip">
+            <strong>{source}</strong>
+            <span>{preview}</span>
+          </span>
+        </span>
+      }}
+    />
+    {snapshot && snapshot.contextRefs.length > 0 ? <button
+      type="button"
+      className="reader-ai-answer-sources"
+      onClick={()=>onOpenSources(message.id)}
+    >
+      <Share2 size={12}/>
+      <span>{t('answerSources')}</span>
+      <small>{citedContextCount > 0 ? citedContextCount : usedContextCount}</small>
+    </button> : null}
+  </>
+}
+
+function ReaderAiSourcesDetailBody({
+  message,
+  focusCitationId,
+  locationUnavailable,
+  onOpenCitation,
+  onOpenExternal
+}: {
+  message: LlmMessageRecord | null
+  focusCitationId: string | null
+  locationUnavailable: boolean
+  onOpenCitation(citation: LlmCitationRefRecord, snapshot: LlmAssistantEvidenceSnapshot): void
+  onOpenExternal(url: string): void
+}): React.JSX.Element {
+  const { t } = useTranslation()
+  const [snapshot, setSnapshot] = useState<LlmAssistantEvidenceSnapshot | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!message) return
+    let cancelled = false
+    setSnapshot(null)
+    setError(null)
+    void window.origread.getLlmAssistantEvidence(message.id)
+      .then((value) => { if (!cancelled) setSnapshot(value) })
+      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)) })
+    return () => { cancelled = true }
+  }, [message?.id])
+
+  useEffect(() => {
+    if (!snapshot || !focusCitationId) return
+    const frame = window.requestAnimationFrame(() => {
+      const target = rootRef.current?.querySelector<HTMLElement>(`[data-citation-id="${CSS.escape(focusCitationId)}"]`)
+      target?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      target?.focus({ preventScroll: true })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [snapshot, focusCitationId])
+
+  if (!message) return <div className="reader-ai-history-empty">{t('citationUnavailable')}</div>
+  if (error) return <div className="reader-ai-chat-error" role="alert">{error}</div>
+  if (!snapshot) return <div className="reader-ai-chat-state"><RefreshCw size={14} className="spinning"/><span>{t('loading')}</span></div>
+
+  const evidenceByContext = new Map<string, LlmEvidenceBlockRecord[]>()
+  for (const block of snapshot.evidenceBlocks) {
+    const list = evidenceByContext.get(block.contextRefId) ?? []
+    list.push(block)
+    evidenceByContext.set(block.contextRefId, list)
+  }
+  const citationsByContext = new Map<string, LlmCitationRefRecord[]>()
+  for (const citation of snapshot.citations) {
+    const list = citationsByContext.get(citation.contextRefId) ?? []
+    list.push(citation)
+    citationsByContext.set(citation.contextRefId, list)
+  }
+
+  return <div className="reader-ai-sources-detail" ref={rootRef}>
+    {locationUnavailable ? <div className="reader-ai-source-location-warning">{t('citationLocationUnavailable')}</div> : null}
+    {snapshot.contextRefs.length === 0 ? <div className="reader-ai-history-empty">{t('citationUnavailable')}</div> : null}
+    {snapshot.contextRefs.map((ref) => {
+      const citations = (citationsByContext.get(ref.id) ?? []).sort((a,b)=>(a.displayOrder??999)-(b.displayOrder??999))
+      const evidence = evidenceByContext.get(ref.id) ?? []
+      const focused = Boolean(focusCitationId && citations.some((citation) => citation.id === focusCitationId))
+      const primaryCitation = citations[0] ?? null
+      const sourceName = primaryCitation
+        ? citationSourceName(primaryCitation, ref, t)
+        : contextSourceName(ref, t)
+      const usage = ref.includedInPrompt
+        ? ref.truncatedInPrompt ? t('contextUsageTruncated') : t('contextUsageIncluded')
+        : t('contextUsageOmitted')
+      const sourceUrl = primaryCitation?.sourceUrl ?? ref.sourceUrl
+      const toolLocator = primaryCitation?.locatorSnapshot?.sourceKind === 'TOOL_RESULT' ? primaryCitation.locatorSnapshot : null
+      return <article className={`reader-ai-source-card ${focused ? 'focused' : ''}`} key={ref.id}>
+        <div className="reader-ai-source-card-head">
+          <div>
+            <span className="reader-ai-source-kind">{contextSourceKindLabel(ref, t)}</span>
+            <strong>{sourceName}</strong>
+          </div>
+          <span className={`reader-ai-source-usage ${ref.includedInPrompt ? 'used' : 'omitted'}`}>{usage}</span>
+        </div>
+        {citations.length > 0 ? <div className="reader-ai-source-citations">
+          {citations.map((citation) => <button
+            key={citation.id}
+            type="button"
+            data-citation-id={citation.id}
+            className={citation.id === focusCitationId ? 'focused' : ''}
+            onClick={()=>onOpenCitation(citation, snapshot)}
+          >[{citation.displayOrder ?? '?'}]</button>)}
+          <small>{t('contextCitationCount', { count: citations.length })}</small>
+        </div> : <small className="reader-ai-source-no-citation">{t('contextNoCitations')}</small>}
+        <blockquote className="reader-ai-source-preview">
+          {citationPreview(primaryCitation?.quoteSnapshot ?? ref.promptContentSnapshot ?? ref.contentSnapshot)}
+        </blockquote>
+        {toolLocator ? <div className="reader-ai-source-tool-meta">
+          {toolLocator.toolName ? <span><strong>{toolLocator.toolName}</strong></span> : null}
+          {toolLocator.toolSourceId ? <span>{t('contextToolServer')}: {toolLocator.toolSourceId}</span> : null}
+          {toolLocator.toolCallId ? <span>call: {toolLocator.toolCallId}</span> : null}
+        </div> : null}
+        <div className="reader-ai-source-card-actions">
+          {primaryCitation && (primaryCitation.locatorSnapshot?.sourceKind === 'ARTICLE' || primaryCitation.locatorSnapshot?.sourceKind === 'SELECTION')
+            ? <button type="button" onClick={()=>onOpenCitation(primaryCitation, snapshot)}><BookOpenText size={12}/>{t('citationViewInReader')}</button>
+            : null}
+          {sourceUrl ? <button type="button" onClick={()=>onOpenExternal(sourceUrl)}><ExternalLink size={12}/>{t('citationOpenSource')}</button> : null}
+        </div>
+        <details className="reader-ai-source-audit">
+          <summary>{t('contextSources')}</summary>
+          <div>
+            {ref.promptContentSnapshot ? <section><strong>{t('contextPromptSnapshot')}</strong><pre>{ref.promptContentSnapshot}</pre></section> : null}
+            <section><strong>{t('contextFullSnapshot')}</strong><pre>{ref.contentSnapshot}</pre></section>
+            {evidence.length > 0 ? <section><strong>{t('contextEvidenceBlocks')}</strong>{evidence.map((block)=><pre key={block.id}>{block.textSnapshot}</pre>)}</section> : null}
+          </div>
+        </details>
+      </article>
+    })}
+  </div>
+}
+
+function contextSourceKindLabel(ref: LlmContextRefRecord, t: (key: string, options?: Record<string, unknown>) => string): string {
+  if (ref.type === 'WEB_SEARCH_RESULT') return t('citationSourceWeb')
+  if (ref.type === 'TOOL_RESULT') return t('citationSourceTool')
+  if (ref.type === 'SELECTED_TEXT') return t('citationSourceSelection')
+  return t('citationSourceArticle')
+}
+
+function contextSourceName(ref: LlmContextRefRecord, t: (key: string, options?: Record<string, unknown>) => string): string {
+  return ref.title?.trim() || webSearchDomain(ref.sourceUrl ?? ref.sourceId) || ref.sourceId?.trim() || contextSourceKindLabel(ref, t)
+}
+
+function citationSourceName(
+  citation: LlmCitationRefRecord,
+  ref: LlmContextRefRecord | null,
+  t: (key: string, options?: Record<string, unknown>) => string
+): string {
+  const locator = citation.locatorSnapshot
+  if (locator?.sourceKind === 'TOOL_RESULT') return locator.toolName?.trim() || ref?.title?.trim() || t('citationSourceTool')
+  if (locator?.sourceKind === 'WEB_SEARCH') return ref?.title?.trim() || webSearchDomain(citation.sourceUrl ?? ref?.sourceUrl) || t('citationSourceWeb')
+  return ref?.title?.trim() || (locator?.sourceKind === 'SELECTION' ? t('citationSourceSelection') : t('citationSourceArticle'))
+}
+
+function citationPreview(value: string): string {
+  const compact = value.replace(/\s+/g, ' ').trim()
+  return compact.length <= 240 ? compact : `${compact.slice(0, 240).trimEnd()}…`
+}
+
+function CitationMarkdown({
+  text,
+  renderCitation
+}: {
+  text: string
+  renderCitation(protocolId: string): React.ReactNode | null
+}): React.JSX.Element {
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  const blocks: React.ReactNode[] = []
+  let listItems: string[] = []
+  const inline = (value: string): React.ReactNode[] => renderCitationInlineMarkdown(value, renderCitation)
+  const flushList = (): void => {
+    if (listItems.length === 0) return
+    blocks.push(<ol key={`list-${blocks.length}`}>{listItems.map((item,index)=><li key={index}>{inline(item)}</li>)}</ol>)
+    listItems = []
+  }
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (!line) { flushList(); continue }
+    const numbered = line.match(/^\d+[.)]\s+(.+)$/)
+    if (numbered?.[1]) { listItems.push(numbered[1]); continue }
+    flushList()
+    const heading = line.match(/^(#{1,4})\s+(.+)$/)
+    if (heading?.[1] && heading[2]) {
+      const content = inline(heading[2])
+      const level = heading[1].length
+      if (level === 1) blocks.push(<h1 key={blocks.length}>{content}</h1>)
+      else if (level === 2) blocks.push(<h2 key={blocks.length}>{content}</h2>)
+      else if (level === 3) blocks.push(<h3 key={blocks.length}>{content}</h3>)
+      else blocks.push(<h4 key={blocks.length}>{content}</h4>)
+      continue
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/)
+    if (bullet?.[1]) {
+      blocks.push(<p className="markdown-bullet" key={blocks.length}>• {inline(bullet[1])}</p>)
+      continue
+    }
+    blocks.push(<p key={blocks.length}>{inline(line)}</p>)
+  }
+  flushList()
+  return <div className="ai-summary-markdown reader-ai-citation-markdown">{blocks}</div>
+}
+
+function renderCitationInlineMarkdown(
+  text: string,
+  renderCitation: (protocolId: string) => React.ReactNode | null
+): React.ReactNode[] {
+  const result: React.ReactNode[] = []
+  const pattern = /(\*\*(.+?)\*\*|\[\[(E\d+)\]\])/g
+  let start = 0
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text))) {
+    if (match.index > start) result.push(text.slice(start, match.index))
+    if (match[3]) {
+      result.push(renderCitation(match[3]) ?? '')
+    } else {
+      result.push(<strong key={`bold-${match.index}-${match[2]}`}>{match[2]}</strong>)
+    }
+    start = match.index + match[0].length
+  }
+  if (start < text.length) result.push(text.slice(start))
+  return result
+}
+
+function findReaderCitationElement(root: HTMLElement, citation: LlmCitationRefRecord): HTMLElement | null {
+  const locator = citation.locatorSnapshot
+  const stableKey = locator?.stableLocatorKey?.trim()
+  if (stableKey) {
+    const exact = root.querySelector<HTMLElement>(`[data-origread-block-id="${CSS.escape(stableKey)}"]`)
+    if (exact) return exact
+  }
+
+  const hash = locator?.normalizedHash?.trim()
+  const hashMatches = hash
+    ? Array.from(root.querySelectorAll<HTMLElement>(`[data-origread-block-hash="${CSS.escape(hash)}"]`))
+    : []
+  if (hashMatches.length === 1) return hashMatches[0]!
+
+  const headingPath = locator?.headingPath?.length ? locator.headingPath.join('\u001f') : ''
+  const normalizedQuote = normalizeReaderCitationText(citation.quoteSnapshot)
+  const allBlocks = Array.from(root.querySelectorAll<HTMLElement>('[data-origread-block-id]'))
+  if (headingPath && normalizedQuote) {
+    const headingMatches = allBlocks.filter((element) =>
+      element.dataset.origreadHeadingPath === headingPath
+      && normalizeReaderCitationText(element.textContent ?? '').includes(normalizedQuote)
+    )
+    if (headingMatches.length === 1) return headingMatches[0]!
+  }
+  if (normalizedQuote) {
+    const quoteMatches = allBlocks.filter((element) => normalizeReaderCitationText(element.textContent ?? '').includes(normalizedQuote))
+    if (quoteMatches.length === 1) return quoteMatches[0]!
+  }
+  return null
+}
+
+function normalizeReaderCitationText(value: string): string {
+  return value.replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function readerAiModelPopoverWidthPx(providerName: string, modelName: string): number {
+  const longestUnits = Math.max(
+    10,
+    readerAiTextVisualUnits(providerName),
+    readerAiTextVisualUnits(modelName)
+  )
+  // 只按当前已选 Provider / Model 计算容器宽度。候选列表里存在超长模型时不应该把整个弹窗永久撑宽；
+  // 原生 select 的下拉层仍可展示完整候选文本。
+  return Math.min(360, Math.max(208, Math.round(92 + longestUnits * 7.1)))
+}
+
+function readerAiTextVisualUnits(value: string): number {
+  return [...value].reduce((total, character) => total + (/[^\u0000-\u00ff]/.test(character) ? 1.75 : 1), 0)
+}
+
+function webSearchDomain(value:string|null|undefined):string{
+  if(!value)return''
+  try{return new URL(value).hostname.replace(/^www\./,'')}catch{return''}
+}
+
+function webSearchResultSnippet(value:string):string{
+  const compact=value.replace(/^Published:\s*[^\n]+\n+/i,'').replace(/\s+/g,' ').trim()
+  return compact.length<=420?compact:`${compact.slice(0,420).trimEnd()}…`
+}
+
+function selectionNodeElement(node: Node): Element | null {
+  return node instanceof Element ? node : node.parentElement
+}
+
+function normalizeReaderAiSelectionText(value: string): string {
+  return value
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function readerAiSelectionPreview(value: string): string {
+  const compact = value.replace(/\s+/g, ' ').trim()
+  return compact.length <= 240 ? compact : `${compact.slice(0, 240).trimEnd()}…`
+}
+
+function ReaderAiSummaryArtifact({
+  summary,
+  expanded,
+  onExpandedChange
+}: {
+  summary: AiSummaryDocument
+  expanded: boolean
+  onExpandedChange(expanded: boolean): void
+}): React.JSX.Element {
+  const { t } = useTranslation()
+  const summaryMarkdown = stripRedundantSummaryHeading(summary.summary)
+  return <details
+    className="reader-ai-summary-artifact"
+    open={expanded}
+    onToggle={(event)=>onExpandedChange(event.currentTarget.open)}
+  >
+    <summary className="reader-ai-summary-artifact-summary">
+      <AiSummaryAccentIcon variant="panel"/>
+      <span className="reader-ai-summary-artifact-title">
+        <strong>{t('aiSummary')}</strong>
+        <small>{t(summaryLengthLabelKey(summary.length))} · {summary.providerName} · {summary.model}</small>
+      </span>
+      <ChevronDown size={14} className="reader-ai-summary-artifact-chevron"/>
+    </summary>
+    <div className="reader-ai-summary-artifact-body">
+      {summary.reasoning ? <details className="ai-reasoning reader-ai-summary-artifact-reasoning"><summary>{t('aiReasoning')}</summary><pre>{summary.reasoning}</pre></details> : null}
+      {summary.status === 'NOT_NEEDED'
+        ? <div className="ai-summary-not-needed"><strong>{t('aiSummaryNotNeeded')}</strong><span>{t(summary.skipReason==='local_source_already_concise'?'aiSummaryNotNeededLocal':'aiSummaryNotNeededModel')}</span></div>
+        : <SimpleMarkdown text={summaryMarkdown}/>}
+    </div>
+  </details>
+}
+
+function ReaderAiChatBody({
+  messages,
+  toolActivity,
+  toolDecisionBusy,
+  manualTools,
+  manualToolContexts,
+  manualToolBusy,
+  manualToolConversationReady,
+  attachedArticles,
+  currentArticleId,
+  summaryArtifact,
+  draft,
+  selectionText,
+  selectionTruncated,
+  composerRef,
+  quickMessages,
+  active,
+  loading,
+  error,
+  modelLabel,
+  providers,
+  providerId,
+  model,
+  forceWebSearchNext,
+  locateMessageId,
+  placeholder,
+  emptyContent,
+  onDraftChange,
+  onClearSelection,
+  onProviderChange,
+  onModelChange,
+  onForceWebSearchNextChange,
+  onOpenWebSearch,
+  onOpenSources,
+  onOpenCitation,
+  onSend,
+  onQuickMessage,
+  onStop,
+  onToolApproval,
+  onManualToolExecute,
+  onDiscardManualToolContext,
+  onAttachedArticlesChange,
+  onRegenerate,
+  onLocateMessageHandled
+}: {
+  messages: LlmMessageRecord[]
+  toolActivity: LlmToolActivityView[]
+  toolDecisionBusy: Record<string, boolean>
+  manualTools: LlmManualToolView[]
+  manualToolContexts: LlmManualToolContextView[]
+  manualToolBusy: boolean
+  manualToolConversationReady: boolean
+  attachedArticles: LlmConversationArticleRecord[]
+  currentArticleId: string
+  summaryArtifact: AiSummaryDocument | null
+  draft: string
+  selectionText: string | null
+  selectionTruncated: boolean
+  composerRef: RefObject<HTMLTextAreaElement | null>
+  quickMessages: LlmQuickMessage[]
+  active: boolean
+  loading: boolean
+  error: string | null
+  modelLabel: string
+  providers: AiProviderProfile[]
+  providerId: string
+  model: string
+  forceWebSearchNext: boolean
+  locateMessageId?: string | null
+  placeholder: string
+  emptyContent?: React.ReactNode
+  onDraftChange(value: string): void
+  onClearSelection(): void
+  onProviderChange(providerId: string): void
+  onModelChange(model: string): void
+  onForceWebSearchNextChange(value: boolean): void
+  onOpenWebSearch(messageId: string): void
+  onOpenSources(messageId: string): void
+  onOpenCitation(messageId: string, citation: LlmCitationRefRecord, snapshot: LlmAssistantEvidenceSnapshot): void
+  onSend(): void
+  onQuickMessage(message: LlmQuickMessage): void
+  onStop(): void
+  onToolApproval(toolCallId: string, decision: LlmToolApprovalDecision): void
+  onManualToolExecute(toolId: string, argumentsJson: string): Promise<boolean>
+  onDiscardManualToolContext(contextId: string): void
+  onAttachedArticlesChange(articles: readonly LlmArticleContextCandidate[]): Promise<void>
+  onRegenerate(assistantMessageId: string): void
+  onLocateMessageHandled?(): void
+}): React.JSX.Element {
+  const { t } = useTranslation()
+  const timelineRef = useRef<HTMLDivElement>(null)
+  const modelPickerRef = useRef<HTMLDetailsElement>(null)
+  const articlePickerRef = useRef<HTMLDetailsElement>(null)
+  const composerActionsRef = useRef<HTMLDetailsElement>(null)
+  const scrollOwnershipRef = useRef(initialReaderAiChatScrollOwnership())
+  const userScrollIntentRef = useRef(false)
+  const visibleMessages = messages.filter((message) => message.historyActive && (message.role === 'USER' || message.role === 'ASSISTANT'))
+  const [followOutput, setFollowOutput] = useState(true)
+  const [scrollAvailability, setScrollAvailability] = useState({ up: false, down: false })
+  const [copyState, setCopyState] = useState<{ messageId: string; ok: boolean } | null>(null)
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
+  const [manualToolEditorId, setManualToolEditorId] = useState<string | null>(null)
+  const [manualToolArguments, setManualToolArguments] = useState('{}')
+  const [manualToolEditorError, setManualToolEditorError] = useState<string | null>(null)
+  const [articlePickerOpen, setArticlePickerOpen] = useState(false)
+  const [articleQuery, setArticleQuery] = useState('')
+  const [articleCandidates, setArticleCandidates] = useState<LlmArticleContextCandidate[]>([])
+  const [articleCandidatesLoading, setArticleCandidatesLoading] = useState(false)
+  const [articlePickerError, setArticlePickerError] = useState<string | null>(null)
+  const [summaryArtifactExpanded, setSummaryArtifactExpanded] = useState(() => visibleMessages.length === 0)
+  const previousVisibleMessageCountRef = useRef(visibleMessages.length)
+  const latestAssistantId = [...visibleMessages].reverse().find((message) => message.role === 'ASSISTANT')?.id ?? null
+  const selectedProvider = providers.find((provider) => provider.id === providerId) ?? null
+  const modelOptions = selectedProvider
+    ? [...new Set([model, selectedProvider.defaultModel, ...selectedProvider.models].map((item) => item.trim()).filter(Boolean))]
+    : model ? [model] : []
+  const modelPopoverWidth = readerAiModelPopoverWidthPx(selectedProvider?.name ?? '', model)
+  const selectedManualTool = manualTools.find((tool) => tool.id === manualToolEditorId) ?? null
+  const attachedCandidates = attachedArticles.map((article) => ({
+    articleId: article.articleId,
+    title: article.title,
+    link: article.link,
+    feedName: null,
+    publishedAt: null
+  } satisfies LlmArticleContextCandidate))
+  const attachedArticleIds = new Set(attachedArticles.map((article) => article.articleId))
+
+  useEffect(() => {
+    if (!articlePickerOpen) return
+    let cancelled = false
+    setArticleCandidatesLoading(true)
+    setArticlePickerError(null)
+    const timer = window.setTimeout(() => {
+      void window.origread.listLlmArticleContextCandidates(articleQuery).then((items) => {
+        if (!cancelled) setArticleCandidates(items.filter((item) => item.articleId !== currentArticleId))
+      }).catch(() => {
+        if (!cancelled) setArticlePickerError(t('articleContextLoadFailed'))
+      }).finally(() => {
+        if (!cancelled) setArticleCandidatesLoading(false)
+      })
+    }, articleQuery.trim() ? 120 : 0)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [articlePickerOpen, articleQuery, currentArticleId, t])
+
+  useEffect(() => {
+    if (!summaryArtifact) return
+    setSummaryArtifactExpanded(visibleMessages.length === 0)
+  }, [summaryArtifact])
+
+  useEffect(() => {
+    const previous = previousVisibleMessageCountRef.current
+    previousVisibleMessageCountRef.current = visibleMessages.length
+    if (!summaryArtifact || previous !== 0 || visibleMessages.length === 0) return
+    setSummaryArtifactExpanded(false)
+  }, [summaryArtifact, visibleMessages.length])
+
+  const openManualToolEditor = (tool: LlmManualToolView): void => {
+    if (!manualToolConversationReady || active) return
+    setManualToolEditorId(tool.id)
+    setManualToolArguments('{}')
+    setManualToolEditorError(null)
+    composerActionsRef.current?.removeAttribute('open')
+  }
+
+  const closeManualToolEditor = (): void => {
+    if (manualToolBusy) return
+    setManualToolEditorId(null)
+    setManualToolArguments('{}')
+    setManualToolEditorError(null)
+  }
+
+  const runManualTool = async (): Promise<void> => {
+    if (!selectedManualTool || manualToolBusy) return
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(manualToolArguments)
+    } catch {
+      setManualToolEditorError(t('manualToolArgumentsInvalid'))
+      return
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      setManualToolEditorError(t('manualToolArgumentsObjectRequired'))
+      return
+    }
+    setManualToolEditorError(null)
+    const ok = await onManualToolExecute(selectedManualTool.id, JSON.stringify(parsed))
+    if (ok) closeManualToolEditor()
+  }
+
+  const toggleAttachedArticle = async (candidate: LlmArticleContextCandidate): Promise<void> => {
+    if (active) return
+    setArticlePickerError(null)
+    const selected = attachedArticleIds.has(candidate.articleId)
+    if (!selected && attachedArticles.length >= 5) {
+      setArticlePickerError(t('articleContextLimitReached'))
+      return
+    }
+    const next = selected
+      ? attachedCandidates.filter((item) => item.articleId !== candidate.articleId)
+      : [...attachedCandidates, candidate]
+    try {
+      await onAttachedArticlesChange(next)
+    } catch {
+      setArticlePickerError(t('articleContextUpdateFailed'))
+    }
+  }
+
+  const copyAssistantMessage = async (message: LlmMessageRecord): Promise<void> => {
+    try {
+      await copyPlainText(displayChatAssistantContent(message.content))
+      setCopyState({ messageId: message.id, ok: true })
+    } catch {
+      setCopyState({ messageId: message.id, ok: false })
+    }
+    window.setTimeout(() => setCopyState((current) => current?.messageId === message.id ? null : current), 1_600)
+  }
+
+  const syncScrollAvailability = (timeline: HTMLDivElement): void => {
+    const maxScrollTop = Math.max(0, timeline.scrollHeight - timeline.clientHeight)
+    const tolerance = 4
+    setScrollAvailability({
+      up: timeline.scrollTop > tolerance,
+      down: timeline.scrollTop < maxScrollTop - tolerance
+    })
+  }
+
+  useEffect(() => {
+    if (!followOutput) return
+    const frame = window.requestAnimationFrame(() => {
+      const timeline = timelineRef.current
+      if (!timeline) return
+      timeline.scrollTop = timeline.scrollHeight
+      const maxScrollTop = Math.max(0, timeline.scrollHeight - timeline.clientHeight)
+      scrollOwnershipRef.current = updateReaderAiChatScrollOwnership(
+        scrollOwnershipRef.current,
+        timeline.scrollTop,
+        maxScrollTop
+      )
+      syncScrollAvailability(timeline)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [followOutput, messages])
+
+  useEffect(() => {
+    const timeline = timelineRef.current
+    if (!timeline || typeof ResizeObserver === 'undefined') return
+    let frame: number | null = null
+    const observer = new ResizeObserver(() => {
+      if (frame !== null) window.cancelAnimationFrame(frame)
+      frame = window.requestAnimationFrame(() => {
+        frame = null
+        const maxScrollTop = Math.max(0, timeline.scrollHeight - timeline.clientHeight)
+        const observed = updateReaderAiChatScrollOwnership(
+          scrollOwnershipRef.current,
+          timeline.scrollTop,
+          maxScrollTop
+        )
+        scrollOwnershipRef.current = observed
+        setFollowOutput(observed.following)
+        if (observed.following) {
+          timeline.scrollTop = timeline.scrollHeight
+          const nextMaxScrollTop = Math.max(0, timeline.scrollHeight - timeline.clientHeight)
+          scrollOwnershipRef.current = updateReaderAiChatScrollOwnership(
+            scrollOwnershipRef.current,
+            timeline.scrollTop,
+            nextMaxScrollTop
+          )
+        }
+        syncScrollAvailability(timeline)
+      })
+    })
+    observer.observe(timeline)
+    return () => {
+      observer.disconnect()
+      if (frame !== null) window.cancelAnimationFrame(frame)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!locateMessageId) return
+    const frame = window.requestAnimationFrame(() => {
+      const timeline = timelineRef.current
+      const target = timeline?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(locateMessageId)}"]`)
+      if (!target) {
+        onLocateMessageHandled?.()
+        return
+      }
+      scrollOwnershipRef.current = pauseReaderAiChatScroll(scrollOwnershipRef.current)
+      setFollowOutput(false)
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      setHighlightedMessageId(locateMessageId)
+      onLocateMessageHandled?.()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [locateMessageId, onLocateMessageHandled])
+
+  useEffect(() => {
+    if (!highlightedMessageId) return
+    const timer = window.setTimeout(() => setHighlightedMessageId(null), 1_600)
+    return () => window.clearTimeout(timer)
+  }, [highlightedMessageId])
+
+  const handleTimelineScroll = (): void => {
+    const timeline = timelineRef.current
+    if (!timeline) return
+    const maxScrollTop = Math.max(0, timeline.scrollHeight - timeline.clientHeight)
+    const userInitiated = userScrollIntentRef.current
+    userScrollIntentRef.current = false
+    const next = updateReaderAiChatScrollOwnership(
+      scrollOwnershipRef.current,
+      timeline.scrollTop,
+      maxScrollTop,
+      userInitiated
+    )
+    scrollOwnershipRef.current = next
+    setFollowOutput(next.following)
+    syncScrollAvailability(timeline)
+  }
+
+  const markTimelineUserScrollIntent = (): void => {
+    userScrollIntentRef.current = true
+  }
+
+  const handleTimelinePointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const timeline = event.currentTarget
+    if (timeline.scrollHeight <= timeline.clientHeight) return
+    const bounds = timeline.getBoundingClientRect()
+    const scrollbarHitWidth = Math.max(12, timeline.offsetWidth - timeline.clientWidth)
+    if (event.clientX >= bounds.right - scrollbarHitWidth) markTimelineUserScrollIntent()
+  }
+
+  const handleTimelineKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) {
+      markTimelineUserScrollIntent()
+    }
+  }
+
+  const jumpToBottom = (): void => {
+    const timeline = timelineRef.current
+    if (!timeline) return
+    scrollOwnershipRef.current = resumeReaderAiChatScroll(scrollOwnershipRef.current)
+    setFollowOutput(true)
+    timeline.scrollTo({ top: timeline.scrollHeight, behavior: 'smooth' })
+  }
+
+  const jumpToTop = (): void => {
+    const timeline = timelineRef.current
+    if (!timeline) return
+    scrollOwnershipRef.current = pauseReaderAiChatScroll(scrollOwnershipRef.current)
+    setFollowOutput(false)
+    timeline.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const submitChat = (): void => {
+    modelPickerRef.current?.removeAttribute('open')
+    composerActionsRef.current?.removeAttribute('open')
+    onSend()
+  }
+
+  const selectQuickMessage = (message: LlmQuickMessage): void => {
+    composerActionsRef.current?.removeAttribute('open')
+    modelPickerRef.current?.removeAttribute('open')
+    onQuickMessage(message)
+  }
+
+  return <div className="reader-ai-chat">
+    <div className="reader-ai-chat-scroll-stage">
+      <div
+        className="reader-ai-chat-timeline"
+        ref={timelineRef}
+        onScroll={handleTimelineScroll}
+        onWheel={markTimelineUserScrollIntent}
+        onTouchStart={markTimelineUserScrollIntent}
+        onPointerDown={handleTimelinePointerDown}
+        onKeyDown={handleTimelineKeyDown}
+      >
+      {loading ? <div className="reader-ai-chat-state"><RefreshCw size={15} className="spinning"/><span>{t('loadingConversation')}</span></div> : null}
+      {summaryArtifact ? <ReaderAiSummaryArtifact
+        summary={summaryArtifact}
+        expanded={summaryArtifactExpanded}
+        onExpandedChange={setSummaryArtifactExpanded}
+      /> : null}
+      {!loading && visibleMessages.length === 0 && !summaryArtifact ? emptyContent ?? <div className="reader-ai-chat-state"><span>{t('startChatPrompt')}</span></div> : null}
+      {visibleMessages.map((message) => message.role === 'USER'
+        ? <div className={`reader-ai-message user ${highlightedMessageId === message.id ? 'search-highlight' : ''}`} key={message.id} data-message-id={message.id}>
+            <div className="reader-ai-user-bubble">{message.content}</div>
+          </div>
+        : <article className={`reader-ai-message assistant status-${message.status.toLowerCase()} ${highlightedMessageId === message.id ? 'search-highlight' : ''}`} key={message.id} data-message-id={message.id}>
+            {message.requestTask === 'ARTICLE_ANALYSIS' ? <div className="reader-ai-task-badge"><Sparkles size={11}/><span>{t('articleAnalysis')}</span></div> : null}
+            <ReaderAiWebSearchActivity message={message} onOpen={()=>onOpenWebSearch(message.id)}/>
+            {message.reasoning ? message.status === 'STREAMING'
+              ? <div className="reader-ai-reasoning-stream"><strong>{t('thinking')}</strong><pre>{message.reasoning}</pre></div>
+              : <details className="reader-ai-reasoning"><summary>{t('thinking')}</summary><pre>{message.reasoning}</pre></details>
+            : null}
+            {message.content
+              ? <ReaderAiAssistantAnswer
+                  message={message}
+                  onOpenSources={onOpenSources}
+                  onOpenCitation={onOpenCitation}
+                />
+              : message.status === 'STREAMING'
+                ? <div className="reader-ai-assistant-working"><span/><span/><span/></div>
+                : null}
+            <ReaderAiToolActivity
+              items={toolActivity.filter((item)=>item.assistantMessageId===message.id)}
+              busy={toolDecisionBusy}
+              onDecision={onToolApproval}
+            />
+            {message.status === 'STOPPED' ? <div className="reader-ai-message-status">{t('stopped')}</div> : null}
+            {message.status === 'ERROR' ? <div className="reader-ai-message-status error">{message.errorMessage || t('aiChatRequestFailed')}</div> : null}
+            {message.status !== 'STREAMING' ? <div className="reader-ai-message-actions">
+              <button type="button" className="reader-ai-message-action" onClick={()=>void copyAssistantMessage(message)}>
+                {copyState?.messageId === message.id ? t(copyState.ok ? 'copied' : 'copyFailed') : t('copyResponse')}
+              </button>
+              <details className="reader-ai-message-usage">
+                <summary className="reader-ai-message-action">{t('usage')}</summary>
+                <div className="reader-ai-message-usage-popover">
+                  {message.providerId || message.model ? <div><span>{t('aiModel')}</span><strong>{[
+                    providers.find((provider) => provider.id === message.providerId)?.name ?? message.providerId,
+                    message.model
+                  ].filter(Boolean).join(' · ')}</strong></div> : null}
+                  <div><span>{t('inputTokens')}</span><strong>{formatUsageValue(message.promptTokens)}</strong></div>
+                  <div><span>{t('outputTokens')}</span><strong>{formatUsageValue(message.completionTokens)}</strong></div>
+                  <div><span>{t('duration')}</span><strong>{formatDurationMs(message.durationMs, t('notAvailable'))}</strong></div>
+                  {message.tokenUsageEstimated ? <small>{t('tokenUsageEstimated')}</small> : null}
+                </div>
+              </details>
+              {!active && message.id === latestAssistantId ? <button type="button" className="reader-ai-message-action" onClick={()=>onRegenerate(message.id)}>
+                {t(message.status === 'ERROR' || message.status === 'STOPPED' ? 'retryResponse' : 'regenerateResponse')}
+              </button> : null}
+            </div> : null}
+          </article>
+        )}
+      </div>
+      {(scrollAvailability.up || scrollAvailability.down) && visibleMessages.length > 0 ? <div className="reader-ai-scroll-jumps" aria-label={t('chatScrollNavigation')}>
+        {scrollAvailability.up ? <button type="button" aria-label={t('backToTop')} title={t('backToTop')} onClick={jumpToTop}><ChevronUp size={15}/></button> : null}
+        {scrollAvailability.down ? <button type="button" aria-label={t('backToBottom')} title={t('backToBottom')} onClick={jumpToBottom}><ChevronDown size={15}/></button> : null}
+      </div> : null}
+    </div>
+    {error ? <div className="reader-ai-chat-error" role="alert">{error}</div> : null}
+    {selectionText ? <div className="reader-ai-selection-context" aria-label={t('selectedOriginalText')}>
+      <div className="reader-ai-selection-context-copy">
+        <span><strong>{t('selectedOriginalText')}</strong><small>{t('selectedOriginalTextNextMessage')}</small></span>
+        <blockquote>{readerAiSelectionPreview(selectionText)}</blockquote>
+        {selectionTruncated ? <small className="reader-ai-selection-context-warning">{t('selectedTextTruncated', { count: READER_AI_SELECTION_MAX_CHARS })}</small> : null}
+      </div>
+      <button type="button" aria-label={t('removeSelectedText')} title={t('removeSelectedText')} onClick={onClearSelection}><X size={12}/></button>
+    </div> : null}
+    {manualToolContexts.length > 0 ? <div className="reader-ai-manual-contexts" aria-label={t('manualToolAttachedResults')}>
+      {manualToolContexts.map((context)=><div className="reader-ai-manual-context" key={context.contextId}>
+        <span><strong>{context.name}</strong><small>{t('manualToolAttachedToNextMessage')}</small></span>
+        <button type="button" aria-label={t('manualToolRemoveResult')} title={t('manualToolRemoveResult')} disabled={active} onClick={()=>onDiscardManualToolContext(context.contextId)}><X size={12}/></button>
+      </div>)}
+    </div> : null}
+    {selectedManualTool ? <div className="reader-ai-manual-tool-editor">
+      <div className="reader-ai-manual-tool-editor-head">
+        <span><strong>{selectedManualTool.description || selectedManualTool.name}</strong><small>{selectedManualTool.name}</small></span>
+        <span className={`reader-ai-tool-risk ${selectedManualTool.risk.toLowerCase()}`}>{t(selectedManualTool.risk==='READ_ONLY'?'toolRiskReadOnly':selectedManualTool.risk==='SENSITIVE'?'toolRiskSensitive':'toolRiskWrite')}</span>
+      </div>
+      <label>
+        <span>{t('manualToolJsonArguments')}</span>
+        <textarea value={manualToolArguments} rows={4} disabled={manualToolBusy} onChange={(event)=>setManualToolArguments(event.target.value)} spellCheck={false}/>
+      </label>
+      {selectedManualTool.risk !== 'READ_ONLY' ? <small className="reader-ai-manual-tool-warning">{t(selectedManualTool.risk==='WRITE'?'manualToolWriteWarning':'manualToolSensitiveWarning')}</small> : null}
+      {manualToolEditorError ? <small className="reader-ai-manual-tool-error" role="alert">{manualToolEditorError}</small> : null}
+      <div className="reader-ai-manual-tool-editor-actions">
+        <button type="button" className="mini-action secondary" disabled={manualToolBusy} onClick={closeManualToolEditor}>{t('cancel')}</button>
+        <button type="button" className="mini-action" disabled={manualToolBusy} onClick={()=>void runManualTool()}>{manualToolBusy?t('toolDecisionWorking'):t(selectedManualTool.risk==='READ_ONLY'?'manualToolRun':'manualToolConfirmAndRun')}</button>
+      </div>
+    </div> : null}
+    <div className="reader-ai-composer">
+      {attachedArticles.length > 0 ? <div className="reader-ai-article-attachments" aria-label={t('attachedArticleContexts')}>
+        {attachedArticles.map((article) => <span className="reader-ai-article-attachment" key={article.articleId} title={article.title}>
+          <BookOpenText size={11}/>
+          <span>{article.title}</span>
+          <button
+            type="button"
+            aria-label={t('removeArticleContext', { title: article.title })}
+            title={t('removeArticleContext', { title: article.title })}
+            disabled={active}
+            onClick={() => void toggleAttachedArticle({ articleId: article.articleId, title: article.title, link: article.link, feedName: null, publishedAt: null })}
+          ><X size={10}/></button>
+        </span>)}
+      </div> : null}
+      <textarea
+        ref={composerRef}
+        value={draft}
+        rows={1}
+        placeholder={placeholder}
+        aria-label={placeholder}
+        disabled={active}
+        onChange={(event)=>onDraftChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
+          event.preventDefault()
+          submitChat()
+        }}
+      />
+      <div className="reader-ai-composer-footer">
+        <div className="reader-ai-composer-left">
+          <details
+            className="reader-ai-article-picker"
+            ref={articlePickerRef}
+            onToggle={(event) => setArticlePickerOpen(event.currentTarget.open)}
+          >
+            <summary
+              className={`reader-ai-article-picker-trigger ${attachedArticles.length > 0 ? 'active' : ''}`}
+              aria-label={t('attachArticleContext')}
+              title={t('attachArticleContext')}
+            >
+              <Paperclip size={13}/>
+              {attachedArticles.length > 0 ? <span>{attachedArticles.length}</span> : null}
+            </summary>
+            <div className="reader-ai-article-picker-popover">
+              <div className="reader-ai-article-picker-head">
+                <div><strong>{t('articleContextTitle')}</strong><small>{t('articleContextCount', { count: attachedArticles.length })}</small></div>
+                <span>{attachedArticles.length}/5</span>
+              </div>
+              <label className="reader-ai-article-picker-search">
+                <Search size={13}/>
+                <input
+                  value={articleQuery}
+                  placeholder={t('articleContextSearchPlaceholder')}
+                  aria-label={t('articleContextSearchPlaceholder')}
+                  disabled={active}
+                  onChange={(event) => setArticleQuery(event.target.value)}
+                />
+              </label>
+              {articlePickerError ? <small className="reader-ai-article-picker-error" role="alert">{articlePickerError}</small> : null}
+              <div className="reader-ai-article-picker-list">
+                {articleCandidatesLoading ? <div className="reader-ai-article-picker-state"><RefreshCw size={13} className="spinning"/><span>{t('loading')}</span></div>
+                  : articleCandidates.length > 0 ? articleCandidates.map((candidate) => {
+                      const selected = attachedArticleIds.has(candidate.articleId)
+                      return <button
+                        type="button"
+                        key={candidate.articleId}
+                        className={selected ? 'selected' : ''}
+                        aria-pressed={selected}
+                        disabled={active || (!selected && attachedArticles.length >= 5)}
+                        onClick={() => void toggleAttachedArticle(candidate)}
+                      >
+                        <span><strong>{candidate.title}</strong><small>{candidate.feedName || (candidate.publishedAt ? new Date(candidate.publishedAt).toLocaleDateString() : t('articleContextLocalArticle'))}</small></span>
+                        <span className="reader-ai-article-picker-check">{selected ? '✓' : '+'}</span>
+                      </button>
+                    })
+                  : <div className="reader-ai-article-picker-state"><span>{t(articleQuery.trim() ? 'articleContextNoSearchResults' : 'articleContextNoRecent')}</span></div>}
+              </div>
+              <small className="reader-ai-article-picker-hint">{t('articleContextHint')}</small>
+            </div>
+          </details>
+          <details className="reader-ai-composer-actions" ref={composerActionsRef}>
+            <summary className="reader-ai-composer-add" aria-label={t('composerActions')} title={t('composerActions')}><Plus size={14}/></summary>
+            <div className="reader-ai-composer-actions-popover">
+              <strong>{t('quickMessagesTitle')}</strong>
+              {quickMessages.length > 0 ? <div className="reader-ai-quick-message-menu">
+                {quickMessages.map((message)=><button type="button" key={message.id} disabled={active} onClick={()=>selectQuickMessage(message)}><span>{message.title}</span><small>{message.content}</small></button>)}
+              </div> : <small className="reader-ai-quick-message-empty">{t('quickMessagesEmpty')}</small>}
+              <div className="reader-ai-composer-action-divider"/>
+              <strong>{t('manualToolsTitle')}</strong>
+              {!manualToolConversationReady ? <small className="reader-ai-quick-message-empty">{t('manualToolNeedsConversation')}</small>
+                : manualTools.length > 0 ? <div className="reader-ai-manual-tool-menu">
+                    {manualTools.map((tool)=><button type="button" key={tool.id} disabled={active} onClick={()=>openManualToolEditor(tool)}><span>{tool.description || tool.name}</span><small>{tool.name} · {t(tool.risk==='READ_ONLY'?'toolRiskReadOnly':tool.risk==='SENSITIVE'?'toolRiskSensitive':'toolRiskWrite')}</small></button>)}
+                  </div>
+                : <small className="reader-ai-quick-message-empty">{t('manualToolsEmpty')}</small>}
+            </div>
+          </details>
+          <button
+            type="button"
+            className={`reader-ai-web-search-toggle ${forceWebSearchNext ? 'active' : ''}`}
+            aria-pressed={forceWebSearchNext}
+            aria-label={t('webSearchForceNext')}
+            title={t(forceWebSearchNext ? 'webSearchForceArmedDescription' : 'webSearchForceNext')}
+            disabled={active}
+            onClick={()=>onForceWebSearchNextChange(!forceWebSearchNext)}
+          >
+            <Search size={13}/>
+            <span>{t(forceWebSearchNext ? 'webSearchForceArmed' : 'webSearchForceNextShort')}</span>
+          </button>
+          <details className="reader-ai-model-picker" ref={modelPickerRef}>
+            <summary className="reader-ai-model-label" title={modelLabel}>{modelLabel}</summary>
+            <div className="reader-ai-model-popover" style={{ width: modelPopoverWidth, maxWidth: 'calc(100cqw - 20px)' }}>
+              <label>
+                <span>{t('aiProvider')}</span>
+                <select value={providerId} aria-label={t('aiProvider')} disabled={active} onChange={(event)=>onProviderChange(event.target.value)}>
+                  {providers.map((provider)=><option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>{t('aiModel')}</span>
+                <select value={model} aria-label={t('aiModel')} disabled={active || !selectedProvider || modelOptions.length === 0} onChange={(event)=>{
+                  onModelChange(event.target.value)
+                  modelPickerRef.current?.removeAttribute('open')
+                }}>
+                  {modelOptions.length === 0 ? <option value="">{t('selectModel')}</option> : modelOptions.map((item)=><option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+              <small>{t('conversationModelSwitchHint')}</small>
+            </div>
+          </details>
+        </div>
+        {active
+          ? <button type="button" className="reader-ai-send stop" aria-label={t('stopGenerating')} title={t('stopGenerating')} onClick={onStop}><Square size={13}/></button>
+          : <button type="button" className="reader-ai-send" aria-label={t('send')} title={t('send')} disabled={!draft.trim()} onClick={submitChat}><ArrowUp size={15}/></button>}
+      </div>
+    </div>
+  </div>
+}
+
+function ReaderAiToolActivity({
+  items,
+  busy,
+  onDecision
+}: {
+  items: LlmToolActivityView[]
+  busy: Record<string, boolean>
+  onDecision(toolCallId: string, decision: LlmToolApprovalDecision): void
+}): React.JSX.Element | null {
+  const { t } = useTranslation()
+  if (items.length === 0) return null
+  return <div className="reader-ai-tool-activity">
+    {items.map((item)=>{
+      const pending=item.status==='PENDING_APPROVAL'
+      const working=item.status==='RUNNING'
+      const riskKey=item.risk==='READ_ONLY'?'toolRiskReadOnly':item.risk==='SENSITIVE'?'toolRiskSensitive':'toolRiskWrite'
+      const statusKey=item.status==='COMPLETE'?'toolStatusComplete':item.status==='DENIED'?'toolStatusDenied':item.status==='ERROR'?'toolStatusError':working?'toolStatusRunning':'toolStatusApprovalRequired'
+      return <section className={`reader-ai-tool-card risk-${item.risk.toLowerCase()} status-${item.status.toLowerCase()}`} key={item.toolCallId}>
+        <div className="reader-ai-tool-head">
+          <div><strong>{item.name}</strong><span>{item.description||t('toolNoDescription')}</span></div>
+          <div className="reader-ai-tool-badges"><span className={`reader-ai-tool-risk ${item.risk.toLowerCase()}`}>{t(riskKey)}</span><span>{t(statusKey)}</span></div>
+        </div>
+        <details className="reader-ai-tool-arguments" open={pending}>
+          <summary>{t('toolArguments')}{item.argumentsTruncated?` · ${t('toolArgumentsTruncated')}`:''}</summary>
+          <pre>{item.argumentsPreview||'{}'}</pre>
+        </details>
+        {item.resultPreview&&item.status!=='DENIED'?<details className="reader-ai-tool-result"><summary>{t('toolResult')}</summary><pre>{item.resultPreview}</pre></details>:null}
+        {item.errorMessage?<div className="reader-ai-tool-error">{item.errorMessage}</div>:null}
+        {pending?<div className="reader-ai-tool-approval">
+          <span>{t(item.risk==='WRITE'?'toolApprovalWriteWarning':'toolApprovalSensitiveWarning')}</span>
+          <div><button type="button" className="mini-action secondary" disabled={busy[item.toolCallId]===true} onClick={()=>onDecision(item.toolCallId,'DENY')}>{t('toolDeny')}</button><button type="button" className="mini-action" disabled={busy[item.toolCallId]===true} onClick={()=>onDecision(item.toolCallId,'APPROVE')}>{busy[item.toolCallId]?t('toolDecisionWorking'):t('toolAllowOnce')}</button></div>
+        </div>:null}
+      </section>
+    })}
+  </div>
+}
+
+function ensureChatAssistantMessage(
+  messages: LlmMessageRecord[],
+  identity: LlmExecutionIdentity,
+  requestTask: 'CHAT' | 'ARTICLE_ANALYSIS' = 'CHAT'
+): LlmMessageRecord[] {
+  if (messages.some((message) => message.id === identity.assistantMessageId)) return messages
+  const now = Date.now()
+  return [...messages, {
+    id: identity.assistantMessageId,
+    conversationId: identity.conversationId,
+    role: 'ASSISTANT',
+    content: '',
+    requestTask,
+    providerId: null,
+    model: null,
+    reasoning: null,
+    status: 'STREAMING',
+    errorMessage: null,
+    historyActive: true,
+    webSearchStatus: null,
+    webSearchQuery: null,
+    webSearchProviderName: null,
+    webSearchResultCount: null,
+    webSearchErrorMessage: null,
+    promptTokens: null,
+    completionTokens: null,
+    durationMs: null,
+    tokenUsageEstimated: false,
+    finishReason: null,
+    createdAt: now,
+    updatedAt: now
+  }]
+}
+
+function applyLlmExecutionEvent(
+  messages: LlmMessageRecord[],
+  event: LlmExecutionEvent,
+  requestTask: 'CHAT' | 'ARTICLE_ANALYSIS' = 'CHAT'
+): LlmMessageRecord[] {
+  const withAssistant = ensureChatAssistantMessage(messages, event, requestTask)
+  return withAssistant.map((message) => {
+    if (message.id !== event.assistantMessageId) return message
+    const updatedAt = event.emittedAt
+    if (event.type === 'STARTED') return { ...message, status: 'STREAMING', updatedAt }
+    if (event.type === 'WEB_SEARCH_STATE') return {
+      ...message,
+      webSearchStatus: event.status,
+      webSearchQuery: event.query,
+      webSearchProviderName: event.providerName,
+      webSearchResultCount: event.resultCount,
+      webSearchErrorMessage: event.errorMessage,
+      status: 'STREAMING',
+      updatedAt
+    }
+    if (event.type === 'REASONING_DELTA') return { ...message, reasoning: `${message.reasoning ?? ''}${event.delta}`, status: 'STREAMING', updatedAt }
+    if (event.type === 'CONTENT_DELTA') return { ...message, content: `${message.content}${event.delta}`, status: 'STREAMING', updatedAt }
+    if (event.type === 'TERMINAL') return {
+      ...message,
+      status: event.finishReason === 'CANCELLED' ? 'STOPPED' : 'COMPLETE',
+      finishReason: event.finishReason,
+      updatedAt
+    }
+    if (event.type === 'ERROR') return {
+      ...message,
+      status: 'ERROR',
+      errorMessage: event.error.message,
+      finishReason: 'ERROR',
+      updatedAt
+    }
+    return message
+  })
+}
+
+function chatConversationTitle(content: string): string {
+  const compact = content.replace(/\s+/g, ' ').trim()
+  return compact.length <= 42 ? compact : `${compact.slice(0, 42).trimEnd()}…`
+}
+
+async function copyPlainText(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  if (!copied) throw new Error('clipboard unavailable')
+}
+
+function formatUsageValue(value: number | null): string {
+  return value == null ? '—' : value.toLocaleString()
+}
+
+function formatDurationMs(value: number | null, unavailable: string): string {
+  if (value == null) return unavailable
+  if (value < 1_000) return `${value} ms`
+  return `${(value / 1_000).toFixed(value < 10_000 ? 1 : 0)} s`
+}
+
+function AiSummaryView({
+  panelState,
   summary,
   loading,
   progressStage,
+  streamUpdate,
   elapsedSeconds,
   placement,
   panelSize,
@@ -2685,12 +5444,16 @@ function AiSummaryPanel({
   onPanelSizeChange,
   onRegenerate,
   onStop,
-  onClose,
-  replaceMode = false
+  onFirstVisibleValue,
+  onBackToHome,
+  onContinueChat,
+  onClose
 }: {
+  panelState: ReaderAiPanelState
   summary: AiSummaryDocument | null
   loading: boolean
   progressStage: AiSummaryProgressStage | null
+  streamUpdate: AiSummaryStreamUpdate | null
   elapsedSeconds: number
   placement: AiSummaryPlacement
   panelSize: number
@@ -2702,54 +5465,68 @@ function AiSummaryPanel({
   onPanelSizeChange(size:number):void
   onRegenerate():void
   onStop():void
+  onFirstVisibleValue(firstVisible:'reasoning'|'content'):void
+  onBackToHome():void
+  onContinueChat():void
   onClose():void
-  replaceMode?:boolean
 }):React.JSX.Element{
   const {t}=useTranslation()
-  const [sizeEditorOpen,setSizeEditorOpen]=useState(false)
   const summaryMarkdown=summary ? stripRedundantSummaryHeading(summary.summary) : ''
-  const sizeLabel=placement==='top'||placement==='bottom'?t('summaryPanelHeight'):t('summaryPanelWidth')
-  return <aside className={`ai-summary-panel ${replaceMode?'replace':'docked'} placement-${placement}`}>
-    <header className="ai-summary-panel-header">
-      <div className="ai-summary-panel-identity"><AiSummaryAccentIcon variant="panel" loading={loading}/><div><strong>{t('aiSummary')}</strong><span>{summary ? `${summary.providerName} · ${summary.model}` : t('aiSummaryWorking')}</span></div>{summary&&<span className="ai-summary-mode-badge">{t(summaryLengthLabelKey(summary.length))}</span>}</div>
-      <div className="ai-summary-panel-actions">
-        <select value={placement} aria-label={t('summaryPlacement')} title={t('summaryPlacement')} onChange={(event)=>{setSizeEditorOpen(false);onPlacementChange(event.target.value as AiSummaryPlacement)}}>
-          <option value="replace">{t('summaryPlacementReplace')}</option>
-          <option value="left">{t('summaryPlacementLeft')}</option>
-          <option value="right">{t('summaryPlacementRight')}</option>
-          <option value="top">{t('summaryPlacementTop')}</option>
-          <option value="bottom">{t('summaryPlacementBottom')}</option>
-        </select>
-        {!replaceMode&&<div className="ai-summary-size-control">
-          <button type="button" className={`icon-button ${sizeEditorOpen?'active':''}`} title={t('summaryPanelSize')} aria-label={t('summaryPanelSize')} aria-expanded={sizeEditorOpen} onClick={()=>setSizeEditorOpen((open)=>!open)}><SlidersHorizontal size={15}/></button>
-          {sizeEditorOpen&&<div className="ai-summary-size-popover">
-            <div><span>{sizeLabel}</span><strong>{panelSize}px</strong></div>
-            <input aria-label={sizeLabel} type="range" min="220" max="640" step="10" value={panelSize} onChange={(event)=>onPanelSizeChange(Number(event.target.value))}/>
-          </div>}
-        </div>}
-        {summary?.status==='GENERATED'&&<button type="button" className={`icon-button ${speechActive?'active':''}`} title={speechActive&&speechStatus==='speaking'?t('pauseReading'):speechActive&&speechStatus==='paused'?t('resumeReading'):t('readSummary')} aria-label={t('readSummary')} onClick={onToggleSpeech}>{speechActive&&speechStatus==='speaking'?<Pause size={15}/>:speechActive&&speechStatus==='paused'?<Play size={15}/>:<Headphones size={15}/>}</button>}
-        {speechActive&&speechStatus!=='idle'&&<button type="button" className="icon-button" title={t('stopReading')} aria-label={t('stopReading')} onClick={onStopSpeech}><Square size={13}/></button>}
-        <button type="button" className="icon-button" title={t('close')} aria-label={t('close')} onClick={onClose}><X size={15}/></button>
-      </div>
-    </header>
-    <div className="ai-summary-panel-body">
+  const streamingSummaryMarkdown=streamUpdate?.summaryPreview ? stripRedundantSummaryHeading(streamUpdate.summaryPreview) : ''
+  const hasStreamingPreview=loading&&Boolean(streamingSummaryMarkdown||streamUpdate?.reasoningPreview)
+  const firstVisibleValue: 'reasoning' | 'content' | null = loading
+    ? streamUpdate?.reasoningPreview ? 'reasoning' : streamingSummaryMarkdown ? 'content' : null
+    : summary?.status === 'GENERATED'
+      ? summary.reasoning ? 'reasoning' : summaryMarkdown ? 'content' : null
+      : null
+  useEffect(() => {
+    if (!firstVisibleValue) return
+    let paintFrame: number | null = null
+    // 第一帧让 React commit 的 DOM 进入绘制；第二帧记录用户实际可见后的近似时点。
+    const commitFrame = window.requestAnimationFrame(() => {
+      paintFrame = window.requestAnimationFrame(() => onFirstVisibleValue(firstVisibleValue))
+    })
+    return () => {
+      window.cancelAnimationFrame(commitFrame)
+      if (paintFrame !== null) window.cancelAnimationFrame(paintFrame)
+    }
+  }, [firstVisibleValue, onFirstVisibleValue])
+  return <ReaderAiPanelShell
+    view={panelState.view}
+    detailView={panelState.detailView}
+    placement={placement}
+    panelSize={panelSize}
+    leading={<AiSummaryAccentIcon variant="panel" loading={loading}/>}
+    title={t('aiSummary')}
+    subtitle={summary ? `${summary.providerName} · ${summary.model}` : t('aiSummaryWorking')}
+    badge={summary ? <span className="ai-summary-mode-badge">{t(summaryLengthLabelKey(summary.length))}</span> : null}
+    actions={<>
+      <button type="button" className="icon-button" title={t('backToAiHome')} aria-label={t('backToAiHome')} onClick={onBackToHome}><ArrowLeft size={15}/></button>
+      {summary?.status==='GENERATED'&&<button type="button" className={`icon-button ${speechActive?'active':''}`} title={speechActive&&speechStatus==='speaking'?t('pauseReading'):speechActive&&speechStatus==='paused'?t('resumeReading'):t('readSummary')} aria-label={t('readSummary')} onClick={onToggleSpeech}>{speechActive&&speechStatus==='speaking'?<Pause size={15}/>:speechActive&&speechStatus==='paused'?<Play size={15}/>:<Headphones size={15}/>}</button>}
+      {speechActive&&speechStatus!=='idle'&&<button type="button" className="icon-button" title={t('stopReading')} aria-label={t('stopReading')} onClick={onStopSpeech}><Square size={13}/></button>}
+    </>}
+    onPlacementChange={onPlacementChange}
+    onPanelSizeChange={onPanelSizeChange}
+    onClose={onClose}
+  >
       {loading&&<AiSummaryProgressStatus stage={progressStage} elapsedSeconds={elapsedSeconds}/>}
-      {summary ? <>
+      {hasStreamingPreview ? <>
+        {streamUpdate?.reasoningPreview&&<details className="ai-reasoning ai-reasoning-streaming" open><summary>{t('aiReasoning')}</summary><pre>{streamUpdate.reasoningPreview}</pre></details>}
+        {streamingSummaryMarkdown&&<SimpleMarkdown text={streamingSummaryMarkdown}/>}
+        <button className="mini-action ai-summary-stop-action" type="button" onClick={onStop}><Square size={12}/>{t('stopAiSummary')}</button>
+      </> : summary ? <>
+        {summary.reasoning&&<details className="ai-reasoning"><summary>{t('aiReasoning')}</summary><pre>{summary.reasoning}</pre></details>}
         {summary.status==='NOT_NEEDED'
           ? <div className="ai-summary-not-needed"><strong>{t('aiSummaryNotNeeded')}</strong><span>{t(summary.skipReason==='local_source_already_concise'?'aiSummaryNotNeededLocal':'aiSummaryNotNeededModel')}</span></div>
           : <SimpleMarkdown text={summaryMarkdown}/>}
-        {summary.reasoning&&<details className="ai-reasoning"><summary>{t('aiReasoning')}</summary><pre>{summary.reasoning}</pre></details>}
         {loading
           ? <button className="mini-action ai-summary-stop-action" type="button" onClick={onStop}><Square size={12}/>{t('stopAiSummary')}</button>
-          : <button className="mini-action regenerate-button" type="button" onClick={onRegenerate}><RefreshCw size={13}/>{t('regenerateWithOptions')}</button>}
+          : <div className="ai-summary-footer-actions">
+              <button className="mini-action" type="button" onClick={onContinueChat}>{t('continueAsking')}</button>
+              <button className="mini-action regenerate-button" type="button" onClick={onRegenerate}><RefreshCw size={13}/>{t('regenerateWithOptions')}</button>
+            </div>}
       </> : <div className="ai-summary-progress-empty"><AiSummaryAccentIcon variant="panel" loading/><strong>{t(aiSummaryProgressLabelKey(progressStage))}</strong><span>{t('aiSummaryElapsed',{count:elapsedSeconds})}</span><button className="mini-action ai-summary-stop-action" type="button" onClick={onStop}><Square size={12}/>{t('stopAiSummary')}</button></div>}
-    </div>
-  </aside>
-}
-
-function AiSummaryProgressBanner({stage,elapsedSeconds,onStop}:{stage:AiSummaryProgressStage|null;elapsedSeconds:number;onStop():void}):React.JSX.Element{
-  const {t}=useTranslation()
-  return <div className="ai-summary-progress-banner" role="status"><AiSummaryAccentIcon variant="toolbar" loading/><div><strong>{t(aiSummaryProgressLabelKey(stage))}</strong><span>{t('aiSummaryElapsed',{count:elapsedSeconds})} · {t('aiSummaryContinueReading')}</span></div><button className="mini-action ai-summary-stop-action" type="button" onClick={onStop}><Square size={12}/>{t('stopAiSummary')}</button></div>
+  </ReaderAiPanelShell>
 }
 
 function AiSummaryProgressStatus({stage,elapsedSeconds}:{stage:AiSummaryProgressStage|null;elapsedSeconds:number}):React.JSX.Element{

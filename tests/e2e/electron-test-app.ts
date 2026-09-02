@@ -39,7 +39,10 @@ export async function launchIsolatedOrigRead(
   return {
     app,
     async close() {
-      await app.close()
+      await Promise.race([
+        app.close().catch(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, 2_000))
+      ])
       await rm(userDataDir, { recursive: true, force: true, maxRetries: 4, retryDelay: 80 })
     }
   }

@@ -72,6 +72,75 @@ export class ExaWebSearchAdapter implements WebSearchProviderAdapter {
   }
 }
 
+export class BraveWebSearchAdapter implements WebSearchProviderAdapter {
+  readonly kind = 'BRAVE' as const
+
+  async search(profile: WebSearchProviderProfile, apiKey: string, request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResponse> {
+    requireProfile(profile, this.kind)
+    if (!apiKey.trim()) throw new WebSearchException('Brave Search 缺少 API Key')
+    const url = new URL(profile.endpoint)
+    url.searchParams.set('q', request.query)
+    url.searchParams.set('count', String(request.maxResults))
+    url.searchParams.set('text_decorations', 'false')
+    url.searchParams.set('extra_snippets', String(request.includeContent))
+    const payload = await fetchSearchJson(url.toString(), {
+      method: 'GET',
+      headers: { 'X-Subscription-Token': apiKey.trim(), Accept: 'application/json' }
+    }, request.timeoutMs, signal, 'Brave Search')
+    return parseBraveResponse(profile, payload)
+  }
+}
+
+export class PerplexityWebSearchAdapter implements WebSearchProviderAdapter {
+  readonly kind = 'PERPLEXITY' as const
+
+  async search(profile: WebSearchProviderProfile, apiKey: string, request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResponse> {
+    requireProfile(profile, this.kind)
+    if (!apiKey.trim()) throw new WebSearchException('Perplexity Search 缺少 API Key')
+    const payload = await fetchSearchJson(profile.endpoint, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey.trim()}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: request.query, max_results: request.maxResults, max_tokens_per_page: request.includeContent ? 4096 : 512 })
+    }, request.timeoutMs, signal, 'Perplexity Search')
+    return parsePerplexityResponse(profile, payload)
+  }
+}
+
+export class LinkupWebSearchAdapter implements WebSearchProviderAdapter {
+  readonly kind = 'LINKUP' as const
+
+  async search(profile: WebSearchProviderProfile, apiKey: string, request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResponse> {
+    requireProfile(profile, this.kind)
+    if (!apiKey.trim()) throw new WebSearchException('Linkup 缺少 API Key')
+    const payload = await fetchSearchJson(profile.endpoint, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey.trim()}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: request.query, depth: 'standard', outputType: 'searchResults' })
+    }, request.timeoutMs, signal, 'Linkup')
+    return parseLinkupResponse(profile, payload, request.maxResults)
+  }
+}
+
+export class FirecrawlWebSearchAdapter implements WebSearchProviderAdapter {
+  readonly kind = 'FIRECRAWL' as const
+
+  async search(profile: WebSearchProviderProfile, apiKey: string, request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResponse> {
+    requireProfile(profile, this.kind)
+    if (!apiKey.trim()) throw new WebSearchException('Firecrawl 缺少 API Key')
+    const payload = await fetchSearchJson(profile.endpoint, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey.trim()}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: request.query,
+        limit: request.maxResults,
+        sources: ['web'],
+        ...(request.includeContent ? { scrapeOptions: { formats: [{ type: 'markdown' }] } } : {})
+      })
+    }, request.timeoutMs, signal, 'Firecrawl')
+    return parseFirecrawlResponse(profile, payload)
+  }
+}
+
 export class KeenableWebSearchAdapter implements WebSearchProviderAdapter {
   readonly kind = 'KEENABLE' as const
 
@@ -90,6 +159,22 @@ export class KeenableWebSearchAdapter implements WebSearchProviderAdapter {
       body: JSON.stringify({ query: request.query, max_results: request.maxResults })
     }, request.timeoutMs, signal, 'Keenable')
     return parseKeenableResponse(profile, payload)
+  }
+}
+
+export class SearxngWebSearchAdapter implements WebSearchProviderAdapter {
+  readonly kind = 'SEARXNG' as const
+
+  async search(profile: WebSearchProviderProfile, _apiKey: string, request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResponse> {
+    requireProfile(profile, this.kind)
+    const url = new URL(profile.endpoint)
+    url.searchParams.set('q', request.query)
+    url.searchParams.set('format', 'json')
+    const payload = await fetchSearchJson(url.toString(), {
+      method: 'GET',
+      headers: { Accept: 'application/json' }
+    }, request.timeoutMs, signal, 'SearXNG')
+    return parseSearxngResponse(profile, payload, request.maxResults)
   }
 }
 
@@ -131,6 +216,75 @@ export function parseExaResponse(profile: WebSearchProviderProfile, payload: unk
   }) : [])
 }
 
+export function parseBraveResponse(profile: WebSearchProviderProfile, payload: unknown): WebSearchResponse {
+  const root = asRecord(payload, 'Brave Search')
+  const web = isRecord(root.web) ? root.web : null
+  return response(profile, Array.isArray(web?.results) ? web.results.flatMap((item) => {
+    const record = isRecord(item) ? item : null
+    const url = stringValue(record?.url)
+    if (!record || !url) return []
+    const extras = Array.isArray(record.extra_snippets) ? record.extra_snippets.map(stringValue).filter(Boolean) : []
+    const snippets = [stringValue(record.description), ...extras].filter(Boolean)
+    return [result({
+      title: stringValue(record.title) || url,
+      url,
+      snippet: [...new Set(snippets)].join('\n'),
+      publishedAt: stringValue(record.page_age) || null,
+      content: null
+    })]
+  }) : [])
+}
+
+export function parsePerplexityResponse(profile: WebSearchProviderProfile, payload: unknown): WebSearchResponse {
+  const root = asRecord(payload, 'Perplexity Search')
+  return response(profile, Array.isArray(root.results) ? root.results.flatMap((item) => {
+    const record = isRecord(item) ? item : null
+    const url = stringValue(record?.url)
+    if (!record || !url) return []
+    return [result({
+      title: stringValue(record.title) || url,
+      url,
+      snippet: stringValue(record.snippet),
+      publishedAt: stringValue(record.date) || null,
+      content: null
+    })]
+  }) : [])
+}
+
+export function parseLinkupResponse(profile: WebSearchProviderProfile, payload: unknown, maxResults = 20): WebSearchResponse {
+  const root = asRecord(payload, 'Linkup')
+  const items = Array.isArray(root.results) ? root.results.slice(0, maxResults) : []
+  return response(profile, items.flatMap((item) => {
+    const record = isRecord(item) ? item : null
+    const url = stringValue(record?.url)
+    if (!record || !url) return []
+    return [result({
+      title: stringValue(record.name) || url,
+      url,
+      snippet: stringValue(record.content),
+      publishedAt: null,
+      content: null
+    })]
+  }))
+}
+
+export function parseFirecrawlResponse(profile: WebSearchProviderProfile, payload: unknown): WebSearchResponse {
+  const root = asRecord(payload, 'Firecrawl')
+  const data = isRecord(root.data) ? root.data : null
+  return response(profile, Array.isArray(data?.web) ? data.web.flatMap((item) => {
+    const record = isRecord(item) ? item : null
+    const url = stringValue(record?.url)
+    if (!record || !url) return []
+    return [result({
+      title: stringValue(record.title) || url,
+      url,
+      snippet: stringValue(record.description),
+      publishedAt: null,
+      content: stringValue(record.markdown) || null
+    })]
+  }) : [])
+}
+
 export function parseKeenableResponse(profile: WebSearchProviderProfile, payload: unknown): WebSearchResponse {
   const root = asRecord(payload, 'Keenable')
   return response(profile, Array.isArray(root.results) ? root.results.flatMap((item) => {
@@ -145,6 +299,23 @@ export function parseKeenableResponse(profile: WebSearchProviderProfile, payload
       content: null
     })]
   }) : [])
+}
+
+export function parseSearxngResponse(profile: WebSearchProviderProfile, payload: unknown, maxResults = 20): WebSearchResponse {
+  const root = asRecord(payload, 'SearXNG')
+  const items = Array.isArray(root.results) ? root.results.slice(0, maxResults) : []
+  return response(profile, items.flatMap((item) => {
+    const record = isRecord(item) ? item : null
+    const url = stringValue(record?.url)
+    if (!record || !url) return []
+    return [result({
+      title: stringValue(record.title) || url,
+      url,
+      snippet: stringValue(record.content),
+      publishedAt: stringValue(record.publishedDate) || null,
+      content: null
+    })]
+  }))
 }
 
 export function resolveKeenableEndpoint(endpoint: string, hasApiKey: boolean): string {

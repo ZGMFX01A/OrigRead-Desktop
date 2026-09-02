@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, powerMonitor, shell, type IpcMainInvokeEvent } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
+import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { IPC_CHANNELS, type AppInfo, type FeedSettingsPatch } from '../shared/contracts'
 import { resolveBrandName } from '../shared/locale'
 import { DesktopDatabase } from './database/database'
@@ -66,6 +66,54 @@ import { AccountRepository } from './accounts/account-repository'
 import { RemoteAccountSyncService } from './accounts/remote-account-sync-service'
 import { AccountSyncSettingsProvider, DesktopAccountService } from './accounts/desktop-account-service'
 import type { AccountCreateInput, AccountPatch, AccountType } from '../shared/account'
+import type {
+  LlmAppendUserMessageRequest,
+  LlmCreateConversationRequest,
+  LlmExecuteManualToolRequest,
+  LlmReaderContextSnapshot,
+  LlmReplaceConversationArticlesRequest,
+  LlmStartExecutionRequest,
+  LlmStartExecutionProfile,
+  LlmUpdateConversationRequest
+} from '../shared/llm-ipc'
+import type { LlmConversationRecord } from '../shared/llm-chat'
+import type { LlmContextItem } from '../shared/llm-context'
+import { LlmChatRepository } from './llm/chat-repository'
+import { OpenAiCompatibleLlmAdapter } from './llm/openai-compatible-llm-adapter'
+import { LlmContextComposer } from './llm/context-composer'
+import { LlmToolRuntime } from './llm/tool-runtime'
+import { ManualToolContextService } from './llm/manual-tool-context-service'
+import { LlmRuntime, type LlmExecutionProfile } from './llm/execution-runtime'
+import { LlmSkillRepository } from './llm/skill-repository'
+import { LlmSkillRouter } from './llm/skill-router'
+import { LlmCustomizationSettingsRepository } from './llm/customization-settings-repository'
+import { LlmQuickMessageRepository } from './llm/quick-message-repository'
+import { LlmTaskPromptCustomizer } from './llm/prompt-customization'
+import { LlmExecutionRegistry } from './llm/execution-registry'
+import { LlmChatExecutionService, type LlmExecutionEvidenceGroup } from './llm/chat-execution-service'
+import { buildArticleEvidenceBlocks, buildSelectionEvidenceBlock } from './llm/evidence-block-builder'
+import {
+  buildReaderStateContextItems,
+  buildRegeneratedReaderSelectionContextItems,
+  validateLlmReaderContextSnapshot
+} from './llm/reader-context-builder'
+import { OpenAiCompatibleProvider } from './ai/openai-compatible-provider'
+import { normalizeLlmCustomizationSettingsPatch } from '../shared/llm-customization'
+import { LLM_SKILL_TASKS, type LlmSkillManagementSnapshot, type LlmSkillState, type LlmSkillTask } from '../shared/llm-skill'
+import { MAX_LLM_SKILL_IMPORT_BYTES } from './llm/skill-repository'
+import { WebSearchRepository } from './search/web-search-repository'
+import { WebSearchService } from './search/web-search-service'
+import { WebSearchRouter } from './search/web-search-router'
+import { WEB_SEARCH_PROVIDER_KINDS, type WebSearchProviderKind, type WebSearchProviderPatch, type WebSearchSettingsPatch } from '../shared/web-search'
+import { McpRemoteRepository } from './mcp/mcp-remote-repository'
+import { McpRemoteClientManager, createSdkMcpRemoteConnectorFactory } from './mcp/mcp-remote-client-manager'
+import { createMcpOAuthProviderSession } from './mcp/mcp-oauth-provider'
+import { McpToolCatalogService } from './mcp/mcp-tool-catalog-service'
+import { McpToolRuntimeBridge } from './mcp/mcp-tool-runtime-bridge'
+import { McpLocalRepository } from './mcp/mcp-local-repository'
+import { McpLocalClientManager, createSdkMcpLocalConnectorFactory } from './mcp/mcp-local-client-manager'
+import { McpCombinedRuntime } from './mcp/mcp-combined-runtime'
+import type { McpLocalServerPatch, McpRemoteServerPatch } from '../shared/mcp'
 
 const isDevelopment = Boolean(process.env.ELECTRON_RENDERER_URL)
 if (process.env.ORIGREAD_E2E_USER_DATA_DIR) {
@@ -103,9 +151,20 @@ let originalArticleViewController: OriginalArticleViewController | null = null
 let periodicSyncScheduler: PeriodicSyncScheduler | null = null
 let aiSettingsRepository: AiSettingsRepository | null = null
 let aiSummaryService: AiSummaryService | null = null
+let webSearchRepository: WebSearchRepository | null = null
+let webSearchService: WebSearchService | null = null
+let webSearchRouter: WebSearchRouter | null = null
+let mcpRemoteRepository: McpRemoteRepository | null = null
+let mcpRemoteClientManager: McpRemoteClientManager | null = null
+let mcpLocalRepository: McpLocalRepository | null = null
+let mcpLocalClientManager: McpLocalClientManager | null = null
+let mcpCombinedRuntime: McpCombinedRuntime | null = null
+let mcpToolCatalogService: McpToolCatalogService | null = null
+let mcpToolRuntimeBridge: McpToolRuntimeBridge | null = null
 let activeAiSummaryRequest: { articleId: string; controller: AbortController } | null = null
 let translationSettingsRepository: TranslationSettingsRepository | null = null
 let translationService: TranslationService | null = null
+let activeTranslationRequest: { articleId: string; controller: AbortController } | null = null
 let articleFilterRepository: ArticleFilterRepository | null = null
 let configurationBackupService: ConfigurationBackupService | null = null
 let opmlService: OpmlService | null = null
@@ -113,6 +172,16 @@ let feedDiscoveryCatalog: FeedDiscoveryCatalog | null = null
 let aiRuleGenerationService: AiRuleGenerationService | null = null
 let accountRepository: AccountRepository | null = null
 let accountService: DesktopAccountService | null = null
+let llmChatRepository: LlmChatRepository | null = null
+let llmSkillRepository: LlmSkillRepository | null = null
+let llmSkillRouter: LlmSkillRouter | null = null
+let llmCustomizationSettingsRepository: LlmCustomizationSettingsRepository | null = null
+let llmQuickMessageRepository: LlmQuickMessageRepository | null = null
+let llmToolRuntime: LlmToolRuntime | null = null
+let manualToolContextService: ManualToolContextService | null = null
+let llmRuntime: LlmRuntime | null = null
+let llmExecutionService: LlmChatExecutionService | null = null
+const llmExecutionRegistry = new LlmExecutionRegistry()
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
@@ -211,6 +280,10 @@ function createMainWindow(): BrowserWindow {
   })
 
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  const llmOwnerId = String(window.webContents.id)
+  window.webContents.once('destroyed', () => {
+    llmExecutionRegistry.cancelOwner(llmOwnerId, 'Renderer was destroyed')
+  })
   window.webContents.on('before-input-event', (event, input) => {
     const key = input.key.toLowerCase()
     if (key === 'f12' || ((input.control || input.meta) && input.shift && key === 'i')) {
@@ -821,7 +894,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.getAiSettings, (event) => {
     assertTrustedSender(event); if (!aiSettingsRepository) throw new Error('AI settings are not ready'); return aiSettingsRepository.current()
   })
-  ipcMain.handle(IPC_CHANNELS.getAiApiKey, (event, providerId: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.revealAiApiKey, (event, providerId: unknown) => {
     assertTrustedSender(event); if (!aiSettingsRepository) throw new Error('AI settings are not ready'); return aiSettingsRepository.getApiKey(validateId(providerId, 'providerId'))
   })
   ipcMain.handle(IPC_CHANNELS.updateAiSettings, (event, patch: unknown) => {
@@ -849,6 +922,182 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.testAiProvider, async (event, providerId: unknown) => {
     assertTrustedSender(event); if (!aiSummaryService) throw new Error('AI service is not ready'); try { await aiSummaryService.testProvider(validateId(providerId, 'providerId')); return { ok:true,error:null } } catch(error) { return { ok:false,error:error instanceof Error?error.message:String(error) } }
   })
+  ipcMain.handle(IPC_CHANNELS.getWebSearchSettings, (event) => {
+    assertTrustedSender(event)
+    if (!webSearchRepository) throw new Error('Web Search settings are not ready')
+    return webSearchRepository.current()
+  })
+  ipcMain.handle(IPC_CHANNELS.revealWebSearchApiKey, (event, providerId: unknown) => {
+    assertTrustedSender(event)
+    if (!webSearchRepository) throw new Error('Web Search settings are not ready')
+    return webSearchRepository.getApiKey(validateId(providerId, 'providerId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.updateWebSearchSettings, (event, patch: unknown) => {
+    assertTrustedSender(event)
+    if (!webSearchRepository) throw new Error('Web Search settings are not ready')
+    return webSearchRepository.updateSettings(validateWebSearchSettingsPatch(patch))
+  })
+  ipcMain.handle(IPC_CHANNELS.addWebSearchProvider, (event, kind: unknown) => {
+    assertTrustedSender(event)
+    if (!webSearchRepository) throw new Error('Web Search settings are not ready')
+    return webSearchRepository.addProvider(validateWebSearchProviderKind(kind))
+  })
+  ipcMain.handle(IPC_CHANNELS.updateWebSearchProvider, (event, patch: unknown) => {
+    assertTrustedSender(event)
+    if (!webSearchRepository) throw new Error('Web Search settings are not ready')
+    return webSearchRepository.updateProvider(validateWebSearchProviderPatch(patch))
+  })
+  ipcMain.handle(IPC_CHANNELS.removeWebSearchProvider, (event, providerId: unknown) => {
+    assertTrustedSender(event)
+    if (!webSearchRepository) throw new Error('Web Search settings are not ready')
+    return webSearchRepository.removeProvider(validateId(providerId, 'providerId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.testWebSearchProvider, async (event, providerId: unknown) => {
+    assertTrustedSender(event)
+    if (!webSearchService) throw new Error('Web Search service is not ready')
+    try {
+      return { ok: true, result: await webSearchService.checkHealth(validateId(providerId, 'providerId')), error: null }
+    } catch (error) {
+      return { ok: false, result: null, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.getMcpRemoteSettings, (event) => {
+    assertTrustedSender(event)
+    if (!mcpRemoteRepository) throw new Error('Remote MCP settings are not ready')
+    return mcpRemoteRepository.current()
+  })
+  ipcMain.handle(IPC_CHANNELS.revealMcpRemoteCredential, (event, serverId: unknown) => {
+    assertTrustedSender(event)
+    if (!mcpRemoteRepository) throw new Error('Remote MCP settings are not ready')
+    return mcpRemoteRepository.getCredential(validateId(serverId, 'serverId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.getMcpConnectionStates, (event) => {
+    assertTrustedSender(event)
+    if (!mcpRemoteClientManager) throw new Error('Remote MCP client is not ready')
+    return mcpRemoteClientManager.statesSnapshot()
+  })
+  ipcMain.handle(IPC_CHANNELS.addMcpRemoteServer, (event) => {
+    assertTrustedSender(event)
+    if (!mcpRemoteRepository) throw new Error('Remote MCP settings are not ready')
+    return mcpRemoteRepository.addServer()
+  })
+  ipcMain.handle(IPC_CHANNELS.updateMcpRemoteServer, async (event, patch: unknown) => {
+    assertTrustedSender(event)
+    if (!mcpRemoteRepository || !mcpRemoteClientManager) throw new Error('Remote MCP runtime is not ready')
+    const value = validateMcpRemoteServerPatch(patch)
+    const settings = mcpRemoteRepository.updateServer(value)
+    await mcpRemoteClientManager.invalidate(value.id)
+    mcpToolRuntimeBridge?.sync()
+    return settings
+  })
+  ipcMain.handle(IPC_CHANNELS.removeMcpRemoteServer, async (event, serverId: unknown) => {
+    assertTrustedSender(event)
+    if (!mcpRemoteRepository || !mcpRemoteClientManager) throw new Error('Remote MCP runtime is not ready')
+    const id = validateId(serverId, 'serverId')
+    await mcpRemoteClientManager.invalidate(id)
+    const settings = mcpRemoteRepository.removeServer(id)
+    mcpToolCatalogService?.removeServer(id)
+    mcpToolRuntimeBridge?.sync()
+    return settings
+  })
+  ipcMain.handle(IPC_CHANNELS.testMcpRemoteServer, async (event, serverId: unknown) => {
+    assertTrustedSender(event)
+    if (!mcpRemoteClientManager) throw new Error('Remote MCP client is not ready')
+    try {
+      return { ok: true, result: await mcpRemoteClientManager.checkHealth(validateId(serverId, 'serverId')), error: null }
+    } catch (error) {
+      return { ok: false, result: null, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.connectMcpRemoteServer, async (event, serverId: unknown) => {
+    assertTrustedSender(event)
+    if (!mcpRemoteClientManager) throw new Error('Remote MCP client is not ready')
+    return mcpRemoteClientManager.connect(validateId(serverId, 'serverId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.authorizeMcpRemoteServer, async (event, serverId: unknown) => {
+    assertTrustedSender(event)
+    if (!mcpRemoteClientManager) throw new Error('Remote MCP client is not ready')
+    const snapshot = await mcpRemoteClientManager.authorize(validateId(serverId, 'serverId'))
+    // A different OAuth grant may expose a different tool set. Keep the old cache
+    // visible for audit, but remove it from executable ToolRuntime until refreshed.
+    mcpToolRuntimeBridge?.sync()
+    return snapshot
+  })
+  ipcMain.handle(IPC_CHANNELS.disconnectMcpRemoteServer, async (event, serverId: unknown) => {
+    assertTrustedSender(event)
+    if (!mcpRemoteClientManager) throw new Error('Remote MCP client is not ready')
+    await mcpRemoteClientManager.disconnect(validateId(serverId, 'serverId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.getMcpLocalSettings, (event) => {
+    assertTrustedSender(event)
+    if (!mcpLocalRepository) throw new Error('Local MCP settings are not ready')
+    return mcpLocalRepository.current()
+  })
+  ipcMain.handle(IPC_CHANNELS.revealMcpLocalEnvironment, (event, serverId: unknown) => {
+    assertTrustedSender(event)
+    if (!mcpLocalRepository) throw new Error('Local MCP settings are not ready')
+    return mcpLocalRepository.getEnvironment(validateId(serverId, 'serverId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.getMcpLocalConnectionStates, (event) => {
+    assertTrustedSender(event)
+    if (!mcpLocalClientManager) throw new Error('Local MCP client is not ready')
+    return mcpLocalClientManager.statesSnapshot()
+  })
+  ipcMain.handle(IPC_CHANNELS.addMcpLocalServer, (event) => {
+    assertTrustedSender(event)
+    if (!mcpLocalRepository) throw new Error('Local MCP settings are not ready')
+    return mcpLocalRepository.addServer()
+  })
+  ipcMain.handle(IPC_CHANNELS.updateMcpLocalServer, async (event, patch: unknown) => {
+    assertTrustedSender(event)
+    if (!mcpLocalRepository || !mcpLocalClientManager) throw new Error('Local MCP runtime is not ready')
+    const value = validateMcpLocalServerPatch(patch)
+    const settings = mcpLocalRepository.updateServer(value)
+    await mcpLocalClientManager.invalidate(value.id)
+    mcpToolRuntimeBridge?.sync()
+    return settings
+  })
+  ipcMain.handle(IPC_CHANNELS.removeMcpLocalServer, async (event, serverId: unknown) => {
+    assertTrustedSender(event)
+    if (!mcpLocalRepository || !mcpLocalClientManager) throw new Error('Local MCP runtime is not ready')
+    const id = validateId(serverId, 'serverId')
+    await mcpLocalClientManager.invalidate(id)
+    const settings = mcpLocalRepository.removeServer(id)
+    mcpToolCatalogService?.removeServer(id)
+    mcpToolRuntimeBridge?.sync()
+    return settings
+  })
+  ipcMain.handle(IPC_CHANNELS.testMcpLocalServer, async (event, serverId: unknown) => {
+    assertTrustedSender(event)
+    if (!mcpLocalClientManager) throw new Error('Local MCP client is not ready')
+    try {
+      return { ok: true, result: await mcpLocalClientManager.checkHealth(validateId(serverId, 'serverId')), error: null }
+    } catch (error) {
+      return { ok: false, result: null, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.connectMcpLocalServer, async (event, serverId: unknown) => {
+    assertTrustedSender(event)
+    if (!mcpLocalClientManager) throw new Error('Local MCP client is not ready')
+    return mcpLocalClientManager.connect(validateId(serverId, 'serverId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.disconnectMcpLocalServer, async (event, serverId: unknown) => {
+    assertTrustedSender(event)
+    if (!mcpLocalClientManager) throw new Error('Local MCP client is not ready')
+    await mcpLocalClientManager.disconnect(validateId(serverId, 'serverId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.getMcpToolCatalog, (event) => {
+    assertTrustedSender(event)
+    if (!mcpToolCatalogService) throw new Error('MCP tool catalog is not ready')
+    return mcpToolCatalogService.current()
+  })
+  ipcMain.handle(IPC_CHANNELS.refreshMcpToolCatalog, async (event, serverId: unknown) => {
+    assertTrustedSender(event)
+    if (!mcpToolCatalogService) throw new Error('MCP tool catalog is not ready')
+    const snapshot = await mcpToolCatalogService.refreshServer(validateId(serverId, 'serverId'))
+    mcpToolRuntimeBridge?.sync()
+    return snapshot
+  })
   ipcMain.handle(IPC_CHANNELS.summarizeArticle, async (event, articleId: unknown, forceRefresh?: unknown, options?: unknown) => {
     assertTrustedSender(event)
     if (!aiSummaryService) throw new Error('AI service is not ready')
@@ -866,6 +1115,11 @@ function registerIpcHandlers(): void {
             event.sender.send(IPC_CHANNELS.aiSummaryProgress, { articleId: validatedArticleId, stage })
           }
         },
+        (update) => {
+          if (!event.sender.isDestroyed() && activeAiSummaryRequest === request) {
+            event.sender.send(IPC_CHANNELS.aiSummaryStreamUpdate, { articleId: validatedArticleId, ...update })
+          }
+        },
         request.controller.signal
       )
     } finally {
@@ -880,6 +1134,379 @@ function registerIpcHandlers(): void {
     active.controller.abort()
     activeAiSummaryRequest = null
     return true
+  })
+  ipcMain.handle(IPC_CHANNELS.getLlmCustomizationSettings, (event) => {
+    assertTrustedSender(event)
+    if (!llmCustomizationSettingsRepository) throw new Error('LLM customization settings are not ready')
+    return llmCustomizationSettingsRepository.current()
+  })
+  ipcMain.handle(IPC_CHANNELS.updateLlmCustomizationSettings, (event, patch: unknown) => {
+    assertTrustedSender(event)
+    if (!llmCustomizationSettingsRepository) throw new Error('LLM customization settings are not ready')
+    return llmCustomizationSettingsRepository.update(normalizeLlmCustomizationSettingsPatch(patch))
+  })
+  ipcMain.handle(IPC_CHANNELS.getLlmSkills, (event) => {
+    assertTrustedSender(event)
+    if (!llmSkillRepository) throw new Error('LLM Skill repository is not ready')
+    return toLlmSkillManagementSnapshot(llmSkillRepository.current())
+  })
+  ipcMain.handle(IPC_CHANNELS.importLlmSkill, async (event) => {
+    assertTrustedSender(event)
+    if (!llmSkillRepository) throw new Error('LLM Skill repository is not ready')
+    const selected = await dialog.showOpenDialog({
+      title: '导入 Skill',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Agent Skill', extensions: ['md', 'zip'] },
+        { name: 'All files', extensions: ['*'] }
+      ]
+    })
+    if (selected.canceled || !selected.filePaths[0]) {
+      return { ok: true, cancelled: true, replaced: false, skillId: null, snapshot: toLlmSkillManagementSnapshot(llmSkillRepository.current()), error: null }
+    }
+    const filePath = selected.filePaths[0]
+    try {
+      const size = statSync(filePath).size
+      if (size <= 0 || size > MAX_LLM_SKILL_IMPORT_BYTES) throw new Error(`Skill 文件不能超过 ${MAX_LLM_SKILL_IMPORT_BYTES / 1_000_000} MB`)
+      const imported = await llmSkillRepository.importBytes(readFileSync(filePath), basename(filePath))
+      return {
+        ok: true,
+        cancelled: false,
+        replaced: imported.replaced,
+        skillId: imported.skill.id,
+        snapshot: toLlmSkillManagementSnapshot(llmSkillRepository.current()),
+        error: null
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        cancelled: false,
+        replaced: false,
+        skillId: null,
+        snapshot: toLlmSkillManagementSnapshot(llmSkillRepository.current()),
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.createLlmSkill, async (event, request: unknown) => {
+    assertTrustedSender(event)
+    if (!llmSkillRepository) throw new Error('LLM Skill repository is not ready')
+    try {
+      const imported = await llmSkillRepository.createFromMarkdown(buildCreatedLlmSkillMarkdown(request))
+      return {
+        ok: true,
+        cancelled: false,
+        replaced: imported.replaced,
+        skillId: imported.skill.id,
+        snapshot: toLlmSkillManagementSnapshot(llmSkillRepository.current()),
+        error: null
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        cancelled: false,
+        replaced: false,
+        skillId: null,
+        snapshot: toLlmSkillManagementSnapshot(llmSkillRepository.current()),
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.getLlmSkillPreview, (event, skillId: unknown) => {
+    assertTrustedSender(event)
+    if (!llmSkillRepository) throw new Error('LLM Skill repository is not ready')
+    const skill = llmSkillRepository.skill(validateId(skillId, 'skillId'))
+    if (!skill) throw new Error('Skill 不存在')
+    return {
+      id: skill.id,
+      description: skill.description,
+      instructions: skill.instructions,
+      license: skill.license,
+      compatibility: skill.compatibility,
+      allowedTools: skill.allowedTools,
+      metadata: { ...skill.metadata },
+      hasScripts: skill.hasScripts,
+      resourcePaths: skill.resources.map((resource) => resource.path)
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.setLlmSkillEnabled, (event, skillId: unknown, enabled: unknown) => {
+    assertTrustedSender(event)
+    if (!llmSkillRepository) throw new Error('LLM Skill repository is not ready')
+    return toLlmSkillManagementSnapshot(llmSkillRepository.setEnabled(validateId(skillId, 'skillId'), validateBoolean(enabled, 'enabled')))
+  })
+  ipcMain.handle(IPC_CHANNELS.deleteLlmSkill, (event, skillId: unknown) => {
+    assertTrustedSender(event)
+    if (!llmSkillRepository) throw new Error('LLM Skill repository is not ready')
+    return toLlmSkillManagementSnapshot(llmSkillRepository.delete(validateId(skillId, 'skillId')))
+  })
+  ipcMain.handle(IPC_CHANNELS.setLlmSkillBinding, (event, task: unknown, skillId: unknown) => {
+    assertTrustedSender(event)
+    if (!llmSkillRepository) throw new Error('LLM Skill repository is not ready')
+    const id = skillId == null ? null : validateId(skillId, 'skillId')
+    return toLlmSkillManagementSnapshot(llmSkillRepository.setBinding(validateLlmSkillTask(task), id))
+  })
+  ipcMain.handle(IPC_CHANNELS.getLlmQuickMessages, (event, language: unknown) => {
+    assertTrustedSender(event)
+    if (!llmQuickMessageRepository) throw new Error('LLM Quick Message repository is not ready')
+    return resolvedLlmQuickMessages(llmQuickMessageRepository, validateUiLanguage(language))
+  })
+  ipcMain.handle(IPC_CHANNELS.createLlmQuickMessage, (event, title: unknown, content: unknown, language: unknown) => {
+    assertTrustedSender(event)
+    if (!llmQuickMessageRepository) throw new Error('LLM Quick Message repository is not ready')
+    llmQuickMessageRepository.create(validateText(title, 'title', 80), validateText(content, 'content', 4_000))
+    return resolvedLlmQuickMessages(llmQuickMessageRepository, validateUiLanguage(language))
+  })
+  ipcMain.handle(IPC_CHANNELS.updateLlmQuickMessage, (event, id: unknown, title: unknown, content: unknown, language: unknown) => {
+    assertTrustedSender(event)
+    if (!llmQuickMessageRepository) throw new Error('LLM Quick Message repository is not ready')
+    llmQuickMessageRepository.update(validateId(id, 'quickMessageId'), validateText(title, 'title', 80), validateText(content, 'content', 4_000))
+    return resolvedLlmQuickMessages(llmQuickMessageRepository, validateUiLanguage(language))
+  })
+  ipcMain.handle(IPC_CHANNELS.setLlmQuickMessageEnabled, (event, id: unknown, enabled: unknown, language: unknown) => {
+    assertTrustedSender(event)
+    if (!llmQuickMessageRepository) throw new Error('LLM Quick Message repository is not ready')
+    llmQuickMessageRepository.setEnabled(validateId(id, 'quickMessageId'), validateBoolean(enabled, 'enabled'))
+    return resolvedLlmQuickMessages(llmQuickMessageRepository, validateUiLanguage(language))
+  })
+  ipcMain.handle(IPC_CHANNELS.deleteLlmQuickMessage, (event, id: unknown, language: unknown) => {
+    assertTrustedSender(event)
+    if (!llmQuickMessageRepository) throw new Error('LLM Quick Message repository is not ready')
+    llmQuickMessageRepository.delete(validateId(id, 'quickMessageId'))
+    return resolvedLlmQuickMessages(llmQuickMessageRepository, validateUiLanguage(language))
+  })
+  ipcMain.handle(IPC_CHANNELS.moveLlmQuickMessage, (event, id: unknown, direction: unknown, language: unknown) => {
+    assertTrustedSender(event)
+    if (!llmQuickMessageRepository) throw new Error('LLM Quick Message repository is not ready')
+    if (direction !== -1 && direction !== 1) throw new TypeError('Quick Message direction must be -1 or 1')
+    llmQuickMessageRepository.move(validateId(id, 'quickMessageId'), direction)
+    return resolvedLlmQuickMessages(llmQuickMessageRepository, validateUiLanguage(language))
+  })
+  ipcMain.handle(IPC_CHANNELS.listLlmConversations, (event, articleId?: unknown) => {
+    assertTrustedSender(event)
+    if (!llmChatRepository) throw new Error('LLM chat repository is not ready')
+    return llmChatRepository.listConversations(articleId == null ? null : validateId(articleId, 'articleId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.createLlmConversation, (event, request: unknown) => {
+    assertTrustedSender(event)
+    if (!llmChatRepository) throw new Error('LLM chat repository is not ready')
+    return llmChatRepository.createConversation(validateLlmCreateConversationRequest(request))
+  })
+  ipcMain.handle(IPC_CHANNELS.updateLlmConversation, (event, request: unknown) => {
+    assertTrustedSender(event)
+    if (!llmChatRepository) throw new Error('LLM chat repository is not ready')
+    const value = validateLlmUpdateConversationRequest(request)
+    let updated = llmChatRepository.getConversation(value.conversationId)
+    if (!updated) throw new Error('会话不存在')
+    if (value.title !== undefined) updated = llmChatRepository.updateConversationTitle(value.conversationId, value.title)
+    if (value.providerId !== undefined || value.model !== undefined) {
+      updated = llmChatRepository.updateConversationModel(
+        value.conversationId,
+        value.providerId !== undefined ? value.providerId : updated.providerId,
+        value.model !== undefined ? value.model : updated.model
+      )
+    }
+    return updated
+  })
+  ipcMain.handle(IPC_CHANNELS.deleteLlmConversation, (event, conversationId: unknown) => {
+    assertTrustedSender(event)
+    if (!llmChatRepository) throw new Error('LLM chat repository is not ready')
+    const id = validateId(conversationId, 'conversationId')
+    return { conversationId: id, deleted: llmChatRepository.deleteConversation(id) }
+  })
+  ipcMain.handle(IPC_CHANNELS.listLlmArticleContextCandidates, (event, query?: unknown) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    const normalizedQuery = query == null ? '' : validateText(query, 'query', 200).trim()
+    return libraryRepository.listArticleMetadata(30, normalizedQuery)
+      .map((article) => ({
+        articleId: article.id,
+        title: article.title,
+        link: article.url,
+        feedName: article.feedName,
+        publishedAt: article.publishedAt
+      }))
+  })
+  ipcMain.handle(IPC_CHANNELS.getLlmConversationArticles, (event, conversationId: unknown) => {
+    assertTrustedSender(event)
+    if (!llmChatRepository) throw new Error('LLM chat repository is not ready')
+    const id = validateId(conversationId, 'conversationId')
+    if (!llmChatRepository.getConversation(id)) throw new Error('会话不存在')
+    return llmChatRepository.getConversationArticles(id)
+  })
+  ipcMain.handle(IPC_CHANNELS.replaceLlmConversationArticles, (event, request: unknown) => {
+    assertTrustedSender(event)
+    if (!llmChatRepository || !libraryRepository) throw new Error('LLM chat repository is not ready')
+    const library = libraryRepository
+    const value = validateLlmReplaceConversationArticlesRequest(request)
+    const conversation = llmChatRepository.getConversation(value.conversationId)
+    if (!conversation) throw new Error('会话不存在')
+    const articleIds = value.articleIds.filter((articleId) => articleId !== conversation.articleId)
+    const records = articleIds.map((articleId, position) => {
+      const article = library.getArticleMetadataById(articleId)
+      if (!article) throw new Error(`附加文章不存在: ${articleId}`)
+      return {
+        conversationId: conversation.id,
+        articleId: article.id,
+        title: article.title,
+        link: article.url,
+        originalContent: '',
+        summary: null,
+        position,
+        createdAt: Date.now() + position
+      }
+    })
+    llmChatRepository.replaceConversationArticles(conversation.id, records)
+    return llmChatRepository.getConversationArticles(conversation.id)
+  })
+  ipcMain.handle(IPC_CHANNELS.getLlmMessages, (event, conversationId: unknown) => {
+    assertTrustedSender(event)
+    if (!llmChatRepository) throw new Error('LLM chat repository is not ready')
+    return llmChatRepository.getMessages(validateId(conversationId, 'conversationId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.appendLlmUserMessage, (event, request: unknown) => {
+    assertTrustedSender(event)
+    if (!llmChatRepository) throw new Error('LLM chat repository is not ready')
+    const value = validateLlmAppendUserMessageRequest(request)
+    if (!llmChatRepository.getConversation(value.conversationId)) throw new Error('会话不存在')
+    return llmChatRepository.appendMessage(value.conversationId, {
+      role: 'USER',
+      content: value.content,
+      requestTask: value.requestTask ?? 'CHAT'
+    })
+  })
+  ipcMain.handle(IPC_CHANNELS.getLlmToolActivity, (event, conversationId: unknown) => {
+    assertTrustedSender(event)
+    if (!llmExecutionService) throw new Error('LLM execution service is not ready')
+    return llmExecutionService.toolActivity(validateId(conversationId, 'conversationId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.resolveLlmToolApproval, (event, toolCallId: unknown, decision: unknown) => {
+    assertTrustedSender(event)
+    if (!llmExecutionService) throw new Error('LLM execution service is not ready')
+    const id = validateId(toolCallId, 'toolCallId')
+    if (decision !== 'APPROVE' && decision !== 'DENY') throw new TypeError('Unknown Tool approval decision')
+    return { toolCallId: id, accepted: llmExecutionService.resolveToolApproval(id, decision) }
+  })
+  ipcMain.handle(IPC_CHANNELS.listLlmManualTools, (event) => {
+    assertTrustedSender(event)
+    if (!manualToolContextService) throw new Error('Manual MCP Tool runtime is not ready')
+    return manualToolContextService.listTools()
+  })
+  ipcMain.handle(IPC_CHANNELS.executeLlmManualTool, async (event, request: unknown) => {
+    assertTrustedSender(event)
+    if (!manualToolContextService || !llmChatRepository) throw new Error('Manual MCP Tool runtime is not ready')
+    const value = validateLlmExecuteManualToolRequest(request)
+    if (!llmChatRepository.getConversation(value.conversationId)) throw new Error('会话不存在')
+    return manualToolContextService.execute(value)
+  })
+  ipcMain.handle(IPC_CHANNELS.discardLlmManualToolContext, (event, contextId: unknown) => {
+    assertTrustedSender(event)
+    if (!manualToolContextService) throw new Error('Manual MCP Tool runtime is not ready')
+    return manualToolContextService.discard(validateId(contextId, 'contextId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.getLlmAssistantEvidence, (event, assistantMessageId: unknown) => {
+    assertTrustedSender(event)
+    if (!llmChatRepository) throw new Error('LLM chat repository is not ready')
+    const id = validateId(assistantMessageId, 'assistantMessageId')
+    const contextRefs = llmChatRepository.getContextRefsForAssistant(id)
+    return {
+      contextRefs,
+      evidenceBlocks: contextRefs.flatMap((ref) => llmChatRepository!.getEvidenceBlocks(ref.id)),
+      citations: llmChatRepository.getCitationRefsForAssistant(id)
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.startLlmExecution, (event, request: unknown) => {
+    assertTrustedSender(event)
+    if (!llmChatRepository || !llmExecutionService) throw new Error('LLM runtime is not ready')
+    const value = validateLlmStartExecutionRequest(request)
+    if (llmExecutionRegistry.get(value.requestId)) throw new Error('LLM requestId 已存在')
+    const conversation = llmChatRepository.getConversation(value.conversationId)
+    if (!conversation) throw new Error('会话不存在')
+    const context = buildMainLlmArticleContext(conversation)
+    const readerContextItems = value.regenerateAssistantMessageId
+      ? buildRegeneratedReaderSelectionContextItems(
+          conversation,
+          llmChatRepository.getContextRefsForAssistant(value.regenerateAssistantMessageId)
+        )
+      : buildReaderStateContextItems(conversation, value.readerContext)
+    context.contextItems.push(...readerContextItems)
+    for (const item of readerContextItems) {
+      if (item.type !== 'SELECTED_TEXT') continue
+      const block = buildSelectionEvidenceBlock(item.content, {
+        articleId: conversation.articleId,
+        sourceUrl: conversation.articleLink
+      })
+      if (block) {
+        item.evidenceBlocks = [{ stableLocatorKey: block.stableLocatorKey, content: block.content }]
+        context.evidenceGroups.push({ contextId: item.id, blocks: [block] })
+      }
+    }
+    const assistant = value.regenerateAssistantMessageId
+      ? llmChatRepository.appendRegeneratedAssistant(
+          value.conversationId,
+          value.regenerateAssistantMessageId,
+          value.profile?.task ?? 'CHAT'
+        ).assistant
+      : llmChatRepository.appendMessage(value.conversationId, {
+          role: 'ASSISTANT',
+          content: '',
+          requestTask: value.profile?.task ?? 'CHAT',
+          status: 'STREAMING'
+        })
+    const identity = {
+      requestId: value.requestId,
+      conversationId: value.conversationId,
+      assistantMessageId: assistant.id
+    }
+    const ownerId = String(event.sender.id)
+    const executionProfile = toLlmExecutionProfile(value.profile)
+    const executionTask = value.profile?.task ?? 'CHAT'
+    if ((executionTask === 'CHAT' || executionTask === 'ARTICLE_ANALYSIS') && value.profile?.enabledToolIds === undefined) {
+      // Enabled Remote MCP servers + a fresh user-refreshed catalog form the default
+      // allow-list. Renderer can still pass an explicit list (including []) per request.
+      executionProfile.enabledToolIds = new Set(mcpToolRuntimeBridge?.enabledToolIds() ?? [])
+    }
+    const latestUserInput = llmChatRepository.getMessages(value.conversationId, true)
+      .filter((message) => message.role === 'USER')
+      .at(-1)?.content ?? ''
+    const webSearch = (executionTask === 'CHAT' || executionTask === 'ARTICLE_ANALYSIS') && webSearchRouter && webSearchRepository
+      ? webSearchRouter.prepareSearch(value.profile?.webSearchMode ?? webSearchRepository.current().mode, latestUserInput, conversation.articleTitle)
+      : undefined
+    const customization = llmCustomizationSettingsRepository?.current()
+    executionProfile.customInstructions = customization?.customInstructions || null
+    if (customization?.skillsEnabled === false) {
+      executionProfile.skillId = null
+    } else if (value.profile?.skillId === undefined) {
+      if (executionTask === 'CHAT' && llmSkillRouter) {
+        executionProfile.skillId = llmSkillRouter.resolve(latestUserInput)?.id ?? null
+      } else if (executionTask === 'ARTICLE_ANALYSIS' && llmSkillRepository) {
+        executionProfile.skillId = llmSkillRepository.boundSkill('ARTICLE_ANALYSIS')?.id ?? null
+      }
+    }
+    if (value.manualToolContextIds && value.manualToolContextIds.length > 0) {
+      if (!manualToolContextService) throw new Error('Manual MCP Tool context runtime is not ready')
+      const manual = manualToolContextService.consume(value.conversationId, value.manualToolContextIds)
+      context.contextItems.push(...manual.contextItems)
+      context.evidenceGroups.push(...manual.evidenceGroups)
+    }
+    void llmExecutionService.execute({
+      ...identity,
+      ownerId,
+      profile: executionProfile,
+      contextItems: context.contextItems,
+      evidenceGroups: context.evidenceGroups,
+      ...(webSearch ? { webSearch } : {})
+    }, (executionEvent) => {
+      if (!event.sender.isDestroyed()) event.sender.send(IPC_CHANNELS.llmExecutionEvent, executionEvent)
+    }).catch(() => undefined)
+    return identity
+  })
+  ipcMain.handle(IPC_CHANNELS.cancelLlmExecution, (event, requestId: unknown) => {
+    assertTrustedSender(event)
+    const id = validateId(requestId, 'requestId')
+    return {
+      requestId: id,
+      cancelled: llmExecutionRegistry.cancelOwned(id, String(event.sender.id))
+    }
   })
   ipcMain.handle(IPC_CHANNELS.getTranslationSettings, (event) => {
     assertTrustedSender(event); if (!translationSettingsRepository) throw new Error('Translation settings are not ready'); return translationSettingsRepository.current()
@@ -905,7 +1532,31 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event); if(!translationService)throw new Error('Translation service is not ready');return translationService.getDeepLUsage()
   })
   ipcMain.handle(IPC_CHANNELS.translateArticle, async (event, articleId: unknown, target?: unknown, forceRefresh?: unknown) => {
-    assertTrustedSender(event); if(!translationService)throw new Error('Translation service is not ready');return translationService.translateArticle(validateId(articleId,'articleId'),target===undefined?undefined:validateRecord(target,'translation target') as unknown as TranslationTarget,forceRefresh===undefined?false:validateBoolean(forceRefresh,'forceRefresh'))
+    assertTrustedSender(event)
+    if(!translationService)throw new Error('Translation service is not ready')
+    const validatedArticleId=validateId(articleId,'articleId')
+    activeTranslationRequest?.controller.abort()
+    const request={articleId:validatedArticleId,controller:new AbortController()}
+    activeTranslationRequest=request
+    try{
+      return await translationService.translateArticle(
+        validatedArticleId,
+        target===undefined?undefined:validateRecord(target,'translation target') as unknown as TranslationTarget,
+        forceRefresh===undefined?false:validateBoolean(forceRefresh,'forceRefresh'),
+        request.controller.signal
+      )
+    }finally{
+      if(activeTranslationRequest===request)activeTranslationRequest=null
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.stopTranslation, (event, articleId: unknown) => {
+    assertTrustedSender(event)
+    const validatedArticleId=validateId(articleId,'articleId')
+    const active=activeTranslationRequest
+    if(!active||active.articleId!==validatedArticleId)return false
+    active.controller.abort()
+    activeTranslationRequest=null
+    return true
   })
   ipcMain.handle(IPC_CHANNELS.getArticleFilters, (event) => {
     assertTrustedSender(event); if(!articleFilterRepository)throw new Error('Article filters are not ready');return articleFilterRepository.snapshot()
@@ -979,7 +1630,19 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event);if(!configurationBackupService)throw new Error('Backup service is not ready');try{const content=configurationBackupService.exportBackup(password===undefined?'':validateOptionalText(password,'password',1_024));const selected=await showSaveDialog({title:'导出 OrigRead 配置备份',defaultPath:`OrigRead-Configuration-${new Date().toISOString().slice(0,10)}.json`,filters:[{name:'OrigRead JSON Backup',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};writeFileSync(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
   })
   ipcMain.handle(IPC_CHANNELS.restoreConfigurationBackup, async (event, password?: unknown) => {
-    assertTrustedSender(event);if(!configurationBackupService)throw new Error('Backup service is not ready');try{const selected=await showOpenDialog({title:'恢复 OrigRead 配置备份',properties:['openFile'],filters:[{name:'OrigRead JSON Backup',extensions:['json']}]});if(selected.canceled||!selected.filePaths[0])return{ok:false,cancelled:true,path:null,error:null};const path=selected.filePaths[0];const restoreResult=configurationBackupService.restoreBackup(readFileSync(path,'utf8'),password===undefined?'':validateOptionalText(password,'password',1_024));periodicSyncScheduler?.reconfigure();return{ok:true,cancelled:false,path,restoreResult,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
+    assertTrustedSender(event)
+    if(!configurationBackupService)throw new Error('Backup service is not ready')
+    try{
+      const selected=await showOpenDialog({title:'恢复 OrigRead 配置备份',properties:['openFile'],filters:[{name:'OrigRead JSON Backup',extensions:['json']}]})
+      if(selected.canceled||!selected.filePaths[0])return{ok:false,cancelled:true,path:null,error:null}
+      const path=selected.filePaths[0]
+      const restoreResult=configurationBackupService.restoreBackup(readFileSync(path,'utf8'),password===undefined?'':validateOptionalText(password,'password',1_024))
+      await Promise.allSettled([mcpRemoteClientManager?.disconnectAll(),mcpLocalClientManager?.disconnectAll()])
+      mcpToolCatalogService?.invalidateAll()
+      mcpToolRuntimeBridge?.sync()
+      periodicSyncScheduler?.reconfigure()
+      return{ok:true,cancelled:false,path,restoreResult,error:null}
+    }catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
   })
   ipcMain.handle(IPC_CHANNELS.importRuleFile, async (event, kind: unknown) => {
     assertTrustedSender(event);const ruleKind=validateRuleKind(kind);try{const selected=await showOpenDialog({title:'导入 OrigRead 规则',properties:['openFile'],filters:[{name:'JSON',extensions:['json']}]});if(selected.canceled||!selected.filePaths[0])return{ok:false,cancelled:true,count:0,error:null};const content=readFileSync(selected.filePaths[0],'utf8');const count=ruleKind==='website'?websiteRuleRepository!.importRules(content):ruleKind==='json'?jsonRuleRepository!.importRules(content):articleFilterRepository!.importRules(content);return{ok:true,cancelled:false,count,error:null}}catch(error){return{ok:false,cancelled:false,count:0,error:error instanceof Error?error.message:String(error)}}
@@ -1038,6 +1701,334 @@ function validateOptionalText(value: unknown, field: string, maxLength: number):
 function validateRecord(value: unknown, field: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${field} must be an object`)
   return value as Record<string, unknown>
+}
+
+function validateWebSearchProviderKind(value: unknown): WebSearchProviderKind {
+  if (typeof value === 'string' && (WEB_SEARCH_PROVIDER_KINDS as readonly string[]).includes(value)) return value as WebSearchProviderKind
+  throw new TypeError('Unsupported Web Search Provider kind')
+}
+
+function validateWebSearchSettingsPatch(value: unknown): WebSearchSettingsPatch {
+  const record = validateRecord(value, 'Web Search settings patch')
+  const allowed = new Set(['mode', 'defaultProviderId', 'maxResults'])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unsupported Web Search setting: ${key}`)
+  const result: WebSearchSettingsPatch = {}
+  if (record.mode !== undefined) {
+    if (record.mode !== 'OFF' && record.mode !== 'AUTO') throw new TypeError('Persistent Web Search mode must be OFF or AUTO')
+    result.mode = record.mode
+  }
+  if (record.defaultProviderId !== undefined) {
+    result.defaultProviderId = record.defaultProviderId === null ? null : validateId(record.defaultProviderId, 'defaultProviderId')
+  }
+  if (record.maxResults !== undefined) {
+    if (!Number.isInteger(record.maxResults)) throw new TypeError('maxResults must be an integer')
+    result.maxResults = Number(record.maxResults)
+  }
+  return result
+}
+
+function validateWebSearchProviderPatch(value: unknown): WebSearchProviderPatch {
+  const record = validateRecord(value, 'Web Search provider patch')
+  const allowed = new Set(['id', 'name', 'endpoint', 'enabled', 'apiKey'])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unsupported Web Search provider field: ${key}`)
+  const result: WebSearchProviderPatch = { id: validateId(record.id, 'providerId') }
+  if (record.name !== undefined) result.name = validateOptionalText(record.name, 'name', 80)
+  if (record.endpoint !== undefined) result.endpoint = validateOptionalText(record.endpoint, 'endpoint', 2_000)
+  if (record.enabled !== undefined) result.enabled = validateBoolean(record.enabled, 'enabled')
+  if (record.apiKey !== undefined) result.apiKey = validateOptionalText(record.apiKey, 'apiKey', 16_384)
+  return result
+}
+
+function validateMcpRemoteServerPatch(value: unknown): McpRemoteServerPatch {
+  const record = validateRecord(value, 'Remote MCP server patch')
+  const allowed = new Set(['id', 'name', 'url', 'enabled', 'authMode', 'oauthScopes', 'credential'])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unsupported Remote MCP server field: ${key}`)
+  const result: McpRemoteServerPatch = { id: validateId(record.id, 'serverId') }
+  if (record.name !== undefined) result.name = validateOptionalText(record.name, 'name', 80)
+  if (record.url !== undefined) result.url = validateOptionalText(record.url, 'url', 2_000)
+  if (record.enabled !== undefined) result.enabled = validateBoolean(record.enabled, 'enabled')
+  if (record.authMode !== undefined) {
+    if (!['NONE', 'BEARER', 'CUSTOM_HEADERS', 'OAUTH'].includes(String(record.authMode))) throw new TypeError('Unsupported Remote MCP auth mode')
+    result.authMode = record.authMode as McpRemoteServerPatch['authMode']
+  }
+  if (record.oauthScopes !== undefined) result.oauthScopes = validateOptionalText(record.oauthScopes, 'oauthScopes', 2_000)
+  if (record.credential !== undefined) result.credential = validateOptionalText(record.credential, 'credential', 64_000)
+  return result
+}
+
+function validateMcpLocalServerPatch(value: unknown): McpLocalServerPatch {
+  const record = validateRecord(value, 'Local MCP server patch')
+  const allowed = new Set(['id', 'name', 'enabled', 'command', 'args', 'cwd', 'environment'])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unsupported Local MCP server field: ${key}`)
+  const result: McpLocalServerPatch = { id: validateId(record.id, 'serverId') }
+  if (record.name !== undefined) result.name = validateOptionalText(record.name, 'name', 80)
+  if (record.enabled !== undefined) result.enabled = validateBoolean(record.enabled, 'enabled')
+  if (record.command !== undefined) result.command = validateOptionalText(record.command, 'command', 2_048)
+  if (record.cwd !== undefined) result.cwd = validateOptionalText(record.cwd, 'cwd', 4_096)
+  if (record.environment !== undefined) result.environment = validateOptionalText(record.environment, 'environment', 256_000)
+  if (record.args !== undefined) {
+    if (!Array.isArray(record.args) || record.args.length > 128) throw new TypeError('Local MCP args must be an array of at most 128 strings')
+    result.args = record.args.map((item) => {
+      if (typeof item !== 'string' || item.length > 8_192) throw new TypeError('Local MCP argument is invalid')
+      return item
+    })
+  }
+  return result
+}
+
+function validateLlmCreateConversationRequest(value: unknown): LlmCreateConversationRequest {
+  const record = validateRecord(value, 'LLM conversation request')
+  const allowed = new Set(['title', 'providerId', 'model', 'skillId', 'articleId', 'articleTitle', 'articleLink'])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unsupported LLM conversation field: ${key}`)
+  const result: LlmCreateConversationRequest = {}
+  if (record.title !== undefined) result.title = validateText(record.title, 'title', 500)
+  if (record.providerId !== undefined) result.providerId = record.providerId === null ? null : validateId(record.providerId, 'providerId')
+  if (record.model !== undefined) result.model = record.model === null ? null : validateText(record.model, 'model', 500)
+  if (record.skillId !== undefined) result.skillId = record.skillId === null ? null : validateId(record.skillId, 'skillId')
+  if (record.articleId !== undefined) result.articleId = record.articleId === null ? null : validateId(record.articleId, 'articleId')
+  if (record.articleTitle !== undefined) result.articleTitle = record.articleTitle === null ? null : validateText(record.articleTitle, 'articleTitle', 2_000)
+  if (record.articleLink !== undefined) result.articleLink = record.articleLink === null ? null : validateExternalHttpUrl(record.articleLink)
+  return result
+}
+
+function validateLlmUpdateConversationRequest(value: unknown): LlmUpdateConversationRequest {
+  const record = validateRecord(value, 'LLM conversation update request')
+  const allowed = new Set(['conversationId', 'title', 'providerId', 'model'])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unsupported LLM conversation update field: ${key}`)
+  const result: LlmUpdateConversationRequest = { conversationId: validateId(record.conversationId, 'conversationId') }
+  if (record.title !== undefined) result.title = validateText(record.title, 'title', 500)
+  if (record.providerId !== undefined) result.providerId = record.providerId === null ? null : validateId(record.providerId, 'providerId')
+  if (record.model !== undefined) result.model = record.model === null ? null : validateText(record.model, 'model', 500)
+  if (result.title === undefined && result.providerId === undefined && result.model === undefined) {
+    throw new TypeError('LLM conversation update must change at least one field')
+  }
+  return result
+}
+
+function validateLlmReplaceConversationArticlesRequest(value: unknown): LlmReplaceConversationArticlesRequest {
+  const record = validateRecord(value, 'LLM conversation articles request')
+  const allowed = new Set(['conversationId', 'articleIds'])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unsupported LLM conversation articles field: ${key}`)
+  if (!Array.isArray(record.articleIds)) throw new TypeError('articleIds must be an array')
+  const articleIds = [...new Set(record.articleIds.map((item) => validateId(item, 'articleId')))]
+  if (articleIds.length > 5) throw new TypeError('最多只能附加 5 篇文章')
+  return {
+    conversationId: validateId(record.conversationId, 'conversationId'),
+    articleIds
+  }
+}
+
+function validateLlmAppendUserMessageRequest(value: unknown): LlmAppendUserMessageRequest {
+  const record = validateRecord(value, 'LLM user message request')
+  const allowed = new Set(['conversationId', 'content', 'requestTask'])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unsupported LLM message field: ${key}`)
+  const requestTask = record.requestTask === undefined ? undefined : validateLlmTask(record.requestTask)
+  return {
+    conversationId: validateId(record.conversationId, 'conversationId'),
+    content: validateText(record.content, 'content', 200_000),
+    ...(requestTask ? { requestTask } : {})
+  }
+}
+
+function validateLlmExecuteManualToolRequest(value: unknown): LlmExecuteManualToolRequest {
+  const record = validateRecord(value, 'Manual MCP Tool request')
+  const allowed = new Set(['conversationId', 'toolId', 'argumentsJson', 'confirmed'])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unsupported Manual MCP Tool field: ${key}`)
+  return {
+    conversationId: validateId(record.conversationId, 'conversationId'),
+    toolId: validateId(record.toolId, 'toolId'),
+    argumentsJson: validateText(record.argumentsJson, 'argumentsJson', 64_000),
+    confirmed: validateBoolean(record.confirmed, 'confirmed')
+  }
+}
+
+function validateLlmStartExecutionRequest(value: unknown): LlmStartExecutionRequest {
+  const record = validateRecord(value, 'LLM execution request')
+  const allowed = new Set(['requestId', 'conversationId', 'regenerateAssistantMessageId', 'readerContext', 'manualToolContextIds', 'profile'])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unsupported LLM execution field: ${key}`)
+  let manualToolContextIds: string[] | undefined
+  if (record.manualToolContextIds !== undefined) {
+    if (!Array.isArray(record.manualToolContextIds) || record.manualToolContextIds.length > 20) {
+      throw new TypeError('manualToolContextIds must be an array')
+    }
+    manualToolContextIds = [...new Set(record.manualToolContextIds.map((item) => validateId(item, 'manualToolContextId')))]
+  }
+  return {
+    requestId: validateId(record.requestId, 'requestId'),
+    conversationId: validateId(record.conversationId, 'conversationId'),
+    ...(record.regenerateAssistantMessageId === undefined
+      ? {}
+      : { regenerateAssistantMessageId: validateId(record.regenerateAssistantMessageId, 'regenerateAssistantMessageId') }),
+    ...(record.readerContext === undefined
+      ? {}
+      : { readerContext: validateLlmReaderContextSnapshot(record.readerContext) as LlmReaderContextSnapshot }),
+    ...(manualToolContextIds === undefined ? {} : { manualToolContextIds }),
+    ...(record.profile === undefined ? {} : { profile: validateLlmStartExecutionProfile(record.profile) })
+  }
+}
+
+function validateLlmStartExecutionProfile(value: unknown): LlmStartExecutionProfile {
+  const record = validateRecord(value, 'LLM execution profile')
+  const allowed = new Set([
+    'task', 'providerId', 'model', 'reasoning', 'skillId', 'customInstructions', 'enabledToolIds', 'contextMaxTokens', 'webSearchMode'
+  ])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unsupported LLM profile field: ${key}`)
+  const result: LlmStartExecutionProfile = {}
+  if (record.task !== undefined) result.task = validateLlmTask(record.task)
+  if (record.providerId !== undefined) result.providerId = record.providerId === null ? null : validateId(record.providerId, 'providerId')
+  if (record.model !== undefined) result.model = record.model === null ? null : validateText(record.model, 'model', 500)
+  if (record.skillId !== undefined) result.skillId = record.skillId === null ? null : validateId(record.skillId, 'skillId')
+  if (record.customInstructions !== undefined) {
+    result.customInstructions = record.customInstructions === null ? null : validateText(record.customInstructions, 'customInstructions', 8_000)
+  }
+  if (record.webSearchMode !== undefined) {
+    if (record.webSearchMode !== 'OFF' && record.webSearchMode !== 'AUTO' && record.webSearchMode !== 'FORCE') {
+      throw new TypeError('Unknown Web Search mode')
+    }
+    result.webSearchMode = record.webSearchMode
+  }
+  if (record.reasoning !== undefined) {
+    const reasoning = validateRecord(record.reasoning, 'reasoning')
+    const reasoningAllowed = new Set(['effort', 'showReasoning'])
+    for (const key of Object.keys(reasoning)) if (!reasoningAllowed.has(key)) throw new TypeError(`Unsupported reasoning field: ${key}`)
+    const effort = validateText(reasoning.effort, 'reasoning.effort', 32)
+    if (!['AUTO', 'NONE', 'MINIMAL', 'LOW', 'MEDIUM', 'HIGH', 'XHIGH', 'MAXIMUM'].includes(effort)) {
+      throw new TypeError('Unknown reasoning effort')
+    }
+    result.reasoning = {
+      effort: effort as NonNullable<LlmStartExecutionProfile['reasoning']>['effort'],
+      showReasoning: validateBoolean(reasoning.showReasoning, 'reasoning.showReasoning')
+    }
+  }
+  if (record.enabledToolIds !== undefined) {
+    if (!Array.isArray(record.enabledToolIds) || record.enabledToolIds.length > 100) throw new TypeError('enabledToolIds must be an array')
+    result.enabledToolIds = record.enabledToolIds.map((item) => validateId(item, 'toolId'))
+  }
+  if (record.contextMaxTokens !== undefined) {
+    if (!Number.isInteger(record.contextMaxTokens) || Number(record.contextMaxTokens) < 4_096 || Number(record.contextMaxTokens) > 4_000_000) {
+      throw new TypeError('contextMaxTokens is invalid')
+    }
+    result.contextMaxTokens = Number(record.contextMaxTokens)
+  }
+  return result
+}
+
+function validateLlmTask(value: unknown): 'CHAT' | 'ARTICLE_ANALYSIS' {
+  if (value === 'CHAT' || value === 'ARTICLE_ANALYSIS') return value
+  throw new TypeError('Unknown LLM task')
+}
+
+function validateLlmSkillTask(value: unknown): LlmSkillTask {
+  if (typeof value === 'string' && (LLM_SKILL_TASKS as readonly string[]).includes(value)) return value as LlmSkillTask
+  throw new TypeError('Unknown LLM Skill task')
+}
+
+function buildCreatedLlmSkillMarkdown(value: unknown): string {
+  const record = validateRecord(value, 'LLM Skill create request')
+  const allowed = new Set(['id', 'description', 'instructions', 'triggers'])
+  for (const key of Object.keys(record)) if (!allowed.has(key)) throw new TypeError(`Unsupported Skill create field: ${key}`)
+  const id = validateText(record.id, 'skillId', 64).trim()
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) throw new TypeError('Skill ID 只能使用小写字母、数字和单个连字符')
+  const description = validateText(record.description, 'description', 1_024).trim()
+  const instructions = validateText(record.instructions, 'instructions', 500_000).trim()
+  const triggers = record.triggers === undefined ? '' : validateOptionalText(record.triggers, 'triggers', 2_000).trim()
+  return [
+    '---',
+    `name: ${id}`,
+    `description: ${JSON.stringify(description)}`,
+    ...(triggers ? ['metadata:', `  origread-triggers: ${JSON.stringify(triggers)}`] : []),
+    '---',
+    instructions
+  ].join('\n')
+}
+
+function validateUiLanguage(value: unknown): 'zh' | 'en' {
+  if (value === 'zh' || value === 'en') return value
+  throw new TypeError('Unsupported UI language')
+}
+
+function toLlmSkillManagementSnapshot(state: LlmSkillState): LlmSkillManagementSnapshot {
+  return {
+    bindings: { ...state.bindings },
+    skills: state.skills.map((skill) => ({
+      id: skill.id,
+      description: skill.description,
+      enabled: skill.enabled,
+      license: skill.license,
+      compatibility: skill.compatibility,
+      allowedTools: skill.allowedTools,
+      metadata: { ...skill.metadata },
+      hasScripts: skill.hasScripts,
+      contentHash: skill.contentHash,
+      resourceCount: skill.resources.length,
+      installedAt: skill.installedAt,
+      updatedAt: skill.updatedAt
+    }))
+  }
+}
+
+function resolvedLlmQuickMessages(repository: LlmQuickMessageRepository, language: 'zh' | 'en') {
+  return repository.current().map((message) => ({ ...message, ...repository.resolveText(message, language) }))
+}
+
+function toLlmExecutionProfile(profile?: LlmStartExecutionProfile): LlmExecutionProfile {
+  if (!profile) return {}
+  return {
+    task: profile.task,
+    providerId: profile.providerId,
+    model: profile.model,
+    reasoning: profile.reasoning,
+    skillId: profile.skillId,
+    customInstructions: profile.customInstructions,
+    enabledToolIds: profile.enabledToolIds ? new Set(profile.enabledToolIds) : undefined,
+    contextPolicy: profile.contextMaxTokens ? { maxTokens: profile.contextMaxTokens } : undefined
+  }
+}
+
+function buildMainLlmArticleContext(conversation: LlmConversationRecord): {
+  contextItems: LlmContextItem[]
+  evidenceGroups: LlmExecutionEvidenceGroup[]
+} {
+  if (!conversation.articleId || !readerContentService) return { contextItems: [], evidenceGroups: [] }
+  const contextItems: LlmContextItem[] = []
+  const evidenceGroups: LlmExecutionEvidenceGroup[] = []
+  const articleInputs = [
+    {
+      articleId: conversation.articleId,
+      title: conversation.articleTitle,
+      link: conversation.articleLink,
+      priority: 100
+    },
+    ...(llmChatRepository?.getConversationArticles(conversation.id) ?? []).map((article, index) => ({
+      articleId: article.articleId,
+      title: article.title,
+      link: article.link,
+      priority: 90 - index
+    }))
+  ]
+  for (const article of articleInputs) {
+    const reader = readerContentService.get(article.articleId, true)
+    const sourceUrl = reader.sourceUrl ?? article.link
+    const blocks = buildArticleEvidenceBlocks(reader.html, {
+      articleId: article.articleId,
+      sourceUrl
+    })
+    if (blocks.length === 0) continue
+    const contextId = `article:${article.articleId}:reader`
+    contextItems.push({
+      id: contextId,
+      type: 'ARTICLE',
+      content: blocks.map((block) => block.content).join('\n\n'),
+      title: article.title,
+      sourceId: sourceUrl,
+      internalArticleId: article.articleId,
+      reserveEvidenceBudget: true,
+      evidenceBlocks: blocks,
+      priority: article.priority
+    })
+    evidenceGroups.push({ contextId, blocks })
+  }
+  return { contextItems, evidenceGroups }
 }
 
 function validateFeedSettingsPatch(value: unknown): FeedSettingsPatch {
@@ -1212,6 +2203,66 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   accountRepository.migrateLegacySyncSettings(legacySettings.syncIntervalMinutes, legacySettings.syncOnStart)
   const systemLanguage = app.getLocale()
   aiSettingsRepository = new AiSettingsRepository(desktopDatabase.connection, secretStore, systemLanguage)
+  webSearchRepository = new WebSearchRepository(desktopDatabase.connection, secretStore)
+  webSearchService = new WebSearchService(webSearchRepository)
+  webSearchRouter = new WebSearchRouter(webSearchRepository, webSearchService)
+  mcpRemoteRepository = new McpRemoteRepository(desktopDatabase.connection, secretStore)
+  mcpRemoteClientManager = new McpRemoteClientManager(
+    mcpRemoteRepository,
+    createSdkMcpRemoteConnectorFactory(
+      'OrigRead Desktop',
+      app.getVersion(),
+      (server) => mcpRemoteRepository!.runtimeAuth(server.id),
+      (server) => createMcpOAuthProviderSession({
+        serverId: server.id,
+        clientName: 'OrigRead Desktop',
+        secrets: secretStore,
+        openExternal: (url) => shell.openExternal(url)
+      })
+    )
+  )
+  mcpLocalRepository = new McpLocalRepository(desktopDatabase.connection, secretStore)
+  mcpLocalClientManager = new McpLocalClientManager(
+    mcpLocalRepository,
+    createSdkMcpLocalConnectorFactory('OrigRead Desktop', app.getVersion(), mcpLocalRepository)
+  )
+  mcpCombinedRuntime = new McpCombinedRuntime(
+    mcpRemoteRepository,
+    mcpRemoteClientManager,
+    mcpLocalRepository,
+    mcpLocalClientManager
+  )
+  mcpToolCatalogService = new McpToolCatalogService(
+    desktopDatabase.connection,
+    mcpCombinedRuntime,
+    mcpCombinedRuntime
+  )
+  llmChatRepository = new LlmChatRepository(desktopDatabase.connection)
+  llmChatRepository.recoverInterruptedState()
+  llmSkillRepository = new LlmSkillRepository(desktopDatabase.connection)
+  llmCustomizationSettingsRepository = new LlmCustomizationSettingsRepository(desktopDatabase.connection)
+  llmQuickMessageRepository = new LlmQuickMessageRepository(desktopDatabase.connection)
+  llmSkillRouter = new LlmSkillRouter(llmSkillRepository, () => llmCustomizationSettingsRepository?.current().skillsEnabled !== false)
+  const llmTaskPromptCustomizer = new LlmTaskPromptCustomizer(llmSkillRepository, llmCustomizationSettingsRepository)
+  llmToolRuntime = new LlmToolRuntime()
+  mcpToolRuntimeBridge = new McpToolRuntimeBridge(mcpToolCatalogService, mcpCombinedRuntime, llmToolRuntime)
+  // Startup only projects the persisted catalog; it never contacts MCP servers.
+  mcpToolRuntimeBridge.sync()
+  manualToolContextService = new ManualToolContextService(llmToolRuntime)
+  llmRuntime = new LlmRuntime(
+    new OpenAiCompatibleLlmAdapter(aiSettingsRepository),
+    new LlmContextComposer(),
+    llmToolRuntime,
+    llmSkillRepository
+  )
+  llmExecutionService = new LlmChatExecutionService(
+    llmChatRepository,
+    llmRuntime,
+    new OpenAiCompatibleProvider(),
+    llmToolRuntime,
+    llmExecutionRegistry,
+    webSearchRouter
+  )
   translationSettingsRepository = new TranslationSettingsRepository(desktopDatabase.connection, secretStore, systemLanguage)
   articleFilterRepository = new ArticleFilterRepository(join(app.getPath('userData'), 'article-filter-rules.json'))
   feedDiscoveryCatalog = new FeedDiscoveryCatalog()
@@ -1251,13 +2302,29 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   )
   websiteSubscriptionService = new WebsiteSubscriptionService(libraryRepository, websiteSourceService, articleFilterRepository)
   rssHubSubscriptionService = new RssHubSubscriptionService(libraryRepository)
-  aiSummaryService = new AiSummaryService(libraryRepository, readerContentService, aiSettingsRepository, join(app.getPath('userData'), 'cache', 'ai-summary'))
+  aiSummaryService = new AiSummaryService(
+    libraryRepository,
+    readerContentService,
+    aiSettingsRepository,
+    join(app.getPath('userData'), 'cache', 'ai-summary'),
+    new OpenAiCompatibleProvider(),
+    llmTaskPromptCustomizer
+  )
   aiRuleGenerationService = new AiRuleGenerationService(aiSettingsRepository, websiteRuleRepository, jsonRuleRepository, new JsonArticleParser())
-  translationService = new TranslationService(libraryRepository, readerContentService, translationSettingsRepository, aiSettingsRepository, join(app.getPath('userData'), 'cache', 'translation'))
+  translationService = new TranslationService(
+    libraryRepository,
+    readerContentService,
+    translationSettingsRepository,
+    aiSettingsRepository,
+    join(app.getPath('userData'), 'cache', 'translation'),
+    new OpenAiCompatibleProvider(),
+    llmTaskPromptCustomizer
+  )
   configurationBackupService = new ConfigurationBackupService(
     app.getVersion(), libraryRepository, settingsRepository, websiteRuleRepository, jsonRuleRepository,
     articleFilterRepository, websitePreferenceRepository, rssHubSettingsRepository, translationSettingsRepository, aiSettingsRepository,
-    accountRepository
+    accountRepository, llmSkillRepository, llmQuickMessageRepository, llmCustomizationSettingsRepository, webSearchRepository,
+    mcpRemoteRepository, mcpLocalRepository
   )
   sourceSyncService = new SourceSyncService(
     libraryRepository,
@@ -1308,50 +2375,80 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   )
   registerIpcHandlers()
   createMainWindow()
-  periodicSyncScheduler.start()
+  if (process.env.ORIGREAD_DISABLE_PERIODIC_SYNC !== '1') periodicSyncScheduler.start()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow()
     }
   })
+}).catch((error: unknown) => {
+  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+  console.error('[OrigRead] startup failed before the main window was ready', error)
+  const isChinese = app.getLocale().toLowerCase().startsWith('zh')
+  dialog.showErrorBox(
+    localizedAppName(),
+    isChinese
+      ? `OrigRead 启动失败。\n\n${message}\n\n现有数据不会被自动清除，请保留此错误信息用于排查。`
+      : `OrigRead failed to start.\n\n${message}\n\nExisting data will not be cleared automatically. Keep this error for troubleshooting.`
+  )
+  app.quit()
 })
 
-app.on('before-quit', () => {
-  periodicSyncScheduler?.stop()
-  periodicSyncScheduler = null
-  originalArticleViewController?.dispose()
-  originalArticleViewController = null
-  mainWindow = null
-  desktopDatabase?.close()
-  desktopDatabase = null
-  libraryRepository = null
-  settingsRepository = null
-  readerFontRepository = null
-  rssSubscriptionService = null
-  rssHubSettingsRepository = null
-  rssHubResolver = null
-  jsonSubscriptionService = null
-  jsonSourceService = null
-  jsonRuleRepository = null
-  websiteSubscriptionService = null
-  websiteSourceService = null
-  websitePreferenceRepository = null
-  websiteRuleRepository = null
-  sourceDiscoveryService = null
-  sourceSyncService = null
-  readerContentService = null
-  articleFullContentService = null
-  rssHubSubscriptionService = null
-  aiSettingsRepository = null
-  aiSummaryService = null
-  translationSettingsRepository = null
-  translationService = null
-  articleFilterRepository = null
-  configurationBackupService = null
-  opmlService = null
-  feedDiscoveryCatalog = null
-  aiRuleGenerationService = null
+let applicationShutdownStarted = false
+app.on('before-quit', (event) => {
+  if (applicationShutdownStarted) return
+  event.preventDefault()
+  applicationShutdownStarted = true
+  void (async () => {
+    await Promise.allSettled([
+      mcpRemoteClientManager?.disconnectAll(),
+      mcpLocalClientManager?.disconnectAll()
+    ])
+    manualToolContextService = null
+    mcpToolRuntimeBridge = null
+    mcpToolCatalogService = null
+    mcpCombinedRuntime = null
+    mcpLocalClientManager = null
+    mcpLocalRepository = null
+    mcpRemoteClientManager = null
+    mcpRemoteRepository = null
+    periodicSyncScheduler?.stop()
+    periodicSyncScheduler = null
+    originalArticleViewController?.dispose()
+    originalArticleViewController = null
+    mainWindow = null
+    desktopDatabase?.close()
+    desktopDatabase = null
+    libraryRepository = null
+    settingsRepository = null
+    readerFontRepository = null
+    rssSubscriptionService = null
+    rssHubSettingsRepository = null
+    rssHubResolver = null
+    jsonSubscriptionService = null
+    jsonSourceService = null
+    jsonRuleRepository = null
+    websiteSubscriptionService = null
+    websiteSourceService = null
+    websitePreferenceRepository = null
+    websiteRuleRepository = null
+    sourceDiscoveryService = null
+    sourceSyncService = null
+    readerContentService = null
+    articleFullContentService = null
+    rssHubSubscriptionService = null
+    aiSettingsRepository = null
+    aiSummaryService = null
+    translationSettingsRepository = null
+    translationService = null
+    articleFilterRepository = null
+    configurationBackupService = null
+    opmlService = null
+    feedDiscoveryCatalog = null
+    aiRuleGenerationService = null
+    app.quit()
+  })()
 })
 
 app.on('window-all-closed', () => {

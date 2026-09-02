@@ -7,12 +7,25 @@ import type {
   OriginalNavigationAction,
   OriginalViewBounds
 } from '../shared/original-view'
-import type { AiProviderPatch, AiSettingsPatch, AiSummaryProgress, AiSummaryRequestOptions } from '../shared/ai'
+import type { AiProviderPatch, AiSettingsPatch, AiSummaryProgress, AiSummaryRequestOptions, AiSummaryStreamUpdate } from '../shared/ai'
 import type { TranslationProviderPatch, TranslationProviderType, TranslationSettingsPatch, TranslationTarget } from '../shared/translation'
 import type { ArticleFilterRuleType } from '../shared/filter-rules'
 import type { AiGeneratedRuleKind, AiRuleGenerationOptions, AiRuleGenerationProgress } from '../shared/ai-rule'
 import type { SourceDiscoveryProgress } from '../shared/source-discovery'
 import type { AccountCreateInput, AccountPatch } from '../shared/account'
+import type {
+  LlmAppendUserMessageRequest,
+  LlmCreateConversationRequest,
+  LlmExecuteManualToolRequest,
+  LlmExecutionEvent,
+  LlmReplaceConversationArticlesRequest,
+  LlmStartExecutionRequest,
+  LlmUpdateConversationRequest
+} from '../shared/llm-ipc'
+import type { LlmCustomizationSettingsPatch } from '../shared/llm-customization'
+import type { LlmSkillCreateRequest, LlmSkillTask } from '../shared/llm-skill'
+import type { WebSearchProviderKind, WebSearchProviderPatch, WebSearchSettingsPatch } from '../shared/web-search'
+import type { McpLocalServerPatch, McpRemoteServerPatch } from '../shared/mcp'
 
 const api: OrigReadDesktopApi = Object.freeze({
   getAppInfo: () => ipcRenderer.invoke(IPC_CHANNELS.getAppInfo),
@@ -113,19 +126,89 @@ const api: OrigReadDesktopApi = Object.freeze({
   getReaderContent: (articleId: string, preferFull?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.getReaderContent, articleId, preferFull),
   fetchFullContent: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.fetchFullContent, articleId),
   getAiSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getAiSettings),
-  getAiApiKey: (providerId: string) => ipcRenderer.invoke(IPC_CHANNELS.getAiApiKey, providerId),
+  revealAiApiKey: (providerId: string) => ipcRenderer.invoke(IPC_CHANNELS.revealAiApiKey, providerId),
   updateAiSettings: (patch: AiSettingsPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateAiSettings, patch),
   addAiProvider: () => ipcRenderer.invoke(IPC_CHANNELS.addAiProvider),
   updateAiProvider: (patch: AiProviderPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateAiProvider, patch),
   removeAiProvider: (providerId: string) => ipcRenderer.invoke(IPC_CHANNELS.removeAiProvider, providerId),
   refreshAiModels: (providerId: string, draftApiKey?: string) => ipcRenderer.invoke(IPC_CHANNELS.refreshAiModels, providerId, draftApiKey),
   testAiProvider: (providerId: string) => ipcRenderer.invoke(IPC_CHANNELS.testAiProvider, providerId),
+  getWebSearchSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getWebSearchSettings),
+  revealWebSearchApiKey: (providerId: string) => ipcRenderer.invoke(IPC_CHANNELS.revealWebSearchApiKey, providerId),
+  updateWebSearchSettings: (patch: WebSearchSettingsPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateWebSearchSettings, patch),
+  addWebSearchProvider: (kind: WebSearchProviderKind) => ipcRenderer.invoke(IPC_CHANNELS.addWebSearchProvider, kind),
+  updateWebSearchProvider: (patch: WebSearchProviderPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateWebSearchProvider, patch),
+  removeWebSearchProvider: (providerId: string) => ipcRenderer.invoke(IPC_CHANNELS.removeWebSearchProvider, providerId),
+  testWebSearchProvider: (providerId: string) => ipcRenderer.invoke(IPC_CHANNELS.testWebSearchProvider, providerId),
+  getMcpRemoteSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getMcpRemoteSettings),
+  revealMcpRemoteCredential: (serverId: string) => ipcRenderer.invoke(IPC_CHANNELS.revealMcpRemoteCredential, serverId),
+  getMcpConnectionStates: () => ipcRenderer.invoke(IPC_CHANNELS.getMcpConnectionStates),
+  addMcpRemoteServer: () => ipcRenderer.invoke(IPC_CHANNELS.addMcpRemoteServer),
+  updateMcpRemoteServer: (patch: McpRemoteServerPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateMcpRemoteServer, patch),
+  removeMcpRemoteServer: (serverId: string) => ipcRenderer.invoke(IPC_CHANNELS.removeMcpRemoteServer, serverId),
+  testMcpRemoteServer: (serverId: string) => ipcRenderer.invoke(IPC_CHANNELS.testMcpRemoteServer, serverId),
+  connectMcpRemoteServer: (serverId: string) => ipcRenderer.invoke(IPC_CHANNELS.connectMcpRemoteServer, serverId),
+  authorizeMcpRemoteServer: (serverId: string) => ipcRenderer.invoke(IPC_CHANNELS.authorizeMcpRemoteServer, serverId),
+  disconnectMcpRemoteServer: (serverId: string) => ipcRenderer.invoke(IPC_CHANNELS.disconnectMcpRemoteServer, serverId),
+  getMcpLocalSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getMcpLocalSettings),
+  revealMcpLocalEnvironment: (serverId: string) => ipcRenderer.invoke(IPC_CHANNELS.revealMcpLocalEnvironment, serverId),
+  getMcpLocalConnectionStates: () => ipcRenderer.invoke(IPC_CHANNELS.getMcpLocalConnectionStates),
+  addMcpLocalServer: () => ipcRenderer.invoke(IPC_CHANNELS.addMcpLocalServer),
+  updateMcpLocalServer: (patch: McpLocalServerPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateMcpLocalServer, patch),
+  removeMcpLocalServer: (serverId: string) => ipcRenderer.invoke(IPC_CHANNELS.removeMcpLocalServer, serverId),
+  testMcpLocalServer: (serverId: string) => ipcRenderer.invoke(IPC_CHANNELS.testMcpLocalServer, serverId),
+  connectMcpLocalServer: (serverId: string) => ipcRenderer.invoke(IPC_CHANNELS.connectMcpLocalServer, serverId),
+  disconnectMcpLocalServer: (serverId: string) => ipcRenderer.invoke(IPC_CHANNELS.disconnectMcpLocalServer, serverId),
+  getMcpToolCatalog: () => ipcRenderer.invoke(IPC_CHANNELS.getMcpToolCatalog),
+  refreshMcpToolCatalog: (serverId: string) => ipcRenderer.invoke(IPC_CHANNELS.refreshMcpToolCatalog, serverId),
   summarizeArticle: (articleId: string, forceRefresh?: boolean, options?: AiSummaryRequestOptions) => ipcRenderer.invoke(IPC_CHANNELS.summarizeArticle, articleId, forceRefresh, options),
   stopAiSummary: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.stopAiSummary, articleId),
   onAiSummaryProgress: (listener: (progress: AiSummaryProgress) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, progress: AiSummaryProgress): void => listener(progress)
     ipcRenderer.on(IPC_CHANNELS.aiSummaryProgress, wrapped)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.aiSummaryProgress, wrapped)
+  },
+  onAiSummaryStreamUpdate: (listener: (update: AiSummaryStreamUpdate) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, update: AiSummaryStreamUpdate): void => listener(update)
+    ipcRenderer.on(IPC_CHANNELS.aiSummaryStreamUpdate, wrapped)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.aiSummaryStreamUpdate, wrapped)
+  },
+  getLlmCustomizationSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getLlmCustomizationSettings),
+  updateLlmCustomizationSettings: (patch: LlmCustomizationSettingsPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateLlmCustomizationSettings, patch),
+  getLlmSkills: () => ipcRenderer.invoke(IPC_CHANNELS.getLlmSkills),
+  importLlmSkill: () => ipcRenderer.invoke(IPC_CHANNELS.importLlmSkill),
+  createLlmSkill: (request: LlmSkillCreateRequest) => ipcRenderer.invoke(IPC_CHANNELS.createLlmSkill, request),
+  getLlmSkillPreview: (skillId: string) => ipcRenderer.invoke(IPC_CHANNELS.getLlmSkillPreview, skillId),
+  setLlmSkillEnabled: (skillId: string, enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.setLlmSkillEnabled, skillId, enabled),
+  deleteLlmSkill: (skillId: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteLlmSkill, skillId),
+  setLlmSkillBinding: (task: LlmSkillTask, skillId: string | null) => ipcRenderer.invoke(IPC_CHANNELS.setLlmSkillBinding, task, skillId),
+  getLlmQuickMessages: (language: 'zh' | 'en') => ipcRenderer.invoke(IPC_CHANNELS.getLlmQuickMessages, language),
+  createLlmQuickMessage: (title: string, content: string, language: 'zh' | 'en') => ipcRenderer.invoke(IPC_CHANNELS.createLlmQuickMessage, title, content, language),
+  updateLlmQuickMessage: (id: string, title: string, content: string, language: 'zh' | 'en') => ipcRenderer.invoke(IPC_CHANNELS.updateLlmQuickMessage, id, title, content, language),
+  setLlmQuickMessageEnabled: (id: string, enabled: boolean, language: 'zh' | 'en') => ipcRenderer.invoke(IPC_CHANNELS.setLlmQuickMessageEnabled, id, enabled, language),
+  deleteLlmQuickMessage: (id: string, language: 'zh' | 'en') => ipcRenderer.invoke(IPC_CHANNELS.deleteLlmQuickMessage, id, language),
+  moveLlmQuickMessage: (id: string, direction: -1 | 1, language: 'zh' | 'en') => ipcRenderer.invoke(IPC_CHANNELS.moveLlmQuickMessage, id, direction, language),
+  listLlmConversations: (articleId?: string | null) => ipcRenderer.invoke(IPC_CHANNELS.listLlmConversations, articleId),
+  createLlmConversation: (request: LlmCreateConversationRequest) => ipcRenderer.invoke(IPC_CHANNELS.createLlmConversation, request),
+  updateLlmConversation: (request: LlmUpdateConversationRequest) => ipcRenderer.invoke(IPC_CHANNELS.updateLlmConversation, request),
+  deleteLlmConversation: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteLlmConversation, conversationId),
+  listLlmArticleContextCandidates: (query?: string) => ipcRenderer.invoke(IPC_CHANNELS.listLlmArticleContextCandidates, query),
+  getLlmConversationArticles: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.getLlmConversationArticles, conversationId),
+  replaceLlmConversationArticles: (request: LlmReplaceConversationArticlesRequest) => ipcRenderer.invoke(IPC_CHANNELS.replaceLlmConversationArticles, request),
+  getLlmMessages: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.getLlmMessages, conversationId),
+  appendLlmUserMessage: (request: LlmAppendUserMessageRequest) => ipcRenderer.invoke(IPC_CHANNELS.appendLlmUserMessage, request),
+  getLlmToolActivity: (conversationId: string) => ipcRenderer.invoke(IPC_CHANNELS.getLlmToolActivity, conversationId),
+  resolveLlmToolApproval: (toolCallId: string, decision: 'APPROVE' | 'DENY') => ipcRenderer.invoke(IPC_CHANNELS.resolveLlmToolApproval, toolCallId, decision),
+  listLlmManualTools: () => ipcRenderer.invoke(IPC_CHANNELS.listLlmManualTools),
+  executeLlmManualTool: (request: LlmExecuteManualToolRequest) => ipcRenderer.invoke(IPC_CHANNELS.executeLlmManualTool, request),
+  discardLlmManualToolContext: (contextId: string) => ipcRenderer.invoke(IPC_CHANNELS.discardLlmManualToolContext, contextId),
+  getLlmAssistantEvidence: (assistantMessageId: string) => ipcRenderer.invoke(IPC_CHANNELS.getLlmAssistantEvidence, assistantMessageId),
+  startLlmExecution: (request: LlmStartExecutionRequest) => ipcRenderer.invoke(IPC_CHANNELS.startLlmExecution, request),
+  cancelLlmExecution: (requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.cancelLlmExecution, requestId),
+  onLlmExecutionEvent: (listener: (event: LlmExecutionEvent) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, executionEvent: LlmExecutionEvent): void => listener(executionEvent)
+    ipcRenderer.on(IPC_CHANNELS.llmExecutionEvent, wrapped)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.llmExecutionEvent, wrapped)
   },
   getTranslationSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getTranslationSettings),
   getTranslationApiKey: (type: TranslationProviderType) => ipcRenderer.invoke(IPC_CHANNELS.getTranslationApiKey, type),
@@ -134,6 +217,7 @@ const api: OrigReadDesktopApi = Object.freeze({
   testTranslationProvider: (type: TranslationProviderType) => ipcRenderer.invoke(IPC_CHANNELS.testTranslationProvider, type),
   getDeepLUsage: () => ipcRenderer.invoke(IPC_CHANNELS.getDeepLUsage),
   translateArticle: (articleId: string, target?: TranslationTarget, forceRefresh?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.translateArticle, articleId, target, forceRefresh),
+  stopTranslation: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.stopTranslation, articleId),
   getArticleFilters: () => ipcRenderer.invoke(IPC_CHANNELS.getArticleFilters),
   addArticleFilter: (keyword: string, type: ArticleFilterRuleType, feedId?: string | null) => ipcRenderer.invoke(IPC_CHANNELS.addArticleFilter, keyword, type, feedId),
   setArticleFilterEnabled: (id: string, enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.setArticleFilterEnabled, id, enabled),

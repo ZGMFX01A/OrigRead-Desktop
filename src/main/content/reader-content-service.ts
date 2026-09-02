@@ -1,5 +1,6 @@
 import type { ReaderArticleContent, ReaderContentMode } from '../../shared/reader'
 import { LibraryRepository } from '../database/library-repository'
+import { annotateArticleEvidenceHtml } from '../llm/evidence-block-builder'
 import { sanitizeContentHtml } from './content-html-sanitizer'
 import { shouldUseEmbeddedRssAsFullContent } from './embedded-rss-content-policy'
 
@@ -24,10 +25,11 @@ export class ReaderContentService {
       embeddedRssFullContent,
       preferFull
     )
+    const sanitizedHtml = sanitizeContentHtml(html, sourceUrl)
     return {
       articleId,
       mode,
-      html: sanitizeContentHtml(html, sourceUrl),
+      html: annotateArticleEvidenceHtml(sanitizedHtml, { articleId, sourceUrl: article.url }),
       sourceUrl: article.url
     }
   }

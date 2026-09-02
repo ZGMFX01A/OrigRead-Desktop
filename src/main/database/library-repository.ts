@@ -22,6 +22,14 @@ export interface RssHttpCacheRecord {
   updatedAt: number
 }
 
+export interface ArticleMetadataRecord {
+  id: string
+  feedName: string
+  title: string
+  url: string | null
+  publishedAt: number | null
+}
+
 interface GroupRow {
   id: string
   account_id: number
@@ -449,6 +457,53 @@ export class LibraryRepository {
     return this.listArticlesForAccount(this.getCurrentAccountId(), limit)
   }
 
+  listArticleMetadata(limit = 30, titleQuery = ''): ArticleMetadataRecord[] {
+    const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 200)
+    const accountId = this.getCurrentAccountId()
+    const normalizedQuery = titleQuery.trim()
+    const rows = normalizedQuery
+      ? this.database.prepare(`
+          SELECT a.id, f.name AS feed_name, a.title, a.url, a.published_at
+          FROM articles a
+          INNER JOIN feeds f ON f.id = a.feed_id AND f.account_id = a.account_id
+          WHERE a.account_id = ? AND a.title LIKE ? ESCAPE '\\' COLLATE NOCASE
+          ORDER BY COALESCE(a.published_at, a.created_at) DESC, a.id
+          LIMIT ?
+        `).all(accountId, `%${escapeLikePattern(normalizedQuery)}%`, safeLimit)
+      : this.database.prepare(`
+          SELECT a.id, f.name AS feed_name, a.title, a.url, a.published_at
+          FROM articles a
+          INNER JOIN feeds f ON f.id = a.feed_id AND f.account_id = a.account_id
+          WHERE a.account_id = ?
+          ORDER BY COALESCE(a.published_at, a.created_at) DESC, a.id
+          LIMIT ?
+        `).all(accountId, safeLimit)
+    return (rows as unknown as Array<{
+      id: string
+      feed_name: string
+      title: string
+      url: string | null
+      published_at: number | null
+    }>).map(articleMetadataFromRow)
+  }
+
+  getArticleMetadataById(articleId: string): ArticleMetadataRecord | null {
+    const row = this.database.prepare(`
+      SELECT a.id, f.name AS feed_name, a.title, a.url, a.published_at
+      FROM articles a
+      INNER JOIN feeds f ON f.id = a.feed_id AND f.account_id = a.account_id
+      WHERE a.account_id = ? AND a.id = ?
+      LIMIT 1
+    `).get(this.getCurrentAccountId(), articleId.trim()) as unknown as {
+      id: string
+      feed_name: string
+      title: string
+      url: string | null
+      published_at: number | null
+    } | undefined
+    return row ? articleMetadataFromRow(row) : null
+  }
+
   listArticlesForAccount(accountId: number, limit = 200): ArticleRecord[] {
     const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 1_000)
     return (this.database.prepare(`
@@ -704,6 +759,22 @@ function toSqlBoolean(value: boolean): number {
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, '\\$&')
+}
+
+function articleMetadataFromRow(row: {
+  id: string
+  feed_name: string
+  title: string
+  url: string | null
+  published_at: number | null
+}): ArticleMetadataRecord {
+  return {
+    id: row.id,
+    feedName: row.feed_name,
+    title: row.title,
+    url: row.url,
+    publishedAt: row.published_at
+  }
 }
 
 function makeSearchSnippet(value: string, query: string): string {

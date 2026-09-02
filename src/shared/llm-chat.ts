@@ -123,10 +123,17 @@ export type LlmEvidenceBlockKind =
 export interface LlmEvidenceLocatorV1 {
   version: 1
   sourceKind: 'ARTICLE' | 'SELECTION' | 'WEB_SEARCH' | 'TOOL_RESULT'
+  /** Stable evidence identity used by Reader DOM anchors when available. */
+  stableLocatorKey?: string
   blockIndex?: number
   headingPath?: string[]
   articleId?: string | null
   sourceUrl?: string | null
+  /** Frozen tool provenance; do not resolve historical citations against the live MCP catalog. */
+  toolCallId?: string | null
+  toolId?: string | null
+  toolName?: string | null
+  toolSourceId?: string | null
   normalizedHash: string
 }
 

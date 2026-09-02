@@ -2,12 +2,18 @@ import { performance } from 'node:perf_hooks'
 import { NETWORK_REQUEST_TIMEOUT_MS } from '../network/request-policy'
 import type { WebSearchRepository } from './web-search-repository'
 import {
+  BraveWebSearchAdapter,
   ExaWebSearchAdapter,
+  FirecrawlWebSearchAdapter,
   KeenableWebSearchAdapter,
+  LinkupWebSearchAdapter,
+  PerplexityWebSearchAdapter,
+  SearxngWebSearchAdapter,
   TavilyWebSearchAdapter,
   WebSearchException,
   type WebSearchProviderAdapter
 } from './web-search-adapters'
+import { webSearchProviderDefinition } from '../../shared/web-search'
 import type {
   WebSearchHealthCheckResult,
   WebSearchProviderKind,
@@ -27,9 +33,14 @@ export class WebSearchService {
   constructor(
     private readonly repository: WebSearchRepository,
     adapters: readonly WebSearchProviderAdapter[] = [
-      new TavilyWebSearchAdapter(),
       new ExaWebSearchAdapter(),
-      new KeenableWebSearchAdapter()
+      new TavilyWebSearchAdapter(),
+      new BraveWebSearchAdapter(),
+      new PerplexityWebSearchAdapter(),
+      new LinkupWebSearchAdapter(),
+      new FirecrawlWebSearchAdapter(),
+      new KeenableWebSearchAdapter(),
+      new SearxngWebSearchAdapter()
     ]
   ) {
     this.adapters = new Map(adapters.map((adapter) => [adapter.kind, adapter]))
@@ -77,7 +88,7 @@ export class WebSearchService {
 
   private validateRuntimeProfile(profile: WebSearchProviderProfile, apiKey: string): void {
     if (!profile.enabled || !profile.endpoint.trim()) throw new WebSearchException(`Web Search Provider 未完成配置：${profile.name}`)
-    if ((profile.kind === 'TAVILY' || profile.kind === 'EXA') && !apiKey.trim()) {
+    if (webSearchProviderDefinition(profile.kind).requiresApiKey && !apiKey.trim()) {
       throw new WebSearchException(`Web Search Provider 缺少 API Key：${profile.name}`)
     }
   }

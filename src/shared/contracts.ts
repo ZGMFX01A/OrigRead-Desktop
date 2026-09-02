@@ -13,7 +13,7 @@ import type {
   OriginalNavigationAction,
   OriginalViewBounds
 } from './original-view'
-import type { AiProviderPatch, AiProviderTestResult, AiSettings, AiSettingsPatch, AiSummaryDocument, AiSummaryProgress, AiSummaryRequestOptions } from './ai'
+import type { AiProviderPatch, AiProviderTestResult, AiSettings, AiSettingsPatch, AiSummaryDocument, AiSummaryProgress, AiSummaryRequestOptions, AiSummaryStreamUpdate } from './ai'
 import type { DeepLUsage, TranslationDocument, TranslationProviderPatch, TranslationProviderTestResult, TranslationSettings, TranslationSettingsPatch, TranslationTarget } from './translation'
 import type { ArticleFilterRule, ArticleFilterSnapshot, ArticleFilterRuleType } from './filter-rules'
 import type { ConfigurationBackupFileResult } from './configuration-backup'
@@ -23,6 +23,21 @@ import type { ReaderFontEntry, ReaderFontFileResult } from './reader-font'
 import type { OpmlExportFileResult, OpmlImportFileResult } from './opml'
 import type { UpdateCheckResult, UpdateDownloadResult } from './update'
 import type { AccountConnectionTestResult, AccountCreateInput, AccountPatch, AccountRecord, AccountSnapshot } from './account'
+import type { LlmChatDataApi } from './llm-ipc'
+import type { LlmCustomizationSettings, LlmCustomizationSettingsPatch } from './llm-customization'
+import type { LlmQuickMessage } from './llm-quick-message'
+import type { LlmSkillCreateRequest, LlmSkillImportFileResult, LlmSkillManagementSnapshot, LlmSkillPreview, LlmSkillTask } from './llm-skill'
+import type { WebSearchProviderKind, WebSearchProviderPatch, WebSearchProviderTestResult, WebSearchSettings, WebSearchSettingsPatch } from './web-search'
+import type {
+  McpConnectionSnapshot,
+  McpLocalServerPatch,
+  McpLocalServerTestResult,
+  McpLocalSettings,
+  McpRemoteServerPatch,
+  McpRemoteServerTestResult,
+  McpRemoteSettings,
+  McpToolCatalogSnapshot
+} from './mcp'
 
 export interface WebsiteSourceRuleSettings {
   feedId: string
@@ -49,7 +64,7 @@ export interface FeedSettingsPatch {
   isBrowser?: boolean
 }
 
-export interface OrigReadDesktopApi {
+export interface OrigReadDesktopApi extends LlmChatDataApi {
   getAppInfo(): Promise<AppInfo>
   getLibrarySnapshot(): Promise<LibrarySnapshot>
   listFeeds(): Promise<FeedRecord[]>
@@ -130,16 +145,60 @@ export interface OrigReadDesktopApi {
   getReaderContent(articleId: string, preferFull?: boolean): Promise<ReaderArticleContent>
   fetchFullContent(articleId: string): Promise<FullContentFetchResult>
   getAiSettings(): Promise<AiSettings>
-  getAiApiKey(providerId: string): Promise<string>
+  revealAiApiKey(providerId: string): Promise<string>
   updateAiSettings(patch: AiSettingsPatch): Promise<AiSettings>
   addAiProvider(): Promise<AiSettings>
   updateAiProvider(patch: AiProviderPatch): Promise<AiSettings>
   removeAiProvider(providerId: string): Promise<AiSettings>
   refreshAiModels(providerId: string, draftApiKey?: string): Promise<string[]>
   testAiProvider(providerId: string): Promise<AiProviderTestResult>
+  getWebSearchSettings(): Promise<WebSearchSettings>
+  revealWebSearchApiKey(providerId: string): Promise<string>
+  updateWebSearchSettings(patch: WebSearchSettingsPatch): Promise<WebSearchSettings>
+  addWebSearchProvider(kind: WebSearchProviderKind): Promise<WebSearchSettings>
+  updateWebSearchProvider(patch: WebSearchProviderPatch): Promise<WebSearchSettings>
+  removeWebSearchProvider(providerId: string): Promise<WebSearchSettings>
+  testWebSearchProvider(providerId: string): Promise<WebSearchProviderTestResult>
+  getMcpRemoteSettings(): Promise<McpRemoteSettings>
+  revealMcpRemoteCredential(serverId: string): Promise<string>
+  getMcpConnectionStates(): Promise<McpConnectionSnapshot[]>
+  addMcpRemoteServer(): Promise<McpRemoteSettings>
+  updateMcpRemoteServer(patch: McpRemoteServerPatch): Promise<McpRemoteSettings>
+  removeMcpRemoteServer(serverId: string): Promise<McpRemoteSettings>
+  testMcpRemoteServer(serverId: string): Promise<McpRemoteServerTestResult>
+  connectMcpRemoteServer(serverId: string): Promise<McpConnectionSnapshot>
+  authorizeMcpRemoteServer(serverId: string): Promise<McpConnectionSnapshot>
+  disconnectMcpRemoteServer(serverId: string): Promise<void>
+  getMcpLocalSettings(): Promise<McpLocalSettings>
+  revealMcpLocalEnvironment(serverId: string): Promise<string>
+  getMcpLocalConnectionStates(): Promise<McpConnectionSnapshot[]>
+  addMcpLocalServer(): Promise<McpLocalSettings>
+  updateMcpLocalServer(patch: McpLocalServerPatch): Promise<McpLocalSettings>
+  removeMcpLocalServer(serverId: string): Promise<McpLocalSettings>
+  testMcpLocalServer(serverId: string): Promise<McpLocalServerTestResult>
+  connectMcpLocalServer(serverId: string): Promise<McpConnectionSnapshot>
+  disconnectMcpLocalServer(serverId: string): Promise<void>
+  getMcpToolCatalog(): Promise<McpToolCatalogSnapshot>
+  refreshMcpToolCatalog(serverId: string): Promise<McpToolCatalogSnapshot>
   summarizeArticle(articleId: string, forceRefresh?: boolean, options?: AiSummaryRequestOptions): Promise<AiSummaryDocument>
   stopAiSummary(articleId: string): Promise<boolean>
   onAiSummaryProgress(listener: (progress: AiSummaryProgress) => void): () => void
+  onAiSummaryStreamUpdate(listener: (update: AiSummaryStreamUpdate) => void): () => void
+  getLlmCustomizationSettings(): Promise<LlmCustomizationSettings>
+  updateLlmCustomizationSettings(patch: LlmCustomizationSettingsPatch): Promise<LlmCustomizationSettings>
+  getLlmSkills(): Promise<LlmSkillManagementSnapshot>
+  importLlmSkill(): Promise<LlmSkillImportFileResult>
+  createLlmSkill(request: LlmSkillCreateRequest): Promise<LlmSkillImportFileResult>
+  getLlmSkillPreview(skillId: string): Promise<LlmSkillPreview>
+  setLlmSkillEnabled(skillId: string, enabled: boolean): Promise<LlmSkillManagementSnapshot>
+  deleteLlmSkill(skillId: string): Promise<LlmSkillManagementSnapshot>
+  setLlmSkillBinding(task: LlmSkillTask, skillId: string | null): Promise<LlmSkillManagementSnapshot>
+  getLlmQuickMessages(language: 'zh' | 'en'): Promise<LlmQuickMessage[]>
+  createLlmQuickMessage(title: string, content: string, language: 'zh' | 'en'): Promise<LlmQuickMessage[]>
+  updateLlmQuickMessage(id: string, title: string, content: string, language: 'zh' | 'en'): Promise<LlmQuickMessage[]>
+  setLlmQuickMessageEnabled(id: string, enabled: boolean, language: 'zh' | 'en'): Promise<LlmQuickMessage[]>
+  deleteLlmQuickMessage(id: string, language: 'zh' | 'en'): Promise<LlmQuickMessage[]>
+  moveLlmQuickMessage(id: string, direction: -1 | 1, language: 'zh' | 'en'): Promise<LlmQuickMessage[]>
   getTranslationSettings(): Promise<TranslationSettings>
   getTranslationApiKey(type: TranslationProviderPatch['type']): Promise<string>
   updateTranslationSettings(patch: TranslationSettingsPatch): Promise<TranslationSettings>
@@ -147,6 +206,7 @@ export interface OrigReadDesktopApi {
   testTranslationProvider(type: TranslationProviderPatch['type']): Promise<TranslationProviderTestResult>
   getDeepLUsage(): Promise<DeepLUsage>
   translateArticle(articleId: string, target?: TranslationTarget, forceRefresh?: boolean): Promise<TranslationDocument>
+  stopTranslation(articleId: string): Promise<boolean>
   getArticleFilters(): Promise<ArticleFilterSnapshot>
   addArticleFilter(keyword: string, type: ArticleFilterRuleType, feedId?: string | null): Promise<ArticleFilterSnapshot>
   setArticleFilterEnabled(id: string, enabled: boolean): Promise<ArticleFilterSnapshot>
@@ -251,16 +311,78 @@ export const IPC_CHANNELS = {
   getReaderContent: 'reader:get-content',
   fetchFullContent: 'reader:fetch-full-content',
   getAiSettings: 'ai:settings:get',
-  getAiApiKey: 'ai:provider:get-api-key',
+  revealAiApiKey: 'ai:provider:reveal-api-key',
   updateAiSettings: 'ai:settings:update',
   addAiProvider: 'ai:provider:add',
   updateAiProvider: 'ai:provider:update',
   removeAiProvider: 'ai:provider:remove',
   refreshAiModels: 'ai:provider:models',
   testAiProvider: 'ai:provider:test',
+  getWebSearchSettings: 'web-search:settings:get',
+  revealWebSearchApiKey: 'web-search:provider:reveal-api-key',
+  updateWebSearchSettings: 'web-search:settings:update',
+  addWebSearchProvider: 'web-search:provider:add',
+  updateWebSearchProvider: 'web-search:provider:update',
+  removeWebSearchProvider: 'web-search:provider:remove',
+  testWebSearchProvider: 'web-search:provider:test',
+  getMcpRemoteSettings: 'mcp:remote:settings:get',
+  revealMcpRemoteCredential: 'mcp:remote:credential:reveal',
+  getMcpConnectionStates: 'mcp:remote:connections:get',
+  addMcpRemoteServer: 'mcp:remote:server:add',
+  updateMcpRemoteServer: 'mcp:remote:server:update',
+  removeMcpRemoteServer: 'mcp:remote:server:remove',
+  testMcpRemoteServer: 'mcp:remote:server:test',
+  connectMcpRemoteServer: 'mcp:remote:server:connect',
+  authorizeMcpRemoteServer: 'mcp:remote:server:authorize',
+  disconnectMcpRemoteServer: 'mcp:remote:server:disconnect',
+  getMcpLocalSettings: 'mcp:local:settings:get',
+  revealMcpLocalEnvironment: 'mcp:local:environment:reveal',
+  getMcpLocalConnectionStates: 'mcp:local:connections:get',
+  addMcpLocalServer: 'mcp:local:server:add',
+  updateMcpLocalServer: 'mcp:local:server:update',
+  removeMcpLocalServer: 'mcp:local:server:remove',
+  testMcpLocalServer: 'mcp:local:server:test',
+  connectMcpLocalServer: 'mcp:local:server:connect',
+  disconnectMcpLocalServer: 'mcp:local:server:disconnect',
+  getMcpToolCatalog: 'mcp:tools:catalog:get',
+  refreshMcpToolCatalog: 'mcp:tools:catalog:refresh',
   summarizeArticle: 'ai:summary:generate',
   stopAiSummary: 'ai:summary:stop',
   aiSummaryProgress: 'ai:summary:progress',
+  aiSummaryStreamUpdate: 'ai:summary:stream-update',
+  getLlmCustomizationSettings: 'llm:customization:get',
+  updateLlmCustomizationSettings: 'llm:customization:update',
+  getLlmSkills: 'llm:skills:get',
+  importLlmSkill: 'llm:skills:import',
+  createLlmSkill: 'llm:skills:create',
+  getLlmSkillPreview: 'llm:skills:preview',
+  setLlmSkillEnabled: 'llm:skills:set-enabled',
+  deleteLlmSkill: 'llm:skills:delete',
+  setLlmSkillBinding: 'llm:skills:set-binding',
+  getLlmQuickMessages: 'llm:quick-messages:get',
+  createLlmQuickMessage: 'llm:quick-messages:create',
+  updateLlmQuickMessage: 'llm:quick-messages:update',
+  setLlmQuickMessageEnabled: 'llm:quick-messages:set-enabled',
+  deleteLlmQuickMessage: 'llm:quick-messages:delete',
+  moveLlmQuickMessage: 'llm:quick-messages:move',
+  listLlmConversations: 'llm:conversation:list',
+  createLlmConversation: 'llm:conversation:create',
+  updateLlmConversation: 'llm:conversation:update',
+  deleteLlmConversation: 'llm:conversation:delete',
+  listLlmArticleContextCandidates: 'llm:conversation-articles:candidates',
+  getLlmConversationArticles: 'llm:conversation-articles:get',
+  replaceLlmConversationArticles: 'llm:conversation-articles:replace',
+  getLlmMessages: 'llm:message:list',
+  appendLlmUserMessage: 'llm:message:append-user',
+  getLlmToolActivity: 'llm:tool-activity:list',
+  resolveLlmToolApproval: 'llm:tool-approval:resolve',
+  listLlmManualTools: 'llm:manual-tool:list',
+  executeLlmManualTool: 'llm:manual-tool:execute',
+  discardLlmManualToolContext: 'llm:manual-tool:discard-context',
+  getLlmAssistantEvidence: 'llm:evidence:get-assistant',
+  startLlmExecution: 'llm:execution:start',
+  cancelLlmExecution: 'llm:execution:cancel',
+  llmExecutionEvent: 'llm:execution:event',
   getTranslationSettings: 'translation:settings:get',
   getTranslationApiKey: 'translation:provider:get-api-key',
   updateTranslationSettings: 'translation:settings:update',
@@ -268,6 +390,7 @@ export const IPC_CHANNELS = {
   testTranslationProvider: 'translation:provider:test',
   getDeepLUsage: 'translation:deepl:usage',
   translateArticle: 'translation:article:translate',
+  stopTranslation: 'translation:article:stop',
   getArticleFilters: 'rules:filter:list',
   addArticleFilter: 'rules:filter:add',
   setArticleFilterEnabled: 'rules:filter:set-enabled',

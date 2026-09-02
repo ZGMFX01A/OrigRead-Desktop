@@ -1,4 +1,13 @@
-export const WEB_SEARCH_PROVIDER_KINDS = ['TAVILY', 'EXA', 'KEENABLE'] as const
+export const WEB_SEARCH_PROVIDER_KINDS = [
+  'EXA',
+  'TAVILY',
+  'BRAVE',
+  'PERPLEXITY',
+  'LINKUP',
+  'FIRECRAWL',
+  'KEENABLE',
+  'SEARXNG'
+] as const
 export type WebSearchProviderKind = typeof WEB_SEARCH_PROVIDER_KINDS[number]
 
 export type WebSearchBackendKind = 'RAW_SEARCH'
@@ -31,6 +40,14 @@ export interface WebSearchProviderDefinition {
 }
 
 export const WEB_SEARCH_PROVIDER_DEFINITIONS: Readonly<Record<WebSearchProviderKind, WebSearchProviderDefinition>> = Object.freeze({
+  EXA: {
+    kind: 'EXA',
+    defaultName: 'Exa',
+    defaultEndpoint: 'https://api.exa.ai/search',
+    backendKind: 'RAW_SEARCH',
+    requiresApiKey: true,
+    supportsApiKey: true
+  },
   TAVILY: {
     kind: 'TAVILY',
     defaultName: 'Tavily',
@@ -39,10 +56,34 @@ export const WEB_SEARCH_PROVIDER_DEFINITIONS: Readonly<Record<WebSearchProviderK
     requiresApiKey: true,
     supportsApiKey: true
   },
-  EXA: {
-    kind: 'EXA',
-    defaultName: 'Exa',
-    defaultEndpoint: 'https://api.exa.ai/search',
+  BRAVE: {
+    kind: 'BRAVE',
+    defaultName: 'Brave Search',
+    defaultEndpoint: 'https://api.search.brave.com/res/v1/web/search',
+    backendKind: 'RAW_SEARCH',
+    requiresApiKey: true,
+    supportsApiKey: true
+  },
+  PERPLEXITY: {
+    kind: 'PERPLEXITY',
+    defaultName: 'Perplexity Search',
+    defaultEndpoint: 'https://api.perplexity.ai/search',
+    backendKind: 'RAW_SEARCH',
+    requiresApiKey: true,
+    supportsApiKey: true
+  },
+  LINKUP: {
+    kind: 'LINKUP',
+    defaultName: 'Linkup',
+    defaultEndpoint: 'https://api.linkup.so/v1/search',
+    backendKind: 'RAW_SEARCH',
+    requiresApiKey: true,
+    supportsApiKey: true
+  },
+  FIRECRAWL: {
+    kind: 'FIRECRAWL',
+    defaultName: 'Firecrawl',
+    defaultEndpoint: 'https://api.firecrawl.dev/v2/search',
     backendKind: 'RAW_SEARCH',
     requiresApiKey: true,
     supportsApiKey: true
@@ -54,6 +95,14 @@ export const WEB_SEARCH_PROVIDER_DEFINITIONS: Readonly<Record<WebSearchProviderK
     backendKind: 'RAW_SEARCH',
     requiresApiKey: false,
     supportsApiKey: true
+  },
+  SEARXNG: {
+    kind: 'SEARXNG',
+    defaultName: 'SearXNG',
+    defaultEndpoint: '',
+    backendKind: 'RAW_SEARCH',
+    requiresApiKey: false,
+    supportsApiKey: false
   }
 })
 

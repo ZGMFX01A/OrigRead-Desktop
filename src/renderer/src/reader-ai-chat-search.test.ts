@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { LlmMessageRecord } from '../../shared/llm-chat'
+import type { LlmCitationRefRecord, LlmMessageRecord } from '../../shared/llm-chat'
 import { displayChatAssistantContent, searchReaderAiChatMessages } from './reader-ai-chat-search'
 
 function message(id: string, role: 'USER' | 'ASSISTANT', content: string, historyActive = true): LlmMessageRecord {
@@ -46,6 +46,8 @@ describe('Reader AI current-chat search', () => {
 
   it('uses user-visible citation numbers instead of leaking evidence protocol ids', () => {
     expect(displayChatAssistantContent('First [[E7]], same [[E7]], next [[E2]].')).toBe('First [1], same [1], next [2].')
+    const persisted = [{ protocolId: 'E2', displayOrder: 1 }, { protocolId: 'E7', displayOrder: 2 }] as LlmCitationRefRecord[]
+    expect(displayChatAssistantContent('First [[E7]], next [[E2]], invalid [[E9]].', persisted)).toBe('First [2], next [1], invalid .')
     expect(searchReaderAiChatMessages([
       message('a1', 'ASSISTANT', 'Revenue rose [[E7]].')
     ], 'revenue')[0]?.snippet).toBe('Revenue rose [1].')

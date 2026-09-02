@@ -316,6 +316,20 @@ export class LlmChatRepository {
     })
   }
 
+  /** Append one request-time context discovered after the initial prompt snapshot, such as an automatic Tool result. */
+  appendContextRef(record: LlmContextRefRecord): void {
+    this.database.prepare(`
+      INSERT INTO llm_context_refs (
+        id,conversation_id,assistant_message_id,context_id,type,title,source_id,article_id,source_url,
+        content_snapshot,prompt_content_snapshot,content_sha256,priority,included_in_prompt,truncated_in_prompt,created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      record.id, record.conversationId, record.assistantMessageId, record.contextId, record.type, record.title, record.sourceId,
+      record.articleId, record.sourceUrl, record.contentSnapshot, record.promptContentSnapshot, record.contentSha256,
+      record.priority, boolInt(record.includedInPrompt), boolInt(record.truncatedInPrompt), record.createdAt
+    )
+  }
+
   getContextRefsForAssistant(assistantMessageId: string): LlmContextRefRecord[] {
     return (this.database.prepare(`
       SELECT * FROM llm_context_refs WHERE assistant_message_id=? ORDER BY priority DESC,created_at,id

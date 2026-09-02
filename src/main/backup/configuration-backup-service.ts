@@ -8,7 +8,7 @@ import type { RssHubSettingsRepository } from '../sources/rsshub/rsshub-settings
 import type { WebsiteParsePreferenceRepository } from '../sources/website/website-parse-preference-repository'
 import type { WebsiteRuleRepository } from '../sources/website/website-rule-repository'
 import type { TranslationSettingsRepository } from '../translation/translation-settings-repository'
-import type { ConfigurationBackup,ConfigurationBackupSecrets,ConfigurationRestoreResult,TranslationBackup,AiBackup,RssHubBackup,WebSearchBackup } from '../../shared/configuration-backup'
+import type { ConfigurationBackup,ConfigurationBackupSecrets,ConfigurationRestoreResult,TranslationBackup,AiBackup,RssHubBackup,WebSearchBackup,McpBackup } from '../../shared/configuration-backup'
 import { backupTargetToTranslationTarget } from '../../shared/configuration-backup'
 import type { FeedRecord,GroupRecord,SourceType } from '../../shared/library'
 import type { TranslationProviderType } from '../../shared/translation'
@@ -22,6 +22,8 @@ import type { LlmCustomizationSettingsRepository } from '../llm/customization-se
 import { normalizeLlmCustomizationSettingsPatch } from '../../shared/llm-customization'
 import type { WebSearchRepository } from '../search/web-search-repository'
 import { MAX_WEB_SEARCH_MAX_RESULTS, MIN_WEB_SEARCH_MAX_RESULTS, WEB_SEARCH_PROVIDER_KINDS } from '../../shared/web-search'
+import type { McpRemoteRepository } from '../mcp/mcp-remote-repository'
+import type { McpLocalRepository } from '../mcp/mcp-local-repository'
 
 export class ConfigurationBackupService {
   constructor(
@@ -39,17 +41,23 @@ export class ConfigurationBackupService {
     private readonly llmSkills?:LlmSkillRepository,
     private readonly llmQuickMessages?:LlmQuickMessageRepository,
     private readonly llmCustomization?:LlmCustomizationSettingsRepository,
-    private readonly webSearch?:WebSearchRepository
+    private readonly webSearch?:WebSearchRepository,
+    private readonly mcpRemote?:McpRemoteRepository,
+    private readonly mcpLocal?:McpLocalRepository
   ){}
 
   exportBackup(password=''):string{
     const groups=this.library.listGroups(),feeds=this.library.listFeeds(),settings=this.desktopSettings.current(),translation=this.translation.current(),ai=this.ai.current(),account=this.accounts?.current()
+    const mcpRemoteSecrets=this.mcpRemote?.exportBackupSecrets()
     const secrets:ConfigurationBackupSecrets={
       translationApiKeys:Object.fromEntries(TRANSLATION_PROVIDER_TYPES.map((type)=>[type,this.translation.getApiKey(type)]).filter(([,value])=>Boolean(value))) as Partial<Record<TranslationProviderType,string>>,
       aiApiKeys:Object.fromEntries(ai.providers.map((provider)=>[provider.id,this.ai.getApiKey(provider.id)]).filter(([,value])=>Boolean(value))),
-      ...(this.webSearch?{webSearchApiKeys:this.webSearch.exportApiKeys()}:{})
+      ...(this.webSearch?{webSearchApiKeys:this.webSearch.exportApiKeys()}:{}),
+      ...(mcpRemoteSecrets&&Object.keys(mcpRemoteSecrets.credentials).length>0?{mcpRemoteCredentials:mcpRemoteSecrets.credentials}:{}),
+      ...(mcpRemoteSecrets&&Object.keys(mcpRemoteSecrets.oauth).length>0?{mcpRemoteOAuth:mcpRemoteSecrets.oauth}:{}),
+      ...(this.mcpLocal?{mcpLocalEnvironments:this.mcpLocal.exportBackupEnvironments()}:{}),
     }
-    const hasSecrets=Object.keys(secrets.translationApiKeys).length>0||Object.keys(secrets.aiApiKeys).length>0||Object.keys(secrets.webSearchApiKeys??{}).length>0
+    const hasSecrets=Object.keys(secrets.translationApiKeys).length>0||Object.keys(secrets.aiApiKeys).length>0||Object.keys(secrets.webSearchApiKeys??{}).length>0||Object.keys(secrets.mcpRemoteCredentials??{}).length>0||Object.keys(secrets.mcpRemoteOAuth??{}).length>0||Object.keys(secrets.mcpLocalEnvironments??{}).length>0
     const includeSecrets=Boolean(password)
     if(includeSecrets&&password.length<6)throw new Error('备份密码至少需要 6 个字符')
     const backup:ConfigurationBackup={
@@ -60,6 +68,7 @@ export class ConfigurationBackupService {
       rssHub:this.rssHub.current(),rssHubSourceUrls:this.library.listRssHubSourceUrls(),translation:toTranslationBackup(translation),ai:toAiBackup(ai),
       ...(this.llmSkills&&this.llmQuickMessages&&this.llmCustomization?{llm:{customization:this.llmCustomization.current(),skills:JSON.parse(this.llmSkills.exportBackupState()),quickMessages:JSON.parse(this.llmQuickMessages.exportBackupState())}}:{}),
       ...(this.webSearch?{webSearch:this.webSearch.exportStoredSettings()}:{}),
+      ...(this.mcpRemote&&this.mcpLocal?{mcp:{remote:this.mcpRemote.exportBackupState(),local:this.mcpLocal.exportBackupState()}}:{}),
       encryptedSecrets:includeSecrets&&hasSecrets?encryptConfigurationSecrets(secrets,password):null
     }
     return JSON.stringify(backup,null,2)
@@ -71,6 +80,7 @@ export class ConfigurationBackupService {
     const backup=this.decodeAndValidate(content)
     const secrets=backup.encryptedSecrets?decryptConfigurationSecrets(backup.encryptedSecrets,password):null
     validateWebSearchSecretReferences(backup.webSearch,secrets?.webSearchApiKeys)
+    this.validateMcpBackup(backup.mcp,secrets??undefined)
     // 到这里才开始任何写入：格式、规则、订阅和密码均已完整校验。
     const {feedIdMap,groupsAdded,feedsAdded,feedsUpdated}=this.restoreSubscriptions(backup)
     this.desktopSettings.update(readDesktopPreferences(backup.preferences))
@@ -90,6 +100,10 @@ export class ConfigurationBackupService {
     if(backup.webSearch&&this.webSearch){
       this.webSearch.restore(backup.webSearch,secrets?.webSearchApiKeys)
     }
+    if(backup.mcp&&this.mcpRemote&&this.mcpLocal){
+      this.mcpRemote.restoreBackupState(backup.mcp.remote,secrets?.mcpRemoteCredentials,secrets?.mcpRemoteOAuth)
+      this.mcpLocal.restoreBackupState(backup.mcp.local,secrets?.mcpLocalEnvironments)
+    }
     if(backup.llm&&this.llmSkills&&this.llmQuickMessages&&this.llmCustomization){
       this.llmSkills.restoreBackupState(JSON.stringify(backup.llm.skills))
       this.llmQuickMessages.restoreBackupState(JSON.stringify(backup.llm.quickMessages))
@@ -108,7 +122,7 @@ export class ConfigurationBackupService {
     normalizeDesktopSyncInterval(backup.accountSettings?.syncIntervalMinutes)
     readDesktopPreferences(backup.preferences)
     this.websiteRules.validateBackup(JSON.stringify(backup.websiteRules));this.jsonRules.validateBackup(JSON.stringify(backup.jsonRules));this.articleFilters.validateBackup(JSON.stringify(backup.articleFilters));this.websitePreferences.validateBackup(JSON.stringify(backup.websiteParsePreferences))
-    validateRssHubBackup(backup.rssHub);validateTranslationBackup(backup.translation);validateAiBackup(backup.ai);this.validateLlmBackup(backup.llm);validateWebSearchBackup(backup.webSearch)
+    validateRssHubBackup(backup.rssHub);validateTranslationBackup(backup.translation);validateAiBackup(backup.ai);this.validateLlmBackup(backup.llm);validateWebSearchBackup(backup.webSearch);this.validateMcpBackup(backup.mcp)
     return backup
   }
 
@@ -121,6 +135,20 @@ export class ConfigurationBackupService {
     if(value.skills===undefined||value.quickMessages===undefined)throw new Error('备份缺少 Skills 或 Quick Messages')
     this.llmSkills.validateBackupState(JSON.stringify(value.skills))
     this.llmQuickMessages.validateBackupState(JSON.stringify(value.quickMessages))
+  }
+
+  private validateMcpBackup(value:McpBackup|undefined,secrets?:ConfigurationBackupSecrets):void{
+    const hasMcpSecrets=Object.keys(secrets?.mcpRemoteCredentials??{}).length>0
+      ||Object.keys(secrets?.mcpRemoteOAuth??{}).length>0
+      ||Object.keys(secrets?.mcpLocalEnvironments??{}).length>0
+    if(value===undefined){
+      if(hasMcpSecrets)throw new Error('MCP 凭据存在，但备份缺少对应的 MCP 配置')
+      return
+    }
+    if(!value||typeof value!=='object'||Array.isArray(value)||!value.remote||!value.local)throw new Error('备份中的 MCP 配置无效')
+    if(!this.mcpRemote||!this.mcpLocal)throw new Error('当前版本无法恢复 MCP 配置')
+    this.mcpRemote.validateBackupState(value.remote,secrets?.mcpRemoteCredentials,secrets?.mcpRemoteOAuth)
+    this.mcpLocal.validateBackupState(value.local,secrets?.mcpLocalEnvironments)
   }
 
   private restoreSubscriptions(backup:ConfigurationBackup):{feedIdMap:Map<string,string>;groupsAdded:number;feedsAdded:number;feedsUpdated:number}{

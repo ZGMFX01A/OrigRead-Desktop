@@ -26,6 +26,8 @@ describe('ReaderContentService', () => {
     expect(result.mode).toBe('full')
     expect(result.html).toContain('Full body')
     expect(result.html).toContain('href="https://example.com/more"')
+    expect(result.html).toContain('data-origread-block-id=')
+    expect(result.html).toContain('data-origread-block-hash=')
     expect(result.html).not.toContain('<script')
   })
 

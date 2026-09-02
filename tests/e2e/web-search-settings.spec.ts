@@ -17,6 +17,8 @@ test('Dedicated Web Search settings use safe secret reveal and the real provider
     await expect(section).toBeVisible()
     await section.locator('.setting-row').filter({ hasText: '默认联网' }).locator('select').selectOption('AUTO')
     await section.locator('.setting-row').filter({ hasText: '搜索结果数' }).locator('select').selectOption('8')
+    await expect(section.locator('.web-search-kind-select option')).toHaveCount(8)
+    expect(await section.locator('.web-search-kind-select option').allTextContents()).toEqual(['Exa','Tavily','Brave Search','Perplexity Search','Linkup','Firecrawl','Keenable','SearXNG'])
     await section.locator('.web-search-kind-select').selectOption('TAVILY')
     await section.locator('.web-search-toolbar').getByRole('button', { name: '添加' }).click()
 

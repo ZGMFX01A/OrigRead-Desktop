@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildArticleEvidenceBlocks } from './evidence-block-builder'
+import { annotateArticleEvidenceHtml, buildArticleEvidenceBlocks, buildSelectionEvidenceBlock } from './evidence-block-builder'
 
 describe('buildArticleEvidenceBlocks D2.9', () => {
   it('splits sanitized article HTML into semantic blocks without duplicating nested content', () => {
@@ -28,10 +28,23 @@ describe('buildArticleEvidenceBlocks D2.9', () => {
     expect(blocks[1]?.locator).toMatchObject({
       version: 1,
       sourceKind: 'ARTICLE',
+      stableLocatorKey: blocks[1]?.stableLocatorKey,
       articleId: 'article-1',
       sourceUrl: 'https://example.com/article',
       headingPath: ['Results']
     })
+  })
+
+  it('annotates Reader HTML with the same stable block identities and hashes', () => {
+    const html = annotateArticleEvidenceHtml('<h2>Section</h2><p>Evidence text.</p><p>Second fact.</p>', {
+      articleId: 'article-1',
+      sourceUrl: 'https://example.com/article'
+    })
+    const blocks = buildArticleEvidenceBlocks(html, { articleId: 'article-1', sourceUrl: 'https://example.com/article' })
+    expect(html).toContain(`data-origread-block-id="${blocks[0]?.stableLocatorKey}"`)
+    expect(html).toContain(`data-origread-block-id="${blocks[1]?.stableLocatorKey}"`)
+    expect(html).toContain(`data-origread-block-hash="${blocks[1]?.normalizedSha256}"`)
+    expect(html).toContain('data-origread-heading-path="Section"')
   })
 
   it('keeps stable locator identity when unrelated content is inserted after a block', () => {
@@ -52,5 +65,15 @@ describe('buildArticleEvidenceBlocks D2.9', () => {
     const blocks = buildArticleEvidenceBlocks('<div>Only bare text without semantic tags</div>')
     expect(blocks).toHaveLength(1)
     expect(blocks[0]).toMatchObject({ kind: 'PARAGRAPH', content: 'Only bare text without semantic tags' })
+  })
+
+  it('freezes selected original text as citation-ready evidence without pretending it has an article block anchor', () => {
+    const block = buildSelectionEvidenceBlock('  selected   evidence  ', { articleId: 'article-1', sourceUrl: 'https://example.com/article' })
+    expect(block).toMatchObject({
+      content: 'selected evidence',
+      kind: 'SELECTION',
+      locator: { sourceKind: 'SELECTION', articleId: 'article-1', sourceUrl: 'https://example.com/article' }
+    })
+    expect(block?.locator.stableLocatorKey).toBe(block?.stableLocatorKey)
   })
 })

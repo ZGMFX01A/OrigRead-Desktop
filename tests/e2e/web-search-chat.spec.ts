@@ -36,6 +36,19 @@ test('Reader AI Chat exposes Dedicated Web Search activity, frozen results, one-
 
     const assistant = page.locator('.reader-ai-message.assistant').last()
     await expect(assistant).toContainText('Search-backed answer')
+    const inlineCitation = assistant.locator('.reader-ai-inline-citation').first()
+    await expect(inlineCitation).toBeVisible()
+    await inlineCitation.hover()
+    await expect(assistant.locator('.reader-ai-inline-citation-popover').first()).toContainText('Search result one')
+    await expect(assistant.locator('.reader-ai-inline-citation-popover').first()).toContainText('First current development')
+    await assistant.getByRole('button', {name:'来源'}).click()
+    await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-detail','sources')
+    const sources = page.locator('.reader-ai-sources-detail')
+    await expect(sources).toContainText('网页来源')
+    await expect(sources).toContainText('Search result one')
+    await expect(sources).toContainText('First current development with supporting detail.')
+    await expect(sources).toContainText('已用于回答')
+    await page.getByRole('button', {name:'返回'}).click()
     const activity = assistant.locator('.reader-ai-web-search-activity')
     await expect(activity).toContainText('已搜索网页')
     await expect(activity).toContainText('Fixture Search')
@@ -83,6 +96,10 @@ test('Reader AI Chat exposes Dedicated Web Search activity, frozen results, one-
     await page.locator('.reader-ai-history-main').first().click()
     await expect(page.locator('.reader-ai-web-search-activity')).toHaveCount(2)
     await expect(page.locator('.reader-ai-web-search-activity').first()).toContainText('2 条结果')
+    await expect(page.locator('.reader-ai-inline-citation')).toHaveCount(2)
+    await page.locator('.reader-ai-message.assistant').first().getByRole('button',{name:'来源'}).click()
+    await expect(page.locator('.reader-ai-sources-detail')).toContainText('Search result one')
+    await expect(page.locator('.reader-ai-sources-detail')).toContainText('First current development with supporting detail.')
   } finally {
     await testApp.close()
     await closeServer(fixture.server)
@@ -113,8 +130,10 @@ async function startFixture(): Promise<{server:Server;baseUrl:string;searchReque
         if(!body.includes('Search result one')){
           response.writeHead(500,{'content-type':'application/json'});response.end(JSON.stringify({error:'Search context missing'}));return
         }
+        const evidenceId=findEvidenceId(body,'First current development with supporting detail.')
+        if(!evidenceId){response.writeHead(500,{'content-type':'application/json'});response.end(JSON.stringify({error:'Search evidence id missing'}));return}
         response.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache',connection:'keep-alive'})
-        response.write(`data: ${JSON.stringify({choices:[{delta:{content:'Search-backed answer'},finish_reason:null}]})}\n\n`)
+        response.write(`data: ${JSON.stringify({choices:[{delta:{content:`Search-backed answer [[${evidenceId}]]`},finish_reason:null}]})}\n\n`)
         response.write(`data: ${JSON.stringify({choices:[{delta:{},finish_reason:'stop'}]})}\n\n`)
         response.end('data: [DONE]\n\n')
       })
@@ -128,3 +147,14 @@ async function startFixture(): Promise<{server:Server;baseUrl:string;searchReque
 }
 
 async function closeServer(server:Server):Promise<void>{await new Promise<void>((resolve)=>server.close(()=>resolve()))}
+
+function findEvidenceId(rawRequest:string,marker:string):string|null{
+  try{
+    const parsed=JSON.parse(rawRequest) as {messages?:Array<{role?:string;content?:string}>}
+    const system=parsed.messages?.find((message)=>message.role==='system')?.content??''
+    const markerIndex=system.indexOf(marker)
+    if(markerIndex<0)return null
+    const matches=[...system.slice(0,markerIndex).matchAll(/\[ORIGREAD_EVIDENCE id="(E\d+)"\]/g)]
+    return matches.at(-1)?.[1]??null
+  }catch{return null}
+}

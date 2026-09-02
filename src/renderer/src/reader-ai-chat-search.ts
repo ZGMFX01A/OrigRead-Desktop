@@ -1,4 +1,4 @@
-import type { LlmMessageRecord } from '../../shared/llm-chat'
+import type { LlmCitationRefRecord, LlmMessageRecord } from '../../shared/llm-chat'
 
 export interface ReaderAiChatSearchResult {
   messageId: string
@@ -6,7 +6,17 @@ export interface ReaderAiChatSearchResult {
   snippet: string
 }
 
-export function displayChatAssistantContent(content: string): string {
+export function displayChatAssistantContent(content: string, citations?: readonly LlmCitationRefRecord[]): string {
+  if (citations) {
+    const byProtocolId = new Map(citations.map((citation, index) => [
+      citation.protocolId,
+      citation.displayOrder ?? index + 1
+    ] as const))
+    return content.replace(/\[\[(E\d+)\]\]/g, (_match, protocolId: string) => {
+      const displayOrder = byProtocolId.get(protocolId)
+      return displayOrder ? `[${displayOrder}]` : ''
+    })
+  }
   const citationOrder = new Map<string, number>()
   return content.replace(/\[\[(E\d+)\]\]/g, (_match, protocolId: string) => {
     let displayOrder = citationOrder.get(protocolId)
