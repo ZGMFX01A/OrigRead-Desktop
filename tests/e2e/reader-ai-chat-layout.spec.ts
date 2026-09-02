@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http'
-import { expect, test, type Locator } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { launchIsolatedOrigRead } from './electron-test-app'
 
 test('Reader AI Chat keeps scroll ownership across long streaming, resize, placement and dark theme', async () => {
@@ -88,8 +88,11 @@ test('Reader AI Chat keeps scroll ownership across long streaming, resize, place
     const streamingAssistant = page.locator('.reader-ai-message.assistant').last()
     await expect(streamingAssistant).toContainText('STREAM-START')
     await timeline.hover()
+    const pauseScrollStartedAt = Date.now()
     await page.mouse.wheel(0, -520)
     await expect(page.getByRole('button', { name: '回到底部' })).toBeVisible()
+    const pauseScrollResponseMs = Date.now() - pauseScrollStartedAt
+    expect(pauseScrollResponseMs).toBeLessThan(1_000)
     const pausedTop = await timeline.evaluate((element) => element.scrollTop)
 
     await expect(streamingAssistant).toContainText('STREAM-MIDDLE')
@@ -100,12 +103,17 @@ test('Reader AI Chat keeps scroll ownership across long streaming, resize, place
 
     // Narrowing increases wrapping/scrollHeight. The user-paused state must survive the ResizeObserver reflow.
     const panel = page.locator('.reader-ai-panel')
-    await panel.getByRole('button', { name: 'AI 面板尺寸' }).click()
-    const sizeSlider = panel.getByRole('slider', { name: 'AI 面板宽度' })
-    await sizeSlider.fill('220')
-    await expect.poll(async () => (await page.evaluate(() => window.origread.getSettings())).aiSummaryPanelSize).toBe(220)
+    const resizeHandle = panel.getByRole('separator', { name: '拖动调整 AI 面板宽度' })
+    await expect(resizeHandle).toBeVisible()
+    const narrowResizeStartedAt = Date.now()
+    await beginReaderAiPanelDrag(page, panel, 220, 'right')
     await expect.poll(async () => (await panel.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(219)
     await expect.poll(async () => (await panel.boundingBox())?.width ?? 0).toBeLessThanOrEqual(221)
+    expect(await page.evaluate(async () => (await window.origread.getSettings()).aiSummaryPanelSize)).toBe(360)
+    const narrowResizeResponseMs = Date.now() - narrowResizeStartedAt
+    expect(narrowResizeResponseMs).toBeLessThan(1_500)
+    await page.mouse.up()
+    await expect.poll(async () => (await page.evaluate(() => window.origread.getSettings())).aiSummaryPanelSize).toBe(220)
     await expect(page.getByRole('button', { name: '回到底部' })).toBeVisible()
 
     await expect(streamingAssistant).toContainText('STREAM-END')
@@ -117,14 +125,21 @@ test('Reader AI Chat keeps scroll ownership across long streaming, resize, place
     await expect.poll(async () => distanceToBottom(timeline)).toBeLessThanOrEqual(4)
 
     // While following, widening to the maximum must keep the viewport anchored to the end.
-    const maxSizeSlider = panel.getByRole('slider', { name: 'AI 面板宽度' })
-    if (!await maxSizeSlider.isVisible()) {
-      await panel.getByRole('button', { name: 'AI 面板尺寸' }).click()
-    }
-    await maxSizeSlider.fill('640')
-    await expect.poll(async () => (await page.evaluate(() => window.origread.getSettings())).aiSummaryPanelSize).toBe(640)
+    const wideResizeStartedAt = Date.now()
+    await beginReaderAiPanelDrag(page, panel, 640, 'right')
     await expect.poll(async () => (await panel.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(639)
     await expect.poll(async () => distanceToBottom(timeline)).toBeLessThanOrEqual(4)
+    expect(await page.evaluate(async () => (await window.origread.getSettings()).aiSummaryPanelSize)).toBe(220)
+    const wideResizeResponseMs = Date.now() - wideResizeStartedAt
+    expect(wideResizeResponseMs).toBeLessThan(1_500)
+    await page.mouse.up()
+    await expect.poll(async () => (await page.evaluate(() => window.origread.getSettings())).aiSummaryPanelSize).toBe(640)
+
+    console.info('[D8.1 Perf Baseline]', JSON.stringify({
+      long_chat_pause_scroll_ms: pauseScrollResponseMs,
+      panel_resize_to_220_ms: narrowResizeResponseMs,
+      panel_resize_to_640_ms: wideResizeResponseMs
+    }))
 
     // Theme is persisted independently of the conversation. Reload, reopen the same Conversation, then validate
     // the real Chat surfaces rather than only checking the root data-theme flag.
@@ -238,6 +253,25 @@ function longParagraph(marker: string): string {
     { length: 42 },
     (_, index) => `${marker} section ${index + 1} explains the article with enough detail to exercise wrapping and long-chat scrolling.`
   ).join(' ')
+}
+
+async function beginReaderAiPanelDrag(
+  page: Page,
+  panel: Locator,
+  targetWidth: number,
+  placement: 'left' | 'right'
+): Promise<void> {
+  const handle = panel.getByRole('separator', { name: '拖动调整 AI 面板宽度' })
+  const [handleBox, panelBox] = await Promise.all([handle.boundingBox(), panel.boundingBox()])
+  if (!handleBox || !panelBox) throw new Error('Reader AI panel resize geometry is unavailable')
+  const startX = handleBox.x + handleBox.width / 2
+  const y = handleBox.y + Math.min(24, handleBox.height / 2)
+  const physicalDelta = placement === 'left'
+    ? targetWidth - panelBox.width
+    : panelBox.width - targetWidth
+  await page.mouse.move(startX, y)
+  await page.mouse.down()
+  await page.mouse.move(startX + physicalDelta, y, { steps: 4 })
 }
 
 async function closeServer(server: Server): Promise<void> {

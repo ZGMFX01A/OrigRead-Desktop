@@ -93,8 +93,26 @@ test('Reader original-text Ask AI selection is one-shot, auditable, and preserve
     await citation.hover()
     await expect(firstAssistant.locator('.reader-ai-inline-citation-popover').first()).toContainText('Selection source article')
     await expect(firstAssistant.locator('.reader-ai-inline-citation-popover').first()).toContainText('Revenue rose by 20 percent')
+
+    // Move far away before the inline citation click. One click must both reposition the Reader
+    // and leave the target visibly highlighted; it must not require a second click after scrolling.
+    await page.locator('.reader-content').evaluate((element) => { element.scrollTop = element.scrollHeight })
     await citation.click()
     await expect(highlightedEvidence).toContainText('Revenue rose by 20 percent')
+    const citationVisibleAfterFirstClick = await highlightedEvidence.evaluate((element) => {
+      const target = element.getBoundingClientRect()
+      const reader = document.querySelector('.reader-content')?.getBoundingClientRect()
+      if (!reader) return false
+      return target.bottom > reader.top && target.top < reader.bottom
+    })
+    expect(citationVisibleAfterFirstClick).toBe(true)
+    const citationFeedback = await highlightedEvidence.evaluate((element) => {
+      const style = getComputedStyle(element as HTMLElement)
+      return { animationName: style.animationName, animationDuration: style.animationDuration }
+    })
+    expect(citationFeedback.animationName).toBe('reader-citation-highlight-feedback')
+    expect(citationFeedback.animationDuration).toBe('1.05s')
+    await expect(highlightedEvidence).toHaveCount(0, { timeout: 2_000 })
 
     await firstAssistant.getByRole('button', { name: '来源' }).click()
     await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-detail', 'sources')
@@ -193,6 +211,7 @@ async function latestAssistantMessageId(page: Page, articleId: string): Promise<
 
 async function startSelectionFixture(): Promise<{ server: Server; requests(): string[] }> {
   const requests: string[] = []
+  const filler = Array.from({ length: 80 }, (_value, index) => `<p>Long article filler paragraph ${index + 1} keeps citation navigation meaningfully distant.</p>`).join('')
   const server = createServer((request, response) => {
     if (request.url === '/feed.xml') {
       response.writeHead(200, { 'content-type': 'application/rss+xml; charset=utf-8' })
@@ -201,6 +220,7 @@ async function startSelectionFixture(): Promise<{ server: Server; requests(): st
 <item><title>Selection source article</title><link>http://127.0.0.1/article</link><guid>d7-3-selection</guid><description><![CDATA[
 <h2>Results</h2>
 <p>Revenue rose by 20 percent because enterprise renewals increased.</p>
+${filler}
 <p>Operating margin also improved while support costs remained stable.</p>
 ]]></description></item></channel></rss>`)
       return

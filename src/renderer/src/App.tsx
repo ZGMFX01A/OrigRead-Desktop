@@ -43,6 +43,8 @@ import type { ArticleRecord, ArticleSearchResult, FeedArticleStats, FeedRecord, 
 import {
   ARTICLE_PANE_WIDTH_MAX,
   ARTICLE_PANE_WIDTH_MIN,
+  READER_AI_PANEL_WIDTH_MAX,
+  READER_AI_PANEL_WIDTH_MIN,
   SOURCE_PANE_WIDTH_MAX,
   SOURCE_PANE_WIDTH_MIN,
   WORKSPACE_PANE_WIDTH_MAX,
@@ -142,11 +144,17 @@ interface ReaderAiSelectionCandidate extends ReaderAiSelection {
 
 const sourceDiscoveryStageOrder: SourceDiscoveryStage[] = ['rss', 'rsshub', 'json', 'website', 'dynamic_website', 'ranking']
 const aiSummaryPlacementOrder: AiSummaryPlacement[] = ['left', 'right']
-const AI_SUMMARY_PANEL_MIN = 220
-const AI_SUMMARY_PANEL_MAX = 640
 const AI_SUMMARY_PANEL_KEYBOARD_STEP = 20
 const RECENT_SOURCE_SCOPE_LIMIT = 5
 const READER_AI_SELECTION_MAX_CHARS = 20_000
+const READER_CITATION_HIGHLIGHT_MS = 1_150
+
+function readerCitationScrollBehavior(): ScrollBehavior {
+  // Citation navigation must complete positioning before its short highlight animation starts.
+  // A smooth scroll can outlive the highlight on long articles, making the first click look like
+  // "jump only". Use deterministic positioning here; the highlight itself remains animated.
+  return 'auto'
+}
 
 export default function App(): React.JSX.Element {
   const { t, i18n } = useTranslation()
@@ -282,11 +290,18 @@ export default function App(): React.JSX.Element {
   const chatComposerInputRef = useRef<HTMLTextAreaElement>(null)
   const chatActiveRequestIdRef = useRef<string | null>(null)
   const chatActiveRequestTaskRef = useRef<'CHAT' | 'ARTICLE_ANALYSIS'>('CHAT')
+  const chatPerfRunRef = useRef<{
+    requestId: string
+    task: 'CHAT' | 'ARTICLE_ANALYSIS'
+    startedAt: number
+    firstVisibleScheduled: boolean
+  } | null>(null)
   const chatConversationIdRef = useRef<string | null>(null)
   const chatManualToolContextsRef = useRef<LlmManualToolContextView[]>([])
   const citationArticleNavigationRef = useRef<string | null>(null)
   const readerCitationHighlightRef = useRef<HTMLElement | null>(null)
   const readerCitationHighlightTimerRef = useRef<number | null>(null)
+  const readerCitationProgrammaticScrollRef = useRef(false)
   const articleSearchInputRef = useRef<HTMLInputElement>(null)
   const adaptiveSourceOverlayCloseRef = useRef<HTMLButtonElement>(null)
   const sourceSwitcherTriggerRef = useRef<HTMLButtonElement>(null)
@@ -625,6 +640,23 @@ export default function App(): React.JSX.Element {
         assistantMessageId: event.assistantMessageId
       })
       setChatMessages((current) => applyLlmExecutionEvent(current, event, chatActiveRequestTaskRef.current))
+      const perfRun = chatPerfRunRef.current
+      if (
+        perfRun?.requestId === event.requestId
+        && !perfRun.firstVisibleScheduled
+        && (event.type === 'REASONING_DELTA' || event.type === 'CONTENT_DELTA')
+      ) {
+        perfRun.firstVisibleScheduled = true
+        const firstVisible = event.type === 'REASONING_DELTA' ? 'reasoning' : 'content'
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            logReaderChatUiPerf(perfRun, 'UI_TTFV', {
+              first_visible: firstVisible,
+              event_to_paint_ms: Math.max(0, Date.now() - event.emittedAt)
+            })
+          })
+        })
+      }
       if (event.type === 'TOOL_STATE') {
         void window.origread.getLlmToolActivity(event.conversationId)
           .then((activity) => {
@@ -633,6 +665,17 @@ export default function App(): React.JSX.Element {
           .catch(() => undefined)
       }
       if (event.type === 'TERMINAL' || event.type === 'ERROR') {
+        if (perfRun?.requestId === event.requestId) {
+          const outcome = event.type === 'ERROR'
+            ? 'error'
+            : event.finishReason === 'CANCELLED' ? 'cancelled' : 'complete'
+          window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(() => {
+              logReaderChatUiPerf(perfRun, 'UI_TOTAL', { outcome })
+              if (chatPerfRunRef.current?.requestId === perfRun.requestId) chatPerfRunRef.current = null
+            })
+          })
+        }
         chatActiveRequestIdRef.current = null
         chatActiveRequestTaskRef.current = 'CHAT'
         setChatActiveExecution(null)
@@ -868,13 +911,17 @@ export default function App(): React.JSX.Element {
         if (readerCitationHighlightTimerRef.current !== null) window.clearTimeout(readerCitationHighlightTimerRef.current)
         readerCitationHighlightRef.current?.classList.remove('origread-citation-highlight')
         readerCitationHighlightRef.current = element
+        readerCitationProgrammaticScrollRef.current = true
+        element.scrollIntoView({ block: 'center', behavior: readerCitationScrollBehavior() })
         element.classList.add('origread-citation-highlight')
-        element.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+          readerCitationProgrammaticScrollRef.current = false
+        }))
         readerCitationHighlightTimerRef.current = window.setTimeout(() => {
           element.classList.remove('origread-citation-highlight')
           if (readerCitationHighlightRef.current === element) readerCitationHighlightRef.current = null
           readerCitationHighlightTimerRef.current = null
-        }, 2_800)
+        }, READER_CITATION_HIGHLIGHT_MS)
         setReaderCitationTarget(null)
         return
       }
@@ -1155,6 +1202,10 @@ export default function App(): React.JSX.Element {
   }
 
   const aiSummaryPlacement = settings?.aiSummaryPlacement ?? 'right'
+  const aiSummaryPlacementRef = useRef<AiSummaryPlacement>(aiSummaryPlacement)
+  useEffect(() => {
+    aiSummaryPlacementRef.current = aiSummaryPlacement
+  }, [aiSummaryPlacement])
   const aiLoading = readerToolLoading === 'ai'
   const aiSummaryPanelOpen = readerAiPanel.open && readerAiPanel.view === 'summary'
   const readerAiPanelDocked = Boolean(readerAiPanel.open)
@@ -1284,7 +1335,9 @@ export default function App(): React.JSX.Element {
         conversationId,
         toolId: tool.id,
         argumentsJson,
-        confirmed: tool.risk !== 'READ_ONLY'
+        // Every item in this picker is MCP. Clicking this explicit run action is the
+        // one-shot user approval; remote readOnlyHint cannot bypass Main authorization.
+        confirmed: true
       })
       chatManualToolContextsRef.current = [...chatManualToolContextsRef.current, context]
       setChatManualToolContexts((current) => [...current, context])
@@ -1462,6 +1515,8 @@ export default function App(): React.JSX.Element {
   ): Promise<void> => {
     const content = (contentOverride ?? chatDraft).trim()
     if (!content || !selectedArticle || !selectedArticleId || chatActiveRequestIdRef.current) return
+    const perfStartedAt = performance.now()
+    let perfRequestId: string | null = null
     setChatError(null)
     try {
       let conversation = chatConversation?.id === readerAiPanel.conversationId ? chatConversation : null
@@ -1513,8 +1568,15 @@ export default function App(): React.JSX.Element {
       }))
 
       const requestId = crypto.randomUUID()
+      perfRequestId = requestId
       chatActiveRequestIdRef.current = requestId
       chatActiveRequestTaskRef.current = requestTask
+      chatPerfRunRef.current = {
+        requestId,
+        task: requestTask,
+        startedAt: perfStartedAt,
+        firstVisibleScheduled: false
+      }
       const manualToolContextIds = requestTask === 'CHAT'
         ? chatManualToolContextsRef.current.map((item) => item.contextId)
         : []
@@ -1547,6 +1609,10 @@ export default function App(): React.JSX.Element {
       setChatActiveExecution(identity)
       setChatMessages((current) => ensureChatAssistantMessage(current, identity, requestTask))
     } catch {
+      if (perfRequestId && chatPerfRunRef.current?.requestId === perfRequestId) {
+        logReaderChatUiPerf(chatPerfRunRef.current, 'UI_TOTAL', { outcome: 'error' })
+        chatPerfRunRef.current = null
+      }
       chatActiveRequestIdRef.current = null
       chatActiveRequestTaskRef.current = 'CHAT'
       setChatActiveExecution(null)
@@ -1612,10 +1678,17 @@ export default function App(): React.JSX.Element {
     const conversation = chatConversation
     if (!conversation || chatActiveRequestIdRef.current) return
     const requestTask = chatMessages.find((message) => message.id === assistantMessageId)?.requestTask ?? 'CHAT'
+    const perfStartedAt = performance.now()
     setChatError(null)
     const requestId = crypto.randomUUID()
     chatActiveRequestIdRef.current = requestId
     chatActiveRequestTaskRef.current = requestTask
+    chatPerfRunRef.current = {
+      requestId,
+      task: requestTask,
+      startedAt: perfStartedAt,
+      firstVisibleScheduled: false
+    }
     setChatMessages((current) => current.map((message) =>
       message.id === assistantMessageId ? { ...message, historyActive: false } : message
     ))
@@ -1633,6 +1706,10 @@ export default function App(): React.JSX.Element {
       setChatActiveExecution(identity)
       setChatMessages((current) => ensureChatAssistantMessage(current, identity, requestTask))
     } catch {
+      if (chatPerfRunRef.current?.requestId === requestId) {
+        logReaderChatUiPerf(chatPerfRunRef.current, 'UI_TOTAL', { outcome: 'error' })
+        chatPerfRunRef.current = null
+      }
       chatActiveRequestIdRef.current = null
       chatActiveRequestTaskRef.current = 'CHAT'
       setChatActiveExecution(null)
@@ -1642,11 +1719,15 @@ export default function App(): React.JSX.Element {
   }
 
   const changeReaderAiPanelPlacement = async (placement: AiSummaryPlacement): Promise<void> => {
+    // Keep keyboard placement cycling synchronous with the latest requested value. React state
+    // can lag one render behind the persisted setting after a shortcut, which otherwise makes a
+    // quick opposite shortcut calculate from a stale placement and write the same side again.
+    aiSummaryPlacementRef.current = placement
     await updateDesktopSettings({ aiSummaryPlacement: placement })
   }
 
   const cycleReaderAiPanelPlacement = (direction: -1 | 1): void => {
-    const currentIndex = aiSummaryPlacementOrder.indexOf(aiSummaryPlacement)
+    const currentIndex = aiSummaryPlacementOrder.indexOf(aiSummaryPlacementRef.current)
     const nextIndex = (currentIndex + direction + aiSummaryPlacementOrder.length) % aiSummaryPlacementOrder.length
     void changeReaderAiPanelPlacement(aiSummaryPlacementOrder[nextIndex]!)
   }
@@ -1654,8 +1735,8 @@ export default function App(): React.JSX.Element {
   const resizeAiSummaryPanel = (direction: -1 | 1): void => {
     const current = settings?.aiSummaryPanelSize ?? 360
     const next = Math.max(
-      AI_SUMMARY_PANEL_MIN,
-      Math.min(AI_SUMMARY_PANEL_MAX, current + direction * AI_SUMMARY_PANEL_KEYBOARD_STEP)
+      READER_AI_PANEL_WIDTH_MIN,
+      Math.min(READER_AI_PANEL_WIDTH_MAX, current + direction * AI_SUMMARY_PANEL_KEYBOARD_STEP)
     )
     if (next !== current) void updateDesktopSettings({ aiSummaryPanelSize: next })
   }
@@ -1842,9 +1923,9 @@ export default function App(): React.JSX.Element {
     setSettings((current) => current ? { ...current, articlePaneWidth: width } : current)
   }
 
-  /** AI Panel 拖动时只更新 Renderer 快照；结束一次交互后再持久化，避免 range 高频 IPC 回写导致宽度跳动。 */
+  /** AI Panel 边缘拖动时只更新 Renderer 快照；松手后再持久化，避免 pointermove 高频 IPC 回写。 */
   const previewAiSummaryPanelSize = (size: number): void => {
-    const normalized = Math.max(AI_SUMMARY_PANEL_MIN, Math.min(AI_SUMMARY_PANEL_MAX, size))
+    const normalized = Math.max(READER_AI_PANEL_WIDTH_MIN, Math.min(READER_AI_PANEL_WIDTH_MAX, size))
     setSettings((current) => current ? { ...current, aiSummaryPanelSize: normalized } : current)
   }
 
@@ -2081,13 +2162,17 @@ export default function App(): React.JSX.Element {
     if (!element) return false
     clearReaderCitationHighlight()
     readerCitationHighlightRef.current = element
+    readerCitationProgrammaticScrollRef.current = true
+    element.scrollIntoView({ block: 'center', behavior: readerCitationScrollBehavior() })
     element.classList.add('origread-citation-highlight')
-    element.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      readerCitationProgrammaticScrollRef.current = false
+    }))
     readerCitationHighlightTimerRef.current = window.setTimeout(() => {
       element.classList.remove('origread-citation-highlight')
       if (readerCitationHighlightRef.current === element) readerCitationHighlightRef.current = null
       readerCitationHighlightTimerRef.current = null
-    }, 2_800)
+    }, READER_CITATION_HIGHLIGHT_MS)
     return true
   }
 
@@ -2138,6 +2223,12 @@ export default function App(): React.JSX.Element {
       openReaderAiSources(messageId, citation.id, true)
       setReaderCitationTarget(null)
     }
+  }
+
+  const handleReaderContentScroll = (): void => {
+    setReaderAiSelectionCandidate(null)
+    if (readerCitationProgrammaticScrollRef.current) return
+    clearReaderCitationHighlight()
   }
 
   const handleReaderHtmlClick = (event: React.MouseEvent<HTMLDivElement>): void => {
@@ -2731,7 +2822,7 @@ export default function App(): React.JSX.Element {
   const effectiveAiSummaryPanelSize = readerStageWidth > 0
     ? Math.min(
         configuredAiSummaryPanelSize,
-        Math.max(AI_SUMMARY_PANEL_MIN, readerStageWidth - 280)
+        Math.max(READER_AI_PANEL_WIDTH_MIN, readerStageWidth - 280)
       )
     : configuredAiSummaryPanelSize
   const readerStyle = {
@@ -2903,7 +2994,7 @@ export default function App(): React.JSX.Element {
           view={readerAiPanel.view}
           detailView="sources"
           placement={aiSummaryPlacement}
-          panelSize={settings?.aiSummaryPanelSize ?? 360}
+          panelSize={effectiveAiSummaryPanelSize}
           leading={<Share2 size={17}/>}
           title={t('contextSources')}
           subtitle={targetMessage ? t('contextSourcesDescription') : chatConversation?.title || selectedArticle.title}
@@ -2931,7 +3022,7 @@ export default function App(): React.JSX.Element {
           view={readerAiPanel.view}
           detailView="web-search"
           placement={aiSummaryPlacement}
-          panelSize={settings?.aiSummaryPanelSize ?? 360}
+          panelSize={effectiveAiSummaryPanelSize}
           leading={<Search size={17}/>}
           title={t('webSearchResults')}
           subtitle={targetMessage?.webSearchProviderName||chatConversation?.title||selectedArticle.title}
@@ -2952,7 +3043,7 @@ export default function App(): React.JSX.Element {
           view={readerAiPanel.view}
           detailView="chat-search"
           placement={aiSummaryPlacement}
-          panelSize={settings?.aiSummaryPanelSize ?? 360}
+          panelSize={effectiveAiSummaryPanelSize}
           leading={<Search size={17}/>}
           title={t('findInCurrentChat')}
           subtitle={chatConversation?.title || selectedArticle.title}
@@ -2977,7 +3068,7 @@ export default function App(): React.JSX.Element {
           view={readerAiPanel.view}
           detailView="conversation-history"
           placement={aiSummaryPlacement}
-          panelSize={settings?.aiSummaryPanelSize ?? 360}
+          panelSize={effectiveAiSummaryPanelSize}
           leading={<History size={17}/>}
           title={t('conversationHistory')}
           subtitle={selectedArticle.title}
@@ -3015,7 +3106,7 @@ export default function App(): React.JSX.Element {
           view="summary"
           detailView={readerAiPanel.detailView}
           placement={aiSummaryPlacement}
-          panelSize={settings?.aiSummaryPanelSize ?? 360}
+          panelSize={effectiveAiSummaryPanelSize}
           leading={<AiSummaryAccentIcon variant="panel" loading={aiLoading}/>}
           title={t('aiSummary')}
           subtitle={aiSummary ? `${aiSummary.providerName} · ${aiSummary.model}` : t('aiSummaryWorking')}
@@ -3051,7 +3142,7 @@ export default function App(): React.JSX.Element {
           view="chat"
           detailView={readerAiPanel.detailView}
           placement={aiSummaryPlacement}
-          panelSize={settings?.aiSummaryPanelSize ?? 360}
+          panelSize={effectiveAiSummaryPanelSize}
           leading={<AiSummaryAccentIcon variant="panel"/>}
           title={t('aiChat')}
           subtitle={chatConversation?.title || selectedArticle.title}
@@ -3129,7 +3220,7 @@ export default function App(): React.JSX.Element {
         view="home"
         detailView={null}
         placement={aiSummaryPlacement}
-        panelSize={settings?.aiSummaryPanelSize ?? 360}
+        panelSize={effectiveAiSummaryPanelSize}
         leading={<AiSummaryAccentIcon variant="panel"/>}
         title={t('aiAssistant')}
         subtitle={selectedArticle.title}
@@ -3615,7 +3706,7 @@ export default function App(): React.JSX.Element {
             className={`reader-content reader-mode-${readerMode}`}
             onMouseUp={captureReaderOriginalSelection}
             onKeyUp={captureReaderOriginalSelection}
-            onScroll={()=>{setReaderAiSelectionCandidate(null);clearReaderCitationHighlight()}}
+            onScroll={handleReaderContentScroll}
           >
             {readerSearchOpen && (
               <ReaderSearchBar
@@ -4970,6 +5061,8 @@ function ReaderAiChatBody({
       : [...attachedCandidates, candidate]
     try {
       await onAttachedArticlesChange(next)
+      articlePickerRef.current?.removeAttribute('open')
+      setArticlePickerOpen(false)
     } catch {
       setArticlePickerError(t('articleContextUpdateFailed'))
     }
@@ -5133,7 +5226,23 @@ function ReaderAiChatBody({
     onQuickMessage(message)
   }
 
-  return <div className="reader-ai-chat">
+  const handleChatPointerDownCapture = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (!(event.target instanceof Element)) return
+    const floatingSelector = [
+      '.reader-ai-article-picker',
+      '.reader-ai-composer-actions',
+      '.reader-ai-model-picker',
+      '.reader-ai-message-usage'
+    ].join(',')
+    const keepOpen = event.target.closest<HTMLDetailsElement>(floatingSelector)
+    event.currentTarget
+      .querySelectorAll<HTMLDetailsElement>(`${floatingSelector.split(',').join('[open],')}[open]`)
+      .forEach((details) => {
+        if (details !== keepOpen) details.removeAttribute('open')
+      })
+  }
+
+  return <div className="reader-ai-chat" onPointerDownCapture={handleChatPointerDownCapture}>
     <div className="reader-ai-chat-scroll-stage">
       <div
         className="reader-ai-chat-timeline"
@@ -5515,6 +5624,20 @@ function formatDurationMs(value: number | null, unavailable: string): string {
   if (value == null) return unavailable
   if (value < 1_000) return `${value} ms`
   return `${(value / 1_000).toFixed(value < 10_000 ? 1 : 0)} s`
+}
+
+function logReaderChatUiPerf(
+  run: { task: 'CHAT' | 'ARTICLE_ANALYSIS'; startedAt: number },
+  metric: 'UI_TTFV' | 'UI_TOTAL',
+  extra: Record<string, string | number>
+): void {
+  const elapsedMs = Math.max(0, Math.round((performance.now() - run.startedAt) * 10) / 10)
+  console.info('[OrigRead][LLM Perf]', JSON.stringify({
+    task: run.task === 'ARTICLE_ANALYSIS' ? 'article_analysis' : 'chat',
+    metric,
+    [`${metric}_ms`]: elapsedMs,
+    ...extra
+  }))
 }
 
 function AiSummaryBody({

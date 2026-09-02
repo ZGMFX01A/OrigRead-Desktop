@@ -115,6 +115,13 @@ async function openAndValidateSwitcher(page: Page, expectedWidth: number, theme:
   await expect(page.locator('.article-pane')).toBeVisible()
   await expect(page.locator('.reader-pane')).toBeVisible()
 
+  // D8.6.5 adds a short transform-based enter animation. This SS-5 assertion owns final
+  // anchoring/geometry, so measure after that surface settles instead of sampling a fractional
+  // transform frame at non-integer Windows DPI. Motion itself is covered by d8-motion-polish.
+  await popover.evaluate(async (element) => {
+    await Promise.all(element.getAnimations().map((animation) => animation.finished.catch(() => undefined)))
+  })
+
   const geometry = await page.evaluate(() => {
     const workspace = document.querySelector('.workspace-pane')!.getBoundingClientRect()
     const overlay = document.querySelector('.source-switcher-popover')!.getBoundingClientRect()

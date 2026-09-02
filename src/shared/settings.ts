@@ -19,6 +19,9 @@ export const ARTICLE_PANE_WIDTH_MAX = 480
 /** 双栏 Workspace 的持久化宽度边界；与三栏 Source / Article 宽度完全独立。 */
 export const WORKSPACE_PANE_WIDTH_MIN = 320
 export const WORKSPACE_PANE_WIDTH_MAX = 560
+/** Reader AI Panel 的持久化宽度边界；拖拽预览、键盘调整与 Settings normalize 共用。 */
+export const READER_AI_PANEL_WIDTH_MIN = 220
+export const READER_AI_PANEL_WIDTH_MAX = 640
 
 export interface DesktopSettings {
   language: DesktopLanguagePreference
@@ -265,7 +268,7 @@ export function normalizeAiSummaryPlacement(value: unknown): AiSummaryPlacement 
 
 function normalizeAiSummaryPanelSize(value: unknown): number {
   const numberValue = typeof value === 'number' && Number.isFinite(value) ? value : DEFAULT_DESKTOP_SETTINGS.aiSummaryPanelSize
-  return Math.round(Math.min(Math.max(numberValue, 220), 640))
+  return Math.round(Math.min(Math.max(numberValue, READER_AI_PANEL_WIDTH_MIN), READER_AI_PANEL_WIDTH_MAX))
 }
 
 function normalizeStringSetting(value: unknown, fallback: string, maxLength: number): string {

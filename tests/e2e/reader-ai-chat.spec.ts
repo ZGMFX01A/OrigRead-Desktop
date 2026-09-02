@@ -12,6 +12,17 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
 
   try {
     const page = await testApp.app.firstWindow()
+    const rendererPerfLogs: Array<Record<string, unknown>> = []
+    page.on('console', (message) => {
+      const text = message.text()
+      const prefix = '[OrigRead][LLM Perf] '
+      if (!text.startsWith(prefix)) return
+      try {
+        rendererPerfLogs.push(JSON.parse(text.slice(prefix.length)) as Record<string, unknown>)
+      } catch {
+        // Ignore unrelated or partial console formatting; product assertions below require valid perf JSON.
+      }
+    })
     await expect(page.locator('.app-shell')).toBeVisible()
 
     const articleId = await page.evaluate(async ({ feedUrl, baseUrl }) => {
@@ -81,7 +92,7 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     await expect(page.locator('.reader-ai-panel')).toBeVisible()
 
     await page.locator('.reader-ai-model-label').click()
-    const providerSelect = page.getByRole('combobox', { name: 'AI Provider' })
+    const providerSelect = page.getByRole('combobox', { name: 'AI 服务' })
     const modelSelect = page.getByRole('combobox', { name: '默认模型' })
     await expect(providerSelect).toBeVisible()
     await providerSelect.selectOption(alternateProviderId)
@@ -109,6 +120,16 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     await expect(page.locator('.reader-ai-message.assistant .reader-ai-inline-citation')).toHaveText('1')
     await expect(page.locator('.reader-ai-message.assistant')).not.toContainText('[[E2]]')
     await expect(page.locator('.reader-ai-model-label')).toContainText('Alternate fixture · fixture-alt-model')
+    await expect.poll(() => rendererPerfLogs.some((entry) => entry.task === 'chat' && entry.metric === 'UI_TTFV')).toBe(true)
+    await expect.poll(() => rendererPerfLogs.some((entry) => entry.task === 'chat' && entry.metric === 'UI_TOTAL')).toBe(true)
+    const firstUiTtfv = rendererPerfLogs.find((entry) => entry.task === 'chat' && entry.metric === 'UI_TTFV')!
+    expect(Number(firstUiTtfv.UI_TTFV_ms)).toBeGreaterThan(0)
+    expect(Number(firstUiTtfv.UI_TTFV_ms)).toBeLessThan(2_000)
+    expect(Number(firstUiTtfv.event_to_paint_ms)).toBeGreaterThanOrEqual(0)
+    expect(Number(firstUiTtfv.event_to_paint_ms)).toBeLessThan(1_000)
+    const rendererPerfSerialized = JSON.stringify(rendererPerfLogs)
+    expect(rendererPerfSerialized).not.toContain('What changed?')
+    expect(rendererPerfSerialized).not.toContain('fixture-alt-model')
 
     // Ctrl+F inside AI Chat searches the current conversation, not the Reader article.
     // The result references the real message node; selecting it returns to Chat and highlights that node briefly.
@@ -210,10 +231,9 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
       state.__origreadD710ArticleBody = body
       return { scrollTop: reader.scrollTop }
     })
-    await page.getByRole('button', { name: 'AI 面板尺寸' }).click()
-    const panelWidthSlider = page.getByRole('slider', { name: 'AI 面板宽度' })
-    await panelWidthSlider.press('End')
-    await expect(panelWidthSlider).toHaveValue('640')
+    const panelResizeHandle = page.getByRole('separator', { name: '拖动调整 AI 面板宽度' })
+    await panelResizeHandle.press('End')
+    await expect(panelResizeHandle).toHaveAttribute('aria-valuenow', /\d+/)
     await expect.poll(() => page.evaluate(async () => (await window.origread.getSettings()).aiSummaryPanelSize)).toBe(640)
     const narrowLayout = await page.evaluate(() => {
       const state = globalThis as typeof globalThis & { __origreadD710ArticleBody?: HTMLElement }
@@ -254,7 +274,7 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     await page.locator('.reader-ai-model-label').click()
     await expect(page.locator('.reader-ai-model-popover')).toContainText('切换后从下一次回答开始生效')
     const defaultProviderId = await page.evaluate(async () => (await window.origread.getAiSettings()).defaultProviderId)
-    await page.getByRole('combobox', { name: 'AI Provider' }).selectOption(defaultProviderId)
+    await page.getByRole('combobox', { name: 'AI 服务' }).selectOption(defaultProviderId)
     await expect(page.getByRole('combobox', { name: '默认模型' })).toHaveValue('fixture-chat-model')
     await page.locator('.reader-ai-model-label').click()
     await expect(page.locator('.reader-ai-model-label')).toContainText('fixture-chat-model')
@@ -390,6 +410,8 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     await secondComposer.fill('slow question')
     await secondComposer.press('Enter')
     await expect(page.locator('.reader-ai-reasoning-stream')).toContainText('checking article')
+    const reasoningMotion = await page.locator('.reader-ai-reasoning-stream').evaluate((element) => getComputedStyle(element as HTMLElement).animationName)
+    expect(reasoningMotion).toBe('motion-feedback-enter')
     await page.getByRole('button', { name: '停止生成' }).click()
     await expect(page.locator('.reader-ai-message-status')).toContainText('已停止')
     await expect(page.locator('.reader-ai-message.assistant').last().getByRole('button', { name: '重试' })).toBeVisible()
