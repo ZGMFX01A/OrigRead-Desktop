@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { DatabaseSync } from 'node:sqlite'
 import type { AiSettingsRepository } from '../ai/ai-settings-repository'
 import type { LibraryRepository } from '../database/library-repository'
 import type { SettingsRepository } from '../database/settings-repository'
@@ -24,6 +25,7 @@ import type { WebSearchRepository } from '../search/web-search-repository'
 import { MAX_WEB_SEARCH_MAX_RESULTS, MIN_WEB_SEARCH_MAX_RESULTS, WEB_SEARCH_PROVIDER_KINDS } from '../../shared/web-search'
 import type { McpRemoteRepository } from '../mcp/mcp-remote-repository'
 import type { McpLocalRepository } from '../mcp/mcp-local-repository'
+import type { SecretStore } from '../security/secret-store'
 
 export class ConfigurationBackupService {
   constructor(
@@ -43,7 +45,9 @@ export class ConfigurationBackupService {
     private readonly llmCustomization?:LlmCustomizationSettingsRepository,
     private readonly webSearch?:WebSearchRepository,
     private readonly mcpRemote?:McpRemoteRepository,
-    private readonly mcpLocal?:McpLocalRepository
+    private readonly mcpLocal?:McpLocalRepository,
+    private readonly database?:DatabaseSync,
+    private readonly secretStore?:SecretStore
   ){}
 
   exportBackup(password=''):string{
@@ -82,6 +86,26 @@ export class ConfigurationBackupService {
     validateWebSearchSecretReferences(backup.webSearch,secrets?.webSearchApiKeys)
     this.validateMcpBackup(backup.mcp,secrets??undefined)
     // 到这里才开始任何写入：格式、规则、订阅和密码均已完整校验。
+    // D8.4: Desktop 的配置横跨 SQLite、JSON 规则文件和 SecretStore；恢复必须作为一个逻辑事务。
+    if(this.database&&this.secretStore){
+      const rollback=this.captureRollbackState()
+      this.database.exec('BEGIN IMMEDIATE')
+      try{
+        const result=this.applyValidatedBackup(backup,secrets)
+        this.database.exec('COMMIT')
+        return result
+      }catch(error){
+        const rollbackErrors:unknown[]=[]
+        try{this.database.exec('ROLLBACK')}catch(rollbackError){rollbackErrors.push(rollbackError)}
+        try{this.restoreRollbackState(rollback)}catch(rollbackError){rollbackErrors.push(rollbackError)}
+        if(rollbackErrors.length>0)throw new AggregateError([error,...rollbackErrors],'配置恢复失败，且回滚未能完整完成')
+        throw error
+      }
+    }
+    return this.applyValidatedBackup(backup,secrets)
+  }
+
+  private applyValidatedBackup(backup:ConfigurationBackup,secrets:ConfigurationBackupSecrets|null):ConfigurationRestoreResult{
     const {feedIdMap,groupsAdded,feedsAdded,feedsUpdated}=this.restoreSubscriptions(backup)
     this.desktopSettings.update(readDesktopPreferences(backup.preferences))
     if(this.accounts){
@@ -110,6 +134,39 @@ export class ConfigurationBackupService {
       this.llmCustomization.update(backup.llm.customization)
     }
     return{groupsAdded,feedsAdded,feedsUpdated,filterRulesRestored,credentialsRestored:Boolean(secrets)}
+  }
+
+  private captureRollbackState():{
+    websiteRules:string
+    jsonRules:string
+    articleFilters:string
+    websitePreferences:string
+    secrets:Readonly<Record<string,string>>
+  }{
+    if(!this.secretStore)throw new Error('SecretStore is not available')
+    return{
+      websiteRules:this.websiteRules.exportRules(),
+      jsonRules:this.jsonRules.exportRules(),
+      articleFilters:this.articleFilters.exportRules(),
+      websitePreferences:this.websitePreferences.exportBackup(new Set(this.library.listFeeds().map((feed)=>feed.id))),
+      secrets:this.secretStore.snapshot()
+    }
+  }
+
+  private restoreRollbackState(state:{websiteRules:string;jsonRules:string;articleFilters:string;websitePreferences:string;secrets:Readonly<Record<string,string>>}):void{
+    if(!this.secretStore)throw new Error('SecretStore is not available')
+    const errors:unknown[]=[]
+    const identityFeedMap=new Map(this.library.listFeeds().map((feed)=>[feed.id,feed.id]))
+    for(const restore of [
+      ()=>this.websiteRules.restoreBackup(state.websiteRules),
+      ()=>this.jsonRules.restoreBackup(state.jsonRules),
+      ()=>this.articleFilters.restoreBackup(state.articleFilters,identityFeedMap),
+      ()=>this.websitePreferences.restoreBackup(state.websitePreferences,identityFeedMap),
+      ()=>this.secretStore!.restoreSnapshot(state.secrets)
+    ]){
+      try{restore()}catch(error){errors.push(error)}
+    }
+    if(errors.length>0)throw new AggregateError(errors,'配置恢复回滚失败')
   }
 
   private decodeAndValidate(content:string):ConfigurationBackup{

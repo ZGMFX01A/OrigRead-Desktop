@@ -4,6 +4,7 @@ import { _electron as electron, type ElectronApplication } from 'playwright'
 
 export interface IsolatedElectronApp {
   app: ElectronApplication
+  userDataDir: string
   close(): Promise<void>
 }
 
@@ -15,6 +16,16 @@ export async function launchIsolatedOrigRead(
   const root = join(process.cwd(), 'test-results')
   await mkdir(root, { recursive: true })
   const userDataDir = await mkdtemp(join(root, 'user-data-'))
+  return launchOrigReadWithUserData(userDataDir, envOverrides, extraArgs, true)
+}
+
+export async function launchOrigReadWithUserData(
+  userDataDir: string,
+  envOverrides: Record<string, string> = {},
+  extraArgs: string[] = [],
+  cleanupOnClose = false
+): Promise<IsolatedElectronApp> {
+  await mkdir(userDataDir, { recursive: true })
   const env = Object.fromEntries(
     Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
   )
@@ -38,12 +49,15 @@ export async function launchIsolatedOrigRead(
   })
   return {
     app,
+    userDataDir,
     async close() {
       await Promise.race([
         app.close().catch(() => undefined),
         new Promise<void>((resolve) => setTimeout(resolve, 2_000))
       ])
-      await rm(userDataDir, { recursive: true, force: true, maxRetries: 4, retryDelay: 80 })
+      if (cleanupOnClose) {
+        await rm(userDataDir, { recursive: true, force: true, maxRetries: 4, retryDelay: 80 })
+      }
     }
   }
 }

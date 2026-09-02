@@ -188,13 +188,16 @@ export class LlmSkillRepository {
     validateState(state)
     const encoded = encodeState(state)
     const previous = this.readSetting(SKILL_STATE_KEY)
-    this.database.exec('BEGIN IMMEDIATE')
+    // SAVEPOINT works both as a standalone transaction and nested inside the
+    // D8.4 configuration-restore transaction. BEGIN IMMEDIATE cannot nest.
+    this.database.exec('SAVEPOINT llm_skill_state_save')
     try {
       if (previous && tryDecodeState(previous)) this.writeSetting(SKILL_STATE_BACKUP_KEY, previous)
       this.writeSetting(SKILL_STATE_KEY, encoded)
-      this.database.exec('COMMIT')
+      this.database.exec('RELEASE SAVEPOINT llm_skill_state_save')
     } catch (error) {
-      this.database.exec('ROLLBACK')
+      this.database.exec('ROLLBACK TO SAVEPOINT llm_skill_state_save')
+      this.database.exec('RELEASE SAVEPOINT llm_skill_state_save')
       throw error
     }
     return cloneState(state)

@@ -4,6 +4,26 @@ import { applyMigrations, CURRENT_ACCOUNT_SETTING_KEY, CURRENT_SCHEMA_VERSION, D
 import { ORIGREAD_DESKTOP_RELEASE_FEED_URL } from '../../shared/origread-release'
 
 describe('database migration v2 -> current schema', () => {
+  it('creates the full current schema from a fresh install', () => {
+    const db = new DatabaseSync(':memory:')
+    db.exec('PRAGMA foreign_keys=ON')
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: CURRENT_SCHEMA_VERSION })
+    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((row) => row.name)
+    expect(tables).toEqual(expect.arrayContaining([
+      'accounts', 'groups', 'feeds', 'articles',
+      'llm_conversations', 'llm_conversation_articles', 'llm_messages', 'llm_tool_calls',
+      'llm_context_refs', 'llm_evidence_blocks', 'llm_citation_refs'
+    ]))
+    const messageColumns = (db.prepare("PRAGMA table_info('llm_messages')").all() as Array<{ name: string }>).map((column) => column.name)
+    expect(messageColumns).toEqual(expect.arrayContaining([
+      'provider_id', 'model', 'web_search_status', 'web_search_query', 'web_search_provider_name',
+      'web_search_result_count', 'web_search_error_message'
+    ]))
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    db.close()
+  })
+
   it('moves existing library rows into Local account 1 without losing read/starred state', () => {
     const db=new DatabaseSync(':memory:')
     db.exec(`

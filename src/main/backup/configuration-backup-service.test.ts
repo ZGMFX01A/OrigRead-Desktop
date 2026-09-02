@@ -369,6 +369,46 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     expect(fixture.webSearch.current()).toMatchObject({ mode: 'AUTO', defaultProviderId: provider.id, maxResults: 10 })
     expect(fixture.webSearch.current().providers[0]).toMatchObject({ id: provider.id, kind: 'KEENABLE' })
   })
+
+  it('rolls back SQLite, file-backed rules, and secrets when a late restore step fails', () => {
+    const fixture = createFixture()
+    const aiProviderId = fixture.ai.current().providers[0]!.id
+    const filterBundle = JSON.parse(fixture.filters.exportRules()) as { rules: unknown[] }
+
+    // Build a target backup that differs in all three persistence domains.
+    fixture.settings.update({ theme: 'dark' })
+    fixture.ai.updateProvider({ id: aiProviderId, apiKey: 'target-ai-secret' })
+    fixture.customization.update({ customInstructions: 'target customization' })
+    fixture.filters.restoreBackup(JSON.stringify({
+      ...filterBundle,
+      rules: [{ id: 'target-filter', keyword: 'Target', feedId: null, feedName: null, type: 'KEYWORD', enabled: true }]
+    }), new Map())
+    const targetBackup = fixture.backup.exportBackup('target-pass')
+
+    // Establish the state that must survive the failed restore unchanged.
+    fixture.settings.update({ theme: 'light' })
+    fixture.ai.updateProvider({ id: aiProviderId, apiKey: 'baseline-ai-secret' })
+    fixture.customization.update({ customInstructions: 'baseline customization' })
+    fixture.filters.restoreBackup(JSON.stringify({ ...filterBundle, rules: [] }), new Map())
+    const baselineSettings = fixture.settings.current()
+    const baselineFilters = fixture.filters.exportRules()
+    const baselineCustomization = fixture.customization.current()
+    const baselineSecretSnapshot = fixture.secrets.snapshot()
+
+    const originalUpdate = fixture.customization.update.bind(fixture.customization)
+    fixture.customization.update = (() => { throw new Error('injected late restore failure') }) as typeof fixture.customization.update
+    try {
+      expect(() => fixture.backup.restoreBackup(targetBackup, 'target-pass')).toThrow(/injected late restore failure/)
+    } finally {
+      fixture.customization.update = originalUpdate as typeof fixture.customization.update
+    }
+
+    expect(fixture.settings.current()).toEqual(baselineSettings)
+    expect(fixture.filters.exportRules()).toBe(baselineFilters)
+    expect(fixture.customization.current()).toEqual(baselineCustomization)
+    expect(fixture.ai.getApiKey(aiProviderId)).toBe('baseline-ai-secret')
+    expect(fixture.secrets.snapshot()).toEqual(baselineSecretSnapshot)
+  })
 })
 
 function createFixture() {
@@ -393,7 +433,7 @@ function createFixture() {
   const mcpLocal = new McpLocalRepository(database.connection, secrets)
   const backup = new ConfigurationBackupService(
     '0.1.0', library, settings, websiteRules, jsonRules, filters, websitePreferences, rssHub, translation, ai,
-    undefined, skills, quickMessages, customization, webSearch, mcpRemote, mcpLocal
+    undefined, skills, quickMessages, customization, webSearch, mcpRemote, mcpLocal, database.connection, secrets
   )
   return { dir, database, library, settings, websiteRules, jsonRules, filters, websitePreferences, rssHub, translation, ai, skills, quickMessages, customization, webSearch, mcpRemote, mcpLocal, secrets, backup }
 }

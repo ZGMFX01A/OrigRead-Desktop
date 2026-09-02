@@ -108,13 +108,14 @@ export class LlmQuickMessageRepository {
     validateMessages(normalized)
     const encoded = encode(normalized)
     const previous = this.read(SETTINGS_KEY)
-    this.database.exec('BEGIN IMMEDIATE')
+    this.database.exec('SAVEPOINT llm_quick_message_save')
     try {
       if (previous && tryDecode(previous)) this.write(BACKUP_KEY, previous)
       this.write(SETTINGS_KEY, encoded)
-      this.database.exec('COMMIT')
+      this.database.exec('RELEASE SAVEPOINT llm_quick_message_save')
     } catch (error) {
-      this.database.exec('ROLLBACK')
+      this.database.exec('ROLLBACK TO SAVEPOINT llm_quick_message_save')
+      this.database.exec('RELEASE SAVEPOINT llm_quick_message_save')
       throw error
     }
     return normalized.map((message) => ({ ...message }))

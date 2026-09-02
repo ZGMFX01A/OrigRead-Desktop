@@ -183,16 +183,32 @@ describe('LlmChatRepository D2.6 persistence foundation', () => {
         id: 'assistant-running', role: 'ASSISTANT', status: 'STREAMING', now: 20
       })
       repository.updateMessage({ ...assistant, webSearchStatus: 'TRIGGERED', updatedAt: 21 })
-      repository.appendToolCalls([toolCall(conversation.id, assistant.id, 'tool-running', 'RUNNING', 22)])
+      const complete = repository.appendMessage(conversation.id, { id: 'assistant-complete', role: 'ASSISTANT', content: 'done', status: 'COMPLETE', now: 22 })
+      const stopped = repository.appendMessage(conversation.id, { id: 'assistant-stopped', role: 'ASSISTANT', content: 'stopped', status: 'STOPPED', now: 23 })
+      const failed = repository.appendMessage(conversation.id, { id: 'assistant-error', role: 'ASSISTANT', content: 'failed', status: 'ERROR', now: 24 })
+      repository.appendToolCalls([
+        toolCall(conversation.id, assistant.id, 'tool-running', 'RUNNING', 25),
+        toolCall(conversation.id, assistant.id, 'tool-pending', 'PENDING_APPROVAL', 26),
+        toolCall(conversation.id, complete.id, 'tool-complete', 'COMPLETE', 27),
+        toolCall(conversation.id, stopped.id, 'tool-denied', 'DENIED', 28),
+        toolCall(conversation.id, failed.id, 'tool-error', 'ERROR', 29)
+      ])
 
-      expect(repository.recoverInterruptedState(100)).toEqual({ messages: 1, toolCalls: 1 })
+      expect(repository.recoverInterruptedState(100)).toEqual({ messages: 1, toolCalls: 2 })
       expect(repository.getMessage(assistant.id)).toMatchObject({
         status: 'STOPPED', webSearchStatus: 'CANCELLED', finishReason: 'CANCELLED', updatedAt: 100
       })
-      expect(repository.getToolCalls(conversation.id)[0]).toMatchObject({
-        status: 'ERROR', updatedAt: 100
-      })
-      expect(repository.getToolCalls(conversation.id)[0]?.errorMessage).toContain('未自动重放')
+      expect(repository.getMessage(complete.id)).toMatchObject({ status: 'COMPLETE', content: 'done' })
+      expect(repository.getMessage(stopped.id)).toMatchObject({ status: 'STOPPED', content: 'stopped' })
+      expect(repository.getMessage(failed.id)).toMatchObject({ status: 'ERROR', content: 'failed' })
+      const toolCalls = repository.getToolCalls(conversation.id)
+      expect(toolCalls.find((item) => item.id === 'tool-running')).toMatchObject({ status: 'ERROR', updatedAt: 100 })
+      expect(toolCalls.find((item) => item.id === 'tool-running')?.errorMessage).toContain('未自动重放')
+      expect(toolCalls.find((item) => item.id === 'tool-pending')).toMatchObject({ status: 'ERROR', updatedAt: 100 })
+      expect(toolCalls.find((item) => item.id === 'tool-pending')?.errorMessage).toContain('审批已失效')
+      expect(toolCalls.find((item) => item.id === 'tool-complete')).toMatchObject({ status: 'COMPLETE', resultContent: 'Tool result' })
+      expect(toolCalls.find((item) => item.id === 'tool-denied')).toMatchObject({ status: 'DENIED' })
+      expect(toolCalls.find((item) => item.id === 'tool-error')).toMatchObject({ status: 'ERROR', updatedAt: 29 })
       expect(repository.recoverInterruptedState(101)).toEqual({ messages: 0, toolCalls: 0 })
     } finally {
       database.close()
