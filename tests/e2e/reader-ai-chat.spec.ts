@@ -145,6 +145,112 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     expect(firstConversation.messages[1]?.completionTokens).toBeGreaterThan(0)
     expect(firstConversation.messages[1]?.durationMs).toBeGreaterThanOrEqual(0)
 
+    // D7.9: Reader AI Panel is only a projection of the persisted Conversation.
+    // Closing/reopening the container and entering/leaving History must not create a second
+    // Conversation, duplicate messages, replace frozen Evidence/Citations, or fire another request.
+    const firstAssistantId = firstConversation.messages[1]?.id
+    if (!firstAssistantId) throw new Error('First assistant message is missing')
+    const projectionSnapshotBefore = await page.evaluate(async ({ articleId, conversationId, assistantMessageId }) => {
+      const conversations = await window.origread.listLlmConversations(articleId)
+      const messages = await window.origread.getLlmMessages(conversationId)
+      const evidence = await window.origread.getLlmAssistantEvidence(assistantMessageId)
+      return {
+        conversationIds: conversations.map((item) => item.id),
+        messageIds: messages.map((item) => item.id),
+        contextRefIds: evidence.contextRefs.map((item) => item.id),
+        citationRefIds: evidence.citations.map((item) => item.id)
+      }
+    }, {
+      articleId,
+      conversationId: firstConversation.conversation.id,
+      assistantMessageId: firstAssistantId
+    })
+
+    await page.locator('.reader-ai-panel').getByRole('button', { name: '关闭' }).click()
+    await expect(page.locator('.reader-ai-panel')).toBeHidden()
+    await page.keyboard.press('a')
+    await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-view', 'chat')
+    await expect(page.locator('.reader-ai-user-bubble')).toHaveCount(1)
+    await expect(page.locator('.reader-ai-message.assistant')).toHaveCount(1)
+    await page.getByRole('button', { name: '对话历史' }).click()
+    const activeHistory = page.locator('.reader-ai-history-item.active')
+    await expect(activeHistory).toHaveCount(1)
+    await expect(activeHistory).toContainText('当前')
+    await activeHistory.locator('.reader-ai-history-main').click()
+    await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-view', 'chat')
+
+    const projectionSnapshotAfter = await page.evaluate(async ({ articleId, conversationId, assistantMessageId }) => {
+      const conversations = await window.origread.listLlmConversations(articleId)
+      const messages = await window.origread.getLlmMessages(conversationId)
+      const evidence = await window.origread.getLlmAssistantEvidence(assistantMessageId)
+      return {
+        conversationIds: conversations.map((item) => item.id),
+        messageIds: messages.map((item) => item.id),
+        contextRefIds: evidence.contextRefs.map((item) => item.id),
+        citationRefIds: evidence.citations.map((item) => item.id)
+      }
+    }, {
+      articleId,
+      conversationId: firstConversation.conversation.id,
+      assistantMessageId: firstAssistantId
+    })
+    expect(projectionSnapshotAfter).toEqual(projectionSnapshotBefore)
+
+    // D7.10: opening/resizing the docked AI surface must keep the existing Reader DOM alive.
+    // A stored 640px preference is allowed, but on a narrow Reader area the effective grid track
+    // must yield usable width to the article instead of collapsing it to zero.
+    await page.setViewportSize({ width: 900, height: 720 })
+    const readerStabilityBaseline = await page.evaluate(() => {
+      const body = document.querySelector<HTMLElement>('.article-body')
+      const reader = document.querySelector<HTMLElement>('.reader-content')
+      if (!body || !reader) throw new Error('Reader stability probe could not find article DOM')
+      body.style.minHeight = '1800px'
+      reader.scrollTop = 240
+      const state = globalThis as typeof globalThis & { __origreadD710ArticleBody?: HTMLElement }
+      state.__origreadD710ArticleBody = body
+      return { scrollTop: reader.scrollTop }
+    })
+    await page.getByRole('button', { name: 'AI 面板尺寸' }).click()
+    const panelWidthSlider = page.getByRole('slider', { name: 'AI 面板宽度' })
+    await panelWidthSlider.press('End')
+    await expect(panelWidthSlider).toHaveValue('640')
+    await expect.poll(() => page.evaluate(async () => (await window.origread.getSettings()).aiSummaryPanelSize)).toBe(640)
+    const narrowLayout = await page.evaluate(() => {
+      const state = globalThis as typeof globalThis & { __origreadD710ArticleBody?: HTMLElement }
+      const body = document.querySelector<HTMLElement>('.article-body')
+      const reader = document.querySelector<HTMLElement>('.reader-content')
+      const panel = document.querySelector<HTMLElement>('.reader-ai-panel')
+      const composite = document.querySelector<HTMLElement>('.reader-composite')
+      if (!body || !reader || !panel || !composite) throw new Error('Reader stability geometry missing')
+      return {
+        sameBody: state.__origreadD710ArticleBody === body,
+        scrollTop: reader.scrollTop,
+        readerWidth: reader.getBoundingClientRect().width,
+        panelWidth: panel.getBoundingClientRect().width,
+        compositeWidth: composite.getBoundingClientRect().width
+      }
+    })
+    expect(narrowLayout.sameBody).toBe(true)
+    expect(readerStabilityBaseline.scrollTop).toBeGreaterThan(100)
+    expect(narrowLayout.scrollTop).toBeGreaterThan(100)
+    if (narrowLayout.compositeWidth >= 500) expect(narrowLayout.readerWidth).toBeGreaterThanOrEqual(279)
+    expect(narrowLayout.panelWidth).toBeLessThanOrEqual(Math.max(220, narrowLayout.compositeWidth - 280) + 1)
+
+    await page.locator('.reader-ai-panel').getByRole('button', { name: '关闭' }).click()
+    await expect(page.locator('.reader-ai-panel')).toBeHidden()
+    await page.keyboard.press('a')
+    await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-view', 'chat')
+    const afterPanelRemountProbe = await page.evaluate(() => {
+      const state = globalThis as typeof globalThis & { __origreadD710ArticleBody?: HTMLElement }
+      return {
+        sameBody: state.__origreadD710ArticleBody === document.querySelector('.article-body'),
+        scrollTop: document.querySelector<HTMLElement>('.reader-content')?.scrollTop ?? -1
+      }
+    })
+    expect(afterPanelRemountProbe.sameBody).toBe(true)
+    expect(afterPanelRemountProbe.scrollTop).toBeGreaterThan(100)
+    await page.setViewportSize({ width: 1280, height: 720 })
+
     await page.locator('.reader-ai-model-label').click()
     await expect(page.locator('.reader-ai-model-popover')).toContainText('切换后从下一次回答开始生效')
     const defaultProviderId = await page.evaluate(async () => (await window.origread.getAiSettings()).defaultProviderId)
@@ -264,6 +370,23 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     expect(await page.evaluate(async (id) => (await window.origread.listLlmConversations(id)).length, articleId)).toBe(1)
 
     const secondComposer = page.getByRole('textbox', { name: '问问这篇文章……' })
+    await page.evaluate(() => {
+      const reader = document.querySelector<HTMLElement>('.reader-content')
+      const body = document.querySelector<HTMLElement>('.article-body')
+      if (!reader || !body) throw new Error('Chat streaming stability probe could not find Reader DOM')
+      const state = globalThis as typeof globalThis & {
+        __origreadD710ChatBody?: HTMLElement
+        __origreadD710ChatWidths?: number[]
+        __origreadD710ChatObserver?: ResizeObserver
+      }
+      state.__origreadD710ChatBody = body
+      state.__origreadD710ChatWidths = [reader.getBoundingClientRect().width]
+      state.__origreadD710ChatObserver?.disconnect()
+      state.__origreadD710ChatObserver = new ResizeObserver(() => {
+        state.__origreadD710ChatWidths?.push(reader.getBoundingClientRect().width)
+      })
+      state.__origreadD710ChatObserver.observe(reader)
+    })
     await secondComposer.fill('slow question')
     await secondComposer.press('Enter')
     await expect(page.locator('.reader-ai-reasoning-stream')).toContainText('checking article')
@@ -278,6 +401,22 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     }, articleId)
     expect(conversationsAfterStop.count).toBe(2)
     expect(conversationsAfterStop.messages.at(-1)).toMatchObject({ role: 'ASSISTANT', status: 'STOPPED', finishReason: 'CANCELLED' })
+    const chatStreamingStability = await page.evaluate(() => {
+      const state = globalThis as typeof globalThis & {
+        __origreadD710ChatBody?: HTMLElement
+        __origreadD710ChatWidths?: number[]
+        __origreadD710ChatObserver?: ResizeObserver
+      }
+      state.__origreadD710ChatObserver?.disconnect()
+      const widths = state.__origreadD710ChatWidths ?? []
+      return {
+        sameBody: state.__origreadD710ChatBody === document.querySelector('.article-body'),
+        widths
+      }
+    })
+    expect(chatStreamingStability.sameBody).toBe(true)
+    expect(chatStreamingStability.widths.length).toBeGreaterThan(0)
+    expect(Math.max(...chatStreamingStability.widths) - Math.min(...chatStreamingStability.widths)).toBeLessThan(1)
 
     // Renderer restart does not lose article conversations; History can reopen the old branch and delete another one safely.
     await page.reload()

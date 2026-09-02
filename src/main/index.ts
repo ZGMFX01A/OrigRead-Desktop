@@ -97,6 +97,10 @@ import {
   buildRegeneratedReaderSelectionContextItems,
   validateLlmReaderContextSnapshot
 } from './llm/reader-context-builder'
+import {
+  CURRENT_ARTICLE_CONTEXT_PRIORITY,
+  additionalArticleContextPriority
+} from './llm/context-priority'
 import { OpenAiCompatibleProvider } from './ai/openai-compatible-provider'
 import { normalizeLlmCustomizationSettingsPatch } from '../shared/llm-customization'
 import { LLM_SKILL_TASKS, type LlmSkillManagementSnapshot, type LlmSkillState, type LlmSkillTask } from '../shared/llm-skill'
@@ -1997,13 +2001,15 @@ function buildMainLlmArticleContext(conversation: LlmConversationRecord): {
       articleId: conversation.articleId,
       title: conversation.articleTitle,
       link: conversation.articleLink,
-      priority: 100
+      priority: CURRENT_ARTICLE_CONTEXT_PRIORITY,
+      reserveEvidenceBudget: true
     },
     ...(llmChatRepository?.getConversationArticles(conversation.id) ?? []).map((article, index) => ({
       articleId: article.articleId,
       title: article.title,
       link: article.link,
-      priority: 90 - index
+      priority: additionalArticleContextPriority(index),
+      reserveEvidenceBudget: false
     }))
   ]
   for (const article of articleInputs) {
@@ -2022,7 +2028,7 @@ function buildMainLlmArticleContext(conversation: LlmConversationRecord): {
       title: article.title,
       sourceId: sourceUrl,
       internalArticleId: article.articleId,
-      reserveEvidenceBudget: true,
+      reserveEvidenceBudget: article.reserveEvidenceBudget,
       evidenceBlocks: blocks,
       priority: article.priority
     })
@@ -2358,7 +2364,8 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     jsonSubscriptionService,
     websiteSourceService,
     websiteSubscriptionService,
-    accountService
+    accountService,
+    feedDiscoveryCatalog
   )
   periodicSyncScheduler = new PeriodicSyncScheduler(
     new AccountSyncSettingsProvider(accountRepository),

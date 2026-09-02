@@ -183,12 +183,12 @@ test('desktop renderer mounts with preload bridge and primary UI', async () => {
 
     await page.locator('.source-discovery-button').click()
     await expect(page.locator('.source-discovery-page')).toBeVisible()
-    await expect(page.locator('.source-discovery-item')).toHaveCount(752)
-    await page.locator('.source-discovery-search input').fill('Programming')
+    await expect(page.locator('.source-discovery-item')).toHaveCount(2427)
+    await page.locator('.source-discovery-search input').fill('开发工具')
     await expect(page.locator('.source-discovery-item').first()).toBeVisible()
     const filteredSourceCount = await page.locator('.source-discovery-item').count()
     expect(filteredSourceCount).toBeGreaterThan(0)
-    expect(filteredSourceCount).toBeLessThan(752)
+    expect(filteredSourceCount).toBeLessThan(2427)
     await page.locator('.settings-close-button').click()
     await expect(page.locator('.source-discovery-page')).toBeHidden()
 

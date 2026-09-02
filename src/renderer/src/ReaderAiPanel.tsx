@@ -20,7 +20,10 @@ export interface ReaderAiPanelShellProps {
   actions?: ReactNode
   children: ReactNode
   onPlacementChange(placement: AiSummaryPlacement): void
-  onPanelSizeChange(size: number): void
+  /** High-frequency local preview; must not persist through IPC on every range input event. */
+  onPanelSizePreview(size: number): void
+  /** Persist only after the user finishes one resize interaction. */
+  onPanelSizeCommit(size: number): void
   onClose(): void
 }
 
@@ -42,7 +45,8 @@ export function ReaderAiPanelShell({
   actions,
   children,
   onPlacementChange,
-  onPanelSizeChange,
+  onPanelSizePreview,
+  onPanelSizeCommit,
   onClose
 }: ReaderAiPanelShellProps): React.JSX.Element {
   const { t } = useTranslation()
@@ -99,7 +103,10 @@ export function ReaderAiPanelShell({
                   max="640"
                   step="10"
                   value={panelSize}
-                  onChange={(event) => onPanelSizeChange(Number(event.target.value))}
+                  onChange={(event) => onPanelSizePreview(Number(event.target.value))}
+                  onPointerUp={(event) => onPanelSizeCommit(Number(event.currentTarget.value))}
+                  onKeyUp={(event) => onPanelSizeCommit(Number(event.currentTarget.value))}
+                  onBlur={(event) => onPanelSizeCommit(Number(event.currentTarget.value))}
                 />
               </div>
             )}

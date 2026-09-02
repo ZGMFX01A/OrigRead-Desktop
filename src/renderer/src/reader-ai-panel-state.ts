@@ -13,6 +13,12 @@ export type ReaderAiPanelDetailView =
 export interface ReaderAiPanelState {
   open: boolean
   view: ReaderAiPanelView
+  /**
+   * Persisted Conversation identity currently projected by this Reader surface.
+   * Closing the panel or opening a temporary detail surface must preserve it; only explicit
+   * new-chat/article-reset/delete boundaries may clear it. A future Full Workspace must reuse
+   * this persisted identity instead of copying messages into a second conversation store.
+   */
   conversationId: string | null
   detailView: ReaderAiPanelDetailView | null
   detailTargetId: string | null

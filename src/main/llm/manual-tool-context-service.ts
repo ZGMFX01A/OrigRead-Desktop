@@ -5,6 +5,7 @@ import type { LlmExecuteManualToolRequest, LlmManualToolContextView, LlmManualTo
 import { toolRequiresConfirmation } from '../../shared/llm-tool'
 import type { BuiltLlmEvidenceBlock } from './evidence-block-builder'
 import type { LlmToolRuntime } from './tool-runtime'
+import { MANUAL_TOOL_CONTEXT_PRIORITY } from './context-priority'
 
 const MAX_PENDING_CONTEXTS = 40
 const CONTEXT_TTL_MS = 30 * 60_000
@@ -127,7 +128,7 @@ export class ManualToolContextService {
         sourceId: entry.toolId,
         content: entry.content,
         evidenceBlocks: [block],
-        priority: 90
+        priority: MANUAL_TOOL_CONTEXT_PRIORITY
       })
       evidenceGroups.push({ contextId: entry.contextId, blocks: [block] })
     }

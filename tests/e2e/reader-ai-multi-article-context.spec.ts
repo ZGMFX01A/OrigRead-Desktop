@@ -74,9 +74,12 @@ test('Reader AI persists up to five extra articles and freezes each request cont
       }
     }, ids.currentId)
     expect(firstSnapshot.attachedArticles.map((item) => item.articleId)).toEqual([ids.attachedId])
-    expect(firstSnapshot.evidence.contextRefs.filter((ref) => ref.type === 'ARTICLE').map((ref) => ref.articleId)).toEqual(
+    const articleRefs = firstSnapshot.evidence.contextRefs.filter((ref) => ref.type === 'ARTICLE')
+    expect(articleRefs.map((ref) => ref.articleId)).toEqual(
       expect.arrayContaining([ids.currentId, ids.attachedId])
     )
+    expect(articleRefs.find((ref) => ref.articleId === ids.currentId)?.priority).toBe(10_000)
+    expect(articleRefs.find((ref) => ref.articleId === ids.attachedId)?.priority).toBe(9_000)
 
     await attachButton.click()
     await expect(picker).toBeHidden()

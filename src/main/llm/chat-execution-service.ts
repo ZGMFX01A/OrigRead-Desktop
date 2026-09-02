@@ -31,6 +31,7 @@ import { buildLlmTaskBaseSystemPrompt } from './task-system-prompt'
 import type { PreparedWebSearchExecution, WebSearchRouter } from '../search/web-search-router'
 import { buildUnconsumedWebSearchContextRefs, buildWebSearchContext } from '../search/web-search-context'
 import { buildLlmToolActivityView } from './tool-approval-view'
+import { MANUAL_TOOL_CONTEXT_PRIORITY } from './context-priority'
 
 const MAX_AUTOMATIC_TOOL_ROUNDS = 8
 
@@ -551,7 +552,7 @@ export class LlmChatExecutionService {
       contentSnapshot: content,
       promptContentSnapshot: content,
       contentSha256: normalizedSha256,
-      priority: 90,
+      priority: MANUAL_TOOL_CONTEXT_PRIORITY,
       includedInPrompt: true,
       truncatedInPrompt: false,
       createdAt

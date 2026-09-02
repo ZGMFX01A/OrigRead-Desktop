@@ -32,12 +32,18 @@ describe('Reader AI Panel state', () => {
       detailTargetId: 'assistant-1'
     }
 
-    expect(closeReaderAiPanel(current)).toEqual({
+    const closed = closeReaderAiPanel(current)
+    expect(closed).toEqual({
       open: false,
       view: 'chat',
       conversationId: 'conversation-1',
       detailView: null,
       detailTargetId: null
+    })
+    expect(openReaderAiPanel(closed)).toMatchObject({
+      open: true,
+      view: 'chat',
+      conversationId: 'conversation-1'
     })
   })
 

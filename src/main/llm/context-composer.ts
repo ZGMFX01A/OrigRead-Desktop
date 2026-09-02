@@ -56,7 +56,9 @@ export class LlmContextComposer {
 
       const futureEvidenceReserve = accepted
         .slice(acceptedIndex + 1)
-        .reduce((total, candidate) => total + (candidate.item.reserveEvidenceBudget ? evidenceReserveTokens(maxTokens) : 0), 0)
+        .reduce((total, candidate) => total + (
+          candidate.item.reserveEvidenceBudget ? reservedEvidenceTokens(candidate.item, maxTokens) : 0
+        ), 0)
       const availableForItem = Math.max(0, remaining - Math.min(remaining, futureEvidenceReserve))
       const block = renderBlock(item, availableForItem)
       if (!block) {
@@ -212,6 +214,39 @@ function quoteAttribute(value: string): string {
 
 function evidenceReserveTokens(maxTokens: number): number {
   return Math.max(MIN_EVIDENCE_RESERVE_TOKENS, Math.min(MAX_EVIDENCE_RESERVE_TOKENS, Math.floor(maxTokens / 8)))
+}
+
+/**
+ * Citation evidence is atomic. A nominal 512-token reserve does not help if the smallest complete
+ * evidence block plus trusted wrappers needs 700 tokens. When possible, reserve enough for one
+ * complete block; if no block can fit in the whole Context budget, keep the ordinary reserve so an
+ * impossible guarantee does not evict all higher-priority context.
+ */
+function reservedEvidenceTokens(item: LlmContextItem, maxTokens: number): number {
+  const baseline = evidenceReserveTokens(maxTokens)
+  const minimumAtomic = minimumAtomicEvidenceTokens(item)
+  if (minimumAtomic === null || minimumAtomic > maxTokens) return baseline
+  return Math.max(baseline, minimumAtomic)
+}
+
+function minimumAtomicEvidenceTokens(item: LlmContextItem): number | null {
+  const evidenceBlocks = item.evidenceBlocks?.filter((block) =>
+    block.stableLocatorKey.trim() && block.content.trim()
+  ) ?? []
+  if (evidenceBlocks.length === 0) return null
+
+  const header = `[ORIGREAD_CONTEXT type=${item.type} id=${quoteAttribute(item.id)}${item.sourceId ? ` source=${quoteAttribute(item.sourceId)}` : ''}]`
+  const title = item.title ? `\nTitle: ${item.title}` : ''
+  const prefix = `${header}${title}\n`
+  const footer = '\n[/ORIGREAD_CONTEXT]'
+  const fixedTokens = estimateLlmTokens(prefix) + estimateLlmTokens(footer)
+  let cheapest = Number.POSITIVE_INFINITY
+
+  for (const block of evidenceBlocks) {
+    const text = `[ORIGREAD_EVIDENCE id=${quoteAttribute(block.stableLocatorKey.trim())}]\n${block.content.trim()}\n[/ORIGREAD_EVIDENCE]`
+    cheapest = Math.min(cheapest, fixedTokens + estimateLlmTokens(text))
+  }
+  return Number.isFinite(cheapest) ? cheapest : null
 }
 
 function omitBudget(id: string, omittedIds: string[], decisionById: Map<string, LlmContextDecision['status']>): void {

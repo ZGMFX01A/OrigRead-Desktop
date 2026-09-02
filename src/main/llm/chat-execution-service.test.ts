@@ -14,6 +14,11 @@ import { buildArticleEvidenceBlocks } from './evidence-block-builder'
 import type { LlmExecutionEvent } from '../../shared/llm-ipc'
 import type { WebSearchRouter, PreparedWebSearchExecution } from '../search/web-search-router'
 import type { WebSearchRouteResult } from '../../shared/web-search'
+import {
+  CURRENT_ARTICLE_CONTEXT_PRIORITY,
+  additionalArticleContextPriority,
+  webSearchContextPriority
+} from './context-priority'
 
 type StreamHandler = (input: {
   messages: readonly AiChatMessage[]
@@ -537,6 +542,95 @@ describe('LlmChatExecutionService D2 pipeline', () => {
     const omitted = refs.find((ref) => !ref.includedInPrompt)
     expect(omitted).toMatchObject({ sourceUrl: expect.stringMatching(/^https:\/\//), promptContentSnapshot: null })
     expect(omitted?.contentSnapshot).toContain('current fact')
+    env.database.close()
+  })
+
+  it('applies D7.8 priorities so Web Search and current evidence survive before an oversized attachment', async () => {
+    const route: WebSearchRouteResult = {
+      status: 'SUCCESS',
+      providerName: 'Fixture Search',
+      errorMessage: null,
+      requiredFailure: false,
+      response: {
+        providerId: 'search-provider',
+        providerName: 'Fixture Search',
+        backendKind: 'RAW_SEARCH',
+        answer: null,
+        results: [{
+          title: 'Fresh compact source',
+          url: 'https://fresh.example/result',
+          snippet: 'Fresh compact evidence.',
+          publishedAt: null,
+          source: 'fresh.example',
+          content: null
+        }]
+      }
+    }
+    const currentBlocks = buildArticleEvidenceBlocks(`<p>${'当'.repeat(80)}</p>`, {
+      articleId: 'article-1',
+      sourceUrl: 'https://example.com/current'
+    })
+    const attachmentBlocks = buildArticleEvidenceBlocks(`<p>${'附'.repeat(800)}</p>`, {
+      articleId: 'article-2',
+      sourceUrl: 'https://example.com/attached'
+    })
+    const transport = new QueueTransport([
+      async ({ messages, onDelta }) => {
+        const system = String(messages[0]?.content ?? '')
+        expect(system).toContain('Fresh compact evidence.')
+        expect(system).toContain('当'.repeat(20))
+        expect(system).not.toContain('附'.repeat(20))
+        onDelta({ content: 'Budget priority answer', reasoning: '', finishReason: 'stop', toolCalls: [] })
+        return { content: 'Budget priority answer', reasoning: null, finishReason: 'stop', toolCalls: [] }
+      }
+    ])
+    const env = setup(transport, searchRouter(route))
+    const identity = createConversation(env.repository)
+
+    await env.service.execute({
+      ...identity,
+      requestId: 'request-d78-budget-order',
+      ownerId: 'renderer-1',
+      profile: { contextPolicy: { maxTokens: 500 } },
+      contextItems: [
+        {
+          id: 'article:article-1:reader',
+          type: 'ARTICLE',
+          content: currentBlocks.map((block) => block.content).join('\n\n'),
+          title: 'Current article',
+          sourceId: 'https://example.com/current',
+          internalArticleId: 'article-1',
+          reserveEvidenceBudget: true,
+          evidenceBlocks: currentBlocks,
+          priority: CURRENT_ARTICLE_CONTEXT_PRIORITY
+        },
+        {
+          id: 'article:article-2:reader',
+          type: 'ARTICLE',
+          content: attachmentBlocks.map((block) => block.content).join('\n\n'),
+          title: 'Attached article',
+          sourceId: 'https://example.com/attached',
+          internalArticleId: 'article-2',
+          reserveEvidenceBudget: false,
+          evidenceBlocks: attachmentBlocks,
+          priority: additionalArticleContextPriority(0)
+        }
+      ],
+      evidenceGroups: [
+        { contextId: 'article:article-1:reader', blocks: currentBlocks },
+        { contextId: 'article:article-2:reader', blocks: attachmentBlocks }
+      ],
+      webSearch: preparedSearch(false)
+    }, () => undefined)
+
+    const refs = env.repository.getContextRefsForAssistant(identity.assistantMessageId)
+    const search = refs.find((ref) => ref.type === 'WEB_SEARCH_RESULT')
+    const current = refs.find((ref) => ref.articleId === 'article-1')
+    const attachment = refs.find((ref) => ref.articleId === 'article-2')
+    expect(search).toMatchObject({ priority: webSearchContextPriority(0), includedInPrompt: true })
+    expect(current).toMatchObject({ priority: CURRENT_ARTICLE_CONTEXT_PRIORITY, includedInPrompt: true })
+    expect(attachment).toMatchObject({ priority: additionalArticleContextPriority(0), includedInPrompt: false })
+    expect(attachment?.promptContentSnapshot).toBeNull()
     env.database.close()
   })
 

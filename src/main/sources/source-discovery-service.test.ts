@@ -298,6 +298,46 @@ describe('SourceDiscoveryService parity', () => {
     const website = discovery.candidates.find((candidate) => candidate.kind === 'WEBSITE')!
     await expect(service.subscribeMany(discovery.discoveryId, [website.id])).rejects.toThrow('网站 来源仅支持 Local 账户')
   })
+
+  it('exposes catalog URL suggestions and uses a unique known Feed only as a non-blocking fallback', async () => {
+    const knownFeedUrl = 'https://feeds.example.com/known.xml'
+    const catalogEntry = {
+      id: 'known', name: 'Known Feed', feedUrl: knownFeedUrl, siteUrl: 'https://example.com/',
+      categories: ['Tech & Engineering'], origins: [{ sourceId: 'bestblogs', category: 'Technology' }]
+    }
+    const directRss = vi.fn(async (url: unknown) => {
+      if (url === knownFeedUrl) return rssFeed(knownFeedUrl, false)
+      throw new Error('input is not a direct feed')
+    })
+    const delayedFailure = async (): Promise<never> => {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      throw new Error('no source')
+    }
+    const delayedWebsite = async (): Promise<WebsiteInspectionResult> => {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      return websiteInspection(false)
+    }
+    const service = createService({
+      directRss,
+      rss: delayedFailure,
+      rssHub: async () => { await new Promise((resolve) => setTimeout(resolve, 5)); return [] },
+      json: async () => { await new Promise((resolve) => setTimeout(resolve, 5)); return null },
+      website: delayedWebsite,
+      dynamic: vi.fn(),
+      feedDiscoveryCatalog: {
+        matchUrl: () => ({ preferred: catalogEntry, suggestions: [catalogEntry], totalSuggestions: 1 })
+      }
+    })
+
+    const result = await service.discover('https://example.com/')
+    expect(result.catalogMatches).toEqual([catalogEntry])
+    expect(result.catalogMatchCount).toBe(1)
+    expect(result.candidates.some((candidate) => candidate.kind === 'RSS_DIRECT' && candidate.feedLink === knownFeedUrl)).toBe(true)
+    expect(result.candidates.some((candidate) => candidate.kind === 'WEBSITE')).toBe(true)
+    expect(result.candidates[0]).toMatchObject({ kind: 'RSS_DIRECT', feedLink: knownFeedUrl })
+    expect(directRss).toHaveBeenCalledWith('https://example.com/')
+    expect(directRss).toHaveBeenCalledWith(knownFeedUrl)
+  })
 })
 
 function createService(options: {
@@ -311,6 +351,7 @@ function createService(options: {
   rssHubSubscribe?: (...args: any[]) => any
   websiteSubscribe?: (...args: any[]) => Promise<{ feedId: string; insertedArticles: number }>
   accountCoordinator?: { current: () => any; subscribeRss: (...args: any[]) => Promise<string> }
+  feedDiscoveryCatalog?: { matchUrl: (...args: any[]) => any }
 }): SourceDiscoveryService {
   return new SourceDiscoveryService(
     {
@@ -331,7 +372,8 @@ function createService(options: {
       hasRule: () => false
     } as unknown as WebsiteSourceService,
     { add: options.websiteSubscribe ?? (async () => ({ feedId: 'website-feed', insertedArticles: 0 })) } as unknown as WebsiteSubscriptionService,
-    options.accountCoordinator as any
+    options.accountCoordinator as any,
+    options.feedDiscoveryCatalog as any
   )
 }
 

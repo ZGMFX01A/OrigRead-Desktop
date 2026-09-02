@@ -87,6 +87,25 @@ test('AI summary streams reasoning and body through Main IPC before final comple
     await expect(page.getByRole('button', { name: '生成速览摘要' })).toBeVisible()
     await expect(page.getByRole('button', { name: '生成均衡摘要' })).toBeVisible()
     await expect(page.getByRole('button', { name: '生成深入摘要' })).toBeVisible()
+    await page.evaluate(() => {
+      const reader = document.querySelector<HTMLElement>('.reader-content')
+      const body = document.querySelector<HTMLElement>('.article-body')
+      if (!reader || !body) throw new Error('Summary streaming stability probe could not find Reader DOM')
+      const state = globalThis as typeof globalThis & {
+        __origreadD710SummaryBody?: HTMLElement
+        __origreadD710SummaryPanel?: HTMLElement
+        __origreadD710SummaryWidths?: number[]
+        __origreadD710SummaryObserver?: ResizeObserver
+      }
+      state.__origreadD710SummaryBody = body
+      state.__origreadD710SummaryPanel = document.querySelector<HTMLElement>('.reader-ai-panel') ?? undefined
+      state.__origreadD710SummaryWidths = [reader.getBoundingClientRect().width]
+      state.__origreadD710SummaryObserver?.disconnect()
+      state.__origreadD710SummaryObserver = new ResizeObserver(() => {
+        state.__origreadD710SummaryWidths?.push(reader.getBoundingClientRect().width)
+      })
+      state.__origreadD710SummaryObserver.observe(reader)
+    })
     await page.getByRole('button', { name: '生成均衡摘要' }).click()
     await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-view', 'summary')
     await expect.poll(async () => page.evaluate(() => {
@@ -102,6 +121,25 @@ test('AI summary streams reasoning and body through Main IPC before final comple
     await expect(page.locator('.ai-summary-panel-body')).toContainText('这是实时摘要')
     await expect(page.locator('.ai-summary-panel-body')).toContainText('第二段内容。')
     await expect(page.locator('.regenerate-button')).toBeVisible()
+    const summaryStreamingStability = await page.evaluate(() => {
+      const state = globalThis as typeof globalThis & {
+        __origreadD710SummaryBody?: HTMLElement
+        __origreadD710SummaryPanel?: HTMLElement
+        __origreadD710SummaryWidths?: number[]
+        __origreadD710SummaryObserver?: ResizeObserver
+      }
+      state.__origreadD710SummaryObserver?.disconnect()
+      const widths = state.__origreadD710SummaryWidths ?? []
+      return {
+        sameBody: state.__origreadD710SummaryBody === document.querySelector('.article-body'),
+        samePanel: state.__origreadD710SummaryPanel === document.querySelector('.reader-ai-panel'),
+        widths
+      }
+    })
+    expect(summaryStreamingStability.sameBody).toBe(true)
+    expect(summaryStreamingStability.samePanel).toBe(true)
+    expect(summaryStreamingStability.widths.length).toBeGreaterThan(0)
+    expect(Math.max(...summaryStreamingStability.widths) - Math.min(...summaryStreamingStability.widths)).toBeLessThan(1)
 
     const result = await page.evaluate(async ({ articleId, providerId }) => {
       const updates: Array<{ summaryPreview: string; reasoningPreview: string }> = []

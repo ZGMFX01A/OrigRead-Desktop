@@ -38,7 +38,7 @@ describe('ManualToolContextService', () => {
     expect(executed).toMatchObject({ conversationId: 'conversation-1', toolId: 'mcp:read', risk: 'READ_ONLY', resultPreview: 'manual result' })
     const consumed = service.consume('conversation-1', [executed.contextId])
     expect(consumed.contextItems).toMatchObject([{
-      id: executed.contextId, type: 'TOOL_RESULT', sourceId: 'mcp:read', content: 'manual result', priority: 90
+      id: executed.contextId, type: 'TOOL_RESULT', sourceId: 'mcp:read', content: 'manual result', priority: 11500
     }])
     expect(consumed.evidenceGroups[0]?.blocks[0]).toMatchObject({
       kind: 'TOOL_RESULT',

@@ -1,11 +1,13 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { FeedCatalogData, FeedCatalogSnapshot } from '../../shared/source-catalog'
+import { FeedCatalogIndex, type FeedCatalogUrlMatch } from '../../shared/feed-catalog-index'
 
 const SOURCE_CATALOG_SCHEMA_VERSION = 1
 
 export class FeedDiscoveryCatalog {
   readonly data: FeedCatalogSnapshot
+  private readonly index: FeedCatalogIndex
 
   constructor(path = join(__dirname, '../../resources/source_catalog.json')) {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as FeedCatalogData
@@ -28,5 +30,14 @@ export class FeedDiscoveryCatalog {
       feeds: parsed.feeds.map((feed) => ({ ...feed, siteUrl: feed.siteUrl ?? null, categories: [...feed.categories], origins: [...feed.origins] })),
       categoryCounts
     }
+    this.index = new FeedCatalogIndex(this.data.feeds)
+  }
+
+  search(query: string, selectedCategory: string | null = null) {
+    return this.index.search(query, selectedCategory)
+  }
+
+  matchUrl(url: string): FeedCatalogUrlMatch {
+    return this.index.matchUrl(url)
   }
 }

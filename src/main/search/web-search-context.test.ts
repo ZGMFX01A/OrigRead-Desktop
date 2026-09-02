@@ -12,6 +12,7 @@ describe('Web Search context evidence', () => {
     })
     expect(built.contextItems).toHaveLength(2)
     expect(built.contextItems[0]).toMatchObject({ type: 'WEB_SEARCH_RESULT', title: 'One', sourceId: 'https://one.example/post' })
+    expect(built.contextItems.map((item) => item.priority)).toEqual([11000, 10999])
     expect(built.contextItems[0]?.content).toContain('Published: 2026-09-01')
     expect(built.evidenceGroups[0]?.blocks[0]).toMatchObject({ kind: 'SEARCH_RESULT', locator: { sourceKind: 'WEB_SEARCH', sourceUrl: 'https://one.example/post' } })
 

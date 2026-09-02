@@ -153,6 +153,7 @@ export default function App(): React.JSX.Element {
   const [destination, setDestination] = useState<Destination>('all')
   const [focusReading, setFocusReading] = useState(false)
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
+  const [readerStageWidth, setReaderStageWidth] = useState(0)
   const [adaptiveSourceOverlayOpen, setAdaptiveSourceOverlayOpen] = useState(false)
   // Source Switcher 只属于当前会话，不持久化打开状态。
   const [sourceSwitcherOpen, setSourceSwitcherOpen] = useState(false)
@@ -303,6 +304,16 @@ export default function App(): React.JSX.Element {
   const lastObservedSyncFinish = useRef<number | null>(null)
   const autoUpdateCheckedRef = useRef(false)
   const speech = useReaderSpeech(settings?.ttsVoiceURI ?? '')
+
+  useEffect(() => {
+    const stage = readerStageRef.current
+    if (!stage) return
+    const update = (): void => setReaderStageWidth(Math.max(0, Math.round(stage.getBoundingClientRect().width)))
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(stage)
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     setReaderAiSelectionCandidate(null)
@@ -1831,6 +1842,12 @@ export default function App(): React.JSX.Element {
     setSettings((current) => current ? { ...current, articlePaneWidth: width } : current)
   }
 
+  /** AI Panel 拖动时只更新 Renderer 快照；结束一次交互后再持久化，避免 range 高频 IPC 回写导致宽度跳动。 */
+  const previewAiSummaryPanelSize = (size: number): void => {
+    const normalized = Math.max(AI_SUMMARY_PANEL_MIN, Math.min(AI_SUMMARY_PANEL_MAX, size))
+    setSettings((current) => current ? { ...current, aiSummaryPanelSize: normalized } : current)
+  }
+
   /** 双栏 Workspace 的持久化折叠开关；Focus Reading 只临时覆盖可见性。 */
   const toggleWorkspacePane = (): void => {
     if (focusReading) {
@@ -2524,6 +2541,27 @@ export default function App(): React.JSX.Element {
     }
   }
 
+  const validateCatalogMatch = async (feed: FeedCatalogEntry): Promise<void> => {
+    if (isAddingSource) return
+    setSourceUrl(feed.feedUrl)
+    setSourceError(null)
+    setSourceDiscovery(null)
+    setSelectedCandidateId(null)
+    setSelectedCandidateIds([])
+    setIsAddingSource(true)
+    try {
+      const discovered = await discoverSourceWithProgress(feed.feedUrl)
+      setSourceDiscovery(discovered)
+      setSelectedCandidateId(discovered.selectedCandidateId)
+      setSelectedCandidateIds(discovered.selectedCandidateId ? [discovered.selectedCandidateId] : [])
+      if (discovered.candidates.length === 0) setSourceError(discovered.error ?? t('noSourceCandidate'))
+    } catch (error) {
+      setSourceError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsAddingSource(false)
+    }
+  }
+
   const closeAddSource = (): void => {
     if (isAddingSource) return
     setAddSourceOpen(false)
@@ -2689,6 +2727,13 @@ export default function App(): React.JSX.Element {
     : collapsedPaneCount > 1
       ? t('restoreCollapsedPanes')
       : t('expandSourcePane')
+  const configuredAiSummaryPanelSize = settings?.aiSummaryPanelSize ?? 360
+  const effectiveAiSummaryPanelSize = readerStageWidth > 0
+    ? Math.min(
+        configuredAiSummaryPanelSize,
+        Math.max(AI_SUMMARY_PANEL_MIN, readerStageWidth - 280)
+      )
+    : configuredAiSummaryPanelSize
   const readerStyle = {
     '--workspace-pane-track': effectiveWorkspaceCollapsed ? '0px' : `${settings?.workspaceWidth ?? 420}px`,
     '--workspace-divider-track': effectiveWorkspaceCollapsed ? '0px' : '5px',
@@ -2708,7 +2753,7 @@ export default function App(): React.JSX.Element {
     '--reader-soft-background': readerColors.softBackground,
     '--reader-border-color': readerColors.border,
     '--reader-link-color': readerColors.link,
-    '--ai-summary-panel-size': `${settings?.aiSummaryPanelSize ?? 360}px`
+    '--ai-summary-panel-size': `${effectiveAiSummaryPanelSize}px`
   } as CSSProperties
 
   const renderSourceBrandHeader = (): React.JSX.Element => (
@@ -2864,7 +2909,8 @@ export default function App(): React.JSX.Element {
           subtitle={targetMessage ? t('contextSourcesDescription') : chatConversation?.title || selectedArticle.title}
           actions={<button type="button" className="icon-button" title={t('back')} aria-label={t('back')} onClick={()=>{setReaderAiSourceFocus(null);setReaderAiPanel((current)=>closeReaderAiPanelDetail(current))}}><ArrowLeft size={15}/></button>}
           onPlacementChange={(placement)=>void changeReaderAiPanelPlacement(placement)}
-          onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
+          onPanelSizePreview={previewAiSummaryPanelSize}
+          onPanelSizeCommit={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
           onClose={closeReaderAiAssistant}
         >
           <ReaderAiSourcesDetailBody
@@ -2891,7 +2937,8 @@ export default function App(): React.JSX.Element {
           subtitle={targetMessage?.webSearchProviderName||chatConversation?.title||selectedArticle.title}
           actions={<button type="button" className="icon-button" title={t('back')} aria-label={t('back')} onClick={()=>setReaderAiPanel((current)=>closeReaderAiPanelDetail(current))}><ArrowLeft size={15}/></button>}
           onPlacementChange={(placement)=>void changeReaderAiPanelPlacement(placement)}
-          onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
+          onPanelSizePreview={previewAiSummaryPanelSize}
+          onPanelSizeCommit={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
           onClose={closeReaderAiAssistant}
         >
           <ReaderAiWebSearchDetailBody message={targetMessage}/>
@@ -2911,7 +2958,8 @@ export default function App(): React.JSX.Element {
           subtitle={chatConversation?.title || selectedArticle.title}
           actions={<button type="button" className="icon-button" title={t('back')} aria-label={t('back')} onClick={closeReaderAiChatSearch}><ArrowLeft size={15}/></button>}
           onPlacementChange={(placement)=>void changeReaderAiPanelPlacement(placement)}
-          onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
+          onPanelSizePreview={previewAiSummaryPanelSize}
+          onPanelSizeCommit={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
           onClose={closeReaderAiAssistant}
         >
           <ReaderAiChatSearchBody
@@ -2942,7 +2990,8 @@ export default function App(): React.JSX.Element {
             </button>
           </>}
           onPlacementChange={(placement)=>void changeReaderAiPanelPlacement(placement)}
-          onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
+          onPanelSizePreview={previewAiSummaryPanelSize}
+          onPanelSizeCommit={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
           onClose={closeReaderAiAssistant}
         >
           <ReaderAiConversationHistoryBody
@@ -2962,28 +3011,37 @@ export default function App(): React.JSX.Element {
 
     if (readerAiPanel.view === 'summary' && (aiSummary || aiLoading)) {
       return (
-        <AiSummaryView
-          panelState={readerAiPanel}
-          summary={aiSummary}
-          loading={aiLoading}
-          progressStage={aiSummaryProgress?.stage ?? null}
-          streamUpdate={aiSummaryStream}
-          elapsedSeconds={aiSummaryElapsedSeconds}
+        <ReaderAiPanelShell
+          view="summary"
+          detailView={readerAiPanel.detailView}
           placement={aiSummaryPlacement}
           panelSize={settings?.aiSummaryPanelSize ?? 360}
-          speechActive={speech.state.domain==='summary'}
-          speechStatus={speech.state.status}
-          onToggleSpeech={toggleSummarySpeech}
-          onStopSpeech={speech.stop}
+          leading={<AiSummaryAccentIcon variant="panel" loading={aiLoading}/>}
+          title={t('aiSummary')}
+          subtitle={aiSummary ? `${aiSummary.providerName} · ${aiSummary.model}` : t('aiSummaryWorking')}
+          badge={aiSummary ? <span className="ai-summary-mode-badge">{t(summaryLengthLabelKey(aiSummary.length))}</span> : null}
+          actions={<>
+            <button type="button" className="icon-button" title={t('backToAiHome')} aria-label={t('backToAiHome')} onClick={showReaderAiHome}><ArrowLeft size={15}/></button>
+            {aiSummary?.status==='GENERATED'&&<button type="button" className={`icon-button ${speech.state.domain==='summary'?'active':''}`} title={speech.state.domain==='summary'&&speech.state.status==='speaking'?t('pauseReading'):speech.state.domain==='summary'&&speech.state.status==='paused'?t('resumeReading'):t('readSummary')} aria-label={t('readSummary')} onClick={toggleSummarySpeech}>{speech.state.domain==='summary'&&speech.state.status==='speaking'?<Pause size={15}/>:speech.state.domain==='summary'&&speech.state.status==='paused'?<Play size={15}/>:<Headphones size={15}/>}</button>}
+            {speech.state.domain==='summary'&&speech.state.status!=='idle'&&<button type="button" className="icon-button" title={t('stopReading')} aria-label={t('stopReading')} onClick={speech.stop}><Square size={13}/></button>}
+          </>}
           onPlacementChange={(placement)=>void changeReaderAiPanelPlacement(placement)}
-          onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
-          onRegenerate={()=>{if(!aiLoading)setAiOptionsOpen(true)}}
-          onStop={stopAiSummary}
-          onFirstVisibleValue={recordAiSummaryUiTtfv}
-          onBackToHome={showReaderAiHome}
-          onContinueChat={showReaderAiChat}
+          onPanelSizePreview={previewAiSummaryPanelSize}
+          onPanelSizeCommit={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
           onClose={closeReaderAiAssistant}
-        />
+        >
+          <AiSummaryBody
+            summary={aiSummary}
+            loading={aiLoading}
+            progressStage={aiSummaryProgress?.stage ?? null}
+            streamUpdate={aiSummaryStream}
+            elapsedSeconds={aiSummaryElapsedSeconds}
+            onRegenerate={()=>{if(!aiLoading)setAiOptionsOpen(true)}}
+            onStop={stopAiSummary}
+            onFirstVisibleValue={recordAiSummaryUiTtfv}
+            onContinueChat={showReaderAiChat}
+          />
+        </ReaderAiPanelShell>
       )
     }
 
@@ -3012,7 +3070,8 @@ export default function App(): React.JSX.Element {
             </button>
           </>}
           onPlacementChange={(placement)=>void changeReaderAiPanelPlacement(placement)}
-          onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
+          onPanelSizePreview={previewAiSummaryPanelSize}
+          onPanelSizeCommit={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
           onClose={closeReaderAiAssistant}
         >
           <ReaderAiChatBody
@@ -3076,7 +3135,8 @@ export default function App(): React.JSX.Element {
         subtitle={selectedArticle.title}
         actions={<button type="button" className="icon-button" title={t('conversationHistory')} aria-label={t('conversationHistory')} disabled={Boolean(chatActiveRequestIdRef.current)} onClick={showReaderAiConversationHistory}><History size={15}/></button>}
         onPlacementChange={(placement)=>void changeReaderAiPanelPlacement(placement)}
-        onPanelSizeChange={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
+        onPanelSizePreview={previewAiSummaryPanelSize}
+        onPanelSizeCommit={(size)=>void updateDesktopSettings({aiSummaryPanelSize:size})}
         onClose={closeReaderAiAssistant}
       >
         <ReaderAiChatBody
@@ -3780,6 +3840,36 @@ export default function App(): React.JSX.Element {
                         </div>
                       )
                     })}
+                </div>
+              </div>
+            )}
+            {sourceDiscovery && sourceDiscovery.catalogMatches.length > 0 && (
+              <div className="source-candidate-section catalog-match-section">
+                <div className="source-candidate-heading">
+                  <span>{t('sourceCatalogMatchesTitle')}</span>
+                  <span>{t('sourceCatalogMatchesCount', { count: sourceDiscovery.catalogMatchCount })}</span>
+                </div>
+                <p className="source-candidate-hint">
+                  {sourceDiscovery.catalogMatchCount > sourceDiscovery.catalogMatches.length
+                    ? t('sourceCatalogMatchesTruncated', { total: sourceDiscovery.catalogMatchCount, shown: sourceDiscovery.catalogMatches.length })
+                    : t('sourceCatalogMatchesHint')}
+                </p>
+                <div className="source-candidate-list" aria-label={t('sourceCatalogMatchesTitle')}>
+                  {sourceDiscovery.catalogMatches.map((feed) => (
+                    <button
+                      key={feed.id}
+                      type="button"
+                      className="source-candidate catalog-match-candidate"
+                      disabled={isAddingSource}
+                      onClick={() => void validateCatalogMatch(feed)}
+                    >
+                      <span className="candidate-main">
+                        <strong>{feed.name}</strong>
+                        <span className="candidate-notice">{feed.siteUrl?.trim() || feed.feedUrl}</span>
+                      </span>
+                      <span className="candidate-stats"><span className="candidate-kind kind-rss_direct">{t('sourceCatalogValidate')}</span></span>
+                    </button>
+                  ))}
                 </div>
               </div>
             )}
@@ -5427,48 +5517,26 @@ function formatDurationMs(value: number | null, unavailable: string): string {
   return `${(value / 1_000).toFixed(value < 10_000 ? 1 : 0)} s`
 }
 
-function AiSummaryView({
-  panelState,
+function AiSummaryBody({
   summary,
   loading,
   progressStage,
   streamUpdate,
   elapsedSeconds,
-  placement,
-  panelSize,
-  speechActive,
-  speechStatus,
-  onToggleSpeech,
-  onStopSpeech,
-  onPlacementChange,
-  onPanelSizeChange,
   onRegenerate,
   onStop,
   onFirstVisibleValue,
-  onBackToHome,
-  onContinueChat,
-  onClose
+  onContinueChat
 }: {
-  panelState: ReaderAiPanelState
   summary: AiSummaryDocument | null
   loading: boolean
   progressStage: AiSummaryProgressStage | null
   streamUpdate: AiSummaryStreamUpdate | null
   elapsedSeconds: number
-  placement: AiSummaryPlacement
-  panelSize: number
-  speechActive: boolean
-  speechStatus: 'idle'|'speaking'|'paused'
-  onToggleSpeech(): void
-  onStopSpeech(): void
-  onPlacementChange(placement:AiSummaryPlacement):void
-  onPanelSizeChange(size:number):void
   onRegenerate():void
   onStop():void
   onFirstVisibleValue(firstVisible:'reasoning'|'content'):void
-  onBackToHome():void
   onContinueChat():void
-  onClose():void
 }):React.JSX.Element{
   const {t}=useTranslation()
   const summaryMarkdown=summary ? stripRedundantSummaryHeading(summary.summary) : ''
@@ -5491,24 +5559,7 @@ function AiSummaryView({
       if (paintFrame !== null) window.cancelAnimationFrame(paintFrame)
     }
   }, [firstVisibleValue, onFirstVisibleValue])
-  return <ReaderAiPanelShell
-    view={panelState.view}
-    detailView={panelState.detailView}
-    placement={placement}
-    panelSize={panelSize}
-    leading={<AiSummaryAccentIcon variant="panel" loading={loading}/>}
-    title={t('aiSummary')}
-    subtitle={summary ? `${summary.providerName} · ${summary.model}` : t('aiSummaryWorking')}
-    badge={summary ? <span className="ai-summary-mode-badge">{t(summaryLengthLabelKey(summary.length))}</span> : null}
-    actions={<>
-      <button type="button" className="icon-button" title={t('backToAiHome')} aria-label={t('backToAiHome')} onClick={onBackToHome}><ArrowLeft size={15}/></button>
-      {summary?.status==='GENERATED'&&<button type="button" className={`icon-button ${speechActive?'active':''}`} title={speechActive&&speechStatus==='speaking'?t('pauseReading'):speechActive&&speechStatus==='paused'?t('resumeReading'):t('readSummary')} aria-label={t('readSummary')} onClick={onToggleSpeech}>{speechActive&&speechStatus==='speaking'?<Pause size={15}/>:speechActive&&speechStatus==='paused'?<Play size={15}/>:<Headphones size={15}/>}</button>}
-      {speechActive&&speechStatus!=='idle'&&<button type="button" className="icon-button" title={t('stopReading')} aria-label={t('stopReading')} onClick={onStopSpeech}><Square size={13}/></button>}
-    </>}
-    onPlacementChange={onPlacementChange}
-    onPanelSizeChange={onPanelSizeChange}
-    onClose={onClose}
-  >
+  return <>
       {loading&&<AiSummaryProgressStatus stage={progressStage} elapsedSeconds={elapsedSeconds}/>}
       {hasStreamingPreview ? <>
         {streamUpdate?.reasoningPreview&&<details className="ai-reasoning ai-reasoning-streaming" open><summary>{t('aiReasoning')}</summary><pre>{streamUpdate.reasoningPreview}</pre></details>}
@@ -5526,7 +5577,7 @@ function AiSummaryView({
               <button className="mini-action regenerate-button" type="button" onClick={onRegenerate}><RefreshCw size={13}/>{t('regenerateWithOptions')}</button>
             </div>}
       </> : <div className="ai-summary-progress-empty"><AiSummaryAccentIcon variant="panel" loading/><strong>{t(aiSummaryProgressLabelKey(progressStage))}</strong><span>{t('aiSummaryElapsed',{count:elapsedSeconds})}</span><button className="mini-action ai-summary-stop-action" type="button" onClick={onStop}><Square size={12}/>{t('stopAiSummary')}</button></div>}
-  </ReaderAiPanelShell>
+  </>
 }
 
 function AiSummaryProgressStatus({stage,elapsedSeconds}:{stage:AiSummaryProgressStage|null;elapsedSeconds:number}):React.JSX.Element{

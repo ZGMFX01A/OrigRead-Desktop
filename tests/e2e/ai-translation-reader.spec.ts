@@ -206,7 +206,9 @@ test('reader generates AI summary and full-article translation through main-proc
     await expect(dockedSummary).toBeVisible()
     await dockedSummary.getByRole('button',{name:'AI 面板尺寸'}).click()
     await expect(dockedSummary.locator('.ai-summary-size-popover')).toBeVisible()
-    await dockedSummary.locator('.ai-summary-size-popover input').fill('420')
+    const panelSizeInput = dockedSummary.locator('.ai-summary-size-popover input')
+    await panelSizeInput.fill('420')
+    await panelSizeInput.blur()
     await expect.poll(async () => page.evaluate(async () => (await window.origread.getSettings()).aiSummaryPanelSize)).toBe(420)
 
     await page.locator('.reader-tool-options').nth(1).click()

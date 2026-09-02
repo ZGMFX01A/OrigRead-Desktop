@@ -2,7 +2,8 @@ import { Check, Compass, Search, Rss } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { FeedCatalogEntry, FeedCatalogSnapshot } from '../../shared/source-catalog'
-import { localizedSourceCategory, secondarySourceCategory, sourceCategorySearchTerms } from '../../shared/source-catalog'
+import { localizedSourceCategory, secondarySourceCategory } from '../../shared/source-catalog'
+import { FeedCatalogIndex } from '../../shared/feed-catalog-index'
 
 interface SourceDiscoveryPanelProps {
   onSubscribe(feed: FeedCatalogEntry): void
@@ -20,16 +21,8 @@ export function SourceDiscoveryPanel({ onSubscribe }: SourceDiscoveryPanelProps)
     void window.origread.getSourceCatalog().then(setCatalog).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))
   }, [])
 
-  const feeds = useMemo(() => {
-    if (!catalog) return []
-    const normalized = query.trim().toLocaleLowerCase()
-    return catalog.feeds.filter((feed) => {
-      if (category && !feed.categories.includes(category)) return false
-      if (!normalized) return true
-      const categoryTerms = feed.categories.flatMap(sourceCategorySearchTerms)
-      return [feed.name, feed.feedUrl, ...categoryTerms].some((value) => value.toLocaleLowerCase().includes(normalized))
-    })
-  }, [catalog, category, query])
+  const index = useMemo(() => catalog ? new FeedCatalogIndex(catalog.feeds) : null, [catalog])
+  const feeds = useMemo(() => index?.search(query, category || null) ?? [], [index, category, query])
 
   if (error) return <div className="source-discovery-state error">{error}</div>
   if (!catalog) return <div className="source-discovery-state">{t('loadingContent')}</div>

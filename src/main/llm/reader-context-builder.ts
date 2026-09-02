@@ -1,6 +1,7 @@
 import type { LlmContextRefRecord, LlmConversationRecord } from '../../shared/llm-chat'
 import type { LlmContextItem } from '../../shared/llm-context'
 import type { LlmReaderContextSnapshot } from '../../shared/llm-ipc'
+import { SELECTED_TEXT_CONTEXT_PRIORITY } from './context-priority'
 
 const MAX_ARTICLE_ID_CHARS = 500
 const MAX_SELECTION_CHARS = 50_000
@@ -48,7 +49,7 @@ export function buildReaderStateContextItems(
       title: conversation.articleTitle,
       sourceId,
       internalArticleId: articleId,
-      priority: 140
+      priority: SELECTED_TEXT_CONTEXT_PRIORITY
     })
   }
   return items
@@ -73,7 +74,7 @@ export function buildRegeneratedReaderSelectionContextItems(
     title: conversation.articleTitle,
     sourceId: conversation.articleLink,
     internalArticleId: conversation.articleId,
-    priority: 140
+    priority: SELECTED_TEXT_CONTEXT_PRIORITY
   }]
 }
 

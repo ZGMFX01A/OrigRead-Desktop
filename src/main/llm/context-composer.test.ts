@@ -33,6 +33,42 @@ describe('LlmContextComposer', () => {
     }
   })
 
+  it('reserves enough room for one complete atomic evidence block when the baseline reserve is too small', () => {
+    const largeButFit = { stableLocatorKey: 'paragraph:large', content: '中'.repeat(700) }
+    const result = new LlmContextComposer().compose([
+      { id: 'selection', type: 'SELECTED_TEXT', content: 'S'.repeat(20_000), priority: 16_000 },
+      {
+        id: 'article',
+        type: 'ARTICLE',
+        content: largeButFit.content,
+        reserveEvidenceBudget: true,
+        evidenceBlocks: [largeButFit],
+        priority: 10_000
+      }
+    ], { maxTokens: 4_096 })
+
+    expect(result.includedIds).toEqual(['selection', 'article'])
+    expect(result.renderedItems.find((item) => item.id === 'article')?.evidenceBlockKeys).toEqual(['paragraph:large'])
+    expect(estimateLlmTokens(result.text)).toBeLessThanOrEqual(4_096)
+  })
+
+  it('does not starve higher-priority context when a reserved evidence block cannot fit in the whole budget', () => {
+    const result = new LlmContextComposer().compose([
+      { id: 'selection', type: 'SELECTED_TEXT', content: 'selected context', priority: 16_000 },
+      {
+        id: 'article',
+        type: 'ARTICLE',
+        content: '中'.repeat(10_000),
+        reserveEvidenceBudget: true,
+        evidenceBlocks: [{ stableLocatorKey: 'paragraph:impossible', content: '中'.repeat(10_000) }],
+        priority: 10_000
+      }
+    ], { maxTokens: 512 })
+
+    expect(result.includedIds).toContain('selection')
+    expect(result.omittedIds).toContain('article')
+  })
+
   it('omits an item when the budget cannot preserve the context wrapper', () => {
     const result = new LlmContextComposer().compose([
       { id: 'article', type: 'ARTICLE', content: '正文' }

@@ -3,6 +3,7 @@ import { LLM_EVIDENCE_SCHEMA_VERSION, type LlmContextRefRecord } from '../../sha
 import type { LlmContextItem } from '../../shared/llm-context'
 import type { WebSearchResponse, WebSearchResult } from '../../shared/web-search'
 import type { BuiltLlmEvidenceBlock } from '../llm/evidence-block-builder'
+import { webSearchContextPriority } from '../llm/context-priority'
 
 export interface WebSearchEvidenceGroup {
   contextId: string
@@ -46,7 +47,7 @@ export function buildWebSearchContext(response: WebSearchResponse): BuiltWebSear
       sourceId: result.url,
       content,
       evidenceBlocks: [block],
-      priority: 80 - index
+      priority: webSearchContextPriority(index)
     })
     evidenceGroups.push({ contextId, blocks: [block] })
   }

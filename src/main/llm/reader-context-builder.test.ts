@@ -27,7 +27,7 @@ describe('Reader current context', () => {
     })
 
     const items = buildReaderStateContextItems(conversation, snapshot)
-    expect(items.map((item) => [item.type, item.priority])).toEqual([['SELECTED_TEXT', 140]])
+    expect(items.map((item) => [item.type, item.priority])).toEqual([['SELECTED_TEXT', 16000]])
     expect(items[0]).toMatchObject({
       content: 'Selected evidence',
       internalArticleId: 'article-1',
@@ -61,13 +61,13 @@ describe('Reader current context', () => {
       contentSnapshot: 'Original selected evidence',
       promptContentSnapshot: 'Original selected evidence',
       contentSha256: 'hash',
-      priority: 140,
+      priority: 16000,
       includedInPrompt: true,
       truncatedInPrompt: false,
       createdAt: 1
     }]
     expect(buildRegeneratedReaderSelectionContextItems(conversation, refs)).toEqual([
-      expect.objectContaining({ type: 'SELECTED_TEXT', content: 'Original selected evidence', priority: 140 })
+      expect.objectContaining({ type: 'SELECTED_TEXT', content: 'Original selected evidence', priority: 16000 })
     ])
   })
 

@@ -21,6 +21,8 @@ import { RssHubSubscriptionService } from './rsshub/rsshub-subscription-service'
 import { WebsiteSourceService } from './website/website-source-service'
 import { WebsiteSubscriptionService } from './website/website-subscription-service'
 import { rankSourceCandidates, type UnscoredSourceCandidate } from './source-candidate-scorer'
+import type { FeedDiscoveryCatalog } from '../discovery/feed-discovery-catalog'
+import { emptyFeedCatalogUrlMatch, preferredCatalogProbeUrl, type FeedCatalogUrlMatch } from '../../shared/feed-catalog-index'
 
 type CandidatePayload =
   | { type: 'rss'; discovered: DiscoveredRssFeed }
@@ -60,18 +62,22 @@ export class SourceDiscoveryService {
     private readonly jsonSubscription: JsonSubscriptionService,
     private readonly websiteSource: WebsiteSourceService,
     private readonly websiteSubscription: WebsiteSubscriptionService,
-    private readonly accountCoordinator?: AccountSourceCoordinator
+    private readonly accountCoordinator?: AccountSourceCoordinator,
+    private readonly feedDiscoveryCatalog?: FeedDiscoveryCatalog
   ) {}
 
   async discover(rawUrl: string, reportProgress: ProgressReporter = () => undefined): Promise<SourceDiscoveryResult> {
     const sourceUrl = normalizeSourceUrl(rawUrl)
     this.pruneSessions()
+    const catalogMatch = isExplicitJsonEndpoint(sourceUrl)
+      ? emptyFeedCatalogUrlMatch()
+      : this.safeCatalogMatch(sourceUrl)
     if (isExplicitJsonEndpoint(sourceUrl)) {
       const outcome = await runStage('json', reportProgress, () => this.jsonSource.probe(sourceUrl))
       reportProgress('ranking', 'running')
       const result = outcome.value
-        ? this.createSession(sourceUrl, [jsonCandidate(outcome.value)], [{ type: 'json', probe: outcome.value }])
-        : this.createSession(sourceUrl, [], [], outcome.error ?? '未能从该地址识别出有效的 JSON 文章列表')
+        ? this.createSession(sourceUrl, [jsonCandidate(outcome.value)], [{ type: 'json', probe: outcome.value }], null, [], catalogMatch)
+        : this.createSession(sourceUrl, [], [], outcome.error ?? '未能从该地址识别出有效的 JSON 文章列表', [], catalogMatch)
       reportProgress('ranking', 'completed')
       return result
     }
@@ -125,7 +131,8 @@ export class SourceDiscoveryService {
         candidates,
         payloads,
         jsonOutcome.error ?? rssHubOutcome.value?.error ?? rssHubOutcome.error ?? websiteOutcome.error,
-        rssHubResults.map(toRssHubRouteStatusSummary)
+        rssHubResults.map(toRssHubRouteStatusSummary),
+        catalogMatch
       )
       reportProgress('ranking', 'completed')
       return result
@@ -133,6 +140,10 @@ export class SourceDiscoveryService {
 
     const candidates: UnscoredSourceCandidate[] = []
     const payloads: CandidatePayload[] = []
+    const catalogProbeUrl = preferredCatalogProbeUrl(catalogMatch, sourceUrl)
+    const catalogProbe = catalogProbeUrl
+      ? trackOutcome(() => withTimeout(this.rssDiscovery.parseDirect(catalogProbeUrl), 20_000, '目录 Feed 探测超时'))
+      : null
 
     // 输入 URL 本身不是 Feed 后，页面 RSS 发现 / RSSHub / JSON / 静态网页互不依赖，
     // 此处仍并行执行以避免普通网站把多段网络等待串起来。
@@ -154,6 +165,14 @@ export class SourceDiscoveryService {
     if (rssOutcome.value) {
       candidates.push(rssCandidate(rssOutcome.value))
       payloads.push({ type: 'rss', discovered: rssOutcome.value })
+    }
+
+    // Android 在进入 RSSHub / JSON / Website 候选比较前，只判断“用户原 URL 的 RSS 是否健康”。
+    // 原 RSS 没通过时，如果已知目录 Feed 已经顺路验证完成，就把它作为正常 RSS 候选加入统一评分。
+    const directRssAccepted = rankSourceCandidates(candidates).length > 0
+    if (!directRssAccepted && catalogProbe?.settled && catalogProbe.value) {
+      candidates.push(rssCandidate(catalogProbe.value))
+      payloads.push({ type: 'rss', discovered: catalogProbe.value })
     }
 
     const rssHubResults = rssHubOutcome.value?.results ?? []
@@ -194,7 +213,8 @@ export class SourceDiscoveryService {
       candidates,
       payloads,
       lastError ?? rssHubFailureNotice(rssHubResults),
-      rssHubResults.map(toRssHubRouteStatusSummary)
+      rssHubResults.map(toRssHubRouteStatusSummary),
+      catalogMatch
     )
     reportProgress('ranking', 'completed')
     return result
@@ -258,7 +278,8 @@ export class SourceDiscoveryService {
     unscored: UnscoredSourceCandidate[],
     rawPayloads: CandidatePayload[],
     error: string | null = null,
-    rssHubRoutes: RssHubRouteStatusSummary[] = []
+    rssHubRoutes: RssHubRouteStatusSummary[] = [],
+    catalogMatch: FeedCatalogUrlMatch = emptyFeedCatalogUrlMatch()
   ): SourceDiscoveryResult {
     const candidates = rankSourceCandidates(unscored)
     const selectableIds = new Set(candidates.map((candidate) => candidate.id))
@@ -280,6 +301,8 @@ export class SourceDiscoveryService {
       sourceUrl,
       candidates,
       rssHubRoutes: normalizedRssHubRoutes,
+      catalogMatches: catalogMatch.suggestions,
+      catalogMatchCount: catalogMatch.totalSuggestions,
       // 低可信动态兜底必须由用户主动点选，不能像健康来源一样默认推荐/选中。
       selectedCandidateId: candidates.find((candidate) => candidate.diagnostics.accepted)?.id ?? null,
       error: candidates.length === 0 ? error : null
@@ -296,10 +319,28 @@ export class SourceDiscoveryService {
     return result
   }
 
+  private safeCatalogMatch(sourceUrl: string): FeedCatalogUrlMatch {
+    try {
+      return this.feedDiscoveryCatalog?.matchUrl(sourceUrl) ?? emptyFeedCatalogUrlMatch()
+    } catch {
+      // Catalog 是增量能力，目录读取/匹配失败不得破坏既有来源发现链。
+      return emptyFeedCatalogUrlMatch()
+    }
+  }
+
   private pruneSessions(): void {
     const now = Date.now()
     for (const [id, session] of this.sessions) if (now - session.createdAt > SESSION_TTL_MS) this.sessions.delete(id)
   }
+}
+
+function trackOutcome<T>(factory: () => Promise<T>): { settled: boolean; value: T | null } {
+  const tracker = { settled: false, value: null as T | null }
+  void factory()
+    .then((value) => { tracker.value = value })
+    .catch(() => undefined)
+    .finally(() => { tracker.settled = true })
+  return tracker
 }
 
 function rssCandidate(feed: DiscoveredRssFeed): UnscoredSourceCandidate {

@@ -1,5 +1,6 @@
 import type { SourceType } from './library'
 import type { RssHubCandidateState } from './rsshub'
+import type { FeedCatalogEntry } from './source-catalog'
 
 export type SourceCandidateKind =
   | 'RSS_DIRECT'
@@ -69,6 +70,8 @@ export interface SourceDiscoveryResult {
   sourceUrl: string
   candidates: SourceCandidateSummary[]
   rssHubRoutes: RssHubRouteStatusSummary[]
+  catalogMatches: FeedCatalogEntry[]
+  catalogMatchCount: number
   selectedCandidateId: string | null
   error: string | null
 }
