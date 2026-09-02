@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { MemorySecretStore } from '../security/secret-store'
 import { assertSafeLocalCommand, McpLocalRepository } from './mcp-local-repository'
@@ -15,15 +16,16 @@ describe('McpLocalRepository', () => {
     const { database, repository } = setup()
     try {
       const created = repository.addServer().servers[0]!
+      const cwd = resolve('mcp')
       const updated = repository.updateServer({
         id: created.id,
         command: 'node',
         args: ['server.js', '--stdio'],
-        cwd: 'C:\\mcp',
+        cwd,
         environment: 'API_TOKEN=secret-value\nMODE=test'
       })
       expect(updated.servers[0]).toMatchObject({
-        command: 'node', args: ['server.js', '--stdio'], cwd: 'C:\\mcp', hasEnvironment: true
+        command: 'node', args: ['server.js', '--stdio'], cwd, hasEnvironment: true
       })
       expect(JSON.stringify(updated)).not.toContain('secret-value')
       expect(repository.getEnvironment(created.id)).toBe('API_TOKEN=secret-value\nMODE=test')
