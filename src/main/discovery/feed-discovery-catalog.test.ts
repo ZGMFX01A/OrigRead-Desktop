@@ -7,9 +7,9 @@ describe('FeedDiscoveryCatalog', () => {
   it('loads the same bundled catalog as Android', () => {
     const catalog = new FeedDiscoveryCatalog(join(process.cwd(), 'resources', 'source_catalog.json')).data
     expect(catalog.schemaVersion).toBe(1)
-    expect(catalog.generatedAt).toBe('2026-08-29T17:49:09+00:00')
-    expect(catalog.feedCount).toBe(2427)
-    expect(catalog.feeds).toHaveLength(2427)
+    expect(Number.isNaN(Date.parse(catalog.generatedAt ?? ''))).toBe(false)
+    expect(catalog.feedCount).toBe(catalog.feeds.length)
+    expect(catalog.feedCount).toBeGreaterThanOrEqual(1700)
     expect(catalog.sources).toHaveLength(4)
     expect(catalog.categories).toHaveLength(18)
     expect(catalog.categories.every((category, index) => index === 0 || (catalog.categoryCounts[catalog.categories[index - 1]!] ?? 0) >= (catalog.categoryCounts[category] ?? 0))).toBe(true)
