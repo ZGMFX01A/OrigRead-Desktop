@@ -332,7 +332,7 @@ Windows / Linux 使用 Ctrl，macOS 使用 Cmd。
 
 | 系统 | 安装方法 |
 | --- | --- |
-| Windows 10 / 11 x64 | 运行 `.exe` 安装程序，按向导选择安装位置 |
+| Windows 11 x64 | 运行 `.exe` 安装程序，按向导选择安装位置 |
 | macOS 13+ Apple Silicon | 打开 `.dmg`，将 OrigRead 拖入“应用程序” |
 | Linux x64 | 使用 `.AppImage`，或在 Ubuntu / Debian 安装 `.deb` |
 

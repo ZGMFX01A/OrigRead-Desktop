@@ -332,7 +332,7 @@ Download the matching file from [GitHub Releases](https://github.com/ZGMFX01A/Or
 
 | System | Installation |
 | --- | --- |
-| Windows 10 / 11 x64 | Run the `.exe` installer and choose an installation location |
+| Windows 11 x64 | Run the `.exe` installer and choose an installation location |
 | macOS 13+ Apple Silicon | Open the `.dmg` and drag OrigRead into Applications |
 | Linux x64 | Use `.AppImage`, or install `.deb` on Ubuntu / Debian |
 

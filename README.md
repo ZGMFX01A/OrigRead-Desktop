@@ -6,7 +6,7 @@
   <p>English · <a href="README-zh-CN.md">简体中文</a></p>
   <p>
     <a href="https://github.com/ZGMFX01A/OrigRead-Desktop/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ZGMFX01A/OrigRead-Desktop?display_name=tag&amp;sort=semver" /></a>
-    <img alt="Windows 10 / 11" src="https://img.shields.io/badge/Windows-10%2F11-0078D4" />
+    <img alt="Windows 11" src="https://img.shields.io/badge/Windows-11-0078D4" />
     <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&amp;logoColor=white" />
     <img alt="Linux" src="https://img.shields.io/badge/Linux-x64-FCC624?logo=linux&amp;logoColor=black" />
     <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" /></a>
@@ -90,7 +90,7 @@ Choose a package for your system from [GitHub Releases](https://github.com/ZGMFX
 
 | System | Package |
 | --- | --- |
-| Windows 10 / 11 · x64 | `.exe` installer |
+| Windows 11 · x64 | `.exe` installer |
 | macOS 13+ · Apple Silicon | `.dmg` |
 | Linux · x64 | `.AppImage`; Ubuntu / Debian can also use `.deb` |
 

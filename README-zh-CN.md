@@ -6,7 +6,7 @@
   <p><a href="README.md">English</a> · 简体中文</p>
   <p>
     <a href="https://github.com/ZGMFX01A/OrigRead-Desktop/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ZGMFX01A/OrigRead-Desktop?display_name=tag&amp;sort=semver" /></a>
-    <img alt="Windows 10 / 11" src="https://img.shields.io/badge/Windows-10%2F11-0078D4" />
+    <img alt="Windows 11" src="https://img.shields.io/badge/Windows-11-0078D4" />
     <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&amp;logoColor=white" />
     <img alt="Linux" src="https://img.shields.io/badge/Linux-x64-FCC624?logo=linux&amp;logoColor=black" />
     <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" /></a>
@@ -90,7 +90,7 @@ AI 面板可以放在正文左侧或右侧，拖动边缘就能调整宽度。�
 
 | 系统 | 安装包 |
 | --- | --- |
-| Windows 10 / 11 · x64 | `.exe` 安装程序 |
+| Windows 11 · x64 | `.exe` 安装程序 |
 | macOS 13+ · Apple Silicon | `.dmg` |
 | Linux · x64 | `.AppImage`；Ubuntu / Debian 也可使用 `.deb` |
 
