@@ -1,495 +1,378 @@
 # OrigRead Desktop User Guide
 
-Language: English. The Chinese version is `USER_GUIDE-zh-CN.md`.
+[Back to the project](https://github.com/ZGMFX01A/OrigRead-Desktop/blob/main/README.md) · [简体中文](https://github.com/ZGMFX01A/OrigRead-Desktop/blob/main/USER_GUIDE-zh-CN.md)
+
+This guide covers the Windows, macOS, and Linux desktop app. Jump to the task you want to do.
 
 ## Quick index
 
 - [Quick start](#quick-start)
 - [Add a source](#add-a-source)
+- [Manage RSSHub](#manage-rsshub)
 - [Read articles](#read-articles)
+- [Configure AI](#configure-ai)
 - [Use AI summaries](#use-ai-summaries)
 - [Use Reader AI Chat](#use-reader-ai-chat)
-- [Understand AI settings](#understand-ai-settings)
+- [Citation: check an answer's evidence](#citation-check-an-answers-evidence)
+- [Search and tools](#search-and-tools)
 - [Translate articles](#translate-articles)
 - [Share articles as Markdown](#share-articles-as-markdown)
 - [Read articles aloud](#read-articles-aloud)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [What to do when a source cannot be added](#what-to-do-when-a-source-cannot-be-added)
-- [Manage RSSHub](#manage-rsshub)
 - [Use accounts and sync](#use-accounts-and-sync)
 - [Rules and filters](#rules-and-filters)
 - [OPML, backup and migration](#opml-backup-and-migration)
+- [Installation and updates](#installation-and-updates)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Quick start
 
-For the basic reading workflow:
+Keep the default **Local** account, add a source you want to read, and open an article to try full text. Configure AI when you want summaries or discussion, and translation when you need another language. Other settings can wait until they become useful.
 
-1. Open OrigRead Desktop and keep the default **Local** account.
-2. Select **+ Add** and paste an RSS/feed or website URL.
-3. Wait for source detection to finish, choose the recommended candidate and add it.
-4. Return to the article list and open an article.
-5. If the source only provides a short summary, switch to full text; open the original page when you need the real website.
-6. Configure AI or translation later, only if you want those features.
-
-You do not need to configure FreshRSS, a self-hosted RSSHub instance, Website Rules or AI before you can start reading ordinary feeds and websites.
+This guide is also available inside the app under **Settings → About & support → User guide**.
 
 ---
 
 ## Add a source
 
-### Add a website, RSS feed or Atom feed
+A subscription does not have to start with an RSS URL. Give OrigRead a website home page, section page, feed, or public API address.
 
-1. Select **+ Add** in the left workspace area.
-2. Paste a website homepage, article-list page, RSS/Atom feed or another source URL.
-3. Start detection. OrigRead shows the current stage and elapsed time while it analyzes the URL.
-4. Review the candidates. A suitable option is recommended by default, but you can choose another usable candidate.
-5. Confirm the source and return to the timeline for the first sync.
+1. Open the **Add subscription** menu on the left and choose to add a source.
+2. Paste the URL and start discovery. The window shows its current stage and elapsed time.
+3. Check the section, article count, and status of each candidate, then select the content you want.
+4. Confirm and return to the timeline for the first sync.
 
-### How to choose between candidates
+For a particular column, start with its list page. Browse the built-in source directory if you want ideas. To move subscriptions from another reader, export OPML there, then choose **Import OPML** from OrigRead's add menu.
 
-| Candidate | When it is useful | Typical choice |
+### Choose a parsing result
+
+| Source type | What it can follow | What to check |
 | --- | --- | --- |
-| **RSS / Atom** | The site already provides a standard feed | Usually preferred because it is stable and fast to refresh |
-| **RSSHub** | RSSHub has a route for the site | Convenient when the route works; a site may expose several channels |
-| **JSON/API** | The site has a stable public endpoint | Often less affected by visual redesigns |
-| **Website** | There is no feed, but the webpage has a stable article list | Useful, though a redesign may require a different rule |
-| **Dynamic website** | The article list appears only after JavaScript runs | A final fallback and usually slower |
-
-When several candidates work, prioritize **reliable refreshes and correct titles/links** instead of the most technically complex method.
-
-### Import from OPML
-
-1. Export an `.opml` or `.xml` file from your current feed reader.
-2. In OrigRead Desktop, open the add menu and choose **Import OPML**.
-3. Select the file and confirm the import.
-4. Review the imported groups and source count.
-
-OPML is for standard feed migration. Use configuration backup for OrigRead-specific rules, RSSHub settings, AI/translation configuration and other application settings.
-
----
-
-## Read articles
-
-### Source content, full text and original page
-
-- **Source content** — content supplied directly by RSS/Atom/JSON. Some feeds provide only a summary.
-- **Full text** — article text extracted after OrigRead fetches the webpage; suitable for reading, search, translation and AI summary.
-- **Original page** — the real website opened inside the app.
-
-If an article only contains a few lines, switch to full text first. If extraction is still incomplete, open the original page.
-
-### Mark and navigate articles
-
-From the reader you can:
-
-- mark read/unread;
-- star/unstar;
-- move to the previous or next article;
-- search within the current article;
-- open the original page.
-
-### Adjust reading appearance
-
-Settings include:
-
-- reader font;
-- local font import;
-- font size;
-- reader background color;
-- light, dark or system theme.
-
-These settings change presentation only; they do not modify article content.
-
----
-
-## Use AI summaries
-
-### Configure an AI provider first
-
-1. Open **Settings → AI Reading**.
-2. Add an OpenAI-compatible provider.
-3. Enter its endpoint and API key when required.
-4. Fetch or enter models and choose a default model.
-5. Select **Test connection**.
-6. Save and enable the provider after the test succeeds.
-
-You can configure several providers, each with its own endpoint, key and model list.
-
-### Generate a summary
-
-1. Open an article.
-2. Choose **AI Summary**.
-3. OrigRead starts with the current default provider, model and summary mode.
-4. The UI shows real stages such as preparing the article, waiting for AI, and saving the result, together with elapsed time.
-5. Cancel the request if you no longer need it.
-
-### Temporarily change provider, model or summary mode
-
-Summary options let you choose, for this generation only:
-
-- provider;
-- model;
-- brief, standard or detailed mode.
-
-Temporary choices do not overwrite your global defaults.
-
-### Move the summary panel
-
-The AI summary can:
-
-- dock left;
-- dock right.
-
-When the AI panel is docked left or right, drag the boundary between the panel and the article to resize it directly; there is no separate width popover. Keyboard shortcuts remain available for position and size changes.
-
-### Generate rules with AI
-
-Desktop can generate a Website Rule or JSON/API Rule from the rule settings pages. It first creates a candidate from a real, reachable list page or endpoint and then runs the candidate through the local parser. It is not a guarantee that every website can become a stable subscription.
-
-1. Open **Settings → Website Rules** or **Settings → JSON Rules**, then choose **AI generate**.
-2. Enter the target address. For a Website Rule, use an article list page. For a JSON/API Rule, use a public JSON endpoint or a page containing static Next.js / Nuxt embedded JSON.
-3. The dialog starts with the default AI provider and model from AI settings. You can choose another enabled provider or model before starting.
-4. Wait for fetch, analysis, candidate generation and local validation to finish. The preview shows the article count, score and sample titles.
-5. Save only after confirming that the titles, links and count are correct. A candidate that fails local validation is not saved automatically.
-
-If a page depends on JavaScript, requires login, shows a CAPTCHA or uses a paywall, a normal request may not provide usable samples. The app does not bypass access controls. In that case, try dynamic source discovery, a public API or a hand-written rule. Desktop AI rule generation validates the article list first; article bodies continue to use normal content extraction and the built-in original-page view as fallback.
-
-### Read the result before saving
-
-- **Local validation passed** means the list rule ran successfully against the target sample and can be saved as a candidate.
-- If the article count or sample titles are wrong, do not save; change the target address or try another model.
-- If generation fails, read the reported stage and reason. Common causes include a non-public/non-JSON target, blocked access, or selectors that return no articles.
-
----
-
-## Use Reader AI Chat
-
-Reader AI is the article Q&A and analysis panel inside the reader. Unlike a generic blank chat, each conversation is attached to a primary article, and OrigRead persists the Context, Search results, Tool Results and Citations that were actually used by each request.
-
-### Start a conversation
-
-1. Open an article and expand Reader AI.
-2. Before the first message, choose an AI provider and model from the composer when needed. The selected values are stored on the created Conversation.
-3. Send a question. Reasoning, when supplied by the model, and answer content stream into the panel.
-4. Select Stop when you no longer need the generation. Already streamed partial output remains visible.
-
-Ordinary Reader AI factual context comes from the current article body. AI Summary and Translation are separate reading artifacts and are **not automatically fed back into normal Chat as factual context**.
-
-### Ask about selected text
-
-Select text in the article and use Ask AI. The Selection becomes a **one-shot, high-priority context** for the next request and is not repeatedly attached to later messages.
-
-Regenerate uses the frozen Context of the original request. It does not silently read a selection or attached article that you changed later.
-
-### Follow article citations
-
-Select an article Citation marker in an answer once to perform both actions:
-
-1. navigate to the corresponding article text;
-2. highlight the located text.
-
-Programmatic scrolling does not immediately clear the highlight. Historical Citations point to the Evidence frozen for that request and are not rewritten by later attachment changes.
-
-### Attach nearby articles
-
-Use the paperclip action near the composer to open recent articles or search by title.
-
-- Up to **five** extra articles can be attached.
-- The primary article does not consume that five-article quota.
-- Opening the picker with an empty query immediately loads recent articles.
-- The picker closes after a successful attachment change so it cannot cover later Tool approval UI.
-- Removing an attachment affects future requests only; old Context/Evidence remains frozen.
-
-### Web Search
-
-Configure Dedicated Web Search under **Settings → AI Reading → Web Search**. Persistent modes are **AUTO / OFF**. The Search action in the Chat composer arms FORCE for the **next request only** and then returns to the persistent setting.
-
-Search activity exposes the query, provider, result count and result list, together with which results entered model context. The default limit is five results and can be changed in settings.
-
-### Conversation history and search
-
-Reader AI supports:
-
-- starting a new conversation;
-- Conversation History for the current article;
-- renaming and deleting conversations;
-- searching and locating messages inside the current Chat;
-- reopening persisted messages, attachments, Evidence and Citations after an app restart.
-
-### Quick Messages, Skills and MCP Tools
-
-The `+` menu in the composer exposes Quick Messages and manual MCP Tools. For setup, import/binding, approval and security details, see:
-
-- [AI / Web Search / Skills / MCP Guide](AI_MCP_SKILLS.md)
-
----
-
-## Understand AI settings
-
-**Settings → AI Reading** is split into focused workspaces:
-
-- **Reading** — AI enable switch, default provider/model, output language and default summary mode.
-- **Behavior** — Custom Instructions, Skills, Quick Messages, Remote MCP and Local MCP.
-- **Web Search** — AUTO/OFF, default Search Provider, result limit and Search Provider profiles.
-- **AI Providers** — multiple OpenAI-compatible providers with name, endpoint, API key, models, enabled state and default selection.
-
-Secrets such as API keys are not shown by default. Plaintext enters the settings UI only after an explicit reveal action and is cleared again when hidden, saved or when the settings surface is left. Configuration backup also excludes credentials by default.
-
----
-
-## Translate articles
-
-### Configure translation providers
-
-1. Open **Settings → Translation**.
-2. Enable the translation methods you want.
-3. Configure the endpoint, key or other required parameters for each service.
-4. Choose a default target language and provider.
-5. Use the connection test to verify the service.
-
-Desktop supports Microsoft Translator, DeepL, Google Cloud Translation and DeepLX/DLX, and can also use OpenAI-compatible models for full-article translation.
-
-### Translate the current article
-
-1. Open an article.
-2. Select the translation control.
-3. OrigRead uses the current default provider and target language.
-4. After translation, view translated content or the available original/bilingual presentation.
-
-Traditional translation does not depend on AI summaries. DeepL or Microsoft translation works even if no summary model is configured.
-
----
-
-## Share articles as Markdown
-
-The desktop Share button is for copying an article into a notes app. It does not open a third-party app for you: it puts the finished Markdown in the system clipboard, ready to paste.
-
-### Set it up the first time
-
-1. Open an article.
-2. Click **Share**.
-3. The first time, choose the default title-and-link option or customize the content.
-4. Choose whether to include the title, article body, translation currently open in the reader, and AI summary currently open in the reader.
-5. Save, then paste the copied Markdown into Obsidian, Notion or another notes app.
-
-After setup, a normal click copies the Markdown immediately. Right-click the Share button to change the choices later. The original article URL is always included. A cached translation or summary is not included unless it is currently open in the reader.
-
-The Markdown keeps headings, quotes, lists, links and external image URLs. Images are placed on their own lines so they do not run into surrounding text. Sharing from the article list keeps its existing behavior.
-
----
-
-## Read articles aloud
-
-OrigRead Desktop keeps reading domains separate:
-
-- article text;
-- translated text;
-- AI summary.
-
-When translated text is the primary reading content, the main read-aloud control follows the translation. The AI summary panel has its own read-aloud action.
-
-Available voices depend on the operating system and the speech voices visible to Electron.
-
----
-
-## Keyboard shortcuts
-
-| Shortcut | Action |
-| --- | --- |
-| `↑` / `↓` | Scroll article up / down |
-| `←` / `→` | Previous / next article |
-| `K` / `J` | Previous / next article (compatibility shortcuts) |
-| `M` | Toggle read/unread |
-| `S` | Toggle starred |
-| `U` | Open / close original page |
-| `[` | Collapse / expand workspace |
-| `Ctrl/Cmd + F` | Search the current article |
-| `,` / `.` | Cycle AI summary position |
-| `-` / `+` | Shrink / enlarge a docked AI summary panel |
-
-When focus is inside an input, dialog or settings control, reading shortcuts yield to normal text/control input.
-
----
-
-## What to do when a source cannot be added
-
-### Check the current detection stage
-
-The add-source window shows whether OrigRead is checking RSS, RSSHub, JSON/API, static Website parsing or a dynamic page.
-
-If a stage is slow, allow it to finish. Public RSSHub instances and dynamic pages can naturally take longer than direct RSS.
-
-### What “dynamic Chromium fallback” means
-
-Some websites do not include the article list in the initial HTML; JavaScript creates it later. When ordinary parsing cannot see those articles, Desktop can automatically start a restricted Chromium page as the final fallback.
-
-You do not need to enable this manually.
-
-If the rendered page produces real articles but looks less reliable, the candidate may include a warning. In that case:
-
-1. Check whether titles and article count look sensible.
-2. Add it if the result looks valid.
-3. Watch later refreshes to see whether it remains stable.
-4. If it repeatedly fails, prefer RSS, RSSHub, a public API or an explicit rule.
-
-**A page merely rendering is not enough.** If no usable article links are extracted, OrigRead does not create an empty source.
-
-### The site opens in a browser but cannot be subscribed
-
-Common reasons include:
-
-- login is required;
-- CAPTCHA or browser challenges;
-- the list appears only after complex interaction;
-- there is no stable article-list structure;
-- automated requests are restricted;
-- the current network cannot reach RSSHub/API services.
-
-OrigRead does not bypass login walls, CAPTCHA, paywalls or website access controls. Prefer an official feed, RSSHub route or public API when available.
+| RSS / Atom | Standard feeds, including feeds discovered in website pages | Usually a good choice when updates and content match your needs |
+| RSSHub | Websites and channels with an existing route | The right section and a working instance |
+| Website | Regular article lists on a web page | Correct titles and links, without navigation or ads mixed in |
+| JSON / API | Public APIs, WordPress article data, and data in some Next.js / Nuxt pages | Whether the records are the articles you want |
+| Dynamic page | Article lists that appear after scripts run | Article count and any confidence notice after rendering |
+
+OrigRead checks titles, links, dates, and article counts before recommending a candidate. A URL may offer several sections or parsing methods. Use the recommendation as a starting point, then choose what you actually want to follow.
+
+Website, JSON/API, and RSSHub sources require a **Local** account. See [accounts and sync](#use-accounts-and-sync) for remote accounts.
 
 ---
 
 ## Manage RSSHub
 
-Open **Settings → RSSHub** to:
+An RSSHub route describes how to retrieve a site's articles. An instance is the service that returns them. A matching route still needs an available instance.
 
-1. enable or disable RSSHub;
-2. enable or disable individual instances;
-3. add public or self-hosted instances;
-4. test an instance;
-5. restore default instance settings.
+Open **Settings → RSSHub**, enable RSSHub, add or enable an accessible instance, and test its connection. You can configure several public or self-hosted instances; the client does not require an RSSHub server running on your computer.
 
-### Why a route can be “matched” but not subscribable
+If a route matches but offers nothing subscribable, check for a timeout, invalid content, or a request for a more specific URL. Test or switch instances before retrying. A single failed request does not require deleting route data.
 
-OrigRead matches routes locally before contacting an instance. Therefore:
+---
 
-**Matched route ≠ the current RSSHub instance is available.**
+## Read articles
 
-Typical states:
+| Content | When to use it |
+| --- | --- |
+| **Source content** | Text supplied by the feed or API, which may be a full article or just an excerpt |
+| **Full text** | The extracted article body, suitable for continuous reading, translation, and AI analysis |
+| **Original** | The real website inside the app, including comments, charts, and interactive content |
 
-- **Available** — the instance generated a usable feed;
-- **Timed out / unreachable** — the route exists but the request failed;
-- **No valid feed** — the instance responded, but not with a usable feed;
-- **Content failed quality checks** — content was returned but is not suitable for the timeline;
-- **More specific URL required** — the route needs parameters missing from the current URL.
+If the source supplies a few lines, try full text first. Open the original if extraction is incomplete. The first full-text fetch can take a moment.
 
-Public instances can be unstable. Retry later or switch instances when needed.
+The reader lets you mark articles read, star them, move between articles, and search the text. Adjust the font, size, line height, background, and reading width in appearance settings, or import a local font.
+
+Keep the article and AI side by side. Use the panel's placement control to dock it on the left or right, and drag its edge to resize it. Enter focus reading when you want more room for the article. See [keyboard shortcuts](#keyboard-shortcuts) for common controls.
+
+---
+
+## Configure AI
+
+Connect an OpenAI-compatible service before generating summaries or discussing articles:
+
+1. Open **Settings → AI reading → Model services** and add a service endpoint.
+2. Supply an API key if required, then fetch the model list or enter model names manually.
+3. Choose a default model, test the connection, and save and enable the service.
+4. In **Reading**, enable AI reading and check the default service, model, output language, and summary depth.
+
+Use the endpoint, key, and model name supplied by the provider. Add several services if needed, and switch temporarily in summary options or the chat composer.
+
+### Where settings live
+
+| Page | What it controls |
+| --- | --- |
+| **Reading** | AI enabled state, default service and model, output language, summary depth |
+| **Model services** | Endpoints, keys, models, and connection tests |
+| **Web search** | Search mode, services, and result count |
+| **Prompts & behavior** | Custom Instructions, Skills, Quick Messages, remote and local MCP |
+
+Keys are hidden by default. Reveal one when you need to inspect it; saving or leaving settings hides sensitive content again.
+
+---
+
+## Use AI summaries
+
+Open an article, choose **AI Summary**, and use **Quick / Balanced / Deep** as needed. Progress stages and elapsed time appear during generation. Long articles or slower models may take longer; stop the request whenever you no longer need it.
+
+Successful summaries are saved for reuse while the article content is unchanged. To try another model or depth, choose it in summary options and generate again. This temporary choice does not change your defaults.
+
+---
+
+## Use Reader AI Chat
+
+Open an article and expand the AI chat panel. Choose a service and model near the composer, then ask a question such as “What is the author's main evidence?” or “Does this passage agree with the earlier argument?”
+
+To discuss one passage, select it in the article and use **Ask AI**. The selection accompanies the next request only; it is not repeatedly attached to every later message.
+
+### Compare several articles
+
+Click the **paperclip** near the composer and choose recent articles or search by title. Attach up to **5** extra articles; the main article does not count toward that limit. Then ask, for example, “Where do these articles agree, and where do they differ?”
+
+Only selected articles become attachments. An answer's source information shows the material used at the time. Adding or removing attachments later does not rewrite its evidence.
+
+### Continue a discussion
+
+Conversations are saved with their main article. Create, switch, rename, delete, or search them as needed. Stopping generation preserves the content already shown. Regenerating an old answer reuses the original request's article, selection, and attachments.
+
+Reasoning can be displayed when the model supplies it. Article analysis helps examine claims, evidence, and limitations systematically; ordinary chat works well for specific follow-up questions.
+
+---
+
+## Citation: check an answer's evidence
+
+Follow a citation to read the original passage behind an AI conclusion, then judge whether it supports the answer.
+
+1. Click an article reference in the answer.
+2. OrigRead locates and highlights the relevant text. If it cites another attached article, that article opens while the discussion remains available.
+3. Read the surrounding passage, then continue with the answer or ask another question in the adjacent AI panel.
+
+For example, compare how two reports explain an event's cause. Open each reference to see which original statements account for the difference. With the article and answer side by side, you can check without copying passages or hunting for pages.
+
+### Can I inspect evidence from an old answer?
+
+Saved answers retain their source information. Changing attachments later does not replace it. Citation numbering in the article follows the answer being inspected, so the same number in two different answers may refer to different passages.
+
+If an article changes, is deleted, or cannot be located precisely, inspect the source panel. Web search references open their web sources. Tool references open a source URL when available, or show source information otherwise. A citation makes checking easier; it does not guarantee a correct interpretation.
+
+Citation buttons in the desktop article locate evidence again. After checking, continue reading in the AI panel beside it.
+
+---
+
+## Search and tools
+
+### Look up background or recent developments
+
+Add and test a search service under **Settings → AI reading → Web search**, supplying its required endpoint or key. Keep **AUTO** to search when a question needs recent information, or use **OFF** to disable automatic search. The composer search button can force a search for the next message only, then restores the prior mode.
+
+Answers show search activity and results so you can inspect the queries and sources.
+
+### Save recurring ways of asking
+
+**Quick Messages** hold questions such as “List the key evidence.” **Custom Instructions** hold ongoing preferences such as “Explain unfamiliar terms first.” **Skills** hold fuller methods and reference material for summaries, translation, chat, or article analysis.
+
+Manage these under **Prompts & behavior**. Imported Skills supply instructions and resources; OrigRead does not execute their scripts.
+
+### Connect external tools
+
+Configure a remote MCP service or a local MCP service started by a command. Follow the service's instructions for its URL or command, arguments, and authentication, then test the connection and refresh tools.
+
+**Every MCP tool execution requires explicit approval.** Local services start on demand for testing, tool discovery, or execution. Ordinary reading, summaries, and article chat do not need MCP.
+
+See the [AI, Web Search, Skill, and MCP guide](https://github.com/ZGMFX01A/OrigRead-Desktop/blob/main/AI_MCP_SKILLS.md) for detailed configuration.
+
+---
+
+## Translate articles
+
+1. Open **Settings → Translation settings**, enable a service, and supply its endpoint or key if required.
+2. Choose the default target language and service, then test the connection.
+3. Return to the article and start translation. View translated text or bilingual content as needed.
+
+Options include Microsoft Translator, DeepL, Google Cloud Translation, DeepLX / DLX-compatible services, and a configured OpenAI-compatible model. Conventional translation works without AI setup.
+
+Long articles are processed in sections, so timing depends on length and the service. Compare difficult expressions with the original. DeepL translation tests and quota checks are separate operations; a failed quota check does not necessarily mean translation is unavailable.
+
+---
+
+## Share articles as Markdown
+
+Click **Share** in the reader to copy content to the clipboard, then paste it into your notes.
+
+On first use, choose just the title and link or customize the content to include the article body and any translation or summary currently open. The original URL is always included. Previously generated translations and summaries are omitted when they are not currently open.
+
+Later clicks reuse your choices. **Right-click Share** to change them. Markdown retains headings, quotes, lists, links, and external image URLs. Images are not copied as files, and the receiving app determines how the content is displayed.
+
+---
+
+## Read articles aloud
+
+Articles, translations, and summaries have their own reading actions. When translated text is displayed, the main TTS action reads it preferentially. The summary panel can read the summary separately.
+
+Use the speech controls to start or stop and choose an available voice. The voice list depends on your operating system.
+
+---
+
+## Keyboard shortcuts
+
+Use Ctrl on Windows / Linux and Cmd on macOS.
+
+| Shortcut | Action |
+| --- | --- |
+| `↑` / `↓` | Scroll the article up / down |
+| `←` / `→`, or `K` / `J` | Previous / next article |
+| `M` | Toggle read / unread |
+| `S` | Toggle starred |
+| `U` | Open / close the original page |
+| `A` | Toggle the AI assistant |
+| `[` | Toggle focus reading |
+| `Ctrl/Cmd + F` | Search the article; searches chat first when AI chat is open |
+| `Ctrl/Cmd + Shift + F` | Open global article search |
+| `Ctrl/Cmd + K` | Focus search in the current list or source switcher |
+| `Ctrl/Cmd + Shift + K` | Open the source switcher in the two-pane layout with the workspace visible |
+| `,` / `.` | Cycle the open AI panel's placement |
+| `-` / `+` | Resize the open AI panel |
+
+Reading shortcuts yield to text entry, dialogs, and settings where the current interface needs those keys.
+
+---
+
+## What to do when a source cannot be added
+
+### Discovery is slow
+
+Check the current stage and let the attempt finish. Public RSSHub instances, page parsing, and dynamic rendering are usually slower than direct feeds. Try a specific section URL if the home page produces the wrong results.
+
+### Dynamic results are unreliable
+
+Dynamic pages must load and run scripts before articles can be found. Some candidates remain available for a manual attempt after a low-confidence notice even without a reliable article list. They are not recommended or selected by default as healthy sources.
+
+**A page loading does not guarantee a reliable subscription.** Check article count, titles, and links before adding, then watch later refreshes. Prefer a stable feed, RSSHub route, or public API where available.
+
+### The browser can open it but OrigRead cannot
+
+Your browser may be signed in, or the site may require a CAPTCHA, paid access, or complex interaction. OrigRead does not bypass those conditions. Look for a feed, working RSSHub route, or public API, and use the original page where necessary.
+
+If you still cannot subscribe, [open an issue](https://github.com/ZGMFX01A/OrigRead-Desktop/issues) with the URL, version, section you want, and error message.
 
 ---
 
 ## Use accounts and sync
 
-### Local
+| Account | When to use it |
+| --- | --- |
+| **Local** | Store data on the computer and use RSS, RSSHub, Website, and JSON/API sources |
+| **FreshRSS / Google Reader Compatible** | Connect an existing service to sync subscriptions, groups, articles, and read and starred states |
+| **Fever Compatible** | Use the feeds, articles, and reading states the service supplies through Fever |
 
-Local is sufficient for most users and supports all OrigRead source types:
+Add your existing service under **Settings → Accounts** and synchronize. Sync intervals and startup sync belong to the current account and can be set independently.
 
-- RSS / Atom;
-- RSSHub;
-- Website;
-- JSON/API.
-
-### FreshRSS / Google Reader Compatible
-
-If you run a compatible server, add a remote account to sync subscriptions, groups, articles, read state and starred state.
-
-When the remote protocol supports subscription maintenance, adding, moving or renaming RSS sources is performed against the server rather than silently creating local-only data.
-
-### Fever Compatible
-
-Fever accounts sync the feeds, articles, unread state and saved/starred state exposed by the Fever protocol. If the protocol does not provide complete subscription maintenance, OrigRead does not pretend that remote add/move/rename operations exist.
-
-### Sync settings
-
-Sync interval and startup-sync preferences belong to the current account. Different accounts can keep different sync settings.
-
-If you do not need server-based cross-device sync, staying on Local is enough.
+Subscription management and state synchronization depend on the remote protocol. Fever lacks complete subscription management. Use Local for OrigRead's Website, JSON/API, and RSSHub extensions.
 
 ---
 
 ## Rules and filters
 
-### Website Rules
+### When to use a parsing rule
 
-Use these when a website has no usable feed but exposes a relatively stable HTML article list.
+If discovery already finds the content you want, no extra rule is needed. Use a **Website Rule** or **JSON/API Rule** to specify a section or correct parsing results. Website rules find page lists; JSON/API rules read public interfaces or article data embedded in pages.
 
-### JSON/API Rules
+Manage, import, export, and test rules in their settings pages. Open the in-app rule guide before editing fields manually.
 
-Use these when a site exposes a stable REST/JSON or another structured endpoint. A stable API is usually less fragile than page CSS selectors.
+### Ask AI to help create a rule
 
-JSON/API Rules only read fields that are actually present in the list data. They do not invent article bodies or bypass login, signatures, CAPTCHAs or paywalls. If no reusable content field is available, opening an article continues to use normal extraction and the built-in original-page view.
+1. Open **Settings → Website parsing rules** or **JSON rules**, then choose **AI Generate**.
+2. Enter an article list page, public JSON endpoint, or page with recognizable article data.
+3. Select the AI service and model, then wait for generation and the trial parse.
+4. Check counts, scores, sample titles, and links before choosing **Save rule**.
 
-### Article filters
+Desktop AI rule generation validates the article list first. Finding articles does not guarantee complete bodies; opening an article can still use normal extraction and the original page. Retest and adjust rules when a website changes.
 
-Use filters when you want to keep a source but exclude certain titles from the normal timeline. Keywords and regular expressions are supported.
+### Filter unwanted titles
 
-A new filter affects newly fetched articles and does not retroactively delete historical articles.
+Add keyword or regular-expression rules under **Settings → Article filters**. Keep keywords specific to avoid excluding too much. Rules can be enabled, disabled, imported, and exported.
 
-Ordinary users do not need to learn rule syntax before adding common websites. Try automatic source discovery first and use explicit rules only when needed.
+Filtering affects future articles; **it does not delete saved history**. If results are too broad, disable or edit the rule and check later updates.
 
 ---
 
 ## OPML, backup and migration
 
-### When to use OPML
+### Choose a migration method
 
-Use OPML to exchange standard feed subscriptions with other RSS readers.
+| What you want to do | Use |
+| --- | --- |
+| Exchange standard subscriptions with another reader | OPML |
+| Move subscriptions, groups, rules, RSSHub, reading preferences, and AI / translation settings | Full configuration backup |
+| Sync reading data supported by a remote service across devices | That service's account sync |
 
-### When to use configuration backup
+Configuration backups can also include search, Skills, Quick Messages, and MCP settings. **They exclude article bodies, read and starred history, and summary and translation caches.**
 
-Use OrigRead configuration backup when moving richer settings between OrigRead Android and Desktop. It can include:
+### Export configuration
 
-- subscriptions and groups for the current account;
-- Website/JSON rules;
-- article filters;
-- RSSHub configuration;
-- reading preferences;
-- translation and AI configuration.
+Choose **Export full configuration** under **Settings → Backup & restore** and save the file. Credentials are excluded by default. To include saved keys, enable **Include API keys**, set a backup password of at least 6 characters, then export.
 
-Article bodies, read/star history, AI summary caches and translation caches are not part of configuration backup.
+### Restore configuration
 
-Sensitive credentials are excluded by default. They are exported only when you explicitly include them and protect the backup with a password.
+On the target device, open **Backup & restore**, choose **Restore configuration**, and select the file. For an encrypted backup, first enable **Include API keys** to reveal the password field, enter the original backup password, then choose the file to restore.
+
+Subscriptions with matching URLs are merged; missing ones are added. Other subscriptions and article history remain. Check sources, services, and reading settings after restoration.
+
+### Move between Android and desktop
+
+Compatible configuration backups can transfer subscriptions, rules, and settings supported by both apps. This does not automatically synchronize the whole reading library or make every platform setting identical. Retest services after restoring; local model addresses, font files, and local MCP commands may need reconfiguration on another device.
 
 ---
 
-## Software updates
+## Installation and updates
 
-Open **Settings → Software Update** to check manually, or enable automatic checks at startup.
+Download the matching file from [GitHub Releases](https://github.com/ZGMFX01A/OrigRead-Desktop/releases/latest).
 
-When a release is available, OrigRead selects the installer for the current operating system. A failed GitHub/network check does not interrupt normal reading.
+| System | Installation |
+| --- | --- |
+| Windows 10 / 11 x64 | Run the `.exe` installer and choose an installation location |
+| macOS 13+ Apple Silicon | Open the `.dmg` and drag OrigRead into Applications |
+| Linux x64 | Use `.AppImage`, or install `.deb` on Ubuntu / Debian |
+
+If an AppImage will not launch, allow it to run as a program in its file properties.
+
+### macOS cannot open the app
+
+Confirm that the app came from the project's official release and is at `/Applications/OrigRead.app`. If macOS reports it as damaged or refuses to open it because of its download quarantine attribute, run this command for that application:
+
+```bash
+sudo xattr -r -d com.apple.quarantine /Applications/OrigRead.app
+```
+
+This removes that app's download quarantine attribute. The terminal does not show characters while you enter the password. Reopen the app afterward.
+
+### Check for updates
+
+Open **Settings → Software update** to check manually or enable startup checks. The app selects a package for your system; follow its prompts to continue. Android and desktop update independently. A failed update check does not prevent reading.
 
 ---
 
 ## Troubleshooting
 
-### Source detection stays on RSSHub for a long time
+| Problem | What to try first |
+| --- | --- |
+| AI actions are unavailable | Enable AI reading and check the default service and model |
+| Connection testing succeeds but generation fails | Check the model name and supported parameters; a long article may exceed service limits |
+| A citation cannot be located | Wait for article loading; inspect source information if content has changed or been deleted |
+| Full-text extraction is incomplete | Retry or use the original page for comments, charts, or authenticated content |
+| An RSSHub route matches but returns no content | Test or switch the instance and check the specific error |
+| The site returns 403 / 418 | Check the address and connection, then retry later; the site may restrict frequency, region, or automated requests |
+| Shared Markdown lacks translation or summary | Open that content in the current reader and right-click Share to check your choices |
+| An encrypted backup fails to restore | Enter its original password on the backup page before selecting the restore file |
 
-Public RSSHub instances can be slow or temporarily unavailable. Let the current detection finish; if it happens frequently, disable unstable instances or use your own instance under **Settings → RSSHub**.
-
-### RSSHub is matched but there is no subscribable result
-
-The local route match succeeded, but the instance request or returned feed failed. Read the specific status instead of repeatedly removing and re-adding the same URL.
-
-### AI connection test succeeds but generation fails
-
-A successful connection test proves that the endpoint/key is basically reachable. Check whether the selected model actually supports the request parameters and whether the model name is correct.
-
-### What is the difference between DeepL test and usage query?
-
-The connection test verifies translation. Usage/limit lookup is a separate action. A failed usage endpoint does not automatically mean translation itself is unavailable.
-
-### Original webpage and reader content look different
-
-Reader content is extracted and cleaned for reading; Original is the real webpage. For complex tables, comments, interactive widgets or login-gated content, use the original page as the source of truth.
-
-### Dynamic sources refresh slowly
-
-Dynamic sources need to start Chromium, wait for page scripts and parse the rendered result. Standard RSS, RSSHub or stable APIs are usually faster and more reliable when available.
+For help or suggestions, [open an issue](https://github.com/ZGMFX01A/OrigRead-Desktop/issues). The project currently does not accept pull requests; use issues for translation and documentation corrections too.
 
 ---
 
 ## Other platforms
 
-📱 **OrigRead Android**: https://github.com/ZGMFX01A/OrigRead
+[OrigRead Android](https://github.com/ZGMFX01A/OrigRead) is available for Android phones and tablets.
+
+[Desktop repository](https://github.com/ZGMFX01A/OrigRead-Desktop) · [Download updates](https://github.com/ZGMFX01A/OrigRead-Desktop/releases/latest) · [Report an issue](https://github.com/ZGMFX01A/OrigRead-Desktop/issues)

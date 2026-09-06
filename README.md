@@ -1,243 +1,115 @@
-# OrigRead Desktop
-
 <div align="center">
-  <a href="README.md">English</a> |
-  <a href="README-zh-CN.md">简体中文</a>
+  <img src="resources/icon.png" width="128" alt="OrigRead Desktop" />
+  <h1>OrigRead Desktop · 原读</h1>
+  <p><strong>Read what matters to you. Stay close to the source.</strong></p>
+  <p>A reader for Windows, macOS, and Linux that brings your feeds, full articles, and AI reading tools together.</p>
+  <p>English · <a href="README-zh-CN.md">简体中文</a></p>
+  <p>
+    <a href="https://github.com/ZGMFX01A/OrigRead-Desktop/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ZGMFX01A/OrigRead-Desktop?display_name=tag&amp;sort=semver" /></a>
+    <img alt="Windows 10 / 11" src="https://img.shields.io/badge/Windows-10%2F11-0078D4" />
+    <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&amp;logoColor=white" />
+    <img alt="Linux" src="https://img.shields.io/badge/Linux-x64-FCC624?logo=linux&amp;logoColor=black" />
+    <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" /></a>
+    <img alt="Downloads" src="https://img.shields.io/github/downloads/ZGMFX01A/OrigRead-Desktop/total?label=Downloads" />
+    <a href="https://github.com/ZGMFX01A/OrigRead-Desktop/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/ZGMFX01A/OrigRead-Desktop?style=flat" /></a>
+  </p>
+  <p>
+    <a href="https://github.com/ZGMFX01A/OrigRead-Desktop/releases/latest"><strong>Download for desktop</strong></a> ·
+    <a href="USER_GUIDE.md">User guide</a> ·
+    <a href="https://github.com/ZGMFX01A/OrigRead">Android app</a> ·
+    <a href="https://github.com/ZGMFX01A/OrigRead-Desktop/issues">Report an issue</a>
+  </p>
 </div>
 
-<div align="center">
-  <img src="resources/icon.png" width="180" alt="OrigRead Desktop logo" />
-</div>
+## A place for the things you want to read
 
-<div align="center">
-  <strong>A source-first RSS, feed, news and personal information reader for Windows, macOS and Linux.</strong>
-</div>
+Your favorite blogs, the news you follow, that occasional column worth waiting for—all in one place. OrigRead brings your chosen sources into a timeline you can read at your own pace.
 
-<div align="center">
-  RSS / Atom · RSSHub · Website parsing · JSON/API · Full-text reading · Translation · AI Summary / Reader AI · OPML
-</div>
-<div align="center">
-  <img alt="Windows" src="https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows11&logoColor=white" />
-  <img alt="macOS" src="https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&logoColor=white" />
-  <img alt="Linux" src="https://img.shields.io/badge/Linux-Ubuntu%20%2F%20Desktop-FCC624?logo=linux&logoColor=black" />
-  <img alt="Electron" src="https://img.shields.io/badge/Electron-React-47848F?logo=electron&logoColor=white" />
-  <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" /></a>
-  <img alt="Latest release" src="https://img.shields.io/github/v/release/ZGMFX01A/OrigRead-Desktop?display_name=tag&sort=semver" />
-  <img alt="Total GitHub release downloads" src="https://img.shields.io/github/downloads/ZGMFX01A/OrigRead-Desktop/total?label=%20downloads&logo=github" />
-  <img alt="GitHub stars" src="https://img.shields.io/github/stars/ZGMFX01A/OrigRead-Desktop?style=flat" />
-</div>
+On the desktop, the article and AI can sit side by side. Read the original while asking questions, comparing reports, and checking citations. Hide the list to settle into a long piece, adjust the type and reading width, or copy an article into your notes. **The original stays within reach, from the first headline to the next question.**
 
+<p align="center">
+  <img src="assets/readme/screenshots/en-US/ai-citations.png" width="1000" alt="An article beside its AI analysis, with cited evidence highlighted in the original text" />
+  <br /><sub>Article and AI together · Read a conclusion, check its source</sub>
+</p>
 
-## What is OrigRead Desktop?
+## Citation: see the evidence behind an answer
 
-OrigRead Desktop is the standalone desktop client for **OrigRead**. Instead of building the reading experience around algorithmic recommendations, it lets you decide **which sources to follow, how to read them, what to filter, and when translation or AI should be used**.
+An AI answer can leave you with another question: did the author really say that? What was the context? Do these two reports rely on the same evidence? Citation connects answers to the original passages, making verification part of reading.
 
-Beyond RSS and Atom, OrigRead can discover content through RSSHub, ordinary websites, JSON/API endpoints, WordPress REST, and data embedded by Next.js or Nuxt. If a website only reveals its article list after JavaScript runs, a restricted Chromium fallback can be used after static methods fail.
+**Follow a citation to the author's words.** Click an article reference to locate and highlight the relevant text. If the evidence comes from another attached article, OrigRead can open it while keeping the discussion available. With the article and answer in the same window, you can check the context and keep asking questions.
 
-The goal is simple: **bring the sources you deliberately follow into one timeline, provide readable full text whenever possible, and always preserve the original webpage.**
+For example, attach two reports about the same event and ask, “Where do their accounts differ?” Follow the references to see whether the disagreement comes from facts, perspective, or wording. **AI helps organize the evidence; citations let you judge it for yourself.**
 
-## Why OrigRead ?
+Saved answers retain the sources used at the time. Changing attachments later does not replace an old answer's evidence. Search and tool results also retain their sources. If an article changes or a reference can no longer be located, inspect its source information. A citation does not guarantee that AI has interpreted the text correctly.
 
-- **Source-first, not recommendation-first** — your timeline comes from sources you explicitly add.
-- **Paste websites, not only feed URLs** — homepage, article-list, feed and API URLs can all be inspected for usable subscription methods.
-- **Multiple fallback paths** — RSS, RSSHub, JSON/API, website parsing and dynamic pages can compete as candidates instead of one failed parser ending the process.
-- **Keep both readable text and the original page** — use extracted full text for reading and open the real webpage whenever layout, comments or interactive content matter.
-- **AI stays optional and on-demand** — AI is used for summaries, full-article translation, Reader AI Q&A and article analysis; normal source parsing, sync and reading do not require AI.
-- **AI answers stay traceable to the article** — Reader AI can attach article citations to an answer. One click on a citation both navigates to and highlights the cited text, while historical answers keep their own frozen Evidence/Citation snapshots even if the active article or attachments later change.
-- **Built for a long-lived personal source library** — groups, filters, rules, OPML, configuration backup and remote accounts all support the same source-first workflow.
+See the [Citation chapter](USER_GUIDE.md#citation-check-an-answers-evidence) for a walkthrough.
 
-## Screenshots
+## Follow sites beyond RSS
 
-<p align="center"><img src="assets/readme/screenshots/en-US/overview.png" width="1000" alt="OrigRead Desktop overview" /></p>
+A favorite site without a subscribe button does not always need another daily browser visit. **OrigRead can turn regularly updated website content into a source you can follow.** Paste a home or section URL to look for RSS / Atom and matching RSSHub routes. When there is no ready-made feed, OrigRead can look for article lists in web pages and public JSON/API data. This includes WordPress article APIs and data embedded in some Next.js and Nuxt pages.
 
-| Source discovery | Reading & AI | Settings |
-| --- | --- | --- |
-| <img src="assets/readme/screenshots/en-US/source-discovery.png" width="300" alt="OrigRead Desktop source discovery" /> | <img src="assets/readme/screenshots/en-US/reader-ai.png" width="300" alt="OrigRead Desktop reader and AI summary" /> | <img src="assets/readme/screenshots/en-US/settings.png" width="300" alt="OrigRead Desktop settings" /> |
+You do not need to choose a parsing method upfront. OrigRead checks article counts, titles, links, and dates to rank the candidates, then lets you choose the section you actually want. Browser rendering offers another way to try pages whose articles appear only after scripts run.
 
-### AI screenshots (reserved)
+For sites that need special handling, parsing rules tell OrigRead where to find articles. Import or export rules, or ask AI to help create one, then **inspect the articles it actually finds before saving**. Routine discovery and parsing need no AI setup. Reliable updates still depend on the site's access conditions and structure; a redesign may require a rule update.
 
-| AI configuration | Reader AI Chat | AI answer citations |
-| --- | --- | --- |
-| <img src="assets/readme/screenshots/en-US/ai-settings.png" width="300" /> | <img src="assets/readme/screenshots/en-US/ai-chat.png" width="300" /> | <img src="assets/readme/screenshots/en-US/ai-citations.png" width="300" /> |
+Browse the built-in source directory for something new, or import OPML to bring your subscriptions. See the [user guide](USER_GUIDE.md#add-a-source) for adding sources and handling parsing problems.
 
-## Documentation and other platforms
+<table>
+  <tr><th width="50%">Find the section you want</th><th width="50%">Make reading comfortable</th></tr>
+  <tr>
+    <td align="center"><img src="assets/readme/screenshots/en-US/source-discovery.png" width="480" alt="Source discovery: inspect an available subscription candidate" /></td>
+    <td align="center"><img src="assets/readme/screenshots/en-US/settings.png" width="480" alt="Reading settings: font, background, line height, and reading width" /></td>
+  </tr>
+</table>
 
-| 📖 User guide | 🤖 AI / Search / MCP / Skills | 📱 Android edition |
-| --- | --- | --- |
-| [Open the Desktop user guide](USER_GUIDE.md) for task-based instructions on adding sources, reading, AI/translation, sync, migration and troubleshooting. | [Open the AI, Web Search, Skills and MCP guide](AI_MCP_SKILLS.md) for Reader AI, Tool approval and security boundaries. | [Open OrigRead Android](https://github.com/ZGMFX01A/OrigRead) for Android phones and tablets. |
+## From finding an article to understanding it
 
-Android and Desktop are released and installed separately. They share the OrigRead product direction and aim to keep source, rule and configuration-backup workflows compatible where practical.
+### Give long articles room
 
-## Source discovery: paste a URL, not just an RSS feed
+When a feed supplies only an excerpt, try fetching full text. Open the original website inside the app for comments, charts, or interactive content. Adjust fonts, size, background, and reading width, or import a local font you enjoy reading.
 
-When you add a source, OrigRead tries several methods and presents the usable results as candidates:
+Place AI on either side of the article and drag the edge to resize it. Keyboard controls cover common actions such as moving between articles, starring, searching, and entering focus reading.
 
-```text
-Input URL
-  ↓
-RSS / Atom
-  ↓
-RSSHub
-  ↓
-JSON / API / WordPress / Next.js / Nuxt
-  ↓
-Website rules / automatic article-list detection
-  ↓
-Restricted Chromium fallback when needed
-  ↓
-Choose a usable candidate and subscribe
-```
+### Read it, understand it, keep it
 
-### RSS / Atom
+Read translated text or a bilingual view using Microsoft Translator, DeepL, Google Cloud, a DeepLX / DLX-compatible service, or an AI model. Switch to TTS when you would rather listen.
 
-Direct feeds are supported, and ordinary webpages can be inspected for declared RSS/Atom links and common feed endpoints.
+Share an article as Markdown on the clipboard, optionally including its body and any translation or summary currently open. The original URL stays attached. Paste it into your notes so the source is still there when you return to it.
 
-### RSSHub
+### Let AI follow your reading
 
-OrigRead ships with a local RSSHub route catalog. It can first determine whether a website matches a route, then try enabled public or self-hosted instances. Route matching and current instance availability are separate, so a temporary public-instance failure is not reported as “no RSSHub route”.
+Start a long article with a summary, ask about the current article, or select a passage to discuss. Attach related articles to compare perspectives. Use web search when you need background or recent developments.
 
-### Website parsing
+OrigRead supports OpenAI-compatible cloud providers, self-hosted services, and local model services. Quick Messages save recurring questions, Skills preserve reusable methods, and Custom Instructions hold response preferences. Remote and local MCP services can supply additional tools, with confirmation before tool execution.
 
-When there is no usable feed, a Website Rule or automatic article-list detection can turn a stable chronological page into a source. Website layouts can change, so OrigRead keeps alternative candidates and the original webpage available.
+Configure these as they become useful. Everyday subscriptions, extraction, and reading work without AI. See the [AI, search, and tools guide](AI_MCP_SKILLS.md) for advanced setup.
 
-### Restricted Chromium fallback
+## Download and get started
 
-Some sites only create the article list after JavaScript runs. OrigRead starts the dynamic fallback only when static methods do not produce a usable candidate.
+Choose a package for your system from [GitHub Releases](https://github.com/ZGMFX01A/OrigRead-Desktop/releases/latest):
 
-**A page loading successfully does not make it subscribable.** OrigRead still needs to extract usable article links; an empty rendered page is not turned into a fake source.
+| System | Package |
+| --- | --- |
+| Windows 10 / 11 · x64 | `.exe` installer |
+| macOS 13+ · Apple Silicon | `.dmg` |
+| Linux · x64 | `.AppImage`; Ubuntu / Debian can also use `.deb` |
 
-### JSON/API
+Keep the default Local account, add a source or import OPML, and start reading. The app can check for updates. See [installation and updates](USER_GUIDE.md#installation-and-updates) if you need help installing.
 
-Public REST/JSON, WordPress and other stable structured endpoints can be used through automatic discovery or JSON/API Rules. Structured data stays separate from Website Rules so a stable API can be preferred over fragile page selectors.
+For phones and tablets, visit [OrigRead Android](https://github.com/ZGMFX01A/OrigRead). Android and desktop install and update independently. The [migration guide](USER_GUIDE.md#opml-backup-and-migration) explains what you can move between them.
 
-## Full-text reading and original pages
+## Your subscriptions, in your hands
 
-OrigRead commonly exposes three forms of article content:
+A Local account stores data on your computer and supports Website, JSON/API, and RSSHub sources. If you already use FreshRSS, a Google Reader-compatible service, or a Fever-compatible service, connect that account to sync the subscriptions and reading states it supports.
 
-- **Source content** — content supplied directly by RSS/Atom/JSON.
-- **Full text** — readable content extracted after fetching the article page.
-- **Original page** — the real webpage opened inside the app.
+Routine parsing, full-text extraction, and filtering run locally. AI and cloud translation send relevant content to the service you configure. Configuration backups carry subscriptions, rules, and settings. Credentials are excluded by default and can be included in a password-encrypted export. **Configuration backups exclude article bodies, read and starred history, and summary and translation caches.**
 
-Full-text extraction does not depend on AI. Rules, Readability-style extraction and structured page metadata are tried first; browser rendering can be used for dynamic content when necessary. The original link is always preserved.
+## Feedback and discussion
 
-## Reading experience
+Found a problem or have an idea? [Open an issue](https://github.com/ZGMFX01A/OrigRead-Desktop/issues). For parsing problems, include the URL, app version, and steps to reproduce. The project currently does not accept pull requests; use issues for feature suggestions, translation corrections, and documentation feedback too.
 
-- Source, group, unread and starred filtering.
-- Article search and in-article `Ctrl/Cmd + F`.
-- Read/unread, star/unstar and previous/next article controls.
-- Local font import and reader font selection.
-- Light, dark and system themes plus reader background colors.
-- Separate text-to-speech for article text, translation and AI summary.
-- Reader AI / AI Summary panels can dock to the left or right of the article, and their width can be adjusted directly by dragging the boundary between the panel and the reader.
-- Keyboard reading shortcuts; see the full list in the [Desktop user guide](USER_GUIDE.md#keyboard-shortcuts).
-
-## Accounts and sync
-
-OrigRead Desktop supports multiple account types:
-
-- **Local** — all data stays local and all OrigRead source types are available, including RSS, RSSHub, Website and JSON/API.
-- **FreshRSS / Google Reader Compatible** — sync subscriptions, groups, articles, read state and starred state through the Google Reader API family.
-- **Fever Compatible** — sync the feeds, articles, unread state and saved/starred state exposed by the Fever protocol.
-
-Website, JSON/API and RSSHub are OrigRead-specific source types, so they belong to Local accounts. Remote accounts follow the capabilities of the actual remote protocol instead of pretending local-only features exist remotely.
-
-## Translation: traditional providers and AI are independent
-
-You can use traditional translation providers without configuring an LLM:
-
-- Microsoft Translator
-- DeepL
-- Google Cloud Translation
-- DeepLX / DLX-compatible services
-
-OpenAI-compatible models can also be used for full-article translation. The reader can switch between original, translated or bilingual content, and long articles are processed in bounded chunks.
-
-## Share articles as Markdown
-
-On the article reading page, **Share** copies a complete Markdown version to the system clipboard. The first use asks what to include: title, article body, the translation currently open in the reader, and/or the AI summary currently open in the reader. A normal click uses the saved choices; right-click the Share button to change them later. The original article URL is always included.
-
-The Markdown keeps headings, quotes, lists, links and external image URLs readable. Images are placed on their own lines instead of being mixed into surrounding text. A cached translation or summary is not included unless it is currently open in the reader. Paste the result into Obsidian, Notion, or another Markdown-capable notes app. Sharing from the article list keeps its existing behavior.
-
-## AI reading features
-
-AI is optional and is called only after you configure and invoke it.
-
-- Multiple OpenAI-compatible providers.
-- Separate endpoint, API key and models per provider.
-- Brief, standard and detailed summary modes.
-- Content-bound summary caching so changed article text does not keep an obsolete summary.
-- Visible processing stage and elapsed time, plus explicit cancellation.
-- Temporary provider/model/summary-mode selection without overwriting global defaults.
-- Reader AI Chat bound to the current reader article, with streamed reasoning and answer content.
-- Selected text can be used as one-shot context; Regenerate reuses the frozen Context from the original request instead of reading a later selection.
-- Up to five additional nearby articles can be attached to a conversation; the current article remains the separate primary article context.
-- Article citations can be clicked once to both navigate and highlight the cited text. Historical answers keep their own frozen Evidence/Citation snapshots.
-- Conversation history, in-conversation search, rename/delete, Stop, Regenerate and a dedicated Article Analysis task.
-- Dedicated Web Search with persistent AUTO/OFF settings plus a one-shot “force next request” action; Search activity and results remain visible in conversation history.
-- Quick Messages, task Skills, Remote MCP and Local stdio MCP Tools. Every MCP Tool requires explicit user approval; remote Tool metadata never bypasses authorization.
-
-AI-generated JSON rules and Website Rules are available as a confirmation-based workflow. The target is fetched, a configured Provider/model is selected, the candidate is locally parsed and health-checked, and only an explicitly confirmed candidate is saved. The UI reports each stage and shows the parsed-article count, score, model, and repair attempts.
-
-See the [AI / Search / MCP / Skills guide](AI_MCP_SKILLS.md) for the complete Reader AI, Web Search, Skill, Quick Message and MCP workflow.
-
-## Rules and filters
-
-### Website Rules
-
-Use Website Rules for stable HTML article lists. Rules can describe article cards, titles, links, dates and other fields.
-
-### JSON/API Rules
-
-Use JSON/API Rules for stable REST/JSON or other structured data. They are managed separately from Website Rules so the two data models do not get mixed together.
-
-### Article filters
-
-New articles can be filtered by title keyword or regular expression before they enter the normal timeline. Creating a filter does not retroactively delete historical articles.
-
-## OPML, backup and migration
-
-- **OPML** — exchange subscriptions with other RSS/feed readers.
-- **OrigRead configuration backup** — migrate subscriptions, groups, Website/JSON rules, filters, RSSHub settings, reader preferences, translation and AI configuration.
-
-Sensitive credentials are excluded from configuration backup by default. They are exported only when you explicitly include them and protect the backup with a password.
-
-## Software updates
-
-GitHub builds can check OrigRead Desktop Releases and choose the installer for the current operating system. A failed update check does not block normal application startup.
-
-## Security and privacy
-
-- Normal RSS parsing, website parsing, rule matching and full-text extraction do not require AI.
-- AI and cloud translation receive article content only when you invoke the corresponding feature.
-- Remote webpages do not receive Node.js or Electron privileges.
-- OrigRead does not bypass login walls, CAPTCHA, paywalls or website access controls.
-- Configuration backups exclude sensitive credentials by default.
-- AI keys, Web Search keys, Remote MCP credentials/OAuth tokens and Local stdio environment values are managed by Main-process secure storage. Settings expose presence/length metadata by default and reveal plaintext only after an explicit user action.
-- Remote MCP `readOnlyHint` and related Tool metadata are descriptive only and never grant permission. Every MCP Tool execution requires explicit confirmation.
-- Local stdio MCP servers are lazy: they are not spawned at application startup, and child processes are cleaned up when OrigRead exits.
-- Skill scripts are never executed by OrigRead, and declarations such as `allowed-tools` are not treated as authorization.
-
-## Downloads and platforms
-
-Official builds are published through [GitHub Releases](https://github.com/ZGMFX01A/OrigRead-Desktop/releases).
-
-Target desktop platforms:
-
-- Windows 10 / 11 x64
-- macOS 13+ on Apple Silicon
-- Linux x64 via AppImage, with DEB for Ubuntu/Debian systems
-
-### macOS installation
-
-After downloading the app, move `OrigRead.app` into `/Applications`. If macOS reports that the app is damaged, cannot verify the developer, or refuses to open it because of the quarantine attribute, run:
-
-```bash
-sudo xattr -r -d com.apple.quarantine /Applications/OrigRead.app
-```
-
-Then open OrigRead again. The terminal does not display characters while you enter the `sudo` password; this is normal.
-
-## Build from source
+<details>
+<summary>Build from source</summary>
 
 Requirements: Node.js 24+ and npm 11+.
 
@@ -248,31 +120,25 @@ npm test
 npm run build
 ```
 
-Packaging:
+Package for the target platform:
 
 ```bash
 npm run package:win
-npm run package:mac -- --arm64
-npm run package:linux -- --x64
+npm run package:mac
+npm run package:linux
 ```
+
+See [package.json](package.json) and [electron-builder.yml](electron-builder.yml) for build scripts and package settings.
+
+</details>
 
 ## Project relationship and license
 
-OrigRead Desktop and [OrigRead Android](https://github.com/ZGMFX01A/OrigRead) belong to the same product family, but their codebases and release pipelines are independent.
+OrigRead Desktop and [OrigRead Android](https://github.com/ZGMFX01A/OrigRead) share a product direction, with independent repositories and releases. Thank you to everyone who helps with feedback, translations, and code.
 
-Desktop is distributed under the **GNU Affero General Public License v3.0 only (AGPL-3.0-only)**. See [`LICENSE`](LICENSE).
+Desktop is distributed under the **GNU Affero General Public License v3.0 only (AGPL-3.0-only)**. See [LICENSE](LICENSE).
 
-## Links
-
-- Desktop repository: https://github.com/ZGMFX01A/OrigRead-Desktop
-- Releases: https://github.com/ZGMFX01A/OrigRead-Desktop/releases
-- Issues: https://github.com/ZGMFX01A/OrigRead-Desktop/issues
-- Android edition: https://github.com/ZGMFX01A/OrigRead
-- User guide: [English](USER_GUIDE.md) · [简体中文](USER_GUIDE-zh-CN.md)
-- AI / Search / MCP / Skills: [English](AI_MCP_SKILLS.md) · [简体中文](AI_MCP_SKILLS-zh-CN.md)
-- Changes: [CHANGELOG.md](CHANGELOG.md)
-
-## Star History
+## Star history
 
 <a href="https://www.star-history.com/?repos=ZGMFX01A%2FOrigRead-Desktop&type=timeline&logscale=&legend=top-left">
  <picture>
@@ -281,7 +147,3 @@ Desktop is distributed under the **GNU Affero General Public License v3.0 only (
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ZGMFX01A/OrigRead-Desktop&type=timeline&logscale&legend=top-left&sealed_token=9yvZTezWRptvx7uH1yBQewjMuH6m_RkPmRhxuhTr3gCap3szSQY2yEuM0Yoc9uN5ZPr6dwgFU754Grus68KOrSEa8qx5QNqEGkVVlFb4H3-t_dIgUEl2xpnzrkCYUgVlqmeumlDMHVbkchqNX0BmsIKXk6b2dQc2veu09IzN6XO2SAks_MTwdl4dUt_L" />
  </picture>
 </a>
-
-## Search keywords
-
-Desktop RSS reader, Windows RSS reader, macOS RSS reader, Linux RSS reader, Ubuntu RSS reader, feed reader, news reader, personal information reader, RSSHub client, RSSHub Desktop, RSS discovery, website to RSS, website subscription, Website Parser, HTML Parser, JSON API reader, WordPress reader, Next.js reader, Nuxt reader, Chromium dynamic page parsing, full-text RSS, Readability, OPML, FreshRSS client, Google Reader API client, Fever client, AI RSS reader, AI article summary, AI translation, OpenAI Compatible, DeepL, DeepLX, Electron RSS Reader, source-first reader.

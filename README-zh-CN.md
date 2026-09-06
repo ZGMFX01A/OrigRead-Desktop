@@ -1,243 +1,115 @@
-# 原读 Desktop（OrigRead Desktop）
-
 <div align="center">
-  <a href="README.md">English</a> |
-  <a href="README-zh-CN.md">简体中文</a>
+  <img src="resources/icon.png" width="128" alt="OrigRead Desktop" />
+  <h1>原读 Desktop · OrigRead Desktop</h1>
+  <p><strong>读你关心的，回到信息的出处。</strong></p>
+  <p>面向 Windows、macOS 与 Linux 的阅读器，让订阅、全文阅读与 AI 辅助自然地连在一起。</p>
+  <p><a href="README.md">English</a> · 简体中文</p>
+  <p>
+    <a href="https://github.com/ZGMFX01A/OrigRead-Desktop/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ZGMFX01A/OrigRead-Desktop?display_name=tag&amp;sort=semver" /></a>
+    <img alt="Windows 10 / 11" src="https://img.shields.io/badge/Windows-10%2F11-0078D4" />
+    <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&amp;logoColor=white" />
+    <img alt="Linux" src="https://img.shields.io/badge/Linux-x64-FCC624?logo=linux&amp;logoColor=black" />
+    <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" /></a>
+    <img alt="Downloads" src="https://img.shields.io/github/downloads/ZGMFX01A/OrigRead-Desktop/total?label=Downloads" />
+    <a href="https://github.com/ZGMFX01A/OrigRead-Desktop/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/ZGMFX01A/OrigRead-Desktop?style=flat" /></a>
+  </p>
+  <p>
+    <a href="https://github.com/ZGMFX01A/OrigRead-Desktop/releases/latest"><strong>下载桌面版</strong></a> ·
+    <a href="USER_GUIDE-zh-CN.md">操作手册</a> ·
+    <a href="https://github.com/ZGMFX01A/OrigRead">Android 版</a> ·
+    <a href="https://github.com/ZGMFX01A/OrigRead-Desktop/issues">反馈问题</a>
+  </p>
 </div>
 
-<div align="center">
-  <img src="resources/icon.png" width="180" alt="原读 Desktop Logo" />
-</div>
+## 把值得读的，留一张桌面
 
-<div align="center">
-  <strong>一个以“来源优先”为核心的 Windows、macOS 与 Linux RSS / Feed / 新闻与个人信息阅读器。</strong>
-</div>
+喜欢的博客、持续关注的新闻、偶尔更新的专栏，都可以有一个固定的阅读去处。原读把你选择的来源汇成时间线，让你按自己的兴趣和节奏阅读。
 
-<div align="center">
-  RSS / Atom · RSSHub · 网页解析 · JSON/API · 全文阅读 · 翻译 · AI 摘要 / Reader AI · OPML
-</div>
-<div align="center">
-  <img alt="Windows" src="https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows11&logoColor=white" />
-  <img alt="macOS" src="https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&logoColor=white" />
-  <img alt="Linux" src="https://img.shields.io/badge/Linux-Ubuntu%20%2F%20Desktop-FCC624?logo=linux&logoColor=black" />
-  <img alt="Electron" src="https://img.shields.io/badge/Electron-React-47848F?logo=electron&logoColor=white" />
-  <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" /></a>
-  <img alt="Latest release" src="https://img.shields.io/github/v/release/ZGMFX01A/OrigRead-Desktop?display_name=tag&sort=semver" />
-  <img alt="GitHub Release 总下载次数" src="https://img.shields.io/github/downloads/ZGMFX01A/OrigRead-Desktop/total?label=%E4%B8%8B%E8%BD%BD%E6%AC%A1%E6%95%B0&logo=github" />
-  <img alt="GitHub stars" src="https://img.shields.io/github/stars/ZGMFX01A/OrigRead-Desktop?style=flat" />
-</div>
+在电脑上，文章和 AI 可以并排放下：一边读原文，一边提问、比较和核对引用。需要细读时，收起列表，调整字体和版心；想留下笔记，就把整理好的文章复制出去。**从发现内容到理解内容，原文始终在手边。**
 
+<p align="center">
+  <img src="assets/readme/screenshots/zh-CN/ai-citations.png" width="1000" alt="正文与 AI 回答并排展示，点击引用后高亮文章中的依据" />
+  <br /><sub>文章与 AI 同屏 · 读到结论，随手核对出处</sub>
+</p>
 
-## 原读 Desktop 是什么？
+## Citation：让回答的依据看得见
 
-原读 Desktop 是 **OrigRead / 原读** 的独立桌面客户端。它不把算法推荐作为信息入口，而是让用户自己决定**订阅什么来源、用什么方式读取、哪些内容需要过滤，以及什么时候使用翻译或 AI**。
+读到 AI 给出的结论，你可能还想确认：作者真的这么说了吗？这句话在什么语境里？两篇报道的依据是否相同？Citation 把回答和原文中的证据连起来，让核对成为阅读的一部分。
 
-除了传统 RSS / Atom，原读还可以从 RSSHub、普通网页、JSON/API、WordPress REST、Next.js / Nuxt 数据中发现内容；对于必须执行 JavaScript 才能看到文章列表的网站，静态方式失败后还可以使用受限 Chromium 做最后兜底。
+**点引用，找到原话。** 回答中的文章引用可以直接点击，原读会定位并高亮对应正文。依据来自另一篇附加文章时，也能切过去查看，同时保留这次讨论。文章和回答放在同一窗口里，读过上下文，再继续追问，思路更容易接得上。
 
-目标很直接：**把你主动选择的来源集中到一个时间线里，尽可能提供干净可读的正文，同时始终保留原始网页。**
+比如，把两篇关于同一件事的报道交给 AI，问“它们在哪些地方说法不同？”沿着引用查看两边的原话，就能进一步判断分歧来自事实、立场，还是表述方式。**AI 帮你整理线索，引用让你自己判断。**
 
-## 为什么做原读？
+历史回答会保留当时使用的来源；后来增删附件，不会替换旧回答的依据。搜索结果和工具结果也各自保留出处。文章改写或引用无法准确定位时，可以查看来源信息；有引用仍不代表 AI 的理解一定正确。
 
-- **来源优先，而不是推荐优先**：时间线只来自你主动添加的来源。
-- **不只接受 RSS 地址**：可以直接粘贴网站首页、文章列表页、Feed、API 等地址，让应用判断可用方式。
-- **解析失败有退路**：RSS、RSSHub、JSON/API、网页解析和动态页面可以作为不同候选，而不是一种方式失败就彻底结束。
-- **全文和原文都保留**：适合阅读时用提取后的正文；需要确认排版、评论或交互内容时随时打开原网页。
-- **AI 只是按需辅助工具**：AI 用于摘要、全文翻译、Reader AI 问答和文章分析；普通来源解析、同步和阅读不依赖 AI。
-- **AI 回答可追溯到正文**：Reader AI 的回答可以携带正文 Citation；点击引用标记一次，就会跳到对应正文并高亮。历史回答冻结自己的 Evidence/Citation 快照，后续切换文章或附件也不会改写旧引用。
-- **适合长期整理自己的来源**：分组、过滤、规则、OPML、完整配置备份和远端账户同步都围绕“自己的信息源”展开。
+具体操作见[手册中的 Citation 章节](USER_GUIDE-zh-CN.md#citation核对回答的依据)。
 
-## 软件截图
+## 没有 RSS，也值得订阅
 
-<p align="center"><img src="assets/readme/screenshots/zh-CN/overview.png" width="1000" alt="原读 Desktop 主界面" /></p>
+喜欢的网站没有订阅按钮，不一定就得每天自己去刷。**原读会尝试把网站里持续更新的内容，变成可以追踪的订阅。** 粘贴首页或栏目页，它会寻找 RSS / Atom、匹配 RSSHub 路由；没有现成 Feed 时，还能从网页文章列表或公开 JSON/API 中寻找内容。WordPress 的文章接口，以及部分 Next.js、Nuxt 网页中自带的文章数据，也在支持范围内。
 
-| 添加来源 | 阅读与 AI | 设置 |
-| --- | --- | --- |
-| <img src="assets/readme/screenshots/zh-CN/source-discovery.png" width="300" alt="原读 Desktop 添加来源" /> | <img src="assets/readme/screenshots/zh-CN/reader-ai.png" width="300" alt="原读 Desktop 阅读与 AI 摘要" /> | <img src="assets/readme/screenshots/zh-CN/settings.png" width="300" alt="原读 Desktop 设置" /> |
+你不必先选懂一套解析方式。原读会检查文章数量、标题、链接和时间等信息，将更合适的候选排在前面，再由你选中真正想追踪的栏目。需要执行网页脚本后才出现的内容，也有浏览器渲染作为补充尝试。
 
-### AI 功能截图（预留）
+对于需要特别处理的网站，可以用解析规则告诉原读“文章在哪里”。规则支持导入、导出，也可以请 AI 帮忙生成，**先看实际解析出的文章，再决定是否保存**。日常发现和解析无需配置 AI；订阅能否稳定更新，仍取决于网站的访问条件和结构，改版后可能需要调整规则。
 
-| AI 配置 | Reader AI Chat | AI 回答引用 |
-| --- | --- | --- |
-| <img src="assets/readme/screenshots/zh-CN/ai-settings.png" width="300"/> | <img src="assets/readme/screenshots/zh-CN/ai-chat.png" width="300"/> | <img src="assets/readme/screenshots/zh-CN/ai-citations.png" width="300"/> |
+还没想好读什么，可以逛逛内置来源目录；已有一批订阅，也可以直接导入 OPML。添加方法和解析问题的处理见[操作手册](USER_GUIDE-zh-CN.md#添加一个来源)。
 
-## 文档与其他平台
+<table>
+  <tr><th width="50%">找到想追踪的栏目</th><th width="50%">调整成习惯的阅读方式</th></tr>
+  <tr>
+    <td align="center"><img src="assets/readme/screenshots/zh-CN/source-discovery.png" width="480" alt="添加来源：选择 RSSHub 频道或网页解析结果" /></td>
+    <td align="center"><img src="assets/readme/screenshots/zh-CN/settings.png" width="480" alt="阅读设置：字体、背景、行距与版心" /></td>
+  </tr>
+</table>
 
-| 📖 操作手册 | 🤖 AI / Search / MCP / Skill | 📱 Android 版本 |
-| --- | --- | --- |
-| [查看 Desktop 操作手册](USER_GUIDE-zh-CN.md)，按“添加来源、阅读、AI/翻译、同步、迁移、故障处理”等实际任务查找。 | [查看 AI、Web Search、Skill 与 MCP 指南](AI_MCP_SKILLS-zh-CN.md)，包含 Reader AI、Tool 审批和安全边界。 | [前往 OrigRead Android](https://github.com/ZGMFX01A/OrigRead)，适用于 Android 手机和平板。 |
+## 从订阅到读懂，少一点来回折腾
 
-Android 与 Desktop 独立发布、分别安装；两端共享 OrigRead 的产品方向，并尽量保持来源、规则和配置备份的使用体验兼容。
+### 给长文章留出空间
 
-## 来源发现：粘贴网址，而不只是粘贴 RSS
+只有几行摘要的 Feed，可以尝试提取全文；想看评论、图表或互动内容，随时在应用内打开原始网页。字体、字号、背景和版心都可以按习惯调整，也支持导入本地字体。
 
-添加来源时，原读会根据输入地址尝试多种方式，并把实际可用的结果作为候选展示：
+AI 面板可以放在正文左侧或右侧，拖动边缘就能调整宽度。键盘也能完成切换文章、收藏、搜索和进入专注阅读等常用操作，让连续阅读更顺手。
 
-```text
-输入 URL
-  ↓
-RSS / Atom
-  ↓
-RSSHub
-  ↓
-JSON / API / WordPress / Next.js / Nuxt
-  ↓
-网站解析规则 / 自动网页列表识别
-  ↓
-必要时使用动态 Chromium 兜底
-  ↓
-选择可用候选并订阅
-```
+### 看懂，也留得下来
 
-### RSS / Atom
+外语文章可以查看译文或双语内容，翻译可选 Microsoft Translator、DeepL、Google Cloud、DeepLX / DLX 兼容服务或 AI 模型。想换种方式阅读，就让 TTS 读给你听。
 
-支持直接 Feed，也会从普通网页中发现声明的 RSS/Atom 地址，并尝试常见 Feed 路径。
+想留进笔记，点击分享即可将文章复制为 Markdown；正文、当前打开的译文和摘要可以按需附带，原文链接始终保留。粘贴到常用笔记软件，之后重读或整理时仍能找到出处。
 
-### RSSHub
+### AI 接着你的阅读往下走
 
-原读内置 RSSHub 路由目录，可以先判断“这个网站有没有对应 RSSHub 路由”，再尝试已启用的公共或自建实例。路由匹配成功和实例当前可用是两件事，所以公共实例临时超时不会被误报成“没有 RSSHub 路由”。
+长文可以先看摘要，有疑问就问当前文章，或选中一段文字继续追问。需要对照不同观点时，附加几篇相关文章；需要背景或近期进展时，再使用联网搜索。
 
-### 网页解析
+原读支持 OpenAI 兼容服务，可使用你选择的云端模型、自建服务或本地模型服务。快捷消息保存常问的问题，Skills 保存分析方法，自定义指令保留回答偏好。需要更多工具时，可以连接远程 MCP 或本机 MCP 服务，工具执行前会请你确认。
 
-没有可用 Feed 时，可以通过 Website Rule 或自动网页列表识别，把稳定的文章列表页变成来源。网站改版后规则可能失效，因此原读始终保留其他候选和原网页入口。
+这些都可以按需配置。日常订阅、全文提取和阅读无需 AI，先读起来，遇到需要它的时候再用就好。进阶设置见 [AI、搜索与工具指南](AI_MCP_SKILLS-zh-CN.md)。
 
-### 动态 Chromium 兜底
+## 下载与开始使用
 
-有些网站必须执行 JavaScript 后才出现文章列表。只有静态方式没有得到可用结果时，原读才会启动动态页面兜底。
+从 [GitHub Releases](https://github.com/ZGMFX01A/OrigRead-Desktop/releases/latest) 选择与你的系统匹配的安装包：
 
-**网页能打开不等于可以订阅。** 动态页面仍然需要真正识别出可用文章链接；如果没有提取到文章，不会创建一个空来源。
+| 系统 | 安装包 |
+| --- | --- |
+| Windows 10 / 11 · x64 | `.exe` 安装程序 |
+| macOS 13+ · Apple Silicon | `.dmg` |
+| Linux · x64 | `.AppImage`；Ubuntu / Debian 也可使用 `.deb` |
 
-### JSON/API
+安装后，保留默认 Local 账户，添加一个来源或导入 OPML，就可以开始阅读。应用内支持检查更新；安装遇到问题时，查看[安装与更新说明](USER_GUIDE-zh-CN.md#安装与更新)。
 
-对于公开 REST/JSON、WordPress 或稳定结构化数据，可以使用自动识别或 JSON/API Rule。它和普通网页规则是两套独立方式，方便在网站有稳定 API 时优先使用结构化数据。
+手机和平板请前往 [OrigRead Android](https://github.com/ZGMFX01A/OrigRead)。Android 与桌面端独立安装、分别更新；跨端迁移的内容和范围见[操作手册](USER_GUIDE-zh-CN.md#opml备份与迁移)。
 
-## 全文阅读与原网页
+## 自己的订阅，自己掌握
 
-原读提供三种常见阅读内容：
+使用 Local 账户，数据保存在本机，也能使用网页解析、JSON/API 和 RSSHub 等扩展来源。已有 FreshRSS、Google Reader Compatible 或 Fever Compatible 服务时，可以连接对应账户，同步服务支持的订阅和阅读状态。
 
-- **来源正文**：RSS/Atom/JSON 自己提供的内容。
-- **全文**：访问文章页面后提取出的可读正文。
-- **原文**：真实网站页面，通过应用内网页视图打开。
+常规解析、正文提取和过滤在本机完成。使用 AI 或云翻译时，相关内容会发送到你配置的服务。配置备份可以带走订阅、规则和设置，敏感凭据默认不导出，需要迁移时可用密码加密。**配置备份不包含文章正文、已读和收藏历史，也不包含摘要和翻译缓存。**
 
-全文提取不依赖 AI。原读会优先使用规则、Readability 风格提取和页面结构化信息；动态正文必要时再使用浏览器渲染。无论提取结果如何，原始链接始终保留。
+## 反馈与交流
 
-## 阅读体验
+使用中遇到问题，或有想改进的地方，欢迎[提交 Issue](https://github.com/ZGMFX01A/OrigRead-Desktop/issues)。解析问题请附上网址、应用版本和复现步骤。项目目前不接受 Pull Request，功能建议、翻译和文档纠错也请通过 Issue 反馈。
 
-- 来源、分组、未读和收藏筛选。
-- 文章搜索与正文内 `Ctrl/Cmd + F`。
-- 已读 / 未读、收藏、上一篇 / 下一篇。
-- 本地字体导入和阅读字体切换。
-- 浅色、深色、跟随系统以及阅读背景色。
-- 正文、译文和 AI 摘要分别朗读。
-- Reader AI / AI 摘要面板可以停靠在正文左侧或右侧，并直接拖动面板与正文之间的边缘调整宽度。
-- 键盘阅读快捷键，完整列表见 [Desktop 操作手册](USER_GUIDE-zh-CN.md#键盘快捷键)。
-
-## 账户与同步
-
-原读 Desktop 支持多账户：
-
-- **Local**：所有数据保存在本机，可使用 RSS、RSSHub、Website、JSON/API 等全部原读来源类型。
-- **FreshRSS / Google Reader Compatible**：同步远端订阅、分组、文章、已读和收藏状态。
-- **Fever Compatible**：同步 Fever 协议提供的 Feed、文章、未读和收藏能力。
-
-Website、JSON/API 和 RSSHub 是原读自己的来源类型，因此只属于 Local 账户。远端账户会遵循对应服务真正支持的能力，不会把本地功能伪装成远端协议功能。
-
-## 翻译：传统服务与 AI 可以独立使用
-
-不配置 LLM 也可以使用传统翻译服务：
-
-- Microsoft Translator
-- DeepL
-- Google Cloud Translation
-- DeepLX / DLX 兼容服务
-
-也可以把 OpenAI Compatible 模型作为全文翻译方式。阅读时可以切换原文、译文或双语内容，长文章会自动分段处理。
-
-## 把文章分享为 Markdown
-
-在文章阅读页点击 **分享**，原读会把完整的 Markdown 内容复制到系统剪贴板。第一次使用时，可以选择要包含的内容：文章标题、正文、当前阅读页已经打开的翻译，以及当前阅读页已经打开的 AI 摘要。之后短按分享会直接按已保存的选择复制；右键分享按钮可以随时修改。原文 URL 始终会保留。
-
-生成的 Markdown 会保留标题、引用、列表、链接和图片外链，图片会单独占一行，不会和正文文字挤在一起。历史上生成过的翻译或摘要，如果当前阅读页没有打开，就不会被分享。复制后可以直接粘贴到 Obsidian、Notion 或其他支持 Markdown 的笔记软件中。列表页的原有分享方式不变。
-
-## AI 阅读辅助
-
-AI 是可选能力，只有配置并主动使用时才会调用。
-
-- 支持多个 OpenAI Compatible 服务。
-- 每个服务可使用独立 Endpoint、API Key 和模型。
-- 支持速览、均衡、深入三种摘要档位。
-- 摘要和文章内容绑定缓存，正文变化后不会继续误用旧摘要。
-- 生成时显示实际处理阶段和已等待时间，并支持停止当前请求。
-- 可以临时换 Provider、模型和摘要档位，不必修改全局默认设置。
-- Reader AI Chat 与当前阅读文章绑定，可流式显示 Reasoning 和正文回答。
-- 选中文字后可作为一次性上下文提问；重生成会沿用原请求冻结下来的 Context，而不是读取你后来切换的选择。
-- 每个对话最多额外挂 5 篇附近文章；当前文章始终单独作为主文章上下文。
-- 回答中的正文 Citation 可以单击一次完成跳转和高亮；历史回答保存自己的 Evidence/Citation 快照，不会被后续文章或附件变化改写。
-- 支持对话历史、对话内搜索、重命名/删除、停止生成、重生成，以及专门的文章分析任务。
-- Dedicated Web Search 可配置为自动模式，也可以只对下一条消息强制搜索；搜索过程和命中结果会在对话里可见并保存。
-- 支持 Quick Messages、任务 Skill，以及 Remote MCP / Local stdio MCP Tool。所有 MCP Tool 都必须经过显式用户批准，远端 Tool metadata 不会绕过审批。
-
-AI 生成 JSON 规则和网站解析规则已经接入确认式流程：抓取目标后选择已配置的 Provider / 模型，由模型生成候选，再由本地解析器和健康检查验证，只有用户明确确认后才保存。界面会反馈各阶段，并显示解析文章数、评分、实际模型和修复次数。
-
-Reader AI、Web Search、Skill、Quick Messages、Remote MCP 和 Local stdio MCP 的完整使用方式见 [AI / Search / MCP / Skill 指南](AI_MCP_SKILLS-zh-CN.md)。
-
-## 规则与过滤
-
-### Website Rule
-
-适合结构稳定的 HTML 文章列表。可以指定文章卡片、标题、链接、时间等选择器。
-
-### JSON/API Rule
-
-适合稳定的 REST/JSON 或其他结构化数据。规则与 Website Rule 分开管理，避免把两种数据模型混在一起。
-
-### 文章过滤
-
-可以按标题关键词或正则过滤新文章。过滤在新文章进入正常时间线前执行；新建规则不会反向删除已经保存的历史文章。
-
-## OPML、备份与迁移
-
-- **OPML**：用于和其他 RSS 阅读器交换订阅。
-- **原读完整配置备份**：用于迁移订阅、分组、Website/JSON 规则、过滤规则、RSSHub、阅读偏好、翻译和 AI 配置等原读专属内容。
-
-敏感凭据默认不进入完整配置备份。只有主动选择包含凭据并设置备份密码时，才会生成可迁移的加密凭据数据。
-
-## 软件更新
-
-GitHub 版本可以检查 OrigRead Desktop Releases，并根据当前系统选择 Windows、macOS 或 Linux 安装包。更新检查失败不会阻止应用正常启动。
-
-## 安全与隐私
-
-- 普通 RSS、网页解析、规则匹配和正文提取不依赖 AI。
-- AI 和云翻译只有在用户主动使用对应功能时才发送当前内容。
-- 远程网页不会直接获得 Node.js / Electron 高权限。
-- 原读不会绕过登录、验证码、付费墙或网站访问控制。
-- 完整配置备份默认不导出敏感凭据。
-- AI Key、Web Search Key、Remote MCP Credential/OAuth Token、Local stdio env 等敏感值由 Main Process 的安全存储管理；设置页默认只看到“是否已保存/长度”等状态，只有用户主动 reveal 时才暂时显示明文。
-- Remote MCP Tool 的 `readOnlyHint` 等 metadata 只用于风险说明，不能授予权限；所有 MCP Tool 执行都需要显式确认。
-- Local stdio MCP 不会在应用启动时自动拉起；只有测试、刷新 Tool 或实际执行时才按需启动，退出应用时会清理子进程。
-- Skill 中的脚本不会被 OrigRead 执行；`allowed-tools` 等声明也不会被当作授权依据。
-
-## 下载与平台
-
-正式版本通过 [GitHub Releases](https://github.com/ZGMFX01A/OrigRead-Desktop/releases) 发布。
-
-计划/支持的桌面平台：
-
-- Windows 10 / 11 x64
-- macOS 13+（Apple Silicon）
-- Linux x64（AppImage；Ubuntu/Debian 可使用 DEB）
-
-### macOS 安装说明
-
-下载安装包后，将 `OrigRead.app` 拖入 `/Applications`。如果 macOS 提示应用“已损坏”、无法验证开发者，或由于隔离属性而拒绝打开，可以在终端执行：
-
-```bash
-sudo xattr -r -d com.apple.quarantine /Applications/OrigRead.app
-```
-
-执行后重新打开 OrigRead 即可。输入 `sudo` 密码时终端不会显示字符，这是正常现象。
-
-## 从源码构建
+<details>
+<summary>从源码构建</summary>
 
 环境要求：Node.js 24+、npm 11+。
 
@@ -248,31 +120,25 @@ npm test
 npm run build
 ```
 
-打包：
+按目标平台打包：
 
 ```bash
 npm run package:win
-npm run package:mac -- --arm64
-npm run package:linux -- --x64
+npm run package:mac
+npm run package:linux
 ```
 
-## 项目关系与开源协议
+构建脚本与安装包配置见 [package.json](package.json) 和 [electron-builder.yml](electron-builder.yml)。
 
-OrigRead Desktop 与 [OrigRead Android](https://github.com/ZGMFX01A/OrigRead) 属于同一产品方向，但代码仓库和发布流程彼此独立。
+</details>
 
-Desktop 使用 **GNU Affero General Public License v3.0 only（AGPL-3.0-only）**，详见 [`LICENSE`](LICENSE)。
+## 项目关系与许可证
 
-## 相关链接
+OrigRead Desktop 与 [OrigRead Android](https://github.com/ZGMFX01A/OrigRead) 共享产品方向，代码仓库和发布流程彼此独立。感谢所有为项目提供反馈、翻译和代码的参与者。
 
-- Desktop 仓库：https://github.com/ZGMFX01A/OrigRead-Desktop
-- 版本发布：https://github.com/ZGMFX01A/OrigRead-Desktop/releases
-- 问题反馈：https://github.com/ZGMFX01A/OrigRead-Desktop/issues
-- Android 版本：https://github.com/ZGMFX01A/OrigRead
-- 操作手册：[简体中文](USER_GUIDE-zh-CN.md) · [English](USER_GUIDE.md)
-- AI / Search / MCP / Skill：[简体中文](AI_MCP_SKILLS-zh-CN.md) · [English](AI_MCP_SKILLS.md)
-- 版本变更：[CHANGELOG.md](CHANGELOG.md)
+Desktop 以 **GNU Affero General Public License v3.0 only（AGPL-3.0-only）** 发布，详见 [LICENSE](LICENSE)。
 
-## Star History
+## Star 历史
 
 <a href="https://www.star-history.com/?repos=ZGMFX01A%2FOrigRead-Desktop&type=timeline&logscale=&legend=top-left">
  <picture>
@@ -281,7 +147,3 @@ Desktop 使用 **GNU Affero General Public License v3.0 only（AGPL-3.0-only）*
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ZGMFX01A/OrigRead-Desktop&type=timeline&logscale&legend=top-left&sealed_token=9yvZTezWRptvx7uH1yBQewjMuH6m_RkPmRhxuhTr3gCap3szSQY2yEuM0Yoc9uN5ZPr6dwgFU754Grus68KOrSEa8qx5QNqEGkVVlFb4H3-t_dIgUEl2xpnzrkCYUgVlqmeumlDMHVbkchqNX0BmsIKXk6b2dQc2veu09IzN6XO2SAks_MTwdl4dUt_L" />
  </picture>
 </a>
-
-## 搜索关键词
-
-桌面 RSS 阅读器、Windows RSS 阅读器、macOS RSS 阅读器、Linux RSS 阅读器、Ubuntu RSS 阅读器、Feed 阅读器、新闻阅读器、个人信息阅读器、RSSHub 客户端、RSSHub Desktop、RSS 来源发现、网页转 RSS、网页订阅、Website Parser、HTML Parser、JSON API 阅读器、WordPress 阅读器、Next.js 阅读器、Nuxt 阅读器、Chromium 动态网页解析、全文 RSS、Readability、OPML、FreshRSS 客户端、Google Reader API 客户端、Fever 客户端、AI RSS 阅读器、AI 文章摘要、文章总结、AI 翻译、OpenAI Compatible、DeepL、DeepLX、Electron RSS Reader、来源优先阅读器。
