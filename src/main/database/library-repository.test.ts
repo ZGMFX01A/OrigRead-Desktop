@@ -31,6 +31,20 @@ describe('LibraryRepository', () => {
     database.close()
   })
 
+  it('finds equivalent source URL variants using Android comparison semantics', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const feed = {
+      ...createFeed(),
+      url: 'https://Example.com/feed/?utm_source=campaign&a=1#section'
+    }
+    repository.upsertFeed(feed)
+
+    expect(repository.findFeedByUrl('https://example.com/feed?a=1')).toMatchObject({ id: feed.id })
+    expect(repository.findFeedByUrl('https://example.com/feed/?a=2')).toBeNull()
+    database.close()
+  })
+
   it('preserves read and starred state when a feed refresh upserts the same article', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)

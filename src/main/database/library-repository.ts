@@ -9,6 +9,7 @@ import type {
   ArticleSearchResult,
   SourceType
 } from '../../shared/library'
+import { sourceUrlComparisonKey } from '../../shared/source-url-normalizer'
 import { CURRENT_ACCOUNT_SETTING_KEY, DEFAULT_LOCAL_ACCOUNT_ID } from './migrations'
 
 type PreparedStatement = ReturnType<DatabaseSync['prepare']>
@@ -289,7 +290,10 @@ export class LibraryRepository {
       FROM feeds
       WHERE account_id = ? AND url = ?
     `).get(accountId, url) as FeedRow | undefined
-    return row ? toFeedRecord(row) : null
+    if (row) return toFeedRecord(row)
+    const candidateKey = sourceUrlComparisonKey(url)
+    return this.listFeedsForAccount(accountId)
+      .find((feed) => sourceUrlComparisonKey(feed.url) === candidateKey) ?? null
   }
 
   listGroups(): GroupRecord[] {

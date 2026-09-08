@@ -43,6 +43,27 @@ describe('JsonSourceService Android parity', () => {
     expect(result).toBeNull()
   })
 
+  it('propagates cancellation instead of falling through to more JSON rules', async () => {
+    const controller = new AbortController()
+    let aborted = false
+    const service = serviceOf((_url, signal) => new Promise<string>((_resolve, reject) => {
+      if (!signal) return reject(new Error('missing signal'))
+      const onAbort = (): void => {
+        aborted = true
+        reject(signal.reason instanceof Error ? signal.reason : new Error('aborted'))
+      }
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }))
+
+    const pending = service.probe('https://example.com/news', controller.signal)
+    await Promise.resolve()
+    controller.abort(new Error('cancel json probe'))
+
+    await expect(pending).rejects.toThrow('cancel json probe')
+    expect(aborted).toBe(true)
+  })
+
   it('prefers an imported rule before WordPress auto detection', async () => {
     const repository = new JsonRuleRepository(join(process.cwd(), '.does-not-exist-json-rule-file'))
     const imported: JsonRule = {

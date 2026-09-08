@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { DesktopDatabase } from '../../database/database'
 import type { DiscoveredRssFeed } from '../../../shared/rss'
 import type { RssHubRouteDefinition } from '../../../shared/rsshub'
@@ -105,6 +105,68 @@ describe('RssHubResolver Android parity', () => {
       expect(events).toEqual(['first:start', 'first:end', 'second:start'])
       expect(result[0]?.match.feedUrl).toBe('https://second.example.com/example/user/42')
       expect(settings.candidateInstances()[0]).toBe('https://second.example.com')
+    } finally {
+      database.close()
+    }
+  })
+
+  it('aborts the active RSSHub probe when the total probe budget expires', async () => {
+    vi.useFakeTimers()
+    const database = new DesktopDatabase(':memory:')
+    const settings = new RssHubSettingsRepository(database.connection)
+    let aborted = false
+    const resolver = new RssHubResolver(
+      new RssHubRouteMatcher([dynamicRoute]),
+      settings,
+      async (_feedUrl, _sourceUrl, signal) => new Promise<DiscoveredRssFeed>((_resolve, reject) => {
+        if (!signal) return reject(new Error('missing abort signal'))
+        const onAbort = (): void => {
+          aborted = true
+          reject(signal.reason instanceof Error ? signal.reason : new Error('aborted'))
+        }
+        if (signal.aborted) onAbort()
+        else signal.addEventListener('abort', onAbort, { once: true })
+      })
+    )
+    try {
+      const pending = resolver.probe('https://example.com/user/42', 'https://rsshub.example.com')
+      await vi.advanceTimersByTimeAsync(12_000)
+      const result = await pending
+
+      expect(aborted).toBe(true)
+      expect(result).toHaveLength(1)
+      expect(result[0]?.state).toBe('timeout')
+    } finally {
+      vi.useRealTimers()
+      database.close()
+    }
+  })
+
+  it('propagates an outer cancellation instead of converting it to a timeout diagnostic', async () => {
+    const database = new DesktopDatabase(':memory:')
+    const settings = new RssHubSettingsRepository(database.connection)
+    const controller = new AbortController()
+    let aborted = false
+    const resolver = new RssHubResolver(
+      new RssHubRouteMatcher([dynamicRoute]),
+      settings,
+      async (_feedUrl, _sourceUrl, signal) => new Promise<DiscoveredRssFeed>((_resolve, reject) => {
+        if (!signal) return reject(new Error('missing abort signal'))
+        const onAbort = (): void => {
+          aborted = true
+          reject(signal.reason instanceof Error ? signal.reason : new Error('aborted'))
+        }
+        if (signal.aborted) onAbort()
+        else signal.addEventListener('abort', onAbort, { once: true })
+      })
+    )
+    try {
+      const pending = resolver.probe('https://example.com/user/42', 'https://rsshub.example.com', controller.signal)
+      await Promise.resolve()
+      controller.abort(new Error('cancel rsshub probe'))
+
+      await expect(pending).rejects.toThrow('cancel rsshub probe')
+      expect(aborted).toBe(true)
     } finally {
       database.close()
     }

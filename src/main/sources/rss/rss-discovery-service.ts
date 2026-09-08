@@ -30,7 +30,7 @@ export interface RssDirectFetchResult {
   lastModified: string | null
 }
 
-export type RssFetcher = (url: string, validators?: RssRequestValidators) => Promise<RssFetchPayload>
+export type RssFetcher = (url: string, validators?: RssRequestValidators, signal?: AbortSignal) => Promise<RssFetchPayload>
 
 const parser = new Parser<Record<string, never>, CustomRssItem>({
   customFields: {
@@ -62,14 +62,15 @@ export class RssDiscoveryService {
    * 4. 候选按顺序逐个真实请求并解析，第一个成功项胜出；
    * 5. 全部失败时重新抛出首次直接解析错误。
    */
-  async discover(inputUrl: string): Promise<DiscoveredRssFeed> {
+  async discover(inputUrl: string, signal?: AbortSignal): Promise<DiscoveredRssFeed> {
     const normalizedInputUrl = normalizeHttpUrl(inputUrl)
-
+    // 输入地址只请求一次：同一响应先按 Feed 解析；若格式不是 RSS/Atom，直接复用这份
+    // HTML 做 rel=alternate 发现，避免“先 parseDirect、失败后 discover 又下载一次”的重复请求。
+    const inputPayload = await this.fetcher(normalizedInputUrl, undefined, signal)
     try {
-      return await this.parseFeedUrl(normalizedInputUrl, normalizedInputUrl, false)
+      return await this.parsePayload(inputPayload, normalizedInputUrl, normalizedInputUrl, false, signal)
     } catch (directError) {
-      const pagePayload = await this.fetcher(normalizedInputUrl)
-      const html = decodePayload(pagePayload)
+      const html = decodePayload(inputPayload)
       const candidates = distinct([
         ...extractAlternateFeedUrls(html, normalizedInputUrl),
         ...buildCommonFeedCandidates(normalizedInputUrl)
@@ -77,9 +78,9 @@ export class RssDiscoveryService {
 
       for (const candidateUrl of candidates) {
         try {
-          return await this.parseFeedUrl(candidateUrl, normalizedInputUrl, true)
+          return await this.parseFeedUrl(candidateUrl, normalizedInputUrl, true, signal)
         } catch {
-          // Android 同样忽略单个候选异常并继续尝试下一个候选。
+          // 单个候选异常不影响后续候选。
         }
       }
 
@@ -87,18 +88,19 @@ export class RssDiscoveryService {
     }
   }
 
-  async parseDirect(feedUrl: string, sourcePageUrl = feedUrl): Promise<DiscoveredRssFeed> {
-    return this.parseFeedUrl(normalizeHttpUrl(feedUrl), normalizeHttpUrl(sourcePageUrl), false)
+  async parseDirect(feedUrl: string, sourcePageUrl = feedUrl, signal?: AbortSignal): Promise<DiscoveredRssFeed> {
+    return this.parseFeedUrl(normalizeHttpUrl(feedUrl), normalizeHttpUrl(sourcePageUrl), false, signal)
   }
 
   async parseDirectConditional(
     feedUrl: string,
     sourcePageUrl = feedUrl,
-    validators: RssRequestValidators = {}
+    validators: RssRequestValidators = {},
+    signal?: AbortSignal
   ): Promise<RssDirectFetchResult> {
     const normalizedFeedUrl = normalizeHttpUrl(feedUrl)
     const normalizedSourcePageUrl = normalizeHttpUrl(sourcePageUrl)
-    const payload = await this.fetcher(normalizedFeedUrl, validators)
+    const payload = await this.fetcher(normalizedFeedUrl, validators, signal)
     if (payload.notModified) {
       return {
         feed: null,
@@ -108,7 +110,7 @@ export class RssDiscoveryService {
       }
     }
     return {
-      feed: await this.parsePayload(payload, normalizedFeedUrl, normalizedSourcePageUrl, false),
+      feed: await this.parsePayload(payload, normalizedFeedUrl, normalizedSourcePageUrl, false, signal),
       notModified: false,
       etag: payload.etag ?? null,
       lastModified: payload.lastModified ?? null
@@ -118,18 +120,21 @@ export class RssDiscoveryService {
   private async parseFeedUrl(
     feedUrl: string,
     sourcePageUrl: string,
-    discoveredFromPage: boolean
+    discoveredFromPage: boolean,
+    signal?: AbortSignal
   ): Promise<DiscoveredRssFeed> {
-    const payload = await this.fetcher(feedUrl)
-    return this.parsePayload(payload, feedUrl, sourcePageUrl, discoveredFromPage)
+    const payload = await this.fetcher(feedUrl, undefined, signal)
+    return this.parsePayload(payload, feedUrl, sourcePageUrl, discoveredFromPage, signal)
   }
 
   private async parsePayload(
     payload: RssFetchPayload,
     feedUrl: string,
     sourcePageUrl: string,
-    discoveredFromPage: boolean
+    discoveredFromPage: boolean,
+    signal?: AbortSignal
   ): Promise<DiscoveredRssFeed> {
+    signal?.throwIfAborted()
     const xml = decodePayload(payload)
     const parsed = await parser.parseString(xml)
     const title = parsed.title?.trim() ?? ''
@@ -143,6 +148,7 @@ export class RssDiscoveryService {
       this.iconFinder.findBestIcon(extractIconDomain(sourcePageUrl)),
       3_000
     )
+    signal?.throwIfAborted()
     return {
       feedUrl,
       sourcePageUrl,
@@ -160,7 +166,8 @@ export class RssDiscoveryService {
 
 export async function fetchRssPayload(
   url: string,
-  validators: RssRequestValidators = {}
+  validators: RssRequestValidators = {},
+  signal?: AbortSignal
 ): Promise<RssFetchPayload> {
   const headers: Record<string, string> = {
     'user-agent': DESKTOP_BROWSER_USER_AGENT,
@@ -170,7 +177,7 @@ export async function fetchRssPayload(
   if (validators.lastModified) headers['If-Modified-Since'] = validators.lastModified
   const response = await fetch(url, {
     redirect: 'follow',
-    signal: AbortSignal.timeout(20_000),
+    signal: combineAbortSignals(signal, AbortSignal.timeout(20_000)),
     headers
   })
   if (response.status === 304) {
@@ -220,6 +227,10 @@ export function extractAlternateFeedUrls(html: string, inputUrl: string): string
     }
   })
   return result
+}
+
+function combineAbortSignals(primary: AbortSignal | undefined, timeout: AbortSignal): AbortSignal {
+  return primary ? AbortSignal.any([primary, timeout]) : timeout
 }
 
 function decodePayload(payload: RssFetchPayload): string {

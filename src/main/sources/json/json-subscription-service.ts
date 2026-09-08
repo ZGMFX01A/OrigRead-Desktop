@@ -16,7 +16,7 @@ export class JsonSubscriptionService {
   /** 保存探测阶段确认的 endpoint，并直接落库探测阶段已经解析出的首批文章。 */
   async add(probe: JsonSourceProbeResult): Promise<{ feedId: string; insertedArticles: number }> {
     const existing = this.repository.findFeedByUrl(probe.endpointUrl)
-    if (existing) throw new Error(`来源已存在：${existing.name}`)
+    if (existing) return { feedId: existing.id, insertedArticles: 0 }
 
     const now = Date.now()
     const feedId = randomUUID()

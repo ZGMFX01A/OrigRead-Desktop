@@ -102,7 +102,6 @@ describe('RssDiscoveryService Android behavior parity', () => {
 
     expect(requests).toEqual([
       'https://example.com/news',
-      'https://example.com/news',
       'https://example.com/news/feed.xml'
     ])
     expect(result.feedUrl).toBe('https://example.com/news/feed.xml')
@@ -132,6 +131,26 @@ describe('RssDiscoveryService Android behavior parity', () => {
       'https://example.com/feed.xml',
       'https://example.com/index.xml'
     ])
+  })
+
+  it('propagates caller cancellation to the active RSS fetch', async () => {
+    let observedSignal: AbortSignal | undefined
+    const service = new RssDiscoveryService(async (_url, _validators, signal) => {
+      observedSignal = signal
+      return new Promise<RssFetchPayload>((_resolve, reject) => {
+        if (!signal) return reject(new Error('missing abort signal'))
+        const onAbort = (): void => reject(signal.reason instanceof Error ? signal.reason : new Error('aborted'))
+        if (signal.aborted) onAbort()
+        else signal.addEventListener('abort', onAbort, { once: true })
+      })
+    }, noIconFinder)
+    const controller = new AbortController()
+
+    const pending = service.discover('https://example.com/feed.xml', controller.signal)
+    controller.abort(new Error('caller cancelled'))
+
+    await expect(pending).rejects.toThrow('caller cancelled')
+    expect(observedSignal?.aborted).toBe(true)
   })
 
   it('default fetcher sends HTTP validators and treats 304 as not modified', async () => {

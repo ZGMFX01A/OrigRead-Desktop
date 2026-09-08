@@ -163,6 +163,44 @@ describe('LlmChatRepository D2.6 persistence foundation', () => {
     }
   })
 
+  it('restores the latest cited assistant only inside the latest article conversation', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LlmChatRepository(database.connection)
+    try {
+      const oldConversation = repository.createConversation({
+        id: 'conversation-old', articleId: 'article-1', title: 'Old', now: 10
+      })
+      repository.appendMessage(oldConversation.id, { id: 'old-user', role: 'USER', content: 'Old question', now: 20 })
+      const oldAssistant = repository.appendMessage(oldConversation.id, {
+        id: 'old-assistant', role: 'ASSISTANT', content: 'Old cited answer', status: 'COMPLETE', now: 30
+      })
+      const oldContext = contextRef(oldAssistant.id, oldConversation.id, 'old-context', 'article:old', 31)
+      repository.replaceContextRefsForAssistant(oldAssistant.id, [oldContext])
+      repository.replaceCitationRefsForAssistant(oldAssistant.id, [citationRef(oldAssistant.id, oldConversation.id, oldContext.id, 'old-citation', 32)])
+
+      const latestConversation = repository.createConversation({
+        id: 'conversation-latest', articleId: 'article-1', title: 'Latest', now: 100
+      })
+      repository.appendMessage(latestConversation.id, { id: 'latest-user', role: 'USER', content: 'Question', now: 110 })
+      const citedAssistant = repository.appendMessage(latestConversation.id, {
+        id: 'latest-cited', role: 'ASSISTANT', content: 'Supported answer', status: 'COMPLETE', now: 120
+      })
+      const latestContext = contextRef(citedAssistant.id, latestConversation.id, 'latest-context', 'article:latest', 121)
+      repository.replaceContextRefsForAssistant(citedAssistant.id, [latestContext])
+      repository.replaceCitationRefsForAssistant(citedAssistant.id, [citationRef(citedAssistant.id, latestConversation.id, latestContext.id, 'latest-citation', 122)])
+      repository.appendMessage(latestConversation.id, {
+        id: 'latest-no-citation', role: 'ASSISTANT', content: 'Later answer without citations', status: 'COMPLETE', now: 130
+      })
+
+      expect(repository.getLatestRestorableCitationAssistant('article-1')).toMatchObject({
+        id: 'latest-cited',
+        conversationId: 'conversation-latest'
+      })
+    } finally {
+      database.close()
+    }
+  })
+
   it('keeps regenerated history auditable while active history excludes superseded messages', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LlmChatRepository(database.connection)
@@ -378,6 +416,30 @@ function contextRef(
     priority: 100,
     includedInPrompt: true,
     truncatedInPrompt: false,
+    createdAt
+  }
+}
+
+function citationRef(
+  assistantMessageId: string,
+  conversationId: string,
+  contextRefId: string,
+  id: string,
+  createdAt: number
+): LlmCitationRefRecord {
+  return {
+    id,
+    conversationId,
+    assistantMessageId,
+    contextRefId,
+    evidenceBlockId: null,
+    targetKind: 'CONTEXT_REF',
+    protocolId: 'E1',
+    displayOrder: 1,
+    quoteSnapshot: 'Evidence',
+    sourceUrl: 'https://example.com/article',
+    locatorSnapshot: null,
+    schemaVersion: LLM_CITATION_SCHEMA_VERSION,
     createdAt
   }
 }

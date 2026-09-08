@@ -84,6 +84,35 @@ export class LlmChatRepository {
     return (rows as Row[]).map(conversationFromRow)
   }
 
+  /**
+   * Reader-only historical Citation restore. Stay inside the most recently updated Conversation
+   * for this article, then select its latest active COMPLETE Assistant that actually owns Citation
+   * rows. This mirrors Android and prevents an older Conversation from leaking into a normal reopen.
+   */
+  getLatestRestorableCitationAssistant(articleId: string): LlmMessageRecord | null {
+    const normalizedArticleId = articleId.trim()
+    if (!normalizedArticleId) return null
+    const row = this.database.prepare(`
+      SELECT m.* FROM llm_messages m
+      WHERE m.conversation_id = (
+        SELECT c.id FROM llm_conversations c
+        WHERE c.article_id=?
+        ORDER BY c.updated_at DESC,c.created_at DESC,c.id DESC
+        LIMIT 1
+      )
+      AND m.role='ASSISTANT'
+      AND m.history_active=1
+      AND m.status='COMPLETE'
+      AND EXISTS (
+        SELECT 1 FROM llm_citation_refs r
+        WHERE r.assistant_message_id=m.id AND r.conversation_id=m.conversation_id
+      )
+      ORDER BY m.created_at DESC,m.updated_at DESC,m.id DESC
+      LIMIT 1
+    `).get(normalizedArticleId) as Row | undefined
+    return row ? messageFromRow(row) : null
+  }
+
   updateConversationTitle(id: string, title: string, now = Date.now()): LlmConversationRecord {
     const conversationId = id.trim()
     const normalized = normalizeTitle(title)

@@ -74,6 +74,25 @@ describe('buildArticleEvidenceBlocks D2.9', () => {
       kind: 'SELECTION',
       locator: { sourceKind: 'SELECTION', articleId: 'article-1', sourceUrl: 'https://example.com/article' }
     })
-    expect(block?.locator.stableLocatorKey).toBe(block?.stableLocatorKey)
+    expect(block?.stableLocatorKey).toMatch(/^SELECTION:/)
+    expect(block?.locator.stableLocatorKey).toBeUndefined()
+  })
+
+  it('reuses a real Reader anchor only when selected text maps to exactly one article block', () => {
+    const articleBlocks = buildArticleEvidenceBlocks('<h2>Facts</h2><p>Unique selected evidence lives here.</p><p>Other text.</p>')
+    const articleBlock = articleBlocks.find((item) => item.content.includes('Unique selected evidence'))!
+    const selection = buildSelectionEvidenceBlock(
+      'selected evidence',
+      { articleId: 'article-1', sourceUrl: 'https://example.com/article' },
+      articleBlocks
+    )
+
+    expect(selection?.stableLocatorKey).toBe(articleBlock.stableLocatorKey)
+    expect(selection?.locator).toMatchObject({
+      stableLocatorKey: articleBlock.stableLocatorKey,
+      blockIndex: articleBlock.ordinal,
+      normalizedHash: articleBlock.normalizedSha256,
+      headingPath: articleBlock.locator.headingPath
+    })
   })
 })

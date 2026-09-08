@@ -318,6 +318,17 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     await firstAssistant.locator('.reader-ai-inline-citation').click()
     await expect(revenueParagraph.locator('.origread-reader-citation-marker')).toHaveText('[1]')
     await expect(page.locator('.article-body:not(.translated-article-body) .origread-reader-citation-marker')).toHaveCount(1)
+
+    // Android retainAsHistoricalFallback() permanently releases interaction ownership when Chat
+    // closes. Reopening the same Conversation must therefore stay on the latest historical answer
+    // instead of reviving the older Assistant that the user clicked before dismissing the panel.
+    await page.locator('.reader-ai-panel').getByRole('button', { name: '关闭' }).click()
+    await expect(page.locator('.reader-ai-panel')).toBeHidden()
+    await expect(revenueParagraph.locator('.origread-reader-citation-marker')).toHaveText('[2]')
+    await page.keyboard.press('a')
+    await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-view', 'chat')
+    await expect(revenueParagraph.locator('.origread-reader-citation-marker')).toHaveText('[2]')
+
     const afterFollowUp = await page.evaluate(async (id) => {
       const conversations = await window.origread.listLlmConversations(id)
       if (!conversations[0]) throw new Error('Conversation missing after follow-up')

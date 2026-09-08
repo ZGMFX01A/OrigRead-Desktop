@@ -102,6 +102,30 @@ describe('WebsiteSourceService parity', () => {
     expect(requests).toBe(0)
   })
 
+  it('forwards cancellation to the dynamic Chromium renderer', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'origread-website-dynamic-abort-'))
+    dirs.push(dir)
+    const preferenceRepository = new WebsiteParsePreferenceRepository(join(dir, 'prefs.json'))
+    const ruleRepository = new WebsiteRuleRepository(join(dir, 'rules.json'))
+    let observedSignal: AbortSignal | undefined
+    const service = new WebsiteSourceService(
+      ruleRepository,
+      preferenceRepository,
+      async () => { throw new Error('static fetch should not run') },
+      {
+        render: async (_url, signal) => {
+          observedSignal = signal
+          return { finalUrl: 'https://news.example.com/', html: fixture('url-clusters.html') }
+        }
+      }
+    )
+    const controller = new AbortController()
+
+    await service.inspectDynamic('https://news.example.com/', FETCHED_AT, controller.signal)
+
+    expect(observedSignal).toBe(controller.signal)
+  })
+
   it('keeps a metadata-only dynamic fallback when Chromium renders but no article list is healthy', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'origread-website-dynamic-fallback-'))
     dirs.push(dir)

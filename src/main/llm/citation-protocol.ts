@@ -54,7 +54,8 @@ export interface BuiltCitationPersistence {
  */
 export function prepareCitationProtocol(
   composed: ComposedLlmContext,
-  candidates: readonly LlmCitationEvidenceCandidate[]
+  candidates: readonly LlmCitationEvidenceCandidate[],
+  includedHistoryContextIds: readonly string[] = []
 ): LlmCitationReadyContext {
   const byRequestIdentity = new Map<string, LlmCitationEvidenceCandidate>()
   for (const candidate of candidates) {
@@ -69,9 +70,21 @@ export function prepareCitationProtocol(
     byRequestIdentity.set(requestIdentity, { ...candidate, contextId, stableLocatorKey: key })
   }
 
-  const includedIdentities = composed.renderedItems.flatMap((item) =>
+  const composedIdentities = composed.renderedItems.flatMap((item) =>
     (item.evidenceBlockKeys ?? []).map((key) => llmEvidenceRequestIdentity(item.id, key))
   )
+  const candidatesByContextId = new Map<string, LlmCitationEvidenceCandidate[]>()
+  for (const candidate of candidates) {
+    const list = candidatesByContextId.get(candidate.contextId) ?? []
+    list.push(candidate)
+    candidatesByContextId.set(candidate.contextId, list)
+  }
+  const historyIdentities = includedHistoryContextIds.flatMap((contextId) =>
+    (candidatesByContextId.get(contextId) ?? []).map((candidate) =>
+      llmEvidenceRequestIdentity(candidate.contextId, candidate.stableLocatorKey)
+    )
+  )
+  const includedIdentities = [...composedIdentities, ...historyIdentities]
   const protocolEntries: LlmCitationProtocolEntry[] = []
   const seenIncluded = new Set<string>()
   for (const requestIdentity of includedIdentities) {

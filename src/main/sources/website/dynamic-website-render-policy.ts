@@ -4,7 +4,7 @@ export interface DynamicWebsiteRenderResult {
 }
 
 export interface DynamicWebsiteRenderer {
-  render(url: string): Promise<DynamicWebsiteRenderResult>
+  render(url: string, signal?: AbortSignal): Promise<DynamicWebsiteRenderResult>
 }
 
 export function requiresInteractiveVerification(targetUrl: string): boolean {

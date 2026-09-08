@@ -144,6 +144,7 @@ export class LlmChatExecutionService {
     let accumulatedReasoning = ''
     let estimatedPromptTokens = 0
     let lastStreamingPersistAt = 0
+    let contextState: PersistedContextState | null = null
     const emitEvent = (event: LlmExecutionEventPayload): void => {
       emit({
         ...identity,
@@ -164,7 +165,12 @@ export class LlmChatExecutionService {
       if (!currentAssistant || currentAssistant.conversationId !== identity.conversationId || currentAssistant.role !== 'ASSISTANT') {
         throw new Error('Assistant 消息不存在或不属于当前会话')
       }
-      const history = this.repository.getMessages(identity.conversationId, true)
+      // Android request history excludes ERROR messages from the next provider request. Keep the
+      // current placeholder in memory for terminal persistence, but never let a failed historical
+      // Assistant (or its Tool evidence) become valid context for a later request.
+      const history = this.repository
+        .getMessages(identity.conversationId, true)
+        .filter((message) => message.id === identity.assistantMessageId || message.status !== 'ERROR')
       if (!history.some((message) => message.id !== identity.assistantMessageId && message.role === 'USER')) {
         throw new Error('当前会话没有可发送的用户消息')
       }
@@ -232,7 +238,19 @@ export class LlmChatExecutionService {
 
       const contextPersistStartedAt = performance.now()
       const plan = this.runtime.prepare(input.profile, contextItems)
-      const contextState = this.persistContext(identity, plan, contextItems, evidenceGroups)
+      const allToolCalls = this.repository.getToolCalls(identity.conversationId)
+      const activeHistoryAssistantIds = new Set(
+        history
+          .filter((message) => message.id !== identity.assistantMessageId && message.role === 'ASSISTANT')
+          .map((message) => message.id)
+      )
+      const historicalToolCalls = allToolCalls.filter((call) =>
+        activeHistoryAssistantIds.has(call.assistantMessageId)
+        && call.status === 'COMPLETE'
+        && Boolean(call.resultContent?.trim())
+      )
+      const persistedContext = this.persistContext(identity, plan, contextItems, evidenceGroups, historicalToolCalls)
+      contextState = persistedContext
       perf.contextPersistMs = performance.now() - contextPersistStartedAt
       assistant = markAssistantStreaming(assistant, plan.providerId, plan.model)
       latestAssistant = assistant
@@ -240,8 +258,9 @@ export class LlmChatExecutionService {
 
       const providerMessages = this.buildProviderHistory(
         history.filter((message) => message.id !== identity.assistantMessageId),
-        this.repository.getToolCalls(identity.conversationId),
-        buildSystemPrompt(plan, contextState)
+        allToolCalls,
+        buildSystemPrompt(plan, persistedContext),
+        persistedContext.citationEntries
       )
       const toolDefinitions = plan.automaticToolCalling ? buildToolDefinitions(plan) : []
       const descriptorByName = uniqueToolDescriptorByName(plan)
@@ -304,7 +323,7 @@ export class LlmChatExecutionService {
           identity,
           result,
           descriptorByName,
-          contextState,
+          persistedContext,
           registered.signal,
           emitEvent,
           perf
@@ -325,7 +344,7 @@ export class LlmChatExecutionService {
         executionStartedAt
       )
       const terminalPersistStartedAt = performance.now()
-      assistant = this.persistAssistantTerminal(assistant, contextState)
+      assistant = this.persistAssistantTerminal(assistant, persistedContext)
       latestAssistant = assistant
       perf.terminalPersistMs = performance.now() - terminalPersistStartedAt
       perf.outcome = 'complete'
@@ -366,10 +385,13 @@ export class LlmChatExecutionService {
           finalReasoning,
           executionStartedAt
         )
-        this.repository.updateMessage(terminal)
+        const persistedTerminal = contextState
+          ? this.persistAssistantTerminal(terminal, contextState)
+          : (this.repository.updateMessage(terminal), terminal)
+        latestAssistant = persistedTerminal
         if (cancelled) emitEvent({ type: 'TERMINAL', finishReason: 'CANCELLED' })
         else emitEvent({ type: 'ERROR', error: serialized })
-        return terminal
+        return persistedTerminal
       }
       if (serialized.code === 'CANCELLED') emitEvent({ type: 'TERMINAL', finishReason: 'CANCELLED' })
       else emitEvent({ type: 'ERROR', error: serialized })
@@ -384,7 +406,8 @@ export class LlmChatExecutionService {
     identity: LlmExecutionIdentity,
     plan: LlmExecutionPlan,
     items: readonly LlmContextItem[],
-    evidenceGroups: readonly LlmExecutionEvidenceGroup[]
+    evidenceGroups: readonly LlmExecutionEvidenceGroup[],
+    historicalToolCalls: readonly LlmToolCallRecord[] = []
   ): PersistedContextState {
     const now = Date.now()
     const renderedById = new Map(plan.context.renderedItems.map((item) => [item.id, item] as const))
@@ -414,6 +437,35 @@ export class LlmChatExecutionService {
       contextRefByContextId.set(item.id, ref)
       return ref
     })
+    const historicalToolContextIds: string[] = []
+    for (const call of historicalToolCalls) {
+      const content = call.resultContent
+      if (call.status !== 'COMPLETE' || !content?.trim()) continue
+      const contextId = `tool-result:${call.id}`
+      if (contextRefByContextId.has(contextId)) continue
+      const descriptor = this.tools.descriptor(call.toolId)
+      const ref: LlmContextRefRecord = {
+        id: randomUUID(),
+        conversationId: identity.conversationId,
+        assistantMessageId: identity.assistantMessageId,
+        contextId,
+        type: 'TOOL_RESULT',
+        title: descriptor?.description.trim() || descriptor?.name || call.apiName,
+        sourceId: descriptor?.sourceId?.trim() || call.toolId,
+        articleId: null,
+        sourceUrl: null,
+        contentSnapshot: content,
+        promptContentSnapshot: content,
+        contentSha256: sha256(content),
+        priority: MANUAL_TOOL_CONTEXT_PRIORITY,
+        includedInPrompt: true,
+        truncatedInPrompt: false,
+        createdAt: now
+      }
+      contextRefs.push(ref)
+      contextRefByContextId.set(contextId, ref)
+      historicalToolContextIds.push(contextId)
+    }
     this.repository.replaceContextRefsForAssistant(identity.assistantMessageId, contextRefs)
 
     const evidenceByContextId = new Map<string, readonly BuiltLlmEvidenceBlock[]>()
@@ -452,14 +504,57 @@ export class LlmChatExecutionService {
         })
       }
     }
-    const citation = prepareCitationProtocol(plan.context, citationCandidates)
+    for (const call of historicalToolCalls) {
+      const content = call.resultContent
+      if (call.status !== 'COMPLETE' || !content?.trim()) continue
+      const contextId = `tool-result:${call.id}`
+      const contextRef = contextRefByContextId.get(contextId)
+      if (!contextRef) continue
+      const normalizedSha256 = sha256(content)
+      const stableLocatorKey = `TOOL_RESULT:${call.id}:${normalizedSha256.slice(0, 20)}`
+      const descriptor = this.tools.descriptor(call.toolId)
+      const record: LlmEvidenceBlockRecord = {
+        id: randomUUID(),
+        contextRefId: contextRef.id,
+        stableLocatorKey,
+        kind: 'TOOL_RESULT',
+        ordinal: 0,
+        textSnapshot: content,
+        normalizedSha256,
+        locator: {
+          version: 1,
+          sourceKind: 'TOOL_RESULT',
+          stableLocatorKey,
+          toolCallId: call.id,
+          toolId: call.toolId,
+          toolName: descriptor?.description.trim() || descriptor?.name || call.apiName,
+          toolSourceId: descriptor?.sourceId?.trim() || null,
+          normalizedHash: normalizedSha256
+        },
+        schemaVersion: LLM_EVIDENCE_SCHEMA_VERSION,
+        createdAt: now
+      }
+      this.repository.replaceEvidenceBlocks(contextRef.id, [record])
+      citationCandidates.push({
+        contextId,
+        stableLocatorKey,
+        contextRefId: contextRef.id,
+        evidenceBlockId: record.id,
+        targetKind: 'EVIDENCE_BLOCK',
+        quoteSnapshot: content,
+        sourceUrl: null,
+        locatorSnapshot: record.locator
+      })
+    }
+    const citation = prepareCitationProtocol(plan.context, citationCandidates, historicalToolContextIds)
     return { promptText: citation.text, citationInstruction: citation.instruction, citationEntries: citation.protocolEntries }
   }
 
   private buildProviderHistory(
     history: readonly LlmMessageRecord[],
     toolCalls: readonly LlmToolCallRecord[],
-    systemPrompt: string
+    systemPrompt: string,
+    citationEntries: readonly PersistedContextState['citationEntries'][number][] = []
   ): AiChatMessage[] {
     const callsByAssistant = new Map<string, LlmToolCallRecord[]>()
     for (const call of toolCalls) {
@@ -467,20 +562,27 @@ export class LlmChatExecutionService {
       list.push(call)
       callsByAssistant.set(call.assistantMessageId, list)
     }
+    const citationProtocolByToolCallId = new Map<string, string>()
+    for (const entry of citationEntries) {
+      const locator = entry.locatorSnapshot
+      if (locator?.sourceKind !== 'TOOL_RESULT' || !locator.toolCallId) continue
+      citationProtocolByToolCallId.set(locator.toolCallId, entry.protocolId)
+    }
     const result: AiChatMessage[] = [{ role: 'system', content: systemPrompt }]
     for (const message of history) {
+      // Defensive parity with Android buildRequestHistorySnapshot(): failed messages and persisted
+      // SYSTEM rows are not replayed into provider history. The request's system prompt above is
+      // the only system message for this execution.
+      if (message.status === 'ERROR' || message.role === 'SYSTEM') continue
       if (message.role === 'USER') {
         result.push({ role: 'user', content: message.content })
-        continue
-      }
-      if (message.role === 'SYSTEM') {
-        result.push({ role: 'system', content: message.content })
         continue
       }
       if (message.role === 'TOOL') {
         continue
       }
       const calls = (callsByAssistant.get(message.id) ?? []).filter(isProviderHistoryToolCall)
+      if (!message.content.trim() && calls.length === 0) continue
       result.push({
         role: 'assistant',
         // Citation protocol IDs (for example [[E1]]) are request-local. Replaying them verbatim
@@ -496,7 +598,13 @@ export class LlmChatExecutionService {
         })) : undefined
       })
       for (const call of calls) {
-        result.push({ role: 'tool', toolCallId: call.providerCallId, content: toolHistoryContent(call) })
+        const content = toolHistoryContent(call)
+        const protocolId = citationProtocolByToolCallId.get(call.id)
+        result.push({
+          role: 'tool',
+          toolCallId: call.providerCallId,
+          content: protocolId ? wrapToolResultEvidence(content, protocolId) : content
+        })
       }
     }
     return result

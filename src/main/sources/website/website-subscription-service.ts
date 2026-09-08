@@ -19,7 +19,7 @@ export class WebsiteSubscriptionService {
    */
   async add(inspection: WebsiteInspectionResult, dynamicRendering = false): Promise<{ feedId: string; insertedArticles: number }> {
     const existing = this.repository.findFeedByUrl(inspection.sourceUrl)
-    if (existing) throw new Error(`来源已存在：${existing.name}`)
+    if (existing) return { feedId: existing.id, insertedArticles: 0 }
     const now = Date.now()
     const feedId = randomUUID()
     const accountId = this.repository.getCurrentAccountId()

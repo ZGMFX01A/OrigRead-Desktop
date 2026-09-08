@@ -108,7 +108,15 @@ import { SourceSwitcherPopover } from './SourceSwitcherPopover'
 import { SourceManagerOverlay } from './SourceManagerOverlay'
 import { THREE_PANE_BREAKPOINT, resolveResponsivePaneLayout } from './responsive-layout'
 import { ReaderAiPanelShell } from './ReaderAiPanel'
-import { directNavigationRefForOccurrence, projectReaderAiCitationDisplay, type ReaderAiCitationOccurrence } from './citation-ui'
+import {
+  directNavigationRefForOccurrence,
+  projectReaderAiCitationDisplay,
+  readerAiCitationSnapshotFromRestorable,
+  retainReaderAiCitationAsHistoricalFallback,
+  selectReaderAiVisibleCitationSnapshot,
+  type ReaderAiCitationOccurrence,
+  type ReaderAiCitationSnapshot
+} from './citation-ui'
 import {
   INITIAL_READER_AI_PANEL_STATE,
   closeReaderAiPanel,
@@ -243,11 +251,17 @@ export default function App(): React.JSX.Element {
   const [chatConversationHistoryError, setChatConversationHistoryError] = useState<string | null>(null)
   const [chatConversationHistoryQuery, setChatConversationHistoryQuery] = useState('')
   const [chatLocateMessageId, setChatLocateMessageId] = useState<string | null>(null)
-  const [chatLocateCitationTarget, setChatLocateCitationTarget] = useState<{ messageId: string; annotationId: string } | null>(null)
+  const [chatLocateCitationTarget, setChatLocateCitationTarget] = useState<{
+    conversationId: string
+    messageId: string
+    annotationId: string
+  } | null>(null)
   const [readerAiSourceFocus, setReaderAiSourceFocus] = useState<{ messageId: string; citationId: string | null; locationUnavailable: boolean } | null>(null)
-  const [readerAiSourceSnapshot, setReaderAiSourceSnapshot] = useState<{ messageId: string; snapshot: LlmAssistantEvidenceSnapshot } | null>(null)
-  const [readerAiInteractionCitationSnapshot, setReaderAiInteractionCitationSnapshot] = useState<{ messageId: string; snapshot: LlmAssistantEvidenceSnapshot } | null>(null)
-  const [readerAiAnswerCitationSnapshot, setReaderAiAnswerCitationSnapshot] = useState<{ messageId: string; snapshot: LlmAssistantEvidenceSnapshot } | null>(null)
+  const [readerAiSourceSnapshot, setReaderAiSourceSnapshot] = useState<ReaderAiCitationSnapshot | null>(null)
+  const [readerAiInteractionCitationSnapshot, setReaderAiInteractionCitationSnapshot] = useState<ReaderAiCitationSnapshot | null>(null)
+  const [readerAiAnswerCitationSnapshot, setReaderAiAnswerCitationSnapshot] = useState<ReaderAiCitationSnapshot | null>(null)
+  const [readerAiHistoricalCitationSnapshot, setReaderAiHistoricalCitationSnapshot] = useState<ReaderAiCitationSnapshot | null>(null)
+  const [readerAiHistoricalCitationResolved, setReaderAiHistoricalCitationResolved] = useState(false)
   const [readerCitationTarget, setReaderCitationTarget] = useState<{ requestId: number; messageId: string; citation: LlmCitationRefRecord; contextRef: LlmContextRefRecord | null } | null>(null)
   const [chatActiveExecution, setChatActiveExecution] = useState<LlmExecutionIdentity | null>(null)
   const [chatAiSettings, setChatAiSettings] = useState<AiSettings | null>(null)
@@ -319,6 +333,7 @@ export default function App(): React.JSX.Element {
   const chatManualToolContextsRef = useRef<LlmManualToolContextView[]>([])
   const citationArticleNavigationRef = useRef<string | null>(null)
   const readerCitationNavigationRevisionRef = useRef(0)
+  const readerCitationReturnRevisionRef = useRef(0)
   const readerCitationHighlightRef = useRef<HTMLElement | null>(null)
   const readerCitationHighlightTimerRef = useRef<number | null>(null)
   const readerCitationProgrammaticScrollRef = useRef(false)
@@ -1026,6 +1041,30 @@ export default function App(): React.JSX.Element {
   ) ?? null
 
   useEffect(() => {
+    if (!selectedArticleId) {
+      setReaderAiHistoricalCitationSnapshot(null)
+      setReaderAiHistoricalCitationResolved(true)
+      return
+    }
+    let cancelled = false
+    setReaderAiHistoricalCitationSnapshot(null)
+    setReaderAiHistoricalCitationResolved(false)
+    void window.origread.getLlmRestorableCitation(selectedArticleId)
+      .then((restorable) => {
+        if (cancelled) return
+        setReaderAiHistoricalCitationSnapshot(restorable ? readerAiCitationSnapshotFromRestorable(restorable) : null)
+        setReaderAiHistoricalCitationResolved(true)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setReaderAiHistoricalCitationSnapshot(null)
+          setReaderAiHistoricalCitationResolved(true)
+        }
+      })
+    return () => { cancelled = true }
+  }, [selectedArticleId, latestCompletedAssistantForCitation?.id, latestCompletedAssistantForCitation?.updatedAt])
+
+  useEffect(() => {
     setReaderAiInteractionCitationSnapshot(null)
   }, [latestCompletedAssistantForCitation?.id, chatConversation?.id])
 
@@ -1047,12 +1086,18 @@ export default function App(): React.JSX.Element {
     return () => { cancelled = true }
   }, [latestCompletedAssistantForCitation?.id, latestCompletedAssistantForCitation?.updatedAt, selectedArticleId])
 
-  // Citation numbering is message-scoped. The article overlay must follow the assistant message
-  // the user is currently interacting with; otherwise a second answer can replace the same
-  // paragraph's marker numbering while an older inline Citation is still selected.
-  const readerAiVisibleCitationSnapshot = readerAiSourceSnapshot
-    ?? readerAiInteractionCitationSnapshot
-    ?? readerAiAnswerCitationSnapshot
+  // Citation numbering is message-scoped. While Chat is open, the article overlay follows the
+  // message the user is actively inspecting. Once Chat closes, those interaction/answer layers are
+  // only a temporary fallback until SQLite resolves the article's latest historical Citation layer.
+  const readerAiVisibleCitationSnapshot = selectReaderAiVisibleCitationSnapshot({
+    panelOpen: readerAiPanel.open,
+    historicalResolved: readerAiHistoricalCitationResolved,
+    source: readerAiSourceSnapshot,
+    interaction: readerAiInteractionCitationSnapshot,
+    answer: readerAiAnswerCitationSnapshot,
+    historical: readerAiHistoricalCitationSnapshot,
+    dismissedFallback: readerAiSourceSnapshot ?? readerAiInteractionCitationSnapshot ?? readerAiAnswerCitationSnapshot
+  })
 
   useEffect(() => {
     const root = readerContentRef.current?.querySelector<HTMLElement>('.article-body:not(.translated-article-body)') ?? null
@@ -1065,7 +1110,8 @@ export default function App(): React.JSX.Element {
     const frame = window.requestAnimationFrame(() => {
       clearMarkers()
       const { messageId, snapshot } = readerAiVisibleCitationSnapshot
-      const ownerContent = chatMessages.find((message) => message.id === messageId)?.content
+      const ownerContent = readerAiVisibleCitationSnapshot.messageContent
+        ?? chatMessages.find((message) => message.id === messageId)?.content
         ?? snapshot.citations
           .slice()
           .sort((a, b) => (a.displayOrder ?? Number.MAX_SAFE_INTEGER) - (b.displayOrder ?? Number.MAX_SAFE_INTEGER))
@@ -1089,6 +1135,7 @@ export default function App(): React.JSX.Element {
           marker.className = 'origread-reader-citation-marker'
           marker.dataset.origreadCitationMarker = 'true'
           marker.dataset.origreadCitationId = citation.id
+          marker.dataset.origreadCitationConversationId = citation.conversationId
           marker.dataset.origreadCitationMessageId = messageId
           marker.dataset.origreadCitationAnnotationId = occurrence.annotationId
           marker.textContent = `[${occurrence.displayOrder}]`
@@ -1291,13 +1338,19 @@ export default function App(): React.JSX.Element {
   const readerAiPanelDocked = Boolean(readerAiPanel.open)
   const readerAiPanelActive = readerAiPanelDocked
 
-  const toggleReaderAiAssistant = useCallback((): void => {
-    setReaderAiPanel((current) =>
-      current.open
-        ? closeReaderAiPanel(current)
-        : openReaderAiPanel(current, current.view)
-    )
+  const retainReaderAiTransientCitationLayersAsHistoricalFallback = useCallback((): void => {
+    setReaderAiSourceSnapshot((snapshot) => retainReaderAiCitationAsHistoricalFallback(snapshot))
+    setReaderAiInteractionCitationSnapshot((snapshot) => retainReaderAiCitationAsHistoricalFallback(snapshot))
   }, [])
+
+  const toggleReaderAiAssistant = useCallback((): void => {
+    if (readerAiPanel.open) {
+      retainReaderAiTransientCitationLayersAsHistoricalFallback()
+      setReaderAiPanel((current) => closeReaderAiPanel(current))
+      return
+    }
+    setReaderAiPanel((current) => openReaderAiPanel(current, current.view))
+  }, [readerAiPanel.open, retainReaderAiTransientCitationLayersAsHistoricalFallback])
 
   const showReaderAiHome = (): void => {
     setReaderAiPanel((current) => openReaderAiPanel(current, 'home'))
@@ -2327,18 +2380,59 @@ export default function App(): React.JSX.Element {
     clearReaderCitationHighlight()
   }
 
+  const returnReaderCitationToChat = async (
+    conversationId: string,
+    messageId: string,
+    annotationId: string
+  ): Promise<void> => {
+    const requestId = readerCitationReturnRevisionRef.current + 1
+    readerCitationReturnRevisionRef.current = requestId
+    cancelPendingReaderCitationNavigation()
+    setChatLocateMessageId(null)
+    setChatLocateCitationTarget(null)
+
+    try {
+      // A marker can live on an attached article while its Assistant belongs to the owner article's
+      // Conversation. Resolve by persisted Conversation identity first, then return the Reader to
+      // that owner article before asking Chat to locate the exact Citation occurrence.
+      const conversations = await window.origread.listLlmConversations()
+      if (readerCitationReturnRevisionRef.current !== requestId) return
+      const conversation = conversations.find((item) => item.id === conversationId) ?? null
+      const ownerArticleId = conversation?.articleId?.trim() || null
+      if (!conversation || !ownerArticleId) return
+
+      if (selectedArticleId !== ownerArticleId) {
+        const article = await window.origread.getArticleById(ownerArticleId)
+        if (readerCitationReturnRevisionRef.current !== requestId) return
+        if (!article) return
+        citationArticleNavigationRef.current = ownerArticleId
+        setSelectedArticleRecord(article)
+        setSelectedArticleId(ownerArticleId)
+      }
+
+      setChatConversations(conversations.filter((item) => item.articleId === ownerArticleId))
+      setChatLocateCitationTarget({ conversationId, messageId, annotationId })
+      setReaderAiPanel((current) => ({
+        ...openReaderAiPanel(current, 'chat'),
+        conversationId
+      }))
+    } catch {
+      if (readerCitationReturnRevisionRef.current === requestId) {
+        setChatLocateCitationTarget(null)
+      }
+    }
+  }
+
   const handleReaderHtmlClick = (event: React.MouseEvent<HTMLDivElement>): void => {
     const target = event.target as HTMLElement
     const citationMarker = target.closest<HTMLButtonElement>('button[data-origread-citation-marker="true"]')
     if (citationMarker) {
+      const conversationId = citationMarker.dataset.origreadCitationConversationId
       const messageId = citationMarker.dataset.origreadCitationMessageId
       const annotationId = citationMarker.dataset.origreadCitationAnnotationId
-      if (messageId && annotationId) {
+      if (conversationId && messageId && annotationId) {
         event.preventDefault()
-        cancelPendingReaderCitationNavigation()
-        setChatLocateMessageId(null)
-        setChatLocateCitationTarget({ messageId, annotationId })
-        setReaderAiPanel((current) => openReaderAiPanel(current, 'chat'))
+        void returnReaderCitationToChat(conversationId, messageId, annotationId)
         return
       }
     }
@@ -2352,6 +2446,7 @@ export default function App(): React.JSX.Element {
 
   const selectArticle = (article: ArticleRecord): void => {
     if (!closeSettingsIfAllowed()) return
+    readerCitationReturnRevisionRef.current += 1
     cancelPendingReaderCitationNavigation()
     const readerArticle = article.isUnread ? { ...article, isUnread: false } : article
     if (article.isUnread) {
@@ -2696,6 +2791,10 @@ export default function App(): React.JSX.Element {
   }
 
   const discoverSourceWithProgress = async (url: string): Promise<SourceDiscoveryResult> => {
+    const previousRequestId = sourceDiscoveryRequestIdRef.current
+    if (previousRequestId) {
+      await window.origread.cancelSourceDiscovery(previousRequestId).catch(() => false)
+    }
     const requestId = crypto.randomUUID()
     sourceDiscoveryRequestIdRef.current = requestId
     setSourceDiscoveryRequestId(requestId)
@@ -2704,9 +2803,11 @@ export default function App(): React.JSX.Element {
     try {
       return await window.origread.discoverSource(url, requestId)
     } finally {
-      if (sourceDiscoveryRequestIdRef.current === requestId) sourceDiscoveryRequestIdRef.current = null
-      setSourceDiscoveryRequestId((current) => current === requestId ? null : current)
-      setSourceDiscoveryStartedAt(null)
+      if (sourceDiscoveryRequestIdRef.current === requestId) {
+        sourceDiscoveryRequestIdRef.current = null
+        setSourceDiscoveryRequestId((current) => current === requestId ? null : current)
+        setSourceDiscoveryStartedAt(null)
+      }
     }
   }
 
@@ -2755,7 +2856,16 @@ export default function App(): React.JSX.Element {
   }
 
   const closeAddSource = (): void => {
-    if (isAddingSource) return
+    const activeRequestId = sourceDiscoveryRequestIdRef.current
+    // Subscription persistence has no discovery request and remains non-cancellable. During the
+    // network discovery phase, closing the dialog mirrors Android cancelSearch() and aborts Main.
+    if (isAddingSource && !activeRequestId) return
+    if (activeRequestId) {
+      sourceDiscoveryRequestIdRef.current = null
+      setSourceDiscoveryRequestId(null)
+      setSourceDiscoveryStartedAt(null)
+      void window.origread.cancelSourceDiscovery(activeRequestId).catch(() => false)
+    }
     setAddSourceOpen(false)
     setSourceError(null)
     setSourceDiscovery(null)
@@ -3046,6 +3156,7 @@ export default function App(): React.JSX.Element {
 
   const closeReaderAiAssistant = (): void => {
     if (speech.state.domain === 'summary') speech.stop()
+    retainReaderAiTransientCitationLayersAsHistoricalFallback()
     setReaderAiPanel((current) => closeReaderAiPanel(current))
   }
 
@@ -3298,7 +3409,14 @@ export default function App(): React.JSX.Element {
             forceWebSearchNext={chatForceWebSearchNext}
             reasoningEffort={chatReasoningEffort}
             locateMessageId={chatLocateMessageId}
-            locateCitationTarget={chatLocateCitationTarget}
+            locateCitationTarget={
+              chatLocateCitationTarget && chatLocateCitationTarget.conversationId === chatConversation?.id
+                ? {
+                    messageId: chatLocateCitationTarget.messageId,
+                    annotationId: chatLocateCitationTarget.annotationId
+                  }
+                : null
+            }
             placeholder={t('askAboutArticle')}
             onDraftChange={setChatDraft}
             onClearSelection={()=>setReaderAiSelection(null)}
@@ -3995,7 +4113,7 @@ export default function App(): React.JSX.Element {
                 type="button"
                 className="dialog-close"
                 aria-label={t('cancel')}
-                disabled={isAddingSource}
+                disabled={isAddingSource && !sourceDiscoveryRequestId}
                 onClick={closeAddSource}
               >
                 <X size={17} />
@@ -4197,7 +4315,12 @@ export default function App(): React.JSX.Element {
                 </button>
               )}
               <span className="dialog-footer-spacer" />
-              <button type="button" className="dialog-cancel" disabled={isAddingSource} onClick={closeAddSource}>
+              <button
+                type="button"
+                className="dialog-cancel"
+                disabled={isAddingSource && !sourceDiscoveryRequestId}
+                onClick={closeAddSource}
+              >
                 {t('cancel')}
               </button>
               <button

@@ -36,7 +36,7 @@ export interface WebsiteFetchPayload {
   html: string
 }
 
-export type WebsiteFetcher = (url: string) => Promise<WebsiteFetchPayload>
+export type WebsiteFetcher = (url: string, signal?: AbortSignal) => Promise<WebsiteFetchPayload>
 
 interface CandidateBatch {
   candidates: WebsiteParseCandidate[]
@@ -58,14 +58,14 @@ export class WebsiteSourceService {
     private readonly dynamicRenderer: DynamicWebsiteRenderer | null = null
   ) {}
 
-  async inspect(url: string, fetchedAt = Date.now()): Promise<WebsiteInspectionResult> {
-    const payload = await this.request(url)
+  async inspect(url: string, fetchedAt = Date.now(), signal?: AbortSignal): Promise<WebsiteInspectionResult> {
+    const payload = await this.request(url, signal)
     return this.buildInspection(url, payload.finalUrl, payload.html, fetchedAt)
   }
 
-  async inspectDynamic(url: string, fetchedAt = Date.now()): Promise<WebsiteInspectionResult> {
+  async inspectDynamic(url: string, fetchedAt = Date.now(), signal?: AbortSignal): Promise<WebsiteInspectionResult> {
     if (!this.dynamicRenderer) throw new Error('动态 Chromium 渲染器不可用')
-    const rendered = await this.dynamicRenderer.render(url)
+    const rendered = await this.dynamicRenderer.render(url, signal)
     try {
       return this.buildInspection(url, rendered.finalUrl, rendered.html, fetchedAt, true)
     } catch (error) {
@@ -132,8 +132,8 @@ export class WebsiteSourceService {
     return rule ? new ConfigurableWebsiteParser(rule).findObsoleteArticleIds(existingArticles, fetchedArticles) : []
   }
 
-  private async request(url: string): Promise<WebsiteFetchPayload> {
-    const payload = await this.fetcher(url)
+  private async request(url: string, signal?: AbortSignal): Promise<WebsiteFetchPayload> {
+    const payload = await this.fetcher(url, signal)
     if (payload.status < 200 || payload.status >= 300) throw new Error(`网站请求失败：HTTP ${payload.status}`)
     return payload
   }
@@ -313,10 +313,10 @@ export class WebsiteSourceService {
   }
 }
 
-async function defaultWebsiteFetcher(url: string): Promise<WebsiteFetchPayload> {
+async function defaultWebsiteFetcher(url: string, signal?: AbortSignal): Promise<WebsiteFetchPayload> {
   const response = await fetch(url, {
     redirect: 'follow',
-    signal: AbortSignal.timeout(8_000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8_000)]) : AbortSignal.timeout(8_000),
     headers: {
       'user-agent': DESKTOP_BROWSER_USER_AGENT,
       accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'

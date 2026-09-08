@@ -3,6 +3,7 @@ import type {
   SourceCandidateKind,
   SourceCandidateSummary
 } from '../../shared/source-discovery'
+import { sourceUrlComparisonKey } from '../../shared/source-url-normalizer'
 
 export interface SourceCandidateEntry {
   title: string
@@ -77,7 +78,7 @@ export function rankSourceCandidates(candidates: UnscoredSourceCandidate[]): Sou
     // WEBSITE_DYNAMIC 结果交给用户手动尝试；其他来源仍必须通过健康检查。
     .filter(({ candidate, diagnostics }) => diagnostics.accepted || candidate.kind === 'WEBSITE_DYNAMIC')
     .map(({ candidate, diagnostics }): SourceCandidateSummary => ({
-      id: `${candidate.sourceType.toUpperCase()}:${candidate.feedLink.trim()}`,
+      id: `${candidate.sourceType.toUpperCase()}:${sourceUrlComparisonKey(candidate.feedLink)}`,
       title: candidate.title,
       feedLink: candidate.feedLink,
       sourceType: candidate.sourceType,

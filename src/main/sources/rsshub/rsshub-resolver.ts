@@ -1,6 +1,6 @@
 import type { DiscoveredRssFeed } from '../../../shared/rss'
 import type { RssHubProbeResult, RssHubRouteMatch } from '../../../shared/rsshub'
-import { RssDiscoveryService, type RssFetchPayload } from '../rss/rss-discovery-service'
+import { RssDiscoveryService, type RssFetchPayload, type RssRequestValidators } from '../rss/rss-discovery-service'
 import { RssHubRouteMatcher } from './rsshub-route-matcher'
 import { normalizeRssHubInstanceUrl } from './rsshub-route-matcher'
 import { RssHubSettingsRepository } from './rsshub-settings-repository'
@@ -9,7 +9,7 @@ const MAX_ROUTE_CANDIDATES = 5
 const CALL_TIMEOUT_MILLIS = 5_000
 const TOTAL_PROBE_TIMEOUT_MILLIS = 12_000
 
-export type RssHubFeedProbe = (feedUrl: string, sourceUrl: string) => Promise<DiscoveredRssFeed>
+export type RssHubFeedProbe = (feedUrl: string, sourceUrl: string, signal?: AbortSignal) => Promise<DiscoveredRssFeed>
 
 export class RssHubResolver {
   static readonly DEFAULT_INSTANCE = 'https://rsshub.app'
@@ -20,7 +20,12 @@ export class RssHubResolver {
     private readonly feedProbe: RssHubFeedProbe = createDefaultFeedProbe()
   ) {}
 
-  async probe(inputUrl: string, instanceBaseUrl?: string): Promise<RssHubProbeResult[]> {
+  knownInstanceUrls(): string[] {
+    return this.settingsRepository.current().instances.map((instance) => instance.url)
+  }
+
+  async probe(inputUrl: string, instanceBaseUrl?: string, signal?: AbortSignal): Promise<RssHubProbeResult[]> {
+    signal?.throwIfAborted()
     const settings = this.settingsRepository.current()
     const instances = instanceBaseUrl
       ? [instanceBaseUrl]
@@ -48,16 +53,26 @@ export class RssHubResolver {
     if (expectedResolvedKeys.size === 0) return [...diagnostics.values()]
     let successRecorded = false
     let budgetExpired = false
-
-    await withTimeout(async () => {
+    const totalController = new AbortController()
+    const totalTimer = setTimeout(() => {
+      budgetExpired = true
+      totalController.abort(new DOMException('RSSHub probe budget expired', 'TimeoutError'))
+    }, TOTAL_PROBE_TIMEOUT_MILLIS)
+    const probeSignal = signal
+      ? AbortSignal.any([signal, totalController.signal])
+      : totalController.signal
+    try {
       // 与 Android 保持一致：实例按优先级串行 fallback；单实例内部才并发有限路由。
       // 这样不会因为“实例数 × 路由数”同时打满网络，也能稳定复用最近成功实例。
       for (const instance of instances) {
+        signal?.throwIfAborted()
         if (budgetExpired) break
         let results: RssHubProbeResult[] = []
         try {
-          results = await this.probeInstance(inputUrl, instance)
-        } catch {
+          results = await this.probeInstance(inputUrl, instance, probeSignal)
+        } catch (error) {
+          if (signal?.aborted) throw signal.reason ?? error
+          if (totalController.signal.aborted) break
           // 本地 expected 已经保留；单实例异常不能把本地发现结果清空。
         }
 
@@ -81,7 +96,11 @@ export class RssHubResolver {
 
         if ([...expectedResolvedKeys].every((key) => availableByRoute.has(key))) break
       }
-    }, TOTAL_PROBE_TIMEOUT_MILLIS, () => { budgetExpired = true })
+    } finally {
+      clearTimeout(totalTimer)
+    }
+
+    signal?.throwIfAborted()
 
     // 总预算可能先于某个实例完成。此时本地匹配仍然是事实，必须保留为 timeout 诊断。
     for (const match of expected.filter((item) => item.resolved)) {
@@ -113,22 +132,23 @@ export class RssHubResolver {
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
   }
 
-  private async probeInstance(inputUrl: string, instanceBaseUrl: string): Promise<RssHubProbeResult[]> {
+  private async probeInstance(inputUrl: string, instanceBaseUrl: string, signal?: AbortSignal): Promise<RssHubProbeResult[]> {
     const matches = this.routeMatcher.match(inputUrl, instanceBaseUrl, MAX_ROUTE_CANDIDATES)
     return Promise.all(matches.map((match) => {
       if (!match.resolved) {
         return Promise.resolve(toProbeResult(match, 'needs_input', null,
           `RSSHub route requires parameters: ${match.missingParameters.join(', ')}`))
       }
-      return this.probeOne(match, inputUrl)
+      return this.probeOne(match, inputUrl, signal)
     }))
   }
 
-  private async probeOne(match: RssHubRouteMatch, inputUrl: string): Promise<RssHubProbeResult> {
+  private async probeOne(match: RssHubRouteMatch, inputUrl: string, signal?: AbortSignal): Promise<RssHubProbeResult> {
     try {
-      const feed = await this.feedProbe(match.feedUrl!, inputUrl)
+      const feed = await this.feedProbe(match.feedUrl!, inputUrl, signal)
       return toProbeResult(match, 'available', feed, null)
     } catch (error) {
+      if (signal?.aborted) throw error
       if (isTimeoutError(error)) {
         return toProbeResult(match, 'timeout', null, 'RSSHub connection timed out and was skipped')
       }
@@ -142,15 +162,19 @@ export class RssHubResolver {
 
 function createDefaultFeedProbe(): RssHubFeedProbe {
   const discovery = new RssDiscoveryService(fetchRssHubPayload)
-  return (feedUrl, sourceUrl) => discovery.parseDirect(feedUrl, sourceUrl)
+  return (feedUrl, sourceUrl, signal) => discovery.parseDirect(feedUrl, sourceUrl, signal)
 }
 
-async function fetchRssHubPayload(url: string): Promise<RssFetchPayload> {
+async function fetchRssHubPayload(
+  url: string,
+  _validators: RssRequestValidators = {},
+  signal?: AbortSignal
+): Promise<RssFetchPayload> {
   let response: Response
   try {
     response = await fetch(url, {
       redirect: 'follow',
-      signal: AbortSignal.timeout(CALL_TIMEOUT_MILLIS),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(CALL_TIMEOUT_MILLIS)]) : AbortSignal.timeout(CALL_TIMEOUT_MILLIS),
       headers: {
         Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.8'
       }
@@ -217,18 +241,4 @@ function combinedProbeResults(
     ...availableByRoute.values(),
     ...[...diagnostics.entries()].filter(([key]) => !availableByRoute.has(key)).map(([, result]) => result)
   ]
-}
-
-async function withTimeout<T>(work: () => Promise<T>, timeoutMillis: number, fallback: T | (() => T)): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  try {
-    return await Promise.race([
-      work(),
-      new Promise<T>((resolve) => {
-        timer = setTimeout(() => resolve(typeof fallback === 'function' ? (fallback as () => T)() : fallback), timeoutMillis)
-      })
-    ])
-  } finally {
-    if (timer) clearTimeout(timer)
-  }
 }

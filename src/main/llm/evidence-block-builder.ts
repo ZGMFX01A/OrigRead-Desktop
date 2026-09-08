@@ -21,11 +21,19 @@ export interface ArticleEvidenceSource {
   sourceUrl?: string | null
 }
 
-export function buildSelectionEvidenceBlock(content: string, source: ArticleEvidenceSource = {}): BuiltLlmEvidenceBlock | null {
+export function buildSelectionEvidenceBlock(
+  content: string,
+  source: ArticleEvidenceSource = {},
+  articleEvidenceBlocks?: readonly BuiltLlmEvidenceBlock[]
+): BuiltLlmEvidenceBlock | null {
   const normalized = normalizeEvidenceText(content)
   if (!normalized) return null
   const normalizedSha256 = sha256(normalized)
-  const stableLocatorKey = `SELECTION:${normalizedSha256.slice(0, 24)}:0`
+  const syntheticStableLocatorKey = `SELECTION:${normalizedSha256.slice(0, 24)}:0`
+  const matchingArticleBlocks = articleEvidenceBlocks
+    ?.filter((block) => normalizeEvidenceText(block.content).includes(normalized)) ?? []
+  const uniqueArticleBlock = matchingArticleBlocks.length === 1 ? matchingArticleBlocks[0]! : null
+  const stableLocatorKey = uniqueArticleBlock?.stableLocatorKey ?? syntheticStableLocatorKey
   return {
     stableLocatorKey,
     content: normalized,
@@ -35,10 +43,13 @@ export function buildSelectionEvidenceBlock(content: string, source: ArticleEvid
     locator: {
       version: 1,
       sourceKind: 'SELECTION',
-      stableLocatorKey,
+      // Synthetic Selection keys identify request evidence only; they are not Reader DOM anchors.
+      stableLocatorKey: uniqueArticleBlock?.stableLocatorKey,
+      blockIndex: uniqueArticleBlock?.ordinal,
+      headingPath: uniqueArticleBlock?.locator.headingPath ?? [],
       articleId: source.articleId?.trim() || null,
       sourceUrl: source.sourceUrl?.trim() || null,
-      normalizedHash: normalizedSha256
+      normalizedHash: uniqueArticleBlock?.normalizedSha256 ?? normalizedSha256
     },
     schemaVersion: LLM_EVIDENCE_SCHEMA_VERSION
   }

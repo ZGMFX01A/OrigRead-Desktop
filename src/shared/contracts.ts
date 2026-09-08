@@ -135,6 +135,7 @@ export interface OrigReadDesktopApi extends LlmChatDataApi {
   deleteWebsiteRule(id: string): Promise<void>
   testWebsiteRule(url: string): Promise<{ ok:boolean;articleCount:number;error:string|null }>
   discoverSource(url: string, requestId: string): Promise<SourceDiscoveryResult>
+  cancelSourceDiscovery(requestId: string): Promise<boolean>
   onSourceDiscoveryProgress(listener: (progress: SourceDiscoveryProgress) => void): () => void
   subscribeSource(discoveryId: string, candidateIds: string[]): Promise<SourceSubscriptionResult[]>
   refreshJsonSource(feedId: string): Promise<{ feedId: string; fetchedArticles: number; insertedArticles: number }>
@@ -301,6 +302,7 @@ export const IPC_CHANNELS = {
   deleteWebsiteRule: 'website:rules:delete',
   testWebsiteRule: 'website:rules:test',
   discoverSource: 'source:discover',
+  cancelSourceDiscovery: 'source:discover-cancel',
   sourceDiscoveryProgress: 'source:discover-progress',
   subscribeSource: 'source:subscribe',
   refreshJsonSource: 'json:refresh-source',
@@ -380,6 +382,7 @@ export const IPC_CHANNELS = {
   executeLlmManualTool: 'llm:manual-tool:execute',
   discardLlmManualToolContext: 'llm:manual-tool:discard-context',
   getLlmAssistantEvidence: 'llm:evidence:get-assistant',
+  getLlmRestorableCitation: 'llm:evidence:get-restorable',
   startLlmExecution: 'llm:execution:start',
   cancelLlmExecution: 'llm:execution:cancel',
   llmExecutionEvent: 'llm:execution:event',

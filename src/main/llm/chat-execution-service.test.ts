@@ -321,6 +321,51 @@ describe('LlmChatExecutionService D2 pipeline', () => {
     env.database.close()
   })
 
+  it('canonicalizes and preserves valid citations when generation is stopped or errors after partial output', async () => {
+    for (const terminal of ['stopped', 'error'] as const) {
+      const transport = new QueueTransport([
+        async ({ onDelta }) => {
+          onDelta({ content: 'Partial answer [[E1]]', reasoning: '', finishReason: null, toolCalls: [] })
+          if (terminal === 'stopped') throw new DOMException('cancelled', 'AbortError')
+          throw new Error('provider failed after partial output')
+        }
+      ])
+      const env = setup(transport)
+      const identity = createConversation(env.repository)
+      const blocks = buildArticleEvidenceBlocks('<p>Partial-output evidence.</p>', {
+        articleId: 'article-1',
+        sourceUrl: 'https://example.com/article'
+      })
+
+      const result = await env.service.execute({
+        ...identity,
+        requestId: `request-partial-${terminal}`,
+        ownerId: 'renderer-1',
+        contextItems: [{
+          id: 'article:article-1',
+          type: 'ARTICLE',
+          content: blocks.map((block) => block.content).join('\n\n'),
+          sourceId: 'https://example.com/article',
+          internalArticleId: 'article-1',
+          reserveEvidenceBudget: true,
+          evidenceBlocks: blocks,
+          priority: 100
+        }],
+        evidenceGroups: [{ contextId: 'article:article-1', blocks }]
+      }, () => undefined)
+
+      expect(result).toMatchObject({
+        content: 'Partial answer',
+        status: terminal === 'stopped' ? 'STOPPED' : 'ERROR'
+      })
+      expect(env.repository.getCitationRefsForAssistant(identity.assistantMessageId)).toMatchObject([
+        { protocolId: 'E1', quoteSnapshot: 'Partial-output evidence.' }
+      ])
+      expect(env.repository.getCitationAnnotationsForAssistant(identity.assistantMessageId)).toHaveLength(1)
+      env.database.close()
+    }
+  })
+
   it('keeps second-turn citation IDs scoped to the new request instead of colliding with prior assistant tokens', async () => {
     const transport = new QueueTransport([
       async ({ messages, onDelta }) => {
@@ -372,6 +417,118 @@ describe('LlmChatExecutionService D2 pipeline', () => {
     expect(env.repository.getCitationRefsForAssistant('assistant-new')).toMatchObject([
       { protocolId: 'E1', displayOrder: 1, quoteSnapshot: 'Current-turn evidence.' }
     ])
+    env.database.close()
+  })
+
+  it('reissues historical COMPLETE Tool results with current request-local citation IDs', async () => {
+    const transport = new QueueTransport([
+      async ({ messages, onDelta }) => {
+        const historicalTool = messages.find((message) => message.role === 'tool')
+        expect(historicalTool?.content).toContain('[ORIGREAD_EVIDENCE id="E2"]')
+        expect(historicalTool?.content).toContain('Historical tool evidence')
+        onDelta({ content: 'Follow-up from tool [[E2]]', reasoning: '', finishReason: 'stop', toolCalls: [] })
+        return { content: 'Follow-up from tool [[E2]]', reasoning: null, finishReason: 'stop', toolCalls: [] }
+      }
+    ])
+    const env = setup(transport)
+    const conversationId = 'conversation-historical-tool-citation'
+    env.repository.createConversation({ id: conversationId, title: 'Tool history', articleId: 'article-1', articleTitle: 'Article', now: 10 })
+    env.repository.appendMessage(conversationId, { id: 'user-old-tool', role: 'USER', content: 'Use a tool', now: 20 })
+    env.repository.appendMessage(conversationId, {
+      id: 'assistant-old-tool', role: 'ASSISTANT', content: 'Earlier tool-backed answer', status: 'COMPLETE', now: 30
+    })
+    env.repository.appendToolCalls([{
+      id: 'tool-call-old',
+      conversationId,
+      assistantMessageId: 'assistant-old-tool',
+      providerCallId: 'provider-tool-old',
+      toolId: 'historical-tool',
+      apiName: 'historical_tool',
+      argumentsJson: '{}',
+      status: 'COMPLETE',
+      resultContent: 'Historical tool evidence',
+      errorMessage: null,
+      createdAt: 31,
+      updatedAt: 32
+    }])
+    env.repository.appendMessage(conversationId, { id: 'user-new-tool', role: 'USER', content: 'Use that result', now: 40 })
+    env.repository.appendMessage(conversationId, { id: 'assistant-new-tool', role: 'ASSISTANT', content: '', status: 'STREAMING', now: 50 })
+    const blocks = buildArticleEvidenceBlocks('<p>Current article evidence.</p>', {
+      articleId: 'article-1',
+      sourceUrl: 'https://example.com/article'
+    })
+
+    const result = await env.service.execute({
+      conversationId,
+      assistantMessageId: 'assistant-new-tool',
+      requestId: 'request-historical-tool-citation',
+      ownerId: 'renderer-1',
+      contextItems: [{
+        id: 'article:article-1',
+        type: 'ARTICLE',
+        content: blocks.map((block) => block.content).join('\n\n'),
+        sourceId: 'https://example.com/article',
+        internalArticleId: 'article-1',
+        reserveEvidenceBudget: true,
+        evidenceBlocks: blocks,
+        priority: 100
+      }],
+      evidenceGroups: [{ contextId: 'article:article-1', blocks }]
+    }, () => undefined)
+
+    expect(result.content).toBe('Follow-up from tool')
+    expect(env.repository.getCitationRefsForAssistant('assistant-new-tool')).toMatchObject([
+      {
+        protocolId: 'E2',
+        quoteSnapshot: 'Historical tool evidence',
+        locatorSnapshot: { sourceKind: 'TOOL_RESULT', toolCallId: 'tool-call-old' }
+      }
+    ])
+    env.database.close()
+  })
+
+  it('does not replay ERROR assistants or their completed Tool results into the next request', async () => {
+    const transport = new QueueTransport([
+      async ({ messages, onDelta }) => {
+        expect(messages.some((message) => message.role === 'assistant' && message.content.includes('failed answer'))).toBe(false)
+        expect(messages.some((message) => message.role === 'tool' && String(message.content).includes('failed tool evidence'))).toBe(false)
+        onDelta({ content: 'Recovered answer', reasoning: '', finishReason: 'stop', toolCalls: [] })
+        return { content: 'Recovered answer', reasoning: null, finishReason: 'stop', toolCalls: [] }
+      }
+    ])
+    const env = setup(transport)
+    const conversationId = 'conversation-error-history'
+    env.repository.createConversation({ id: conversationId, title: 'Error history', articleId: 'article-1', articleTitle: 'Article', now: 10 })
+    env.repository.appendMessage(conversationId, { id: 'user-old', role: 'USER', content: 'Old request', now: 20 })
+    env.repository.appendMessage(conversationId, {
+      id: 'assistant-error', role: 'ASSISTANT', content: 'failed answer', status: 'ERROR', now: 30
+    })
+    env.repository.appendToolCalls([{
+      id: 'tool-call-error-history',
+      conversationId,
+      assistantMessageId: 'assistant-error',
+      providerCallId: 'provider-tool-error-history',
+      toolId: 'historical-tool',
+      apiName: 'historical_tool',
+      argumentsJson: '{}',
+      status: 'COMPLETE',
+      resultContent: 'failed tool evidence',
+      errorMessage: null,
+      createdAt: 31,
+      updatedAt: 32
+    }])
+    env.repository.appendMessage(conversationId, { id: 'user-new', role: 'USER', content: 'Try again', now: 40 })
+    env.repository.appendMessage(conversationId, { id: 'assistant-new', role: 'ASSISTANT', content: '', status: 'STREAMING', now: 50 })
+
+    const result = await env.service.execute({
+      conversationId,
+      assistantMessageId: 'assistant-new',
+      requestId: 'request-error-history',
+      ownerId: 'renderer-1'
+    }, () => undefined)
+
+    expect(result).toMatchObject({ content: 'Recovered answer', status: 'COMPLETE' })
+    expect(env.repository.getCitationRefsForAssistant('assistant-new')).toEqual([])
     env.database.close()
   })
 

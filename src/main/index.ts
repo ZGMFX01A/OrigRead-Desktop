@@ -151,6 +151,7 @@ let websiteSourceService: WebsiteSourceService | null = null
 let websiteSubscriptionService: WebsiteSubscriptionService | null = null
 let rssHubSubscriptionService: RssHubSubscriptionService | null = null
 let sourceDiscoveryService: SourceDiscoveryService | null = null
+const activeSourceDiscoveryRequests = new Map<string, AbortController>()
 let sourceSyncService: SourceSyncService | null = null
 let readerContentService: ReaderContentService | null = null
 let articleFullContentService: ArticleFullContentService | null = null
@@ -834,16 +835,33 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (!sourceDiscoveryService) throw new Error('Source discovery service is not ready')
     const validatedRequestId = validateText(requestId, 'requestId', 128)
-    return sourceDiscoveryService.discover(validateUrlInput(url), (stage, state) => {
-      if (!event.sender.isDestroyed()) {
-        event.sender.send(IPC_CHANNELS.sourceDiscoveryProgress, {
-          requestId: validatedRequestId,
-          stage,
-          state,
-          at: Date.now()
-        })
+    activeSourceDiscoveryRequests.get(validatedRequestId)?.abort(new Error('Source discovery superseded'))
+    const controller = new AbortController()
+    activeSourceDiscoveryRequests.set(validatedRequestId, controller)
+    try {
+      return await sourceDiscoveryService.discover(validateUrlInput(url), (stage, state) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send(IPC_CHANNELS.sourceDiscoveryProgress, {
+            requestId: validatedRequestId,
+            stage,
+            state,
+            at: Date.now()
+          })
+        }
+      }, controller.signal)
+    } finally {
+      if (activeSourceDiscoveryRequests.get(validatedRequestId) === controller) {
+        activeSourceDiscoveryRequests.delete(validatedRequestId)
       }
-    })
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.cancelSourceDiscovery, (event, requestId: unknown) => {
+    assertTrustedSender(event)
+    const validatedRequestId = validateText(requestId, 'requestId', 128)
+    const controller = activeSourceDiscoveryRequests.get(validatedRequestId)
+    if (!controller) return false
+    controller.abort(new Error('Source discovery cancelled'))
+    return true
   })
   ipcMain.handle(IPC_CHANNELS.subscribeSource, async (event, discoveryId: unknown, candidateIds: unknown) => {
     assertTrustedSender(event)
@@ -1424,6 +1442,24 @@ function registerIpcHandlers(): void {
       citationAnnotationRefs: llmChatRepository.getCitationAnnotationRefsForAssistant(id)
     }
   })
+  ipcMain.handle(IPC_CHANNELS.getLlmRestorableCitation, (event, articleId: unknown) => {
+    assertTrustedSender(event)
+    if (!llmChatRepository) throw new Error('LLM chat repository is not ready')
+    const id = validateId(articleId, 'articleId')
+    const message = llmChatRepository.getLatestRestorableCitationAssistant(id)
+    if (!message) return null
+    const contextRefs = llmChatRepository.getContextRefsForAssistant(message.id)
+    return {
+      message,
+      evidence: {
+        contextRefs,
+        evidenceBlocks: contextRefs.flatMap((ref) => llmChatRepository!.getEvidenceBlocks(ref.id)),
+        citations: llmChatRepository.getCitationRefsForAssistant(message.id),
+        citationAnnotations: llmChatRepository.getCitationAnnotationsForAssistant(message.id),
+        citationAnnotationRefs: llmChatRepository.getCitationAnnotationRefsForAssistant(message.id)
+      }
+    }
+  })
   ipcMain.handle(IPC_CHANNELS.startLlmExecution, (event, request: unknown) => {
     assertTrustedSender(event)
     if (!llmChatRepository || !llmExecutionService) throw new Error('LLM runtime is not ready')
@@ -1441,10 +1477,13 @@ function registerIpcHandlers(): void {
     context.contextItems.push(...readerContextItems)
     for (const item of readerContextItems) {
       if (item.type !== 'SELECTED_TEXT') continue
+      const articleBlocks = context.evidenceGroups
+        .flatMap((group) => group.blocks)
+        .filter((block) => block.locator.articleId === conversation.articleId && block.locator.sourceKind === 'ARTICLE')
       const block = buildSelectionEvidenceBlock(item.content, {
         articleId: conversation.articleId,
         sourceUrl: conversation.articleLink
-      })
+      }, articleBlocks)
       if (block) {
         item.evidenceBlocks = [{ stableLocatorKey: block.stableLocatorKey, content: block.content }]
         context.evidenceGroups.push({ contextId: item.id, blocks: [block] })
@@ -2313,7 +2352,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     new DynamicArticleContentService(dynamicWebsiteRenderer, contentExtractionService)
   )
   websiteSubscriptionService = new WebsiteSubscriptionService(libraryRepository, websiteSourceService, articleFilterRepository)
-  rssHubSubscriptionService = new RssHubSubscriptionService(libraryRepository)
+  rssHubSubscriptionService = new RssHubSubscriptionService(libraryRepository, articleFilterRepository)
   aiSummaryService = new AiSummaryService(
     libraryRepository,
     readerContentService,

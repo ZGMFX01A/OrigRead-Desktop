@@ -27,12 +27,14 @@ export class DynamicWebsiteRenderError extends Error {
  * DOM 返回后仍交给 WebsiteSourceService 的同一 WebsiteRule / 自动 DOM / 健康评分链。
  */
 export class ElectronDynamicWebsiteRenderer implements DynamicWebsiteRenderer {
-  async render(url: string): Promise<DynamicWebsiteRenderResult> {
+  async render(url: string, signal?: AbortSignal): Promise<DynamicWebsiteRenderResult> {
     validateInitialUrl(url)
+    if (signal?.aborted) throw new DynamicWebsiteRenderError('动态页面渲染已取消')
     return new Promise<DynamicWebsiteRenderResult>((resolve, reject) => {
       let completed = false
       let settleTimer: NodeJS.Timeout | null = null
       let navigationCount = 0
+      let abortHandler: (() => void) | null = null
       const window = new BrowserWindow({
         width: VIEWPORT_WIDTH,
         height: VIEWPORT_HEIGHT,
@@ -53,6 +55,8 @@ export class ElectronDynamicWebsiteRenderer implements DynamicWebsiteRenderer {
       const cleanup = (): void => {
         if (settleTimer) clearTimeout(settleTimer)
         settleTimer = null
+        if (abortHandler && signal) signal.removeEventListener('abort', abortHandler)
+        abortHandler = null
         if (!window.isDestroyed()) window.destroy()
       }
       const fail = (message: string): void => {
@@ -92,6 +96,11 @@ export class ElectronDynamicWebsiteRenderer implements DynamicWebsiteRenderer {
       }
 
       const timeoutTimer = setTimeout(() => fail('动态页面渲染超时'), RENDER_TIMEOUT_MS)
+      if (signal) {
+        abortHandler = () => fail('动态页面渲染已取消')
+        signal.addEventListener('abort', abortHandler, { once: true })
+        if (signal.aborted) abortHandler()
+      }
 
       window.webContents.on('will-navigate', (event, targetUrl) => {
         if (!validateNavigation(targetUrl)) event.preventDefault()

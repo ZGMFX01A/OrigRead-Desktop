@@ -147,6 +147,11 @@ export interface LlmAssistantEvidenceSnapshot {
   citationAnnotationRefs: LlmCitationAnnotationRefRecord[]
 }
 
+export interface LlmRestorableCitationSnapshot {
+  message: LlmMessageRecord
+  evidence: LlmAssistantEvidenceSnapshot
+}
+
 export type LlmToolApprovalDecision = 'APPROVE' | 'DENY'
 
 export interface LlmToolActivityView {
@@ -214,6 +219,7 @@ export interface LlmChatDataApi {
   executeLlmManualTool(request: LlmExecuteManualToolRequest): Promise<LlmManualToolContextView>
   discardLlmManualToolContext(contextId: string): Promise<boolean>
   getLlmAssistantEvidence(assistantMessageId: string): Promise<LlmAssistantEvidenceSnapshot>
+  getLlmRestorableCitation(articleId: string): Promise<LlmRestorableCitationSnapshot | null>
   startLlmExecution(request: LlmStartExecutionRequest): Promise<LlmExecutionIdentity>
   cancelLlmExecution(requestId: string): Promise<LlmCancelExecutionResult>
   onLlmExecutionEvent(listener: (event: LlmExecutionEvent) => void): () => void

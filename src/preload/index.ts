@@ -107,6 +107,7 @@ const api: OrigReadDesktopApi = Object.freeze({
   deleteWebsiteRule: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteWebsiteRule, id),
   testWebsiteRule: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.testWebsiteRule, url),
   discoverSource: (url: string, requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.discoverSource, url, requestId),
+  cancelSourceDiscovery: (requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.cancelSourceDiscovery, requestId),
   onSourceDiscoveryProgress: (listener: (progress: SourceDiscoveryProgress) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, progress: SourceDiscoveryProgress): void => listener(progress)
     ipcRenderer.on(IPC_CHANNELS.sourceDiscoveryProgress, wrapped)
@@ -203,6 +204,7 @@ const api: OrigReadDesktopApi = Object.freeze({
   executeLlmManualTool: (request: LlmExecuteManualToolRequest) => ipcRenderer.invoke(IPC_CHANNELS.executeLlmManualTool, request),
   discardLlmManualToolContext: (contextId: string) => ipcRenderer.invoke(IPC_CHANNELS.discardLlmManualToolContext, contextId),
   getLlmAssistantEvidence: (assistantMessageId: string) => ipcRenderer.invoke(IPC_CHANNELS.getLlmAssistantEvidence, assistantMessageId),
+  getLlmRestorableCitation: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.getLlmRestorableCitation, articleId),
   startLlmExecution: (request: LlmStartExecutionRequest) => ipcRenderer.invoke(IPC_CHANNELS.startLlmExecution, request),
   cancelLlmExecution: (requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.cancelLlmExecution, requestId),
   onLlmExecutionEvent: (listener: (event: LlmExecutionEvent) => void) => {

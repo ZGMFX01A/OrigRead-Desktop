@@ -27,9 +27,21 @@ export class RssSubscriptionService {
     return this.addDiscovered(discovered)
   }
 
+  /**
+   * Pre-network duplicate guard shared by the unified source-discovery flow.
+   * LibraryRepository.findFeedByUrl applies the same conservative comparison key used by the
+   * final persistence layer, so tracking parameters / trailing slash variants do not trigger a
+   * redundant discovery request for an already subscribed source.
+   */
+  hasExistingSource(inputUrl: string): boolean {
+    return this.repository.findFeedByUrl(inputUrl) !== null
+  }
+
   addDiscovered(discovered: DiscoveredRssFeed): RssSubscriptionResult {
     const existing = this.repository.findFeedByUrl(discovered.feedUrl)
-    if (existing) throw new Error(`来源已存在：${existing.name}`)
+    if (existing) {
+      return { feedId: existing.id, feed: discovered, insertedArticles: 0 }
+    }
 
     const now = Date.now()
     const feedId = randomUUID()
