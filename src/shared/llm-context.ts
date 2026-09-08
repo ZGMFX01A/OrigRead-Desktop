@@ -74,3 +74,6 @@ export interface ComposedLlmContext {
   renderedItems: LlmRenderedContextItem[]
   decisions: LlmContextDecision[]
 }
+export function llmEvidenceRequestIdentity(contextId: string, stableLocatorKey: string): string {
+  return `${contextId.length}:${contextId}${stableLocatorKey.length}:${stableLocatorKey}`
+}

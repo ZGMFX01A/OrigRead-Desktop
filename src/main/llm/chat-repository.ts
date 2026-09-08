@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import {
+  LLM_CITATION_ANNOTATION_SCHEMA_VERSION,
   LLM_CITATION_SCHEMA_VERSION,
   LLM_EVIDENCE_SCHEMA_VERSION,
+  type LlmCitationAnnotationRecord,
+  type LlmCitationAnnotationRefRecord,
   type LlmCitationRefRecord,
   type LlmContextRefRecord,
   type LlmConversationArticleRecord,
@@ -365,6 +368,7 @@ export class LlmChatRepository {
   replaceCitationRefsForAssistant(assistantMessageId: string, records: readonly LlmCitationRefRecord[]): void {
     const assistantId = assistantMessageId.trim()
     this.transaction(() => {
+      this.database.prepare('DELETE FROM llm_citation_annotations WHERE assistant_message_id=?').run(assistantId)
       this.database.prepare('DELETE FROM llm_citation_refs WHERE assistant_message_id=?').run(assistantId)
       const statement = this.database.prepare(`
         INSERT INTO llm_citation_refs (
@@ -388,6 +392,88 @@ export class LlmChatRepository {
     return (this.database.prepare(`
       SELECT * FROM llm_citation_refs WHERE assistant_message_id=? ORDER BY COALESCE(display_order,2147483647),protocol_id,id
     `).all(assistantMessageId.trim()) as Row[]).map(citationRefFromRow)
+  }
+
+  getCitationAnnotationsForAssistant(assistantMessageId: string): LlmCitationAnnotationRecord[] {
+    return (this.database.prepare(`
+      SELECT * FROM llm_citation_annotations
+      WHERE assistant_message_id=? ORDER BY occurrence_ordinal,id
+    `).all(assistantMessageId.trim()) as Row[]).map(citationAnnotationFromRow)
+  }
+
+  getCitationAnnotationRefsForAssistant(assistantMessageId: string): LlmCitationAnnotationRefRecord[] {
+    return (this.database.prepare(`
+      SELECT ar.* FROM llm_citation_annotation_refs ar
+      JOIN llm_citation_annotations a ON a.id=ar.annotation_id
+      WHERE a.assistant_message_id=?
+      ORDER BY a.occurrence_ordinal,ar.ref_ordinal,ar.citation_ref_id
+    `).all(assistantMessageId.trim()) as Row[]).map(citationAnnotationRefFromRow)
+  }
+
+  /** Atomically persist canonical assistant prose and its complete Citation occurrence graph. */
+  finalizeAssistantCitationState(
+    message: LlmMessageRecord,
+    citationRefs: readonly LlmCitationRefRecord[],
+    annotations: readonly LlmCitationAnnotationRecord[],
+    annotationRefs: readonly LlmCitationAnnotationRefRecord[]
+  ): void {
+    const assistantId = message.id.trim()
+    if (message.role !== 'ASSISTANT') throw new Error('Citation terminal state 只能属于 Assistant 消息')
+    const citationIds = new Set(citationRefs.map((ref) => ref.id))
+    const annotationIds = new Set(annotations.map((annotation) => annotation.id))
+    this.transaction(() => {
+      this.updateMessage(message, false)
+      // Delete occurrences first so no old occurrence can temporarily refer to the replacement ref graph.
+      this.database.prepare('DELETE FROM llm_citation_annotations WHERE assistant_message_id=?').run(assistantId)
+      this.database.prepare('DELETE FROM llm_citation_refs WHERE assistant_message_id=?').run(assistantId)
+
+      const refStatement = this.database.prepare(`
+        INSERT INTO llm_citation_refs (
+          id,conversation_id,assistant_message_id,context_ref_id,evidence_block_id,target_kind,protocol_id,display_order,
+          quote_snapshot,source_url,locator_json,schema_version,created_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `)
+      for (const record of citationRefs) {
+        if (record.assistantMessageId !== assistantId || record.conversationId !== message.conversationId) {
+          throw new Error('CitationRef 不属于当前 Assistant')
+        }
+        if (record.schemaVersion !== LLM_CITATION_SCHEMA_VERSION) throw new Error('不支持的 CitationRef schema version')
+        refStatement.run(
+          record.id, record.conversationId, assistantId, record.contextRefId, record.evidenceBlockId, record.targetKind,
+          record.protocolId, record.displayOrder, record.quoteSnapshot, record.sourceUrl,
+          record.locatorSnapshot ? JSON.stringify(record.locatorSnapshot) : null, record.schemaVersion, record.createdAt
+        )
+      }
+
+      const annotationStatement = this.database.prepare(`
+        INSERT INTO llm_citation_annotations (
+          id,conversation_id,assistant_message_id,canonical_insertion_offset,occurrence_ordinal,schema_version,created_at
+        ) VALUES (?,?,?,?,?,?,?)
+      `)
+      for (const record of annotations) {
+        if (record.assistantMessageId !== assistantId || record.conversationId !== message.conversationId) {
+          throw new Error('CitationAnnotation 不属于当前 Assistant')
+        }
+        if (record.schemaVersion !== LLM_CITATION_ANNOTATION_SCHEMA_VERSION) {
+          throw new Error('不支持的 CitationAnnotation schema version')
+        }
+        annotationStatement.run(
+          record.id, record.conversationId, assistantId, record.canonicalInsertionOffset, record.occurrenceOrdinal,
+          record.schemaVersion, record.createdAt
+        )
+      }
+
+      const annotationRefStatement = this.database.prepare(`
+        INSERT INTO llm_citation_annotation_refs (annotation_id,citation_ref_id,ref_ordinal) VALUES (?,?,?)
+      `)
+      for (const record of annotationRefs) {
+        if (!annotationIds.has(record.annotationId) || !citationIds.has(record.citationRefId)) {
+          throw new Error('CitationAnnotationRef 引用了当前 terminal graph 之外的记录')
+        }
+        annotationRefStatement.run(record.annotationId, record.citationRefId, record.refOrdinal)
+      }
+      this.touchConversation(message.conversationId, message.updatedAt)
+    })
   }
 
   appendToolCalls(records: readonly LlmToolCallRecord[]): void {
@@ -580,6 +666,30 @@ function citationRefFromRow(row: Row): LlmCitationRefRecord {
     displayOrder: row.display_order == null ? null : numberValue(row.display_order), quoteSnapshot: stringValue(row.quote_snapshot),
     sourceUrl: nullableString(row.source_url), locatorSnapshot: row.locator_json == null ? null : parseLocator(row.locator_json),
     schemaVersion, createdAt: numberValue(row.created_at)
+  }
+}
+
+function citationAnnotationFromRow(row: Row): LlmCitationAnnotationRecord {
+  const schemaVersion = numberValue(row.schema_version)
+  if (schemaVersion !== LLM_CITATION_ANNOTATION_SCHEMA_VERSION) {
+    throw new Error(`不支持的 CitationAnnotation schema version：${schemaVersion}`)
+  }
+  return {
+    id: stringValue(row.id),
+    conversationId: stringValue(row.conversation_id),
+    assistantMessageId: stringValue(row.assistant_message_id),
+    canonicalInsertionOffset: numberValue(row.canonical_insertion_offset),
+    occurrenceOrdinal: numberValue(row.occurrence_ordinal),
+    schemaVersion,
+    createdAt: numberValue(row.created_at)
+  }
+}
+
+function citationAnnotationRefFromRow(row: Row): LlmCitationAnnotationRefRecord {
+  return {
+    annotationId: stringValue(row.annotation_id),
+    citationRefId: stringValue(row.citation_ref_id),
+    refOrdinal: numberValue(row.ref_ordinal)
   }
 }
 

@@ -1419,7 +1419,9 @@ function registerIpcHandlers(): void {
     return {
       contextRefs,
       evidenceBlocks: contextRefs.flatMap((ref) => llmChatRepository!.getEvidenceBlocks(ref.id)),
-      citations: llmChatRepository.getCitationRefsForAssistant(id)
+      citations: llmChatRepository.getCitationRefsForAssistant(id),
+      citationAnnotations: llmChatRepository.getCitationAnnotationsForAssistant(id),
+      citationAnnotationRefs: llmChatRepository.getCitationAnnotationRefsForAssistant(id)
     }
   })
   ipcMain.handle(IPC_CHANNELS.startLlmExecution, (event, request: unknown) => {

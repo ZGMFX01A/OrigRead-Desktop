@@ -2,6 +2,7 @@ import type { LlmContextType } from './llm-context'
 
 export const LLM_EVIDENCE_SCHEMA_VERSION = 1
 export const LLM_CITATION_SCHEMA_VERSION = 1
+export const LLM_CITATION_ANNOTATION_SCHEMA_VERSION = 1
 
 export type LlmChatRole = 'SYSTEM' | 'USER' | 'ASSISTANT' | 'TOOL'
 export type LlmMessageStatus = 'COMPLETE' | 'STREAMING' | 'STOPPED' | 'ERROR'
@@ -168,4 +169,22 @@ export interface LlmCitationRefRecord {
   locatorSnapshot: LlmEvidenceLocatorV1 | null
   schemaVersion: number
   createdAt: number
+}
+
+export interface LlmCitationAnnotationRecord {
+  id: string
+  conversationId: string
+  assistantMessageId: string
+  /** UTF-16 offset in the canonical assistant Markdown after transport tokens are removed. */
+  canonicalInsertionOffset: number
+  occurrenceOrdinal: number
+  schemaVersion: number
+  createdAt: number
+}
+
+export interface LlmCitationAnnotationRefRecord {
+  annotationId: string
+  citationRefId: string
+  /** Stable source ordering inside a multi-evidence occurrence. */
+  refOrdinal: number
 }

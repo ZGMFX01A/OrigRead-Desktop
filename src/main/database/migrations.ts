@@ -6,7 +6,7 @@ import {
   ORIGREAD_DESKTOP_RELEASES_URL
 } from '../../shared/origread-release'
 
-export const CURRENT_SCHEMA_VERSION = 11
+export const CURRENT_SCHEMA_VERSION = 12
 export const DEFAULT_LOCAL_ACCOUNT_ID = 1
 export const CURRENT_ACCOUNT_SETTING_KEY = 'account.current_id'
 
@@ -526,6 +526,37 @@ const migrations: Migration[] = [
     up(database) {
       // 兼容更早开发包已经记录 v10、但当时 v10 定义尚未稳定的数据库。
       ensureWebSearchMessageColumns(database)
+    }
+  },
+  {
+    version: 12,
+    up(database) {
+      database.exec(`
+        CREATE TABLE llm_citation_annotations (
+          id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL REFERENCES llm_conversations(id) ON DELETE CASCADE,
+          assistant_message_id TEXT NOT NULL,
+          canonical_insertion_offset INTEGER NOT NULL CHECK (canonical_insertion_offset >= 0),
+          occurrence_ordinal INTEGER NOT NULL CHECK (occurrence_ordinal >= 0),
+          schema_version INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          UNIQUE (assistant_message_id, occurrence_ordinal),
+          FOREIGN KEY (assistant_message_id, conversation_id)
+            REFERENCES llm_messages(id, conversation_id) ON DELETE CASCADE
+        ) STRICT;
+        CREATE INDEX llm_citation_annotations_message_offset_idx
+          ON llm_citation_annotations(assistant_message_id, canonical_insertion_offset, occurrence_ordinal);
+
+        CREATE TABLE llm_citation_annotation_refs (
+          annotation_id TEXT NOT NULL REFERENCES llm_citation_annotations(id) ON DELETE CASCADE,
+          citation_ref_id TEXT NOT NULL REFERENCES llm_citation_refs(id) ON DELETE CASCADE,
+          ref_ordinal INTEGER NOT NULL CHECK (ref_ordinal >= 0),
+          PRIMARY KEY (annotation_id, citation_ref_id),
+          UNIQUE (annotation_id, ref_ordinal)
+        ) STRICT;
+        CREATE INDEX llm_citation_annotation_refs_citation_idx
+          ON llm_citation_annotation_refs(citation_ref_id, annotation_id);
+      `)
     }
   }
 ]

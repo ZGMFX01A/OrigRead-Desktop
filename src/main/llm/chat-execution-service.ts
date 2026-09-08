@@ -19,7 +19,8 @@ import type {
   AiTransportTimingMetric,
   OpenAiCompatibleProvider
 } from '../ai/openai-compatible-provider'
-import { buildCitationRefsFromAssistantOutput, prepareCitationProtocol, type LlmCitationEvidenceCandidate } from './citation-protocol'
+import { buildCitationPersistenceFromAssistantOutput, prepareCitationProtocol, stripHistoricalCitationProtocolTokens, type LlmCitationEvidenceCandidate } from './citation-protocol'
+export { stripHistoricalCitationProtocolTokens } from './citation-protocol'
 import type { BuiltLlmEvidenceBlock } from './evidence-block-builder'
 import type { LlmExecutionPlan, LlmExecutionProfile, LlmRuntime } from './execution-runtime'
 import { LlmExecutionRegistry, serializeLlmIpcError } from './execution-registry'
@@ -323,9 +324,9 @@ export class LlmChatExecutionService {
         accumulatedReasoning,
         executionStartedAt
       )
-      latestAssistant = assistant
       const terminalPersistStartedAt = performance.now()
-      this.persistAssistantTerminal(assistant, contextState)
+      assistant = this.persistAssistantTerminal(assistant, contextState)
+      latestAssistant = assistant
       perf.terminalPersistMs = performance.now() - terminalPersistStartedAt
       perf.outcome = 'complete'
       emitEvent({ type: 'TERMINAL', finishReason })
@@ -440,6 +441,7 @@ export class LlmChatExecutionService {
       this.repository.replaceEvidenceBlocks(contextRef.id, records)
       for (const record of records) {
         citationCandidates.push({
+          contextId,
           stableLocatorKey: record.stableLocatorKey,
           contextRefId: contextRef.id,
           evidenceBlockId: record.id,
@@ -683,6 +685,7 @@ export class LlmChatExecutionService {
     this.repository.replaceEvidenceBlocks(contextRef.id, [evidenceBlock])
     const protocolId = `E${contextState.citationEntries.length + 1}`
     contextState.citationEntries.push({
+      contextId: contextRef.contextId,
       stableLocatorKey,
       contextRefId: contextRef.id,
       evidenceBlockId: evidenceBlock.id,
@@ -766,14 +769,20 @@ export class LlmChatExecutionService {
     }
   }
 
-  private persistAssistantTerminal(assistant: LlmMessageRecord, context: PersistedContextState): void {
-    this.repository.updateMessage(assistant)
-    const citationResult = buildCitationRefsFromAssistantOutput(
+  private persistAssistantTerminal(assistant: LlmMessageRecord, context: PersistedContextState): LlmMessageRecord {
+    const citation = buildCitationPersistenceFromAssistantOutput(
       assistant.content,
       context.citationEntries,
       { conversationId: assistant.conversationId, assistantMessageId: assistant.id }
     )
-    this.repository.replaceCitationRefsForAssistant(assistant.id, citationResult.refs)
+    const canonicalAssistant = { ...assistant, content: citation.canonicalText }
+    this.repository.finalizeAssistantCitationState(
+      canonicalAssistant,
+      citation.refs,
+      citation.annotations,
+      citation.annotationRefs
+    )
+    return canonicalAssistant
   }
 
   private persistStreamingSnapshotIfDue(
@@ -791,17 +800,6 @@ export class LlmChatExecutionService {
 
 function llmAbortReason(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new DOMException('LLM request cancelled', 'AbortError')
-}
-
-/**
- * `[[E<number>]]` is an OrigRead request-local transport token, not durable conversation content.
- * Historical answers retain the raw token in storage so their own CitationRefs can still render
- * correctly in the UI, but a later provider request must not see those old IDs.
- */
-export function stripHistoricalCitationProtocolTokens(content: string): string {
-  return content
-    .replace(/\s*\[\[E\d+\]\]/g, '')
-    .replace(/[ \t]+([,.;:!?，。；：！？])/g, '$1')
 }
 
 async function raceAbortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {

@@ -1,4 +1,6 @@
 import type {
+  LlmCitationAnnotationRecord,
+  LlmCitationAnnotationRefRecord,
   LlmCitationRefRecord,
   LlmContextRefRecord,
   LlmConversationArticleRecord,
@@ -141,6 +143,8 @@ export interface LlmAssistantEvidenceSnapshot {
   contextRefs: LlmContextRefRecord[]
   evidenceBlocks: LlmEvidenceBlockRecord[]
   citations: LlmCitationRefRecord[]
+  citationAnnotations: LlmCitationAnnotationRecord[]
+  citationAnnotationRefs: LlmCitationAnnotationRefRecord[]
 }
 
 export type LlmToolApprovalDecision = 'APPROVE' | 'DENY'

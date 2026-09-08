@@ -88,7 +88,7 @@ test('LLM foundation crosses Main/Preload IPC and persists article evidence cita
     expect(result.messages.at(-1)).toMatchObject({
       id: result.identity.assistantMessageId,
       role: 'ASSISTANT',
-      content: 'Revenue rose [[E2]]',
+      content: 'Revenue rose',
       reasoning: 'checking article',
       status: 'COMPLETE',
       finishReason: 'STOP'

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { LlmContextItem } from '../../shared/llm-context'
+import { llmEvidenceRequestIdentity, type LlmContextItem } from '../../shared/llm-context'
 import { estimateLlmTokens, LlmContextComposer, takeWithinEstimatedTokenBudget } from './context-composer'
 
 describe('LlmContextComposer', () => {
@@ -154,8 +154,8 @@ describe('LlmContextComposer', () => {
     expect(rendered?.content).toContain(last.content)
     expect(rendered?.content).not.toContain(oversized.content)
     expect(result.text).not.toContain('中'.repeat(10))
-    expect(result.text).toContain('[ORIGREAD_EVIDENCE id="p:first"]')
-    expect(result.text).toContain('[ORIGREAD_EVIDENCE id="p:last"]')
+    expect(result.text).toContain(`[ORIGREAD_EVIDENCE id="${llmEvidenceRequestIdentity('article:evidence', 'p:first')}"]`)
+    expect(result.text).toContain(`[ORIGREAD_EVIDENCE id="${llmEvidenceRequestIdentity('article:evidence', 'p:last')}"]`)
     expect(result.decisions[0]?.status).toBe('INCLUDED_TRUNCATED')
   })
 

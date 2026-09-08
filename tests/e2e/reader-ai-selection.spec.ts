@@ -85,9 +85,14 @@ test('Reader original-text Ask AI selection is one-shot, auditable, and preserve
     // Citation markers appear as soon as the cited answer is complete; Sources does not need to be opened first.
     await expect(readerCitationMarker).toBeVisible()
     await expect(readerCitationMarker).toHaveText('[1]')
+    const readerCitationAnnotationId = await readerCitationMarker.getAttribute('data-origread-citation-annotation-id')
+    expect(readerCitationAnnotationId).toBeTruthy()
+    const returnedChatCitation = firstAssistant.locator(
+      `.reader-ai-inline-citation-wrap[data-citation-annotation-id="${readerCitationAnnotationId}"]`
+    )
     await readerCitationMarker.click()
-    await expect(highlightedEvidence).toContainText('Revenue rose by 20 percent')
-    await page.locator('.reader-content').dispatchEvent('scroll')
+    await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-view', 'chat')
+    await expect(returnedChatCitation).toHaveClass(/citation-return-highlight/)
     await expect(highlightedEvidence).toHaveCount(0)
 
     await citation.hover()
@@ -124,7 +129,11 @@ test('Reader original-text Ask AI selection is one-shot, auditable, and preserve
     await page.locator('.reader-content').dispatchEvent('scroll')
     await expect(highlightedEvidence).toHaveCount(0)
     await readerCitationMarker.click()
-    await expect(highlightedEvidence).toContainText('Revenue rose by 20 percent')
+    await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-view', 'chat')
+    await expect(returnedChatCitation).toHaveClass(/citation-return-highlight/)
+
+    await firstAssistant.getByRole('button', { name: '来源' }).click()
+    await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-detail', 'sources')
 
     await page.locator('.reader-content').dispatchEvent('scroll')
     await expect(highlightedEvidence).toHaveCount(0)

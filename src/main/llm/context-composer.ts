@@ -1,5 +1,6 @@
 import {
   LLM_CONTEXT_TYPES,
+  llmEvidenceRequestIdentity,
   type ComposedLlmContext,
   type LlmContextDecision,
   type LlmContextItem,
@@ -184,7 +185,8 @@ function renderAtomicEvidenceBlocks(
     if (seen.has(key)) throw new Error(`Evidence block key 必须唯一：${key}`)
     seen.add(key)
     const separator = rendered.length > 0 ? '\n' : ''
-    const text = `[ORIGREAD_EVIDENCE id=${quoteAttribute(key)}]\n${content}\n[/ORIGREAD_EVIDENCE]`
+    const requestIdentity = llmEvidenceRequestIdentity(item.id, key)
+    const text = `[ORIGREAD_EVIDENCE id=${quoteAttribute(requestIdentity)}]\n${content}\n[/ORIGREAD_EVIDENCE]`
     const blockTokens = estimateLlmTokens(separator) + estimateLlmTokens(text)
     if (usedTokens + blockTokens > maxTokens) continue
     rendered.push(`${separator}${text}`)
@@ -243,7 +245,8 @@ function minimumAtomicEvidenceTokens(item: LlmContextItem): number | null {
   let cheapest = Number.POSITIVE_INFINITY
 
   for (const block of evidenceBlocks) {
-    const text = `[ORIGREAD_EVIDENCE id=${quoteAttribute(block.stableLocatorKey.trim())}]\n${block.content.trim()}\n[/ORIGREAD_EVIDENCE]`
+    const requestIdentity = llmEvidenceRequestIdentity(item.id, block.stableLocatorKey.trim())
+    const text = `[ORIGREAD_EVIDENCE id=${quoteAttribute(requestIdentity)}]\n${block.content.trim()}\n[/ORIGREAD_EVIDENCE]`
     cheapest = Math.min(cheapest, fixedTokens + estimateLlmTokens(text))
   }
   return Number.isFinite(cheapest) ? cheapest : null

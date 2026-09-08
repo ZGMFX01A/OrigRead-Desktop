@@ -156,7 +156,7 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     expect(firstConversation.messages[0]).toMatchObject({ role: 'USER', content: 'What changed?' })
     expect(firstConversation.messages[1]).toMatchObject({
       role: 'ASSISTANT',
-      content: 'Revenue rose [[E2]]',
+      content: 'Revenue rose',
       status: 'COMPLETE',
       providerId: alternateProviderId,
       model: 'fixture-alt-model',

@@ -108,6 +108,7 @@ import { SourceSwitcherPopover } from './SourceSwitcherPopover'
 import { SourceManagerOverlay } from './SourceManagerOverlay'
 import { THREE_PANE_BREAKPOINT, resolveResponsivePaneLayout } from './responsive-layout'
 import { ReaderAiPanelShell } from './ReaderAiPanel'
+import { directNavigationRefForOccurrence, projectReaderAiCitationDisplay, type ReaderAiCitationOccurrence } from './citation-ui'
 import {
   INITIAL_READER_AI_PANEL_STATE,
   closeReaderAiPanel,
@@ -242,11 +243,12 @@ export default function App(): React.JSX.Element {
   const [chatConversationHistoryError, setChatConversationHistoryError] = useState<string | null>(null)
   const [chatConversationHistoryQuery, setChatConversationHistoryQuery] = useState('')
   const [chatLocateMessageId, setChatLocateMessageId] = useState<string | null>(null)
+  const [chatLocateCitationTarget, setChatLocateCitationTarget] = useState<{ messageId: string; annotationId: string } | null>(null)
   const [readerAiSourceFocus, setReaderAiSourceFocus] = useState<{ messageId: string; citationId: string | null; locationUnavailable: boolean } | null>(null)
   const [readerAiSourceSnapshot, setReaderAiSourceSnapshot] = useState<{ messageId: string; snapshot: LlmAssistantEvidenceSnapshot } | null>(null)
   const [readerAiInteractionCitationSnapshot, setReaderAiInteractionCitationSnapshot] = useState<{ messageId: string; snapshot: LlmAssistantEvidenceSnapshot } | null>(null)
   const [readerAiAnswerCitationSnapshot, setReaderAiAnswerCitationSnapshot] = useState<{ messageId: string; snapshot: LlmAssistantEvidenceSnapshot } | null>(null)
-  const [readerCitationTarget, setReaderCitationTarget] = useState<{ messageId: string; citation: LlmCitationRefRecord; contextRef: LlmContextRefRecord | null } | null>(null)
+  const [readerCitationTarget, setReaderCitationTarget] = useState<{ requestId: number; messageId: string; citation: LlmCitationRefRecord; contextRef: LlmContextRefRecord | null } | null>(null)
   const [chatActiveExecution, setChatActiveExecution] = useState<LlmExecutionIdentity | null>(null)
   const [chatAiSettings, setChatAiSettings] = useState<AiSettings | null>(null)
   const [chatQuickMessages, setChatQuickMessages] = useState<LlmQuickMessage[]>([])
@@ -316,6 +318,7 @@ export default function App(): React.JSX.Element {
   const readerAiConversationByArticleRef = useRef(new Map<string, string>())
   const chatManualToolContextsRef = useRef<LlmManualToolContextView[]>([])
   const citationArticleNavigationRef = useRef<string | null>(null)
+  const readerCitationNavigationRevisionRef = useRef(0)
   const readerCitationHighlightRef = useRef<HTMLElement | null>(null)
   const readerCitationHighlightTimerRef = useRef<number | null>(null)
   const readerCitationProgrammaticScrollRef = useRef(false)
@@ -880,6 +883,7 @@ export default function App(): React.JSX.Element {
       setChatConversationHistoryError(null)
       setChatConversationHistoryQuery('')
       setChatLocateMessageId(null)
+      setChatLocateCitationTarget(null)
       setChatActiveExecution(null)
       setChatAiSettings(null)
       setChatDraftProviderId('')
@@ -947,14 +951,17 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     const target = readerCitationTarget
-    if (!target || readerContentLoading || readerMode !== 'article') return
+    if (!target || target.requestId !== readerCitationNavigationRevisionRef.current || readerContentLoading || readerMode !== 'article') return
     const targetArticleId = target.citation.locatorSnapshot?.articleId ?? target.contextRef?.articleId ?? null
     if (!targetArticleId || targetArticleId !== selectedArticleId || !readerContent?.html) return
     let cancelled = false
     let attempt = 0
     let timer: number | null = null
+    const clearExactTarget = (): void => {
+      setReaderCitationTarget((current) => current?.requestId === target.requestId ? null : current)
+    }
     const locate = (): void => {
-      if (cancelled) return
+      if (cancelled || target.requestId !== readerCitationNavigationRevisionRef.current) return
       const articleBody = readerContentRef.current?.querySelector<HTMLElement>('.article-body:not(.translated-article-body)') ?? null
       const element = articleBody ? findReaderCitationElement(articleBody, target.citation) : null
       if (element) {
@@ -972,7 +979,7 @@ export default function App(): React.JSX.Element {
           if (readerCitationHighlightRef.current === element) readerCitationHighlightRef.current = null
           readerCitationHighlightTimerRef.current = null
         }, READER_CITATION_HIGHLIGHT_MS)
-        setReaderCitationTarget(null)
+        clearExactTarget()
         return
       }
       attempt += 1
@@ -980,9 +987,10 @@ export default function App(): React.JSX.Element {
         timer = window.setTimeout(locate, 60)
         return
       }
+      if (target.requestId !== readerCitationNavigationRevisionRef.current) return
       setReaderAiSourceFocus({ messageId: target.messageId, citationId: target.citation.id, locationUnavailable: true })
       setReaderAiPanel((current) => openReaderAiPanelDetail(current, 'sources', target.messageId))
-      setReaderCitationTarget(null)
+      clearExactTarget()
     }
     timer = window.setTimeout(locate, 0)
     return () => {
@@ -1040,8 +1048,8 @@ export default function App(): React.JSX.Element {
   }, [latestCompletedAssistantForCitation?.id, latestCompletedAssistantForCitation?.updatedAt, selectedArticleId])
 
   // Citation numbering is message-scoped. The article overlay must follow the assistant message
-  // the user is currently interacting with; otherwise a second answer can replace [10] with the
-  // same paragraph's [14] from a later message while an older inline citation is still selected.
+  // the user is currently interacting with; otherwise a second answer can replace the same
+  // paragraph's marker numbering while an older inline Citation is still selected.
   const readerAiVisibleCitationSnapshot = readerAiSourceSnapshot
     ?? readerAiInteractionCitationSnapshot
     ?? readerAiAnswerCitationSnapshot
@@ -1056,29 +1064,41 @@ export default function App(): React.JSX.Element {
 
     const frame = window.requestAnimationFrame(() => {
       clearMarkers()
-      const { snapshot } = readerAiVisibleCitationSnapshot
-      const articleCitations = snapshot.citations
-        .filter((citation) => {
+      const { messageId, snapshot } = readerAiVisibleCitationSnapshot
+      const ownerContent = chatMessages.find((message) => message.id === messageId)?.content
+        ?? snapshot.citations
+          .slice()
+          .sort((a, b) => (a.displayOrder ?? Number.MAX_SAFE_INTEGER) - (b.displayOrder ?? Number.MAX_SAFE_INTEGER))
+          .map((citation) => `[[${citation.protocolId}]]`)
+          .join(' ')
+      const display = projectReaderAiCitationDisplay(messageId, ownerContent, snapshot)
+
+      for (const occurrence of display.occurrences) {
+        const elements = new Map<HTMLElement, LlmCitationRefRecord>()
+        for (const citation of occurrence.refs) {
           const sourceKind = citation.locatorSnapshot?.sourceKind
           const contextRef = snapshot.contextRefs.find((ref) => ref.id === citation.contextRefId) ?? null
           const articleId = citation.locatorSnapshot?.articleId ?? contextRef?.articleId ?? null
-          return (sourceKind === 'ARTICLE' || sourceKind === 'SELECTION') && articleId === selectedArticleId
-        })
-        .sort((left, right) => (left.displayOrder ?? Number.MAX_SAFE_INTEGER) - (right.displayOrder ?? Number.MAX_SAFE_INTEGER))
-
-      for (const citation of articleCitations) {
-        const element = findReaderCitationElement(root, citation)
-        if (!element) continue
-        const marker = document.createElement('button')
-        const number = citation.displayOrder ?? snapshot.citations.findIndex((item) => item.id === citation.id) + 1
-        marker.type = 'button'
-        marker.className = 'origread-reader-citation-marker'
-        marker.dataset.origreadCitationMarker = 'true'
-        marker.dataset.origreadCitationId = citation.id
-        marker.textContent = `[${number}]`
-        marker.title = t('citationNumberLabel', { number, source: selectedArticle?.title ?? t('citationSourceArticle') })
-        marker.setAttribute('aria-label', marker.title)
-        element.appendChild(marker)
+          if ((sourceKind !== 'ARTICLE' && sourceKind !== 'SELECTION') || articleId !== selectedArticleId) continue
+          const element = findReaderCitationElement(root, citation)
+          if (element && !elements.has(element)) elements.set(element, citation)
+        }
+        for (const [element, citation] of elements) {
+          const marker = document.createElement('button')
+          marker.type = 'button'
+          marker.className = 'origread-reader-citation-marker'
+          marker.dataset.origreadCitationMarker = 'true'
+          marker.dataset.origreadCitationId = citation.id
+          marker.dataset.origreadCitationMessageId = messageId
+          marker.dataset.origreadCitationAnnotationId = occurrence.annotationId
+          marker.textContent = `[${occurrence.displayOrder}]`
+          marker.title = t('citationNumberLabel', {
+            number: occurrence.displayOrder,
+            source: selectedArticle?.title ?? t('citationSourceArticle')
+          })
+          marker.setAttribute('aria-label', marker.title)
+          element.appendChild(marker)
+        }
       }
     })
 
@@ -1086,7 +1106,7 @@ export default function App(): React.JSX.Element {
       window.cancelAnimationFrame(frame)
       clearMarkers()
     }
-  }, [readerAiVisibleCitationSnapshot, readerContent?.html, readerMode, readerSearchIndex, readerSearchQuery, selectedArticle?.title, selectedArticleId, t])
+  }, [readerAiVisibleCitationSnapshot, readerContent?.html, readerMode, readerSearchIndex, readerSearchQuery, selectedArticle?.title, selectedArticleId, chatMessages, t])
 
   useEffect(() => {
     if (!readerAiPanel.open || settingsOpen) return
@@ -2241,11 +2261,20 @@ export default function App(): React.JSX.Element {
     return true
   }
 
+  const cancelPendingReaderCitationNavigation = (): void => {
+    readerCitationNavigationRevisionRef.current += 1
+    citationArticleNavigationRef.current = null
+    setReaderCitationTarget(null)
+  }
+
   const openReaderAiCitation = async (
     messageId: string,
     citation: LlmCitationRefRecord,
     snapshot: LlmAssistantEvidenceSnapshot
   ): Promise<void> => {
+    const requestId = readerCitationNavigationRevisionRef.current + 1
+    readerCitationNavigationRevisionRef.current = requestId
+    setReaderCitationTarget(null)
     const contextRef = snapshot.contextRefs.find((ref) => ref.id === citation.contextRefId) ?? null
     const sourceKind = citation.locatorSnapshot?.sourceKind
     if (sourceKind === 'WEB_SEARCH' && citation.sourceUrl) {
@@ -2269,42 +2298,47 @@ export default function App(): React.JSX.Element {
     }
     setReaderAiSourceFocus({ messageId, citationId: citation.id, locationUnavailable: false })
     setReaderMode('article')
-    if (selectedArticleId === articleId && readerMode === 'article' && revealReaderCitationNow(citation)) {
-      setReaderCitationTarget(null)
-      return
-    }
-    setReaderCitationTarget({ messageId, citation, contextRef })
+    if (selectedArticleId === articleId && readerMode === 'article' && revealReaderCitationNow(citation)) return
+
+    setReaderCitationTarget({ requestId, messageId, citation, contextRef })
     if (selectedArticleId === articleId) return
     try {
       const article = await window.origread.getArticleById(articleId)
+      if (readerCitationNavigationRevisionRef.current !== requestId) return
       if (!article) {
         openReaderAiSources(messageId, citation.id, true)
-        setReaderCitationTarget(null)
+        setReaderCitationTarget((current) => current?.requestId === requestId ? null : current)
         return
       }
       citationArticleNavigationRef.current = articleId
       setSelectedArticleRecord(article)
       setSelectedArticleId(articleId)
     } catch {
+      if (readerCitationNavigationRevisionRef.current !== requestId) return
       openReaderAiSources(messageId, citation.id, true)
-      setReaderCitationTarget(null)
+      setReaderCitationTarget((current) => current?.requestId === requestId ? null : current)
     }
   }
 
   const handleReaderContentScroll = (): void => {
     setReaderAiSelectionCandidate(null)
     if (readerCitationProgrammaticScrollRef.current) return
+    cancelPendingReaderCitationNavigation()
     clearReaderCitationHighlight()
   }
 
   const handleReaderHtmlClick = (event: React.MouseEvent<HTMLDivElement>): void => {
     const target = event.target as HTMLElement
-    const citationMarker = target.closest<HTMLButtonElement>('button[data-origread-citation-id]')
-    if (citationMarker && readerAiVisibleCitationSnapshot) {
-      const citation = readerAiVisibleCitationSnapshot.snapshot.citations.find((item) => item.id === citationMarker.dataset.origreadCitationId)
-      if (citation) {
+    const citationMarker = target.closest<HTMLButtonElement>('button[data-origread-citation-marker="true"]')
+    if (citationMarker) {
+      const messageId = citationMarker.dataset.origreadCitationMessageId
+      const annotationId = citationMarker.dataset.origreadCitationAnnotationId
+      if (messageId && annotationId) {
         event.preventDefault()
-        void openReaderAiCitation(readerAiVisibleCitationSnapshot.messageId, citation, readerAiVisibleCitationSnapshot.snapshot)
+        cancelPendingReaderCitationNavigation()
+        setChatLocateMessageId(null)
+        setChatLocateCitationTarget({ messageId, annotationId })
+        setReaderAiPanel((current) => openReaderAiPanel(current, 'chat'))
         return
       }
     }
@@ -2318,6 +2352,7 @@ export default function App(): React.JSX.Element {
 
   const selectArticle = (article: ArticleRecord): void => {
     if (!closeSettingsIfAllowed()) return
+    cancelPendingReaderCitationNavigation()
     const readerArticle = article.isUnread ? { ...article, isUnread: false } : article
     if (article.isUnread) {
       setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isUnread: false } : item))
@@ -3263,6 +3298,7 @@ export default function App(): React.JSX.Element {
             forceWebSearchNext={chatForceWebSearchNext}
             reasoningEffort={chatReasoningEffort}
             locateMessageId={chatLocateMessageId}
+            locateCitationTarget={chatLocateCitationTarget}
             placeholder={t('askAboutArticle')}
             onDraftChange={setChatDraft}
             onClearSelection={()=>setReaderAiSelection(null)}
@@ -3282,6 +3318,7 @@ export default function App(): React.JSX.Element {
             onAttachedArticlesChange={replaceReaderAiAttachedArticles}
             onRegenerate={(assistantMessageId)=>void regenerateReaderAiAssistant(assistantMessageId)}
             onLocateMessageHandled={()=>setChatLocateMessageId(null)}
+            onLocateCitationHandled={()=>setChatLocateCitationTarget(null)}
           />
         </ReaderAiPanelShell>
       )
@@ -4572,28 +4609,49 @@ function ReaderAiAssistantAnswer({
     return () => { cancelled = true }
   }, [message.id, message.status, message.updatedAt])
 
-  const citationByProtocol = new Map(snapshot?.citations.map((citation) => [citation.protocolId, citation] as const) ?? [])
+  const display = projectReaderAiCitationDisplay(
+    message.id,
+    message.content,
+    snapshot,
+    message.status === 'STREAMING'
+  )
   const contextById = new Map(snapshot?.contextRefs.map((ref) => [ref.id, ref] as const) ?? [])
   const citedContextCount = new Set(snapshot?.citations.map((citation) => citation.contextRefId) ?? []).size
   const usedContextCount = snapshot?.contextRefs.filter((ref) => ref.includedInPrompt).length ?? 0
 
   return <>
     <CitationMarkdown
-      text={message.content}
-      renderCitation={(protocolId) => {
-        const citation = citationByProtocol.get(protocolId)
-        if (!citation || !snapshot) return null
-        const contextRef = contextById.get(citation.contextRefId) ?? null
-        const number = citation.displayOrder ?? snapshot.citations.findIndex((item) => item.id === citation.id) + 1
-        const source = citationSourceName(citation, contextRef, t)
-        const preview = citationPreview(citation.quoteSnapshot)
-        return <span className="reader-ai-inline-citation-wrap" key={`${citation.id}-${protocolId}`}>
+      text={display.canonicalText}
+      occurrences={display.occurrences}
+      renderCitation={(occurrence) => {
+        const primaryCitation = occurrence.refs[0] ?? null
+        if (!snapshot || !primaryCitation) {
+          return <span
+            className="reader-ai-inline-citation reader-ai-inline-citation-provisional"
+            data-citation-annotation-id={occurrence.annotationId}
+            aria-hidden="true"
+          >{occurrence.displayOrder}</span>
+        }
+        const directCitation = directNavigationRefForOccurrence(occurrence)
+        const contextRef = contextById.get(primaryCitation.contextRefId) ?? null
+        const source = occurrence.refs.length > 1 && !directCitation
+          ? t('answerSources')
+          : citationSourceName(primaryCitation, contextRef, t)
+        const preview = citationPreview(primaryCitation.quoteSnapshot)
+        return <span
+          className="reader-ai-inline-citation-wrap"
+          key={occurrence.annotationId}
+          data-citation-annotation-id={occurrence.annotationId}
+        >
           <button
             type="button"
             className="reader-ai-inline-citation"
-            aria-label={t('citationNumberLabel', { number, source })}
-            onClick={()=>onOpenCitation(message.id, citation, snapshot)}
-          >{number}</button>
+            data-citation-annotation-id={occurrence.annotationId}
+            aria-label={t('citationNumberLabel', { number: occurrence.displayOrder, source })}
+            onClick={() => directCitation
+              ? onOpenCitation(message.id, directCitation, snapshot)
+              : onOpenSources(message.id)}
+          >{occurrence.displayOrder}</button>
           <span className="reader-ai-inline-citation-popover" role="tooltip">
             <strong>{source}</strong>
             <span>{preview}</span>
@@ -4759,15 +4817,18 @@ function citationPreview(value: string): string {
 
 function CitationMarkdown({
   text,
+  occurrences,
   renderCitation
 }: {
   text: string
-  renderCitation(protocolId: string): React.ReactNode | null
+  occurrences: readonly ReaderAiCitationOccurrence[]
+  renderCitation(occurrence: ReaderAiCitationOccurrence): React.ReactNode | null
 }): React.JSX.Element {
-  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  const projected = materializeCitationMarkers(text, occurrences)
+  const lines = projected.text.replace(/\r\n/g, '\n').split('\n')
   const blocks: React.ReactNode[] = []
   let listItems: string[] = []
-  const inline = (value: string): React.ReactNode[] => renderCitationInlineMarkdown(value, renderCitation)
+  const inline = (value: string): React.ReactNode[] => renderCitationInlineMarkdown(value, projected.occurrences, renderCitation)
   const flushList = (): void => {
     if (listItems.length === 0) return
     blocks.push(<ol key={`list-${blocks.length}`}>{listItems.map((item,index)=><li key={index}>{inline(item)}</li>)}</ol>)
@@ -4800,24 +4861,65 @@ function CitationMarkdown({
   return <div className="ai-summary-markdown reader-ai-citation-markdown">{blocks}</div>
 }
 
+const CITATION_MARKER_START = '\uE000'
+const CITATION_MARKER_END = '\uE001'
+
+function materializeCitationMarkers(
+  text: string,
+  occurrences: readonly ReaderAiCitationOccurrence[]
+): { text: string; occurrences: ReaderAiCitationOccurrence[] } {
+  const sorted = [...occurrences]
+    .sort((a, b) => a.canonicalInsertionOffset - b.canonicalInsertionOffset || a.occurrenceOrdinal - b.occurrenceOrdinal)
+  let cursor = 0
+  let output = ''
+  sorted.forEach((occurrence, index) => {
+    const offset = Math.max(cursor, Math.min(text.length, occurrence.canonicalInsertionOffset))
+    output += text.slice(cursor, offset)
+    output += `${CITATION_MARKER_START}${index}${CITATION_MARKER_END}`
+    cursor = offset
+  })
+  output += text.slice(cursor)
+  return { text: output, occurrences: sorted }
+}
+
 function renderCitationInlineMarkdown(
   text: string,
-  renderCitation: (protocolId: string) => React.ReactNode | null
+  occurrences: readonly ReaderAiCitationOccurrence[],
+  renderCitation: (occurrence: ReaderAiCitationOccurrence) => React.ReactNode | null
 ): React.ReactNode[] {
   const result: React.ReactNode[] = []
-  const pattern = /(\*\*(.+?)\*\*|\[\[(E\d+)\]\])/g
-  let start = 0
-  let match: RegExpExecArray | null
-  while ((match = pattern.exec(text))) {
-    if (match.index > start) result.push(text.slice(start, match.index))
-    if (match[3]) {
-      result.push(renderCitation(match[3]) ?? '')
-    } else {
-      result.push(<strong key={`bold-${match.index}-${match[2]}`}>{match[2]}</strong>)
+  let cursor = 0
+  let key = 0
+  while (cursor < text.length) {
+    if (text.startsWith('**', cursor)) {
+      const close = text.indexOf('**', cursor + 2)
+      if (close >= 0) {
+        result.push(<strong key={`strong-${key++}`}>{renderCitationInlineMarkdown(
+          text.slice(cursor + 2, close),
+          occurrences,
+          renderCitation
+        )}</strong>)
+        cursor = close + 2
+        continue
+      }
     }
-    start = match.index + match[0].length
+    if (text[cursor] === CITATION_MARKER_START) {
+      const close = text.indexOf(CITATION_MARKER_END, cursor + 1)
+      if (close >= 0) {
+        const index = Number(text.slice(cursor + 1, close))
+        const occurrence = Number.isInteger(index) ? occurrences[index] : undefined
+        if (occurrence) result.push(renderCitation(occurrence) ?? '')
+        cursor = close + 1
+        continue
+      }
+    }
+    const nextStrong = text.indexOf('**', cursor)
+    const nextCitation = text.indexOf(CITATION_MARKER_START, cursor)
+    const next = [nextStrong, nextCitation].filter((value) => value >= 0).sort((a, b) => a - b)[0] ?? text.length
+    const end = next > cursor ? next : cursor + 1
+    result.push(text.slice(cursor, end))
+    cursor = end
   }
-  if (start < text.length) result.push(text.slice(start))
   return result
 }
 
@@ -4958,6 +5060,7 @@ function ReaderAiChatBody({
   forceWebSearchNext,
   reasoningEffort,
   locateMessageId,
+  locateCitationTarget,
   placeholder,
   emptyContent,
   onDraftChange,
@@ -4977,7 +5080,8 @@ function ReaderAiChatBody({
   onDiscardManualToolContext,
   onAttachedArticlesChange,
   onRegenerate,
-  onLocateMessageHandled
+  onLocateMessageHandled,
+  onLocateCitationHandled
 }: {
   messages: LlmMessageRecord[]
   toolActivity: LlmToolActivityView[]
@@ -5004,6 +5108,7 @@ function ReaderAiChatBody({
   forceWebSearchNext: boolean
   reasoningEffort: LlmReasoningEffort
   locateMessageId?: string | null
+  locateCitationTarget?: { messageId: string; annotationId: string } | null
   placeholder: string
   emptyContent?: React.ReactNode
   onDraftChange(value: string): void
@@ -5024,6 +5129,7 @@ function ReaderAiChatBody({
   onAttachedArticlesChange(articles: readonly LlmArticleContextCandidate[]): Promise<void>
   onRegenerate(assistantMessageId: string): void
   onLocateMessageHandled?(): void
+  onLocateCitationHandled?(): void
 }): React.JSX.Element {
   const { t } = useTranslation()
   const timelineRef = useRef<HTMLDivElement>(null)
@@ -5033,6 +5139,8 @@ function ReaderAiChatBody({
   const composerActionsRef = useRef<HTMLDetailsElement>(null)
   const scrollOwnershipRef = useRef(initialReaderAiChatScrollOwnership())
   const userScrollIntentRef = useRef(false)
+  const citationReturnHighlightRef = useRef<HTMLElement | null>(null)
+  const citationReturnHighlightTimerRef = useRef<number | null>(null)
   const visibleMessages = messages.filter((message) => message.historyActive && (message.role === 'USER' || message.role === 'ASSISTANT'))
   const [followOutput, setFollowOutput] = useState(true)
   const [scrollAvailability, setScrollAvailability] = useState({ up: false, down: false })
@@ -5069,6 +5177,19 @@ function ReaderAiChatBody({
     publishedAt: null
   } satisfies LlmArticleContextCandidate))
   const attachedArticleIds = new Set(attachedArticles.map((article) => article.articleId))
+
+  const clearCitationReturnHighlight = (): void => {
+    if (citationReturnHighlightTimerRef.current !== null) {
+      window.clearTimeout(citationReturnHighlightTimerRef.current)
+      citationReturnHighlightTimerRef.current = null
+    }
+    citationReturnHighlightRef.current?.classList.remove('citation-return-highlight')
+    citationReturnHighlightRef.current = null
+  }
+
+  useEffect(() => () => {
+    clearCitationReturnHighlight()
+  }, [])
 
   useEffect(() => {
     if (!articlePickerOpen) return
@@ -5243,6 +5364,48 @@ function ReaderAiChatBody({
     })
     return () => window.cancelAnimationFrame(frame)
   }, [locateMessageId, onLocateMessageHandled])
+
+  useEffect(() => {
+    if (!locateCitationTarget) return
+    let cancelled = false
+    let attempt = 0
+    let timer: number | null = null
+    const locate = (): void => {
+      if (cancelled) return
+      const timeline = timelineRef.current
+      const message = timeline?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(locateCitationTarget.messageId)}"]`)
+      const target = message?.querySelector<HTMLElement>(`[data-citation-annotation-id="${CSS.escape(locateCitationTarget.annotationId)}"]`) ?? null
+      if (!target) {
+        attempt += 1
+        if (attempt < 20) {
+          timer = window.setTimeout(locate, 60)
+          return
+        }
+        onLocateCitationHandled?.()
+        return
+      }
+      scrollOwnershipRef.current = pauseReaderAiChatScroll(scrollOwnershipRef.current)
+      setFollowOutput(false)
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      clearCitationReturnHighlight()
+      target.classList.add('citation-return-highlight')
+      citationReturnHighlightRef.current = target
+      citationReturnHighlightTimerRef.current = window.setTimeout(() => {
+        target.classList.remove('citation-return-highlight')
+        if (citationReturnHighlightRef.current === target) citationReturnHighlightRef.current = null
+        citationReturnHighlightTimerRef.current = null
+      }, 1_600)
+      onLocateCitationHandled?.()
+    }
+    timer = window.setTimeout(locate, 0)
+    return () => {
+      cancelled = true
+      if (timer !== null) window.clearTimeout(timer)
+    }
+  // The parent passes the completion callback inline. Re-running this effect only because that
+  // function identity changed is unnecessary. The visible feedback owns its own timer/ref and a
+  // Citation locate transaction is keyed solely by its target occurrence.
+  }, [locateCitationTarget])
 
   useEffect(() => {
     if (!highlightedMessageId) return

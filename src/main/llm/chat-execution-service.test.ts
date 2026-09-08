@@ -288,7 +288,7 @@ describe('LlmChatExecutionService D2 pipeline', () => {
     }, (event) => events.push(event))
 
     expect(result).toMatchObject({
-      content: 'Answer [[E1]]',
+      content: 'Answer',
       reasoning: 'checked source',
       status: 'COMPLETE',
       finishReason: 'STOP',
@@ -306,6 +306,16 @@ describe('LlmChatExecutionService D2 pipeline', () => {
     expect(env.repository.getCitationRefsForAssistant(identity.assistantMessageId)).toMatchObject([
       { protocolId: 'E1', displayOrder: 1, targetKind: 'EVIDENCE_BLOCK' }
     ])
+    const annotations = env.repository.getCitationAnnotationsForAssistant(identity.assistantMessageId)
+    expect(annotations).toMatchObject([{
+      canonicalInsertionOffset: 6,
+      occurrenceOrdinal: 0
+    }])
+    expect(env.repository.getCitationAnnotationRefsForAssistant(identity.assistantMessageId)).toMatchObject([{
+      annotationId: annotations[0]!.id,
+      citationRefId: env.repository.getCitationRefsForAssistant(identity.assistantMessageId)[0]!.id,
+      refOrdinal: 0
+    }])
     expect(events.map((event) => event.type)).toEqual(['STARTED', 'REASONING_DELTA', 'CONTENT_DELTA', 'CONTENT_DELTA', 'TERMINAL'])
     expect(events.at(-1)).toMatchObject({ type: 'TERMINAL', finishReason: 'STOP' })
     env.database.close()
@@ -597,7 +607,7 @@ describe('LlmChatExecutionService D2 pipeline', () => {
     expect(env.service.resolveToolApproval(pending.id, 'APPROVE')).toBe(true)
     const result = await running
 
-    expect(result.content).toBe('The release is ready [[E1]].')
+    expect(result.content).toBe('The release is ready.')
     const toolRef = env.repository.getContextRefsForAssistant(identity.assistantMessageId).find((ref) => ref.type === 'TOOL_RESULT')
     expect(toolRef).toMatchObject({ sourceId: 'mcp-server-1', contentSnapshot: 'Release evidence from MCP', includedInPrompt: true })
     const blocks = env.repository.getEvidenceBlocks(toolRef!.id)

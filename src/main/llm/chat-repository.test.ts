@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { DesktopDatabase } from '../database/database'
 import { LlmChatRepository } from './chat-repository'
 import {
+  LLM_CITATION_ANNOTATION_SCHEMA_VERSION,
   LLM_CITATION_SCHEMA_VERSION,
   LLM_EVIDENCE_SCHEMA_VERSION,
+  type LlmCitationAnnotationRecord,
   type LlmCitationRefRecord,
   type LlmContextRefRecord,
   type LlmEvidenceBlockRecord,
@@ -99,6 +101,63 @@ describe('LlmChatRepository D2.6 persistence foundation', () => {
       expect(restored.id).toBe('citation-stable-uuid')
       expect(restored.protocolId).toBe('E7')
       expect(restored.displayOrder).toBe(2)
+    } finally {
+      database.close()
+    }
+  })
+
+  it('atomically finalizes canonical assistant text, refs and occurrence annotations', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LlmChatRepository(database.connection)
+    try {
+      const conversation = repository.createConversation({ id: 'conversation-finalize', now: 10 })
+      const assistant = repository.appendMessage(conversation.id, {
+        id: 'assistant-finalize', role: 'ASSISTANT', content: 'Streaming [[E1]]', status: 'STREAMING', now: 20
+      })
+      const context = contextRef(assistant.id, conversation.id, 'context-finalize', 'article:finalize', 21)
+      repository.replaceContextRefsForAssistant(assistant.id, [context])
+      const evidence: LlmEvidenceBlockRecord = {
+        id: 'evidence-finalize', contextRefId: context.id, stableLocatorKey: 'p:finalize', kind: 'PARAGRAPH', ordinal: 0,
+        textSnapshot: 'Evidence', normalizedSha256: 'hash-finalize',
+        locator: { version: 1, sourceKind: 'ARTICLE', stableLocatorKey: 'p:finalize', articleId: 'article-1', normalizedHash: 'hash-finalize' },
+        schemaVersion: LLM_EVIDENCE_SCHEMA_VERSION, createdAt: 22
+      }
+      repository.replaceEvidenceBlocks(context.id, [evidence])
+      const citation: LlmCitationRefRecord = {
+        id: 'citation-finalize', conversationId: conversation.id, assistantMessageId: assistant.id,
+        contextRefId: context.id, evidenceBlockId: evidence.id, targetKind: 'EVIDENCE_BLOCK', protocolId: 'E1',
+        displayOrder: 1, quoteSnapshot: 'Evidence', sourceUrl: null, locatorSnapshot: evidence.locator,
+        schemaVersion: LLM_CITATION_SCHEMA_VERSION, createdAt: 30
+      }
+      const annotation: LlmCitationAnnotationRecord = {
+        id: 'annotation-finalize', conversationId: conversation.id, assistantMessageId: assistant.id,
+        canonicalInsertionOffset: 9, occurrenceOrdinal: 0,
+        schemaVersion: LLM_CITATION_ANNOTATION_SCHEMA_VERSION, createdAt: 30
+      }
+      const terminal = { ...assistant, content: 'Canonical.', status: 'COMPLETE' as const, updatedAt: 30 }
+      repository.finalizeAssistantCitationState(
+        terminal,
+        [citation],
+        [annotation],
+        [{ annotationId: annotation.id, citationRefId: citation.id, refOrdinal: 0 }]
+      )
+
+      expect(repository.getMessage(assistant.id)).toMatchObject({ content: 'Canonical.', status: 'COMPLETE' })
+      expect(repository.getCitationRefsForAssistant(assistant.id)).toEqual([citation])
+      expect(repository.getCitationAnnotationsForAssistant(assistant.id)).toEqual([annotation])
+      expect(repository.getCitationAnnotationRefsForAssistant(assistant.id)).toEqual([
+        { annotationId: annotation.id, citationRefId: citation.id, refOrdinal: 0 }
+      ])
+
+      expect(() => repository.finalizeAssistantCitationState(
+        { ...terminal, content: 'Must roll back', updatedAt: 40 },
+        [citation],
+        [annotation],
+        [{ annotationId: annotation.id, citationRefId: 'not-in-terminal-graph', refOrdinal: 0 }]
+      )).toThrow('terminal graph')
+      expect(repository.getMessage(assistant.id)?.content).toBe('Canonical.')
+      expect(repository.getCitationRefsForAssistant(assistant.id)).toEqual([citation])
+      expect(repository.getCitationAnnotationsForAssistant(assistant.id)).toEqual([annotation])
     } finally {
       database.close()
     }
@@ -287,7 +346,7 @@ describe('LlmChatRepository D2.6 persistence foundation', () => {
       repository.appendToolCalls([toolCall(conversation.id, assistant.id, 'tool-delete', 'COMPLETE', 33)])
 
       repository.deleteConversation(conversation.id)
-      for (const table of ['llm_messages', 'llm_tool_calls', 'llm_context_refs', 'llm_evidence_blocks', 'llm_citation_refs']) {
+      for (const table of ['llm_messages', 'llm_tool_calls', 'llm_context_refs', 'llm_evidence_blocks', 'llm_citation_refs', 'llm_citation_annotations', 'llm_citation_annotation_refs']) {
         expect(database.connection.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({ count: 0 })
       }
     } finally {

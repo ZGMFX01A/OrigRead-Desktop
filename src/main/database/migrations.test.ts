@@ -13,7 +13,8 @@ describe('database migration v2 -> current schema', () => {
     expect(tables).toEqual(expect.arrayContaining([
       'accounts', 'groups', 'feeds', 'articles',
       'llm_conversations', 'llm_conversation_articles', 'llm_messages', 'llm_tool_calls',
-      'llm_context_refs', 'llm_evidence_blocks', 'llm_citation_refs'
+      'llm_context_refs', 'llm_evidence_blocks', 'llm_citation_refs',
+      'llm_citation_annotations', 'llm_citation_annotation_refs'
     ]))
     const messageColumns = (db.prepare("PRAGMA table_info('llm_messages')").all() as Array<{ name: string }>).map((column) => column.name)
     expect(messageColumns).toEqual(expect.arrayContaining([
@@ -59,6 +60,8 @@ describe('database migration v2 -> current schema', () => {
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='llm_context_refs'").get()).toEqual({name:'llm_context_refs'})
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='llm_evidence_blocks'").get()).toEqual({name:'llm_evidence_blocks'})
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='llm_citation_refs'").get()).toEqual({name:'llm_citation_refs'})
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='llm_citation_annotations'").get()).toEqual({name:'llm_citation_annotations'})
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='llm_citation_annotation_refs'").get()).toEqual({name:'llm_citation_annotation_refs'})
     expect(db.prepare(`
       SELECT f.account_id,f.group_id,f.name,f.url,f.source_page_url,f.source_type,f.icon
       FROM feeds f
@@ -161,7 +164,7 @@ describe('database migration v2 -> current schema', () => {
 
     expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
     expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all())
-      .toEqual([{version:9},{version:10},{version:11}])
+      .toEqual([{version:9},{version:10},{version:11},{version:12}])
     const columns = db.prepare("PRAGMA table_info('llm_messages')").all() as Array<{name:string}>
     expect(columns.map((column)=>column.name)).toEqual(expect.arrayContaining([
       'web_search_status','web_search_query','web_search_provider_name','web_search_result_count','web_search_error_message'
