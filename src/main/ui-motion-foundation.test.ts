@@ -5,15 +5,19 @@ const styles = readFileSync(new URL('../renderer/src/styles.css', import.meta.ur
 
 describe('D8.6.5 motion foundation CSS contract', () => {
   it('defines the shared motion duration/easing tokens and reduced-motion contract', () => {
-    expect(styles).toContain('--motion-duration-instant: 80ms')
-    expect(styles).toContain('--motion-duration-fast: 120ms')
-    expect(styles).toContain('--motion-duration-normal: 160ms')
-    expect(styles).toContain('--motion-duration-emphasized: 200ms')
+    expect(styles).toContain('--motion-duration-instant: 100ms')
+    expect(styles).toContain('--motion-duration-fast: 160ms')
+    expect(styles).toContain('--motion-duration-normal: 240ms')
+    expect(styles).toContain('--motion-duration-emphasized: 320ms')
+    expect(styles).toContain('--motion-duration-structural: 360ms')
+    expect(styles).toContain('--motion-duration-dismiss: 240ms')
     expect(styles).toContain('--motion-ease-standard: cubic-bezier(0.2, 0, 0, 1)')
     expect(styles).toContain('--motion-ease-enter: cubic-bezier(0, 0, 0, 1)')
     expect(styles).toContain('--motion-ease-exit: cubic-bezier(0.3, 0, 1, 1)')
     expect(styles).toContain('@media (prefers-reduced-motion: reduce)')
     expect(styles).toContain('--motion-distance-md: 0px')
+    expect(styles).toContain('--motion-distance-lg: 0px')
+    expect(styles).toContain('--motion-distance-panel: 0px')
   })
 
   it('keeps transitions explicit and routed through the shared motion tokens', () => {
@@ -26,7 +30,7 @@ describe('D8.6.5 motion foundation CSS contract', () => {
     }
   })
 
-  it('defines restrained M2 surface and compact-button motion without global button scaling', () => {
+  it('defines perceptible surface and compact-button motion without global button scaling', () => {
     expect(styles).toContain('@keyframes motion-surface-enter-down')
     expect(styles).toContain('@keyframes motion-surface-enter-up')
     expect(styles).toContain('@keyframes motion-inline-tooltip-enter')
@@ -40,14 +44,40 @@ describe('D8.6.5 motion foundation CSS contract', () => {
     expect(styles).not.toMatch(/(?:^|\n)\s*button:(?:hover|active)[^{]*\{[^}]*scale\(/i)
   })
 
-  it('keeps M3 structural motion away from Reader AI scroll and manual resize tracks', () => {
+  it('uses structural motion for settings, article changes, overlays and Reader AI docking without animating resize controls', () => {
     expect(styles).toContain('@keyframes motion-overlay-enter-left')
     expect(styles).toContain('@keyframes motion-content-enter')
-    expect(styles).toContain('.settings-page-motion')
+    expect(styles).toContain('@keyframes motion-settings-page-forward')
+    expect(styles).toContain('@keyframes motion-settings-page-backward')
+    expect(styles).toContain('@keyframes motion-settings-view-forward')
+    expect(styles).toContain('@keyframes motion-settings-view-backward')
+    expect(styles).toContain('@keyframes motion-list-enter')
+    expect(styles).toContain('@keyframes motion-reader-surface-forward')
+    expect(styles).toContain('@keyframes motion-reader-surface-backward')
+    expect(styles).toContain('@keyframes motion-reader-layout-enter-left')
+    expect(styles).toContain('@keyframes motion-reader-layout-enter-right')
+    expect(styles).toContain('@keyframes motion-reader-layout-exit-left')
+    expect(styles).toContain('@keyframes motion-reader-layout-exit-right')
+    expect(styles).toContain('@keyframes motion-reader-panel-enter-left')
+    expect(styles).toContain('@keyframes motion-reader-panel-enter-right')
+    expect(styles).toContain('@keyframes motion-reader-panel-exit-left')
+    expect(styles).toContain('@keyframes motion-reader-panel-exit-right')
+    expect(styles).toContain('.settings-nav-active-indicator')
+    expect(styles).toContain('.settings-page-motion-forward')
+    expect(styles).toContain('.settings-page-motion-backward')
+    expect(styles).toContain('.ai-settings-tab-indicator')
+    expect(styles).toContain('.ai-settings-view-motion-forward')
+    expect(styles).toContain('.article-list-motion')
     expect(styles).toContain('.adaptive-source-overlay')
+    expect(styles).toContain('.source-item.selected::before')
+    expect(styles).toContain('.article-item.selected::before')
+    expect(styles).toContain('.reader-composite.summary-left:not(.reader-ai-exiting) > .reader-ai-panel.docked')
+    expect(styles).toContain('.reader-composite.reader-ai-exiting.summary-left > .reader-ai-panel.docked')
+    expect(styles).toContain('.reader-content.reader-article-forward')
+    expect(styles).toContain('.reader-content.reader-article-backward')
+    expect(styles).not.toContain('.reader-content-transition-ghost')
+    expect(styles).not.toContain('motion-reader-article-old')
     expect(styles).not.toContain('motion-floating-action-enter')
-    expect(styles).not.toMatch(/\.reader-ai-panel\.docked[^\{]*\{[^}]*animation\s*:/i)
-    expect(styles).not.toMatch(/\.reader-ai-panel\.docked[^\{]*\{[^}]*transform\s*:/i)
     expect(styles).not.toMatch(/\.reader-composite[^\{]*\{[^}]*transition\s*:/i)
     expect(styles).not.toMatch(/\.app-shell[^\{]*\{[^}]*transition\s*:/i)
     expect(styles).not.toMatch(/\.pane-divider[^\{]*\{[^}]*transition\s*:[^}]*width/i)

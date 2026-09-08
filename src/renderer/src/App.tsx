@@ -170,6 +170,7 @@ const aiSummaryPlacementOrder: AiSummaryPlacement[] = ['left', 'right']
 const AI_SUMMARY_PANEL_KEYBOARD_STEP = 20
 const RECENT_SOURCE_SCOPE_LIMIT = 5
 const READER_AI_SELECTION_MAX_CHARS = 20_000
+const READER_AI_PANEL_EXIT_DURATION_MS = 240
 const READER_CITATION_HIGHLIGHT_MS = 1_150
 
 function readerCitationScrollBehavior(): ScrollBehavior {
@@ -235,6 +236,9 @@ export default function App(): React.JSX.Element {
   const [readerAiSelectionCandidate, setReaderAiSelectionCandidate] = useState<ReaderAiSelectionCandidate | null>(null)
   const [aiSummary, setAiSummary] = useState<AiSummaryDocument | null>(null)
   const [readerAiPanel, setReaderAiPanel] = useState<ReaderAiPanelState>(INITIAL_READER_AI_PANEL_STATE)
+  const [readerAiPanelVisualExit, setReaderAiPanelVisualExit] = useState(false)
+  const readerAiPanelExitTimerRef = useRef<number | null>(null)
+  const [readerArticleMotionDirection, setReaderArticleMotionDirection] = useState<'forward' | 'backward'>('forward')
   const [chatConversation, setChatConversation] = useState<LlmConversationRecord | null>(null)
   const [chatAttachedArticles, setChatAttachedArticles] = useState<LlmConversationArticleRecord[]>([])
   const [chatMessages, setChatMessages] = useState<LlmMessageRecord[]>([])
@@ -1335,8 +1339,33 @@ export default function App(): React.JSX.Element {
   }, [aiSummaryPlacement])
   const aiLoading = readerToolLoading === 'ai'
   const aiSummaryPanelOpen = readerAiPanel.open && readerAiPanel.view === 'summary'
-  const readerAiPanelDocked = Boolean(readerAiPanel.open)
-  const readerAiPanelActive = readerAiPanelDocked
+  const readerAiPanelDocked = Boolean(readerAiPanel.open || readerAiPanelVisualExit)
+  const readerAiPanelActive = Boolean(readerAiPanel.open)
+
+  const cancelReaderAiPanelVisualExit = useCallback((): void => {
+    if (readerAiPanelExitTimerRef.current !== null) {
+      window.clearTimeout(readerAiPanelExitTimerRef.current)
+      readerAiPanelExitTimerRef.current = null
+    }
+    setReaderAiPanelVisualExit(false)
+  }, [])
+
+  const beginReaderAiPanelVisualExit = useCallback((): void => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      cancelReaderAiPanelVisualExit()
+      return
+    }
+    if (readerAiPanelExitTimerRef.current !== null) window.clearTimeout(readerAiPanelExitTimerRef.current)
+    setReaderAiPanelVisualExit(true)
+    readerAiPanelExitTimerRef.current = window.setTimeout(() => {
+      readerAiPanelExitTimerRef.current = null
+      setReaderAiPanelVisualExit(false)
+    }, READER_AI_PANEL_EXIT_DURATION_MS)
+  }, [cancelReaderAiPanelVisualExit])
+
+  useEffect(() => () => {
+    if (readerAiPanelExitTimerRef.current !== null) window.clearTimeout(readerAiPanelExitTimerRef.current)
+  }, [])
 
   const retainReaderAiTransientCitationLayersAsHistoricalFallback = useCallback((): void => {
     setReaderAiSourceSnapshot((snapshot) => retainReaderAiCitationAsHistoricalFallback(snapshot))
@@ -1347,10 +1376,12 @@ export default function App(): React.JSX.Element {
     if (readerAiPanel.open) {
       retainReaderAiTransientCitationLayersAsHistoricalFallback()
       setReaderAiPanel((current) => closeReaderAiPanel(current))
+      beginReaderAiPanelVisualExit()
       return
     }
+    cancelReaderAiPanelVisualExit()
     setReaderAiPanel((current) => openReaderAiPanel(current, current.view))
-  }, [readerAiPanel.open, retainReaderAiTransientCitationLayersAsHistoricalFallback])
+  }, [beginReaderAiPanelVisualExit, cancelReaderAiPanelVisualExit, readerAiPanel.open, retainReaderAiTransientCitationLayersAsHistoricalFallback])
 
   const showReaderAiHome = (): void => {
     setReaderAiPanel((current) => openReaderAiPanel(current, 'home'))
@@ -2465,8 +2496,25 @@ export default function App(): React.JSX.Element {
       return
     }
     if (originalViewState.open) void closeOriginalArticle()
-    setSelectedArticleRecord(readerArticle)
-    setSelectedArticleId(article.id)
+    const articleChanged = selectedArticleId !== article.id
+    if (articleChanged) {
+      const currentIndex = visibleArticles.findIndex((item) => item.id === selectedArticleId)
+      const nextIndex = visibleArticles.findIndex((item) => item.id === article.id)
+      setReaderArticleMotionDirection(currentIndex >= 0 && nextIndex >= 0 && nextIndex < currentIndex ? 'backward' : 'forward')
+    }
+    const commitArticleSelection = (): void => {
+      if (articleChanged) {
+        // Never render the previous body under the newly selected title while Reader content loads.
+        setReaderContent(null)
+        setReaderContentError(null)
+        setReaderContentLoading(true)
+        setReaderMode('article')
+        setTranslationDocument(null)
+      }
+      setSelectedArticleRecord(readerArticle)
+      setSelectedArticleId(article.id)
+    }
+    commitArticleSelection()
   }
 
   const searchCachedArticles = useCallback(async (value: string): Promise<void> => {
@@ -3158,10 +3206,11 @@ export default function App(): React.JSX.Element {
     if (speech.state.domain === 'summary') speech.stop()
     retainReaderAiTransientCitationLayersAsHistoricalFallback()
     setReaderAiPanel((current) => closeReaderAiPanel(current))
+    beginReaderAiPanelVisualExit()
   }
 
   const renderReaderAiPanel = (): React.JSX.Element | null => {
-    if (!readerAiPanel.open || !selectedArticle) return null
+    if ((!readerAiPanel.open && !readerAiPanelVisualExit) || !selectedArticle) return null
 
     const enabledChatProviders = chatAiSettings?.providers.filter((provider) => provider.enabled) ?? []
     const activeChatProviderId = chatConversation?.providerId ?? chatDraftProviderId
@@ -3931,10 +3980,11 @@ export default function App(): React.JSX.Element {
         ) : sourceCatalogOpen ? (
           <SourceDiscoveryPanel onSubscribe={(feed)=>void subscribeCatalogFeed(feed)}/>
         ) : selectedArticle ? (
-          <div className={`reader-composite ${readerAiPanelDocked ? `summary-docked summary-${aiSummaryPlacement}` : ''}`}>
+          <div className={`reader-composite ${readerAiPanelDocked ? `summary-docked summary-${aiSummaryPlacement}` : ''} ${readerAiPanelVisualExit ? 'reader-ai-exiting' : ''}`}>
           <div
+            key={selectedArticle.id}
             ref={readerContentRef}
-            className={`reader-content reader-mode-${readerMode}`}
+            className={`reader-content reader-mode-${readerMode} reader-article-surface-motion reader-article-${readerArticleMotionDirection}`}
             onMouseUp={captureReaderOriginalSelection}
             onKeyUp={captureReaderOriginalSelection}
             onScroll={handleReaderContentScroll}
@@ -3977,6 +4027,7 @@ export default function App(): React.JSX.Element {
               <>
                 <div className="translation-result-meta">{translationTargetLabel(translationDocument.target)} · {translationDocument.targetLanguage} · {translationDocument.displayMode === 'BILINGUAL' ? t('bilingual') : t('translatedOnly')}</div>
                 <SearchableHtml
+                  key={`translation:${selectedArticle.id}:${translationDocument.target}:${translationDocument.displayMode}`}
                   html={translationDocument.translatedContent}
                   className="article-body translated-article-body"
                   query={readerSearchQuery}
@@ -3992,6 +4043,7 @@ export default function App(): React.JSX.Element {
               <div className="article-body-status error">{t('readerContentFailed')}: {readerContentError}</div>
             ) : readerContent?.html ? (
               <SearchableHtml
+                key={`article:${selectedArticle.id}`}
                 html={readerContent.html}
                 className="article-body"
                 query={readerSearchQuery}

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { launchIsolatedOrigRead } from './electron-test-app'
 
-test('D8.6.5 M2 uses restrained motion tokens for anchored surfaces and icon-only actions', async () => {
+test('D8.6.5 M2 uses perceptible motion tokens for anchored surfaces and icon-only actions', async () => {
   const testApp = await launchIsolatedOrigRead()
   try {
     const page = await testApp.app.firstWindow()
@@ -27,13 +27,15 @@ test('D8.6.5 M2 uses restrained motion tokens for anchored surfaces and icon-onl
     })
     expect(['top', 'bottom']).toContain(surfaceMotion.placement)
     expect(surfaceMotion.animationName).toMatch(/motion-surface-enter-(?:up|down)/)
-    expect(surfaceMotion.animationDuration).toBe('0.16s')
+    expect(surfaceMotion.animationDuration).toBe('0.24s')
     expect(surfaceMotion.transformOrigin).not.toBe('50% 50%')
 
     await page.keyboard.press('Escape')
     await expect(popover).toHaveCount(0)
 
     await page.locator('.settings-button').click()
+    const navIndicator = page.locator('.settings-nav-active-indicator')
+    const navIndicatorBefore = await navIndicator.boundingBox()
     await page.locator('.settings-nav-button').filter({ hasText: 'AI 阅读' }).click()
     const settingsPageMotion = page.locator('.settings-page-motion')
     await expect(settingsPageMotion).toHaveAttribute('data-settings-page', 'ai')
@@ -41,10 +43,30 @@ test('D8.6.5 M2 uses restrained motion tokens for anchored surfaces and icon-onl
       const style = getComputedStyle(element as HTMLElement)
       return { animationName: style.animationName, animationDuration: style.animationDuration }
     })
-    expect(settingsMotion.animationName).toBe('motion-content-enter')
-    expect(settingsMotion.animationDuration).toBe('0.16s')
+    expect(settingsMotion.animationName).toBe('motion-settings-page-forward')
+    expect(settingsMotion.animationDuration).toBe('0.32s')
+    await page.waitForTimeout(380)
+    const navIndicatorAfter = await navIndicator.boundingBox()
+    expect(navIndicatorBefore).not.toBeNull()
+    expect(navIndicatorAfter).not.toBeNull()
+    expect(Math.abs((navIndicatorAfter?.y ?? 0) - (navIndicatorBefore?.y ?? 0))).toBeGreaterThan(70)
 
+    const tabIndicator = page.locator('.ai-settings-tab-indicator')
+    const tabIndicatorBefore = await tabIndicator.boundingBox()
     await page.getByRole('tab', { name: '模型服务' }).click()
+    const aiViewMotion = page.locator('.ai-settings-view-motion')
+    await expect(aiViewMotion).toHaveAttribute('data-ai-settings-view', 'providers')
+    const aiViewMotionStyle = await aiViewMotion.evaluate((element) => {
+      const style = getComputedStyle(element as HTMLElement)
+      return { name: style.animationName, duration: style.animationDuration }
+    })
+    expect(aiViewMotionStyle.name).toBe('motion-settings-view-forward')
+    expect(aiViewMotionStyle.duration).toBe('0.32s')
+    await page.waitForTimeout(380)
+    const tabIndicatorAfter = await tabIndicator.boundingBox()
+    expect(tabIndicatorBefore).not.toBeNull()
+    expect(tabIndicatorAfter).not.toBeNull()
+    expect(Math.abs((tabIndicatorAfter?.x ?? 0) - (tabIndicatorBefore?.x ?? 0))).toBeGreaterThan(120)
     const iconAction = page.locator('.ai-provider-workspace-head .mini-action.icon-only')
     await expect(iconAction).toBeVisible()
     const buttonMotion = await iconAction.evaluate((element) => {
@@ -55,13 +77,13 @@ test('D8.6.5 M2 uses restrained motion tokens for anchored surfaces and icon-onl
       }
     })
     expect(buttonMotion.properties).toContain('transform')
-    expect(buttonMotion.durations).toContain('0.08s')
+    expect(buttonMotion.durations).toContain('0.1s')
   } finally {
     await testApp.close()
   }
 })
 
-test('D8.6.5 M3 keeps structural motion limited to settings content and adaptive source overlay', async () => {
+test('D8.6.5 M3 keeps structural motion perceptible on settings content and adaptive source overlay', async () => {
   const testApp = await launchIsolatedOrigRead()
   try {
     const page = await testApp.app.firstWindow()
@@ -73,8 +95,8 @@ test('D8.6.5 M3 keeps structural motion limited to settings content and adaptive
       const style = getComputedStyle(element as HTMLElement)
       return { name: style.animationName, duration: style.animationDuration }
     })
-    expect(settingsMotion.name).toBe('motion-content-enter')
-    expect(settingsMotion.duration).toBe('0.16s')
+    expect(settingsMotion.name).toBe('motion-settings-page-forward')
+    expect(settingsMotion.duration).toBe('0.32s')
 
     await page.locator('.settings-close-button').click()
     await page.evaluate(() => window.origread.updateSettings({
@@ -105,9 +127,9 @@ test('D8.6.5 M3 keeps structural motion limited to settings content and adaptive
       }
     })
     expect(overlayMotion.name).toBe('motion-overlay-enter-left')
-    expect(overlayMotion.duration).toBe('0.2s')
+    expect(overlayMotion.duration).toBe('0.32s')
     expect(overlayMotion.backdropName).toBe('motion-backdrop-enter')
-    expect(overlayMotion.backdropDuration).toBe('0.16s')
+    expect(overlayMotion.backdropDuration).toBe('0.24s')
   } finally {
     await testApp.close()
   }

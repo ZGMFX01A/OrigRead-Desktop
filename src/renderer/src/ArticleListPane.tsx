@@ -78,6 +78,8 @@ export function ArticleListPane({
   const hasArticleQuery = articleQuery.trim().length > 0
   const hasSubscriptions = feeds.length > 0
   const searchShortcut = /Mac|iPhone|iPad|iPod/i.test(navigator.platform) ? '⌘K' : 'Ctrl K'
+  const articleScopeKey = articleScope.kind === 'all' ? 'all' : `${articleScope.kind}:${articleScope.id}`
+  const articleListMotionKey = `${articleScopeKey}:${destination}`
 
   return (
     <section className="article-pane" aria-label={t(destinationLabelKey)} aria-busy={refreshing}>
@@ -175,7 +177,7 @@ export function ArticleListPane({
       <div className="workspace-list-stage">
         {articleListError && <div className="workspace-error article-list-error" role="alert">{articleListError}</div>}
         {visibleArticles.length > 0 ? (
-          <div className="list-content article-list">
+          <div key={articleListMotionKey} className="list-content article-list article-list-motion">
             {visibleArticles.map((article) => (
               <article
                 className={`article-item ${article.isUnread ? 'unread' : 'read'} ${selectedArticleId === article.id ? 'selected' : ''}`}
@@ -224,7 +226,7 @@ export function ArticleListPane({
             ))}
           </div>
         ) : (
-          <div className="empty-list-state article-list-empty">
+          <div key={`${articleListMotionKey}:empty`} className="empty-list-state article-list-empty article-list-motion">
             <div className="empty-icon">
               {!hasSubscriptions ? <Rss size={22} /> : hasArticleQuery ? <SearchX size={22} /> : <Inbox size={22} />}
             </div>

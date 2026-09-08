@@ -61,12 +61,108 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     await page.reload()
     const article = page.locator(`.article-item[data-article-id="${articleId}"]`)
     await expect(article).toBeVisible()
+    const sourceItem = page.locator('.source-item').filter({ hasText: 'Reader AI Chat' }).first()
+    await expect(sourceItem).toBeVisible()
+    await sourceItem.click()
+    const sourceSelectionMotion = await sourceItem.evaluate((element) => {
+      const indicatorStyle = getComputedStyle(element as HTMLElement, '::before')
+      return { opacity: indicatorStyle.opacity, transform: indicatorStyle.transform, duration: indicatorStyle.transitionDuration }
+    })
+    expect(Number(sourceSelectionMotion.opacity)).toBeGreaterThan(0)
+    expect(Number(sourceSelectionMotion.opacity)).toBeLessThan(1)
+    expect(sourceSelectionMotion.transform).not.toBe('none')
+    expect(sourceSelectionMotion.duration).toContain('0.16s')
+    await page.waitForTimeout(360)
+    const sourceSelectionSettled = await sourceItem.evaluate((element) => {
+      const indicatorStyle = getComputedStyle(element as HTMLElement, '::before')
+      return { opacity: indicatorStyle.opacity, transform: indicatorStyle.transform }
+    })
+    expect(sourceSelectionSettled.opacity).toBe('1')
+    expect(sourceSelectionSettled.transform).toBe('matrix(1, 0, 0, 1, 0, 0)')
+    const sourceScopedListMotion = await page.locator('.article-list-motion').evaluate((element) => {
+      const style = getComputedStyle(element as HTMLElement)
+      return { name: style.animationName, duration: style.animationDuration }
+    })
+    expect(sourceScopedListMotion).toEqual({ name: 'motion-list-enter', duration: '0.32s' })
+    await expect(article).toBeVisible()
+    await page.locator('.article-destination-item').nth(1).click()
+    const switchedArticleListMotion = await page.locator('.article-list-motion').evaluate((element) => {
+      const style = getComputedStyle(element as HTMLElement)
+      return { name: style.animationName, duration: style.animationDuration }
+    })
+    expect(switchedArticleListMotion).toEqual({ name: 'motion-list-enter', duration: '0.32s' })
+    await page.locator('.article-destination-item').first().click()
+    await expect(article).toBeVisible()
     await article.click()
     await expect(page.locator('.article-body')).toContainText('Revenue rose by 20 percent')
+    const articleSelectionMotion = await article.evaluate((element) => {
+      const indicatorStyle = getComputedStyle(element as HTMLElement, '::before')
+      return { opacity: indicatorStyle.opacity, transform: indicatorStyle.transform, duration: indicatorStyle.transitionDuration }
+    })
+    expect(Number(articleSelectionMotion.opacity)).toBeGreaterThan(0)
+    expect(Number(articleSelectionMotion.opacity)).toBeLessThan(1)
+    expect(articleSelectionMotion.transform).not.toBe('none')
+    expect(articleSelectionMotion.duration).toContain('0.16s')
+    await page.waitForTimeout(360)
+    const articleSelectionSettled = await article.evaluate((element) => {
+      const indicatorStyle = getComputedStyle(element as HTMLElement, '::before')
+      return { opacity: indicatorStyle.opacity, transform: indicatorStyle.transform }
+    })
+    expect(articleSelectionSettled.opacity).toBe('1')
+    expect(articleSelectionSettled.transform).toBe('matrix(1, 0, 0, 1, 0, 0)')
+    const articleMotion = await page.locator('.reader-content').evaluate((element) => {
+      const style = getComputedStyle(element as HTMLElement)
+      return {
+        name: style.animationName,
+        duration: style.animationDuration,
+        bodyName: getComputedStyle(document.querySelector('.article-body') as HTMLElement).animationName,
+        headingName: getComputedStyle(document.querySelector('.article-heading') as HTMLElement).animationName,
+        ghostCount: document.querySelectorAll('.reader-content-transition-ghost').length
+      }
+    })
+    expect(articleMotion).toMatchObject({
+      name: 'motion-reader-surface-forward',
+      duration: '0.36s',
+      bodyName: 'none',
+      headingName: 'none',
+      ghostCount: 0
+    })
 
     expect(await page.evaluate(async (id) => (await window.origread.listLlmConversations(id)).length, articleId)).toBe(0)
+    const readerWidthBeforePanel = await page.locator('.reader-content').evaluate((element) => element.getBoundingClientRect().width)
     await page.keyboard.press('a')
     await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-view', 'home')
+    const panelMotion = await page.locator('.reader-ai-panel').evaluate((element) => {
+      const panelStyle = getComputedStyle(element as HTMLElement)
+      const layoutStyle = getComputedStyle(element.parentElement as HTMLElement)
+      const panelAnimation = element.getAnimations()[0]
+      const firstTransform = (panelAnimation?.effect as KeyframeEffect | null)?.getKeyframes()[0]?.transform
+      let initialTravel = 0
+      if (typeof firstTransform === 'string' && firstTransform !== 'none') {
+        initialTravel = Math.abs(new DOMMatrix(firstTransform).m41)
+      }
+      return {
+        placement: element.classList.contains('placement-left') ? 'left' : 'right',
+        panelName: panelStyle.animationName,
+        panelDuration: panelStyle.animationDuration,
+        layoutName: layoutStyle.animationName,
+        layoutDuration: layoutStyle.animationDuration,
+        initialTravel
+      }
+    })
+    expect(panelMotion.panelName).toBe(`motion-reader-panel-enter-${panelMotion.placement}`)
+    expect(panelMotion.layoutName).toBe(`motion-reader-layout-enter-${panelMotion.placement}`)
+    expect(panelMotion.panelDuration).toBe('0.36s')
+    expect(panelMotion.layoutDuration).toBe('0.36s')
+    expect(panelMotion.initialTravel).toBeGreaterThan(100)
+    await page.locator('.reader-ai-panel').evaluate(async (element) => {
+      await Promise.all(element.getAnimations().map((animation) => animation.finished.catch(() => undefined)))
+    })
+    const settledPanelGeometry = await page.evaluate(() => ({
+      readerWidth: document.querySelector('.reader-content')?.getBoundingClientRect().width ?? 0,
+      panelWidth: document.querySelector('.reader-ai-panel')?.getBoundingClientRect().width ?? 0
+    }))
+    expect(readerWidthBeforePanel - settledPanelGeometry.readerWidth).toBeGreaterThan(settledPanelGeometry.panelWidth * 0.75)
     await expect(page.getByRole('textbox', { name: '问问这篇文章……' })).toBeVisible()
     expect(await page.evaluate(async (id) => (await window.origread.listLlmConversations(id)).length, articleId)).toBe(0)
 
@@ -188,6 +284,22 @@ test('Reader AI Chat creates on first send, streams in Panel, preserves A toggle
     })
 
     await page.locator('.reader-ai-panel').getByRole('button', { name: '关闭' }).click()
+    await expect(page.locator('.reader-composite')).toHaveClass(/reader-ai-exiting/)
+    const panelExitMotion = await page.locator('.reader-ai-panel').evaluate((element) => {
+      const panelStyle = getComputedStyle(element as HTMLElement)
+      const layoutStyle = getComputedStyle(element.parentElement as HTMLElement)
+      return {
+        placement: element.classList.contains('placement-left') ? 'left' : 'right',
+        panelName: panelStyle.animationName,
+        panelDuration: panelStyle.animationDuration,
+        layoutName: layoutStyle.animationName,
+        layoutDuration: layoutStyle.animationDuration
+      }
+    })
+    expect(panelExitMotion.panelName).toBe(`motion-reader-panel-exit-${panelExitMotion.placement}`)
+    expect(panelExitMotion.layoutName).toBe(`motion-reader-layout-exit-${panelExitMotion.placement}`)
+    expect(panelExitMotion.panelDuration).toBe('0.24s')
+    expect(panelExitMotion.layoutDuration).toBe('0.24s')
     await expect(page.locator('.reader-ai-panel')).toBeHidden()
     await page.keyboard.press('a')
     await expect(page.locator('.reader-ai-panel')).toHaveAttribute('data-reader-ai-view', 'chat')

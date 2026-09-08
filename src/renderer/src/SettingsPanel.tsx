@@ -30,6 +30,7 @@ import type {
 } from '../../shared/mcp'
 
 export type SettingsPage = 'general' | 'accounts' | 'translation' | 'ai' | 'filters' | 'jsonRules' | 'websiteRules' | 'rsshub' | 'backup' | 'about' | 'update'
+const SETTINGS_PAGE_ORDER: SettingsPage[] = ['general', 'accounts', 'ai', 'translation', 'filters', 'jsonRules', 'websiteRules', 'rsshub', 'backup', 'about', 'update']
 const INTERNAL_ITHOME_RULE_ID = 'ithome-home'
 const DESKTOP_REPOSITORY_URL = 'https://github.com/ZGMFX01A/OrigRead-Desktop'
 const ANDROID_REPOSITORY_URL = 'https://github.com/ZGMFX01A/OrigRead'
@@ -50,34 +51,45 @@ interface SettingsPanelProps {
 export function SettingsPanel({ settings, appInfo, syncState, initialPage = 'general', onChange, onConfigurationRestored, onAccountChanged, onUnsavedChange }: SettingsPanelProps): React.JSX.Element {
   const { t } = useTranslation()
   const [page, setPage] = useState<SettingsPage>(initialPage)
+  const [pageDirection, setPageDirection] = useState<'forward' | 'backward'>('forward')
   const [aiUnsaved,setAiUnsaved]=useState(false)
-  useEffect(()=>setPage(initialPage),[initialPage])
+  useEffect(()=>{
+    setPage((current)=>{
+      if(initialPage===current)return current
+      setPageDirection(SETTINGS_PAGE_ORDER.indexOf(initialPage)>=SETTINGS_PAGE_ORDER.indexOf(current)?'forward':'backward')
+      return initialPage
+    })
+  },[initialPage])
   useEffect(()=>{onUnsavedChange?.(page==='ai'&&aiUnsaved)},[aiUnsaved,onUnsavedChange,page])
   const navigate=(next:SettingsPage)=>{
     if(next===page)return
     if(page==='ai'&&aiUnsaved&&!window.confirm(t('customInstructionsDiscardConfirm')))return
     if(page==='ai')setAiUnsaved(false)
+    setPageDirection(SETTINGS_PAGE_ORDER.indexOf(next)>=SETTINGS_PAGE_ORDER.indexOf(page)?'forward':'backward')
     setPage(next)
   }
   return <div className="settings-layout">
     <aside className="settings-nav">
       <div className="settings-nav-title"><Settings2 size={18}/><span>{t('settings')}</span></div>
-      <SettingsNavButton active={page==='general'} icon={<Globe2 size={16}/>} label={t('settingsGeneral')} onClick={()=>navigate('general')}/>
-      <SettingsNavButton active={page==='accounts'} icon={<UserRound size={16}/>} label={t('accountsTitle')} onClick={()=>navigate('accounts')}/>
-      <SettingsNavButton active={page==='ai'} icon={<Bot size={16}/>} label={t('aiSettingsTitle')} onClick={()=>navigate('ai')}/>
-      <SettingsNavButton active={page==='translation'} icon={<Languages size={16}/>} label={t('translationSettingsTitle')} onClick={()=>navigate('translation')}/>
-      <SettingsNavButton active={page==='filters'} icon={<Filter size={16}/>} label={t('articleFilters')} onClick={()=>navigate('filters')}/>
-      <SettingsNavButton active={page==='jsonRules'} icon={<FileJson2 size={16}/>} label={t('jsonRules')} onClick={()=>navigate('jsonRules')}/>
-      <SettingsNavButton active={page==='websiteRules'} icon={<Globe2 size={16}/>} label={t('websiteRules')} onClick={()=>navigate('websiteRules')}/>
-      <SettingsNavButton active={page==='rsshub'} icon={<RadioTower size={16}/>} label={t('rssHubSettings')} onClick={()=>navigate('rsshub')}/>
-      <SettingsNavButton active={page==='backup'} icon={<DatabaseBackup size={16}/>} label={t('backupRestore')} onClick={()=>navigate('backup')}/>
-      <SettingsNavButton active={page==='about'} icon={<CircleHelp size={16}/>} label={t('aboutAndSupport')} onClick={()=>navigate('about')}/>
-      <SettingsNavButton active={page==='update'} icon={<RefreshCw size={16}/>} label={t('softwareUpdate')} onClick={()=>navigate('update')}/>
+      <div className="settings-nav-items">
+        <span className="settings-nav-active-indicator" aria-hidden="true" style={{ transform: `translateY(${SETTINGS_PAGE_ORDER.indexOf(page) * 40}px)` }}/>
+        <SettingsNavButton active={page==='general'} icon={<Globe2 size={16}/>} label={t('settingsGeneral')} onClick={()=>navigate('general')}/>
+        <SettingsNavButton active={page==='accounts'} icon={<UserRound size={16}/>} label={t('accountsTitle')} onClick={()=>navigate('accounts')}/>
+        <SettingsNavButton active={page==='ai'} icon={<Bot size={16}/>} label={t('aiSettingsTitle')} onClick={()=>navigate('ai')}/>
+        <SettingsNavButton active={page==='translation'} icon={<Languages size={16}/>} label={t('translationSettingsTitle')} onClick={()=>navigate('translation')}/>
+        <SettingsNavButton active={page==='filters'} icon={<Filter size={16}/>} label={t('articleFilters')} onClick={()=>navigate('filters')}/>
+        <SettingsNavButton active={page==='jsonRules'} icon={<FileJson2 size={16}/>} label={t('jsonRules')} onClick={()=>navigate('jsonRules')}/>
+        <SettingsNavButton active={page==='websiteRules'} icon={<Globe2 size={16}/>} label={t('websiteRules')} onClick={()=>navigate('websiteRules')}/>
+        <SettingsNavButton active={page==='rsshub'} icon={<RadioTower size={16}/>} label={t('rssHubSettings')} onClick={()=>navigate('rsshub')}/>
+        <SettingsNavButton active={page==='backup'} icon={<DatabaseBackup size={16}/>} label={t('backupRestore')} onClick={()=>navigate('backup')}/>
+        <SettingsNavButton active={page==='about'} icon={<CircleHelp size={16}/>} label={t('aboutAndSupport')} onClick={()=>navigate('about')}/>
+        <SettingsNavButton active={page==='update'} icon={<RefreshCw size={16}/>} label={t('softwareUpdate')} onClick={()=>navigate('update')}/>
+      </div>
       <div className="settings-nav-spacer" />
       <small>{appInfo ? `v${appInfo.version} · ${appInfo.platform}` : '—'}</small>
     </aside>
     <div className="settings-page settings-subpage">
-      <div key={page} className="settings-page-motion" data-settings-page={page}>
+      <div key={page} className={`settings-page-motion settings-page-motion-${pageDirection}`} data-settings-page={page}>
         {page==='general' && <GeneralSettings settings={settings} onChange={onChange}/>}
         {page==='accounts' && <AccountsSettingsPage syncState={syncState} onChanged={onAccountChanged}/>}
         {page==='update' && <UpdateSettingsPage settings={settings} appInfo={appInfo} onChange={onChange}/>}
@@ -88,7 +100,7 @@ export function SettingsPanel({ settings, appInfo, syncState, initialPage = 'gen
         {page==='websiteRules' && <WebsiteRulesSettingsPage/>}
         {page==='rsshub' && <RssHubSettingsPage/>}
         {page==='backup' && <BackupSettingsPage onRestored={onConfigurationRestored}/>}
-        {page==='about' && <AboutAndSupportPage appInfo={appInfo} onOpenUpdate={()=>setPage('update')}/>}
+        {page==='about' && <AboutAndSupportPage appInfo={appInfo} onOpenUpdate={()=>navigate('update')}/>}
       </div>
     </div>
   </div>
@@ -377,6 +389,7 @@ function AiSettingsPage({onUnsavedChange}:{onUnsavedChange?:(dirty:boolean)=>voi
   const {t}=useTranslation()
   const [settings,setSettings]=useState<AiSettings|null>(null)
   const [view,setView]=useState<'reading'|'providers'|'search'|'behavior'>('reading')
+  const [viewDirection,setViewDirection]=useState<'forward'|'backward'>('forward')
   const [selectedProviderId,setSelectedProviderId]=useState<string|null>(null)
   const [keys,setKeys]=useState<Record<string,string>>({})
   const [dirtyKeys,setDirtyKeys]=useState<Record<string,boolean>>({})
@@ -454,6 +467,13 @@ function AiSettingsPage({onUnsavedChange}:{onUnsavedChange?:(dirty:boolean)=>voi
     ['search','aiTabSearch',<Search size={15}/>],
     ['behavior','aiTabBehavior',<Sparkles size={15}/>]
   ] as const
+  const changeView=(next:typeof view)=>{
+    if(next===view)return
+    const currentIndex=tabs.findIndex(([id])=>id===view)
+    const nextIndex=tabs.findIndex(([id])=>id===next)
+    setViewDirection(nextIndex>=currentIndex?'forward':'backward')
+    setView(next)
+  }
   const addProvider=async()=>{
     const before=new Set(settings.providers.map((provider)=>provider.id))
     const next=await window.origread.addAiProvider()
@@ -469,8 +489,20 @@ function AiSettingsPage({onUnsavedChange}:{onUnsavedChange?:(dirty:boolean)=>voi
     setKeys((value)=>withoutKey(value,provider.id));setDirtyKeys((value)=>withoutKey(value,provider.id));setVisibleKeys((value)=>withoutKey(value,provider.id))
   }
   return <div className="ai-settings-page"><PageIntro icon={<Bot size={22}/>} title={t('aiSettingsTitle')} description={t('aiSettingsDescription')}/>
-    <div className="ai-settings-tabs" role="tablist" aria-label={t('aiSettingsTitle')}>{tabs.map(([id,label,icon])=><button type="button" role="tab" aria-selected={view===id} className={view===id?'active':''} key={id} onClick={()=>setView(id)}>{icon}<span>{t(label)}</span></button>)}</div>
-    {view==='reading'&&<><div className="ai-settings-summary-card"><div className="ai-settings-summary-icon"><Sparkles size={18}/></div><div><span>{t('aiCurrentDefault')}</span><strong>{defaultProvider?`${defaultProvider.name}${defaultProvider.defaultModel?` · ${defaultProvider.defaultModel}`:''}`:t('notConfigured')}</strong></div><button type="button" className="mini-action" onClick={()=>{setSelectedProviderId(defaultProvider?.id??null);setView('providers')}}>{t('aiManage')}</button></div>
+    <div className="ai-settings-tabs" role="tablist" aria-label={t('aiSettingsTitle')}>
+      <span
+        className="ai-settings-tab-indicator"
+        aria-hidden="true"
+        style={{
+          '--ai-tab-index': tabs.findIndex(([id])=>id===view),
+          '--ai-tab-compact-column': tabs.findIndex(([id])=>id===view) % 2,
+          '--ai-tab-compact-row': Math.floor(tabs.findIndex(([id])=>id===view) / 2)
+        } as React.CSSProperties}
+      />
+      {tabs.map(([id,label,icon])=><button type="button" role="tab" aria-selected={view===id} className={view===id?'active':''} key={id} onClick={()=>changeView(id)}>{icon}<span>{t(label)}</span></button>)}
+    </div>
+    <div key={view} className={`ai-settings-view-motion ai-settings-view-motion-${viewDirection}`} data-ai-settings-view={view}>
+    {view==='reading'&&<><div className="ai-settings-summary-card"><div className="ai-settings-summary-icon"><Sparkles size={18}/></div><div><span>{t('aiCurrentDefault')}</span><strong>{defaultProvider?`${defaultProvider.name}${defaultProvider.defaultModel?` · ${defaultProvider.defaultModel}`:''}`:t('notConfigured')}</strong></div><button type="button" className="mini-action" onClick={()=>{setSelectedProviderId(defaultProvider?.id??null);changeView('providers')}}>{t('aiManage')}</button></div>
     <SettingsSection icon={<BookOpenText size={17}/>} title={t('aiReadingDefaults')}>
       <SettingRow title={t('aiEnabled')} description={t('aiEnabledDescription')}><Toggle ariaLabel={t('aiEnabled')} checked={settings.enabled} onChange={(v)=>void updateGlobal({enabled:v})}/></SettingRow>
       <SettingRow title={t('aiDefaultModel')} description={t('aiDefaultModelDescription')}><div className="ai-default-model-picker"><select aria-label={t('aiDefaultProvider')} value={defaultProvider?.id??''} onChange={(e)=>{clearTransientKeys();setSelectedProviderId(e.target.value);void updateGlobal({defaultProviderId:e.target.value})}}>{settings.providers.filter((provider)=>provider.enabled).map((provider)=><option key={provider.id} value={provider.id}>{provider.name}</option>)}</select><select aria-label={t('aiModel')} value={defaultProvider?.defaultModel??''} disabled={!defaultProvider} onChange={(e)=>{if(defaultProvider)void updateProvider(defaultProvider,{defaultModel:e.target.value})}}><option value="">{t('selectModel')}</option>{defaultProvider?.models.map((model)=><option key={model} value={model}>{model}</option>)}</select></div></SettingRow>
@@ -500,7 +532,7 @@ function AiSettingsPage({onUnsavedChange}:{onUnsavedChange?:(dirty:boolean)=>voi
         </div>})()}
       </div>
     </section>}
-    {status&&<StatusText text={status}/>} </div>
+    {status&&<StatusText text={status}/>} </div></div>
 }
 
 function WebSearchSettingsSection():React.JSX.Element{
