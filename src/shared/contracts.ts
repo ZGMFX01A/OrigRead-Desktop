@@ -8,6 +8,7 @@ import type { SourceDiscoveryProgress, SourceDiscoveryResult, SourceSubscription
 import type { SourceSyncBatchResult, SourceSyncItemResult } from './source-sync'
 import type { FullContentFetchResult, ReaderArticleContent } from './reader'
 import type { SyncRuntimeState } from './sync-runtime'
+import type { SyncDesktopRunResult, SyncDesktopStatus, SyncDiscoverySnapshot, SyncEndpointConfig, SyncEndpointInput, SyncPeerRegistration } from './sync-control'
 import type {
   OriginalArticleViewState,
   OriginalNavigationAction,
@@ -143,6 +144,13 @@ export interface OrigReadDesktopApi extends LlmChatDataApi {
   refreshAllSources(): Promise<SourceSyncBatchResult>
   getSyncRuntimeState(): Promise<SyncRuntimeState>
   onSyncRuntimeStateChanged(listener: (state: SyncRuntimeState) => void): () => void
+  getSyncStatus(): Promise<SyncDesktopStatus>
+  activateSyncGenesis(): Promise<{ syncSpaceId: string; genesisSessionId: string; genesisBaselineId: string; crossDbCutId: string; snapshotBundleId: string; capturedAt: number; tailOperationsBuilt: number }>
+  configureSyncEndpoint(input: SyncEndpointInput): Promise<SyncEndpointConfig>
+  removeSyncEndpoint(endpointId: string): Promise<void>
+  registerSyncPeer(input: SyncPeerRegistration): Promise<{ fingerprint: string }>
+  syncNow(endpointId: string): Promise<SyncDesktopRunResult>
+  discoverSyncPeers(timeoutMs?: number): Promise<SyncDiscoverySnapshot>
   getReaderContent(articleId: string, preferFull?: boolean): Promise<ReaderArticleContent>
   fetchFullContent(articleId: string): Promise<FullContentFetchResult>
   getAiSettings(): Promise<AiSettings>
@@ -310,6 +318,13 @@ export const IPC_CHANNELS = {
   refreshAllSources: 'source:refresh-all',
   getSyncRuntimeState: 'sync:get-runtime-state',
   syncRuntimeStateChanged: 'sync:runtime-state-changed',
+  getSyncStatus: 'sync:get-status',
+  activateSyncGenesis: 'sync:activate-genesis',
+  configureSyncEndpoint: 'sync:endpoint:configure',
+  removeSyncEndpoint: 'sync:endpoint:remove',
+  registerSyncPeer: 'sync:peer:register',
+  syncNow: 'sync:run-now',
+  discoverSyncPeers: 'sync:discover-peers',
   getReaderContent: 'reader:get-content',
   fetchFullContent: 'reader:fetch-full-content',
   getAiSettings: 'ai:settings:get',

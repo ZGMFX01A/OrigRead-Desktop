@@ -41,7 +41,8 @@ function snapshot(citations: LlmCitationRefRecord[]): LlmAssistantEvidenceSnapsh
     evidenceBlocks: [],
     citations,
     citationAnnotations: [],
-    citationAnnotationRefs: []
+    citationAnnotationRefs: [],
+    syncAttachments: []
   }
 }
 

@@ -76,6 +76,7 @@ import type {
   LlmManualToolContextView,
   LlmManualToolView,
   LlmReaderContextSnapshot,
+  LlmSyncAttachmentStateView,
   LlmToolActivityView,
   LlmToolApprovalDecision
 } from '../../shared/llm-ipc'
@@ -4812,7 +4813,10 @@ function ReaderAiAssistantAnswer({
         const source = occurrence.refs.length > 1 && !directCitation
           ? t('answerSources')
           : citationSourceName(primaryCitation, contextRef, t)
-        const preview = citationPreview(primaryCitation.quoteSnapshot)
+        const attachmentState = citationSyncAttachmentState(primaryCitation, snapshot)
+        const preview = attachmentState
+          ? syncAttachmentLabel(attachmentState, t)
+          : citationPreview(primaryCitation.quoteSnapshot)
         return <span
           className="reader-ai-inline-citation-wrap"
           key={occurrence.annotationId}
@@ -4918,6 +4922,7 @@ function ReaderAiSourcesDetailBody({
         : t('contextUsageOmitted')
       const sourceUrl = primaryCitation?.sourceUrl ?? ref.sourceUrl
       const toolLocator = primaryCitation?.locatorSnapshot?.sourceKind === 'TOOL_RESULT' ? primaryCitation.locatorSnapshot : null
+      const attachmentState = sourceSyncAttachmentState(ref, citations, evidence, snapshot)
       return <article className={`reader-ai-source-card ${focused ? 'focused' : ''}`} key={ref.id}>
         <div className="reader-ai-source-card-head">
           <div>
@@ -4937,8 +4942,13 @@ function ReaderAiSourcesDetailBody({
           <small>{t('contextCitationCount', { count: citations.length })}</small>
         </div> : <small className="reader-ai-source-no-citation">{t('contextNoCitations')}</small>}
         <blockquote className="reader-ai-source-preview">
-          {citationPreview(primaryCitation?.quoteSnapshot ?? ref.promptContentSnapshot ?? ref.contentSnapshot)}
+          {attachmentState
+            ? syncAttachmentLabel(attachmentState, t)
+            : citationPreview(primaryCitation?.quoteSnapshot ?? ref.promptContentSnapshot ?? ref.contentSnapshot)}
         </blockquote>
+        {attachmentState ? <small className={`reader-ai-source-sync-state ${attachmentState.availability === 'BLOB_FAILED' ? 'failed' : ''}`}>
+          {syncAttachmentLabel(attachmentState, t)}
+        </small> : null}
         {toolLocator ? <div className="reader-ai-source-tool-meta">
           {toolLocator.toolName ? <span><strong>{toolLocator.toolName}</strong></span> : null}
           {toolLocator.toolSourceId ? <span>{t('contextToolServer')}: {toolLocator.toolSourceId}</span> : null}
@@ -4988,6 +4998,70 @@ function citationSourceName(
 function citationPreview(value: string): string {
   const compact = value.replace(/\s+/g, ' ').trim()
   return compact.length <= 240 ? compact : `${compact.slice(0, 240).trimEnd()}…`
+}
+
+function sourceSyncAttachmentState(
+  ref: LlmContextRefRecord,
+  citations: readonly LlmCitationRefRecord[],
+  evidence: readonly LlmEvidenceBlockRecord[],
+  snapshot: LlmAssistantEvidenceSnapshot
+): LlmSyncAttachmentStateView | null {
+  const candidates: LlmSyncAttachmentStateView[] = []
+  candidates.push(...syncAttachmentStatesFor(snapshot, 'context_ref', ref.id, ['context_snapshot', 'context_prompt_snapshot']))
+  for (const citation of citations) {
+    candidates.push(...syncAttachmentStatesFor(snapshot, 'citation_ref', citation.id, ['citation_quote']))
+  }
+  for (const block of evidence) {
+    candidates.push(...syncAttachmentStatesFor(snapshot, 'evidence_block', block.id, ['evidence_text']))
+  }
+  return mostRelevantUnavailableSyncAttachment(candidates)
+}
+
+function citationSyncAttachmentState(
+  citation: LlmCitationRefRecord,
+  snapshot: LlmAssistantEvidenceSnapshot
+): LlmSyncAttachmentStateView | null {
+  const candidates = syncAttachmentStatesFor(snapshot, 'citation_ref', citation.id, ['citation_quote'])
+  if (citation.evidenceBlockId) {
+    candidates.push(...syncAttachmentStatesFor(snapshot, 'evidence_block', citation.evidenceBlockId, ['evidence_text']))
+  }
+  return mostRelevantUnavailableSyncAttachment(candidates)
+}
+
+function syncAttachmentStatesFor(
+  snapshot: LlmAssistantEvidenceSnapshot,
+  entityType: LlmSyncAttachmentStateView['entityType'],
+  localId: string,
+  referenceKinds: readonly string[]
+): LlmSyncAttachmentStateView[] {
+  const kinds = new Set(referenceKinds)
+  return snapshot.syncAttachments.filter((state) =>
+    state.entityType === entityType && state.localId === localId && kinds.has(state.referenceKind)
+  )
+}
+
+function mostRelevantUnavailableSyncAttachment(
+  states: readonly LlmSyncAttachmentStateView[]
+): LlmSyncAttachmentStateView | null {
+  const rank: Record<LlmSyncAttachmentStateView['availability'], number> = {
+    READY: 0,
+    METADATA_READY: 1,
+    BLOB_MISSING: 2,
+    BLOB_FETCHING: 3,
+    BLOB_FAILED: 4
+  }
+  return states
+    .filter((state) => state.availability !== 'READY')
+    .sort((left, right) => rank[right.availability] - rank[left.availability])[0] ?? null
+}
+
+function syncAttachmentLabel(
+  state: LlmSyncAttachmentStateView,
+  t: (key: string, options?: Record<string, unknown>) => string
+): string {
+  if (state.availability === 'BLOB_FETCHING') return t('syncAttachmentFetching')
+  if (state.availability === 'BLOB_FAILED') return t('syncAttachmentFailed')
+  return t('syncAttachmentMissing')
 }
 
 function CitationMarkdown({

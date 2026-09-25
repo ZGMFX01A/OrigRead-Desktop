@@ -6,6 +6,7 @@ import type { SourceSyncBatchResult } from '../../shared/source-sync'
 import { LibraryRepository } from '../database/library-repository'
 import { AccountRepository } from './account-repository'
 import { RemoteAccountSyncService } from './remote-account-sync-service'
+import type { DesktopSyncRuntimeCoordinator } from '../sync/sync-runtime-coordinator'
 
 interface LocalSyncRunner {
   refreshAllSources(fetchedAt?:number):Promise<SourceSyncBatchResult>
@@ -16,7 +17,8 @@ export class DesktopAccountService {
     private readonly accounts:AccountRepository,
     private readonly library:LibraryRepository,
     private readonly remote:RemoteAccountSyncService,
-    private readonly localSync:LocalSyncRunner
+    private readonly localSync:LocalSyncRunner,
+    private readonly syncRuntime?:DesktopSyncRuntimeCoordinator
   ) {}
 
   snapshot():AccountSnapshot{return this.accounts.snapshot()}
@@ -40,7 +42,11 @@ export class DesktopAccountService {
   }
 
   switchTo(id:number):AccountRecord{return this.accounts.switchTo(id)}
-  delete(id:number):AccountRecord{return this.accounts.delete(id)}
+  delete(id:number):AccountRecord{
+    return this.syncRuntime
+      ? this.syncRuntime.detachLocalAccount(id,()=>this.accounts.delete(id))
+      : this.accounts.delete(id)
+  }
   update(patch:AccountPatch):AccountRecord{return this.accounts.update(patch)}
 
   async testConnection(id:number):Promise<AccountConnectionTestResult>{
@@ -97,7 +103,10 @@ export class DesktopAccountService {
 
   async deleteFeed(feedId:string):Promise<void>{
     if(this.current().type!=='local')return this.remote.deleteFeed(feedId)
-    this.library.deleteArticlesByFeed(feedId,true);this.library.deleteFeed(feedId)
+    // LibraryRepository.deleteFeed() is wrapped by captureLibraryMutation. Let the
+    // Article -> Feed ON DELETE CASCADE happen inside that same transaction so the
+    // before/after diff emits Article GLOBAL_DELETE operations before Feed delete.
+    this.library.deleteFeed(feedId)
   }
 
   async markArticleUnread(articleId:string,unread:boolean):Promise<void>{await this.remote.markArticleUnread(articleId,unread)}

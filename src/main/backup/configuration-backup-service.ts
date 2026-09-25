@@ -26,6 +26,7 @@ import { MAX_WEB_SEARCH_MAX_RESULTS, MIN_WEB_SEARCH_MAX_RESULTS, WEB_SEARCH_PROV
 import type { McpRemoteRepository } from '../mcp/mcp-remote-repository'
 import type { McpLocalRepository } from '../mcp/mcp-local-repository'
 import type { SecretStore } from '../security/secret-store'
+import type { LibrarySyncMutationCapture } from '../sync/library-sync-mutation-capture'
 
 export class ConfigurationBackupService {
   constructor(
@@ -47,7 +48,8 @@ export class ConfigurationBackupService {
     private readonly mcpRemote?:McpRemoteRepository,
     private readonly mcpLocal?:McpLocalRepository,
     private readonly database?:DatabaseSync,
-    private readonly secretStore?:SecretStore
+    private readonly secretStore?:SecretStore,
+    private readonly syncMutations?:LibrarySyncMutationCapture
   ){}
 
   exportBackup(password=''):string{
@@ -106,6 +108,10 @@ export class ConfigurationBackupService {
   }
 
   private applyValidatedBackup(backup:ConfigurationBackup,secrets:ConfigurationBackupSecrets|null):ConfigurationRestoreResult{
+    const accountId=this.library.getCurrentAccountId()
+    // restoreSubscriptions() writes through LibraryRepository.upsertGroup/upsertFeed.
+    // Those repository methods already capture each Library mutation into the Sync Outbox.
+    // Wrapping the whole restore again would double-capture the same Group/Feed changes.
     const {feedIdMap,groupsAdded,feedsAdded,feedsUpdated}=this.restoreSubscriptions(backup)
     this.desktopSettings.update(readDesktopPreferences(backup.preferences))
     if(this.accounts){
@@ -113,11 +119,68 @@ export class ConfigurationBackupService {
     }else{
       this.desktopSettings.update({syncIntervalMinutes:normalizeDesktopSyncInterval(backup.accountSettings.syncIntervalMinutes),syncOnStart:backup.accountSettings.syncOnStart})
     }
-    this.websiteRules.restoreBackup(JSON.stringify(backup.websiteRules))
-    this.jsonRules.restoreBackup(JSON.stringify(backup.jsonRules))
-    const filterRulesRestored=this.articleFilters.restoreBackup(JSON.stringify(backup.articleFilters),feedIdMap)
-    this.websitePreferences.restoreBackup(JSON.stringify(backup.websiteParsePreferences),feedIdMap)
-    this.rssHub.restore(backup.rssHub)
+    const restoreWebsiteRules=()=>this.websiteRules.restoreBackup(JSON.stringify(backup.websiteRules))
+    const restoreJsonRules=()=>this.jsonRules.restoreBackup(JSON.stringify(backup.jsonRules))
+    const restoreFilterRules=()=>this.articleFilters.restoreBackup(JSON.stringify(backup.articleFilters),feedIdMap)
+    if(this.syncMutations?.captureWebsiteRulesMutation){
+      this.syncMutations.captureWebsiteRulesMutation(
+        accountId,
+        ()=>this.websiteRules.listSyncRules(),
+        (rules)=>this.websiteRules.replaceSyncRules(rules),
+        restoreWebsiteRules
+      )
+    }else restoreWebsiteRules()
+    if(this.syncMutations?.captureJsonRulesMutation){
+      this.syncMutations.captureJsonRulesMutation(
+        accountId,
+        ()=>this.jsonRules.listSyncRules(),
+        (rules)=>this.jsonRules.replaceSyncRules(rules),
+        restoreJsonRules
+      )
+    }else restoreJsonRules()
+    const filterRulesRestored=this.syncMutations?.captureFilterRulesMutation
+      ?this.syncMutations.captureFilterRulesMutation(
+        accountId,
+        ()=>this.articleFilters.getAll(),
+        (rules)=>this.articleFilters.replaceRules(rules),
+        restoreFilterRules
+      )
+      :restoreFilterRules()
+    const websitePreferencesJson=JSON.stringify(backup.websiteParsePreferences)
+    const websitePreferenceFeedIds=this.websitePreferences.mappedBackupFeedIds(
+      websitePreferencesJson,
+      feedIdMap
+    )
+    const restoreWebsitePreferences=()=>this.websitePreferences.restoreBackup(
+      websitePreferencesJson,
+      feedIdMap
+    )
+    if(this.syncMutations?.captureWebsiteParsePreferencesMutation){
+      this.syncMutations.captureWebsiteParsePreferencesMutation(
+        accountId,
+        websitePreferenceFeedIds,
+        ()=>new Map(
+          [...websitePreferenceFeedIds].map((feedId)=>[
+            feedId,
+            this.websitePreferences.getUserSyncState(feedId)
+          ])
+        ),
+        (states)=>{
+          for(const feedId of websitePreferenceFeedIds){
+            this.websitePreferences.applyUserSyncState(feedId,states.get(feedId)??null)
+          }
+        },
+        restoreWebsitePreferences
+      )
+    }else restoreWebsitePreferences()
+    if(this.syncMutations?.captureRssHubSettingsMutation){
+      this.syncMutations.captureRssHubSettingsMutation(
+        accountId,
+        ()=>this.rssHub.current(),
+        (settings)=>this.rssHub.replaceSyncSettings(settings),
+        ()=>this.rssHub.restore(backup.rssHub)
+      )
+    }else this.rssHub.restore(backup.rssHub)
     for(const [oldFeedId,url] of Object.entries(backup.rssHubSourceUrls)){const mapped=feedIdMap.get(oldFeedId);if(mapped&&url.trim())this.library.setRssHubSourceUrl(mapped,url)}
     this.restoreTranslation(backup.translation,secrets?.translationApiKeys)
     this.restoreAi(backup.ai,secrets?.aiApiKeys)

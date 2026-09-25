@@ -14,7 +14,12 @@ describe('database migration v2 -> current schema', () => {
       'accounts', 'groups', 'feeds', 'articles',
       'llm_conversations', 'llm_conversation_articles', 'llm_messages', 'llm_tool_calls',
       'llm_context_refs', 'llm_evidence_blocks', 'llm_citation_refs',
-      'llm_citation_annotations', 'llm_citation_annotation_refs'
+      'llm_citation_annotations', 'llm_citation_annotation_refs',
+      'sync_spaces', 'sync_identity_mapping',
+      'sync_local_space_binding', 'sync_device_identity', 'sync_actor_incarnation',
+      'sync_lane_writer_state', 'sync_applied_frontier', 'sync_outbox', 'sync_operation_log',
+      'sync_genesis_session', 'sync_snapshot_bundle', 'sync_snapshot_shard', 'sync_genesis_operation_coverage',
+      'sync_alias_edge', 'sync_entity_alias', 'sync_local_eviction'
     ]))
     const messageColumns = (db.prepare("PRAGMA table_info('llm_messages')").all() as Array<{ name: string }>).map((column) => column.name)
     expect(messageColumns).toEqual(expect.arrayContaining([
@@ -164,11 +169,122 @@ describe('database migration v2 -> current schema', () => {
 
     expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
     expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all())
-      .toEqual([{version:9},{version:10},{version:11},{version:12}])
+      .toEqual(Array.from({ length: CURRENT_SCHEMA_VERSION - 8 }, (_, index) => ({ version: index + 9 })))
     const columns = db.prepare("PRAGMA table_info('llm_messages')").all() as Array<{name:string}>
     expect(columns.map((column)=>column.name)).toEqual(expect.arrayContaining([
       'web_search_status','web_search_query','web_search_provider_name','web_search_result_count','web_search_error_message'
     ]))
     db.close()
   })
+
+  it('creates an empty sync identity layer and keeps canonical keys non-unique', () => {
+    const db = new DatabaseSync(':memory:')
+    db.exec('PRAGMA foreign_keys=ON')
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+
+    expect(db.prepare('SELECT COUNT(*) AS count FROM sync_spaces').get()).toEqual({count:0})
+    expect(db.prepare('SELECT COUNT(*) AS count FROM sync_identity_mapping').get()).toEqual({count:0})
+
+    db.prepare('INSERT INTO sync_spaces(sync_space_id,created_at,updated_at) VALUES(?,?,?)')
+      .run('space-1',1,1)
+    const insert = db.prepare(`
+      INSERT INTO sync_identity_mapping(
+        sync_space_id,entity_type,local_id,sync_id,canonical_key,generation,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?)
+    `)
+    insert.run('space-1','feed','local-feed-1','sync-feed-1','same-source',0,1,1)
+    insert.run('space-1','feed','local-feed-2','sync-feed-2','same-source',0,1,1)
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM sync_identity_mapping
+      WHERE sync_space_id=? AND entity_type=? AND canonical_key=?
+    `).get('space-1','feed','same-source')).toEqual({count:2})
+
+    expect(() => insert.run('space-1','feed','local-feed-3','sync-feed-2','other-source',0,1,1)).toThrow()
+    db.close()
+  })
+
+  it('creates the v15 global operation log with Dot and status indexes', () => {
+    const db = new DatabaseSync(':memory:')
+    db.exec('PRAGMA foreign_keys=ON')
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM sync_operation_log').get()).toEqual({count:0})
+    const indexes = (db.prepare("PRAGMA index_list('sync_operation_log')").all() as Array<{name:string}>).map((row) => row.name)
+    expect(indexes).toEqual(expect.arrayContaining([
+      'sync_operation_log_actor_lane_sequence_idx',
+      'sync_operation_log_space_status_created_idx',
+      'sync_operation_log_space_entity_idx'
+    ]))
+    db.close()
+  })
+
+  it('creates the v16 Genesis session and snapshot layer and extends the outbox cut marker', () => {
+    const db = new DatabaseSync(':memory:')
+    db.exec('PRAGMA foreign_keys=ON')
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+    const outboxColumns = (db.prepare("PRAGMA table_info('sync_outbox')").all() as Array<{name:string}>).map((row) => row.name)
+    expect(outboxColumns).toContain('genesis_included_at')
+    expect(db.prepare('SELECT COUNT(*) AS count FROM sync_genesis_session').get()).toEqual({count:0})
+    expect(db.prepare('SELECT COUNT(*) AS count FROM sync_snapshot_bundle').get()).toEqual({count:0})
+    expect(db.prepare('SELECT COUNT(*) AS count FROM sync_snapshot_shard').get()).toEqual({count:0})
+    expect(db.prepare('SELECT COUNT(*) AS count FROM sync_genesis_operation_coverage').get()).toEqual({count:0})
+    db.close()
+  })
+
+  it('creates separate durable Received/Applied, endpoint, peer and Blob state', () => {
+    const db = new DatabaseSync(':memory:')
+    db.exec('PRAGMA foreign_keys=ON')
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{name:string}>)
+      .map((row) => row.name)
+    expect(tables).toEqual(expect.arrayContaining([
+      'sync_inbox_operation', 'sync_coverage', 'sync_apply_journal', 'sync_peer_identity',
+      'sync_endpoint_config', 'sync_peer_cursor', 'sync_blob_manifest',
+      'sync_blob_reference', 'sync_blob_persisted_ack'
+    ]))
+    expect(tables).toEqual(expect.arrayContaining(['sync_field_version', 'sync_entity_alias', 'sync_entity_tombstone', 'sync_auth_ledger']))
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    db.close()
+  })
+  it('upgrades v22 additively with LocalRecoverySnapshot, Alias and Blob state', () => {
+    const db = new DatabaseSync(':memory:')
+    try {
+      applyMigrations(db)
+      db.exec(`
+        ALTER TABLE articles DROP COLUMN is_read_later;
+        DROP TRIGGER sync_operation_bind_author;
+        DROP TABLE sync_actor_author;
+        ALTER TABLE sync_snapshot_bundle DROP COLUMN auth_stability_checkpoint_id;
+        DROP TABLE sync_blob_persisted_ack;
+        DROP TABLE sync_blob_reference;
+        ALTER TABLE sync_snapshot_shard DROP COLUMN blob_reference_index_json;
+        ALTER TABLE sync_snapshot_shard DROP COLUMN blob_manifest_index_json;
+        ALTER TABLE sync_blob_manifest DROP COLUMN failure_reason;
+        ALTER TABLE sync_blob_manifest DROP COLUMN availability_state;
+        ALTER TABLE sync_blob_manifest DROP COLUMN availability_policy;
+        ALTER TABLE sync_blob_manifest DROP COLUMN encryption_info_json;
+        ALTER TABLE sync_blob_manifest DROP COLUMN compression;
+        ALTER TABLE sync_recovery_capsule DROP COLUMN recovery_state_json;
+        DROP TABLE sync_alias_edge;
+        DROP TABLE sync_local_eviction;
+        DELETE FROM schema_migrations WHERE version>=23;
+      `)
+      const before = db.prepare('SELECT * FROM accounts ORDER BY id').all()
+      expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+      expect(db.prepare('SELECT * FROM accounts ORDER BY id').all()).toEqual(before)
+      const columns = (db.prepare("PRAGMA table_info('sync_recovery_capsule')").all() as Array<{ name: string }>).map((row) => row.name)
+      expect(columns).toContain('recovery_state_json')
+      const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((row) => row.name)
+      expect(tables).toEqual(expect.arrayContaining([
+        'sync_alias_edge', 'sync_entity_alias', 'sync_local_eviction',
+        'sync_blob_reference', 'sync_blob_persisted_ack'
+      ]))
+      const blobColumns = (db.prepare("PRAGMA table_info('sync_blob_manifest')").all() as Array<{ name: string }>).map((row) => row.name)
+      expect(blobColumns).toEqual(expect.arrayContaining(['availability_state','availability_policy','compression','encryption_info_json']))
+      const shardColumns = (db.prepare("PRAGMA table_info('sync_snapshot_shard')").all() as Array<{ name: string }>).map((row) => row.name)
+      expect(shardColumns).toEqual(expect.arrayContaining(['blob_manifest_index_json','blob_reference_index_json']))
+      expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+      expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' })
+    } finally { db.close() }
+  })
+
 })

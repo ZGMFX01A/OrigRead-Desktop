@@ -145,6 +145,22 @@ export interface LlmAssistantEvidenceSnapshot {
   citations: LlmCitationRefRecord[]
   citationAnnotations: LlmCitationAnnotationRecord[]
   citationAnnotationRefs: LlmCitationAnnotationRefRecord[]
+  syncAttachments: LlmSyncAttachmentStateView[]
+}
+
+export type LlmSyncAttachmentAvailability =
+  | 'METADATA_READY'
+  | 'BLOB_MISSING'
+  | 'BLOB_FETCHING'
+  | 'READY'
+  | 'BLOB_FAILED'
+
+export interface LlmSyncAttachmentStateView {
+  entityType: 'context_ref' | 'evidence_block' | 'citation_ref'
+  localId: string
+  referenceKind: string
+  availability: LlmSyncAttachmentAvailability
+  failureReason: string | null
 }
 
 export interface LlmRestorableCitationSnapshot {

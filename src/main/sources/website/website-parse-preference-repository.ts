@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import type { WebsiteParseCandidate, WebsiteRule } from '../../../shared/website'
+import { readUtf8FileOrNull, writeUtf8FileAtomic } from '../../utils/atomic-utf8-file'
 import { AUTOMATIC_WEBSITE_RULE_ID_PREFIX } from './automatic-website-list-detector'
 import { FULL_SCAN_REUSE_INTERVAL } from './automatic-rule-stability-scorer'
 
@@ -28,6 +28,12 @@ export interface WebsiteParsePreference {
   automaticFullScanCount: number
 }
 
+export interface WebsiteParsePreferenceUserSyncState {
+  dynamicRenderingEnabled: boolean
+  preferredRuleId: string | null
+  preferredRuleName: string | null
+}
+
 interface PreferenceBundle { items: WebsiteParsePreference[] }
 
 const MAX_AUTOMATIC_HISTORY_ITEMS = 12
@@ -39,6 +45,45 @@ export class WebsiteParsePreferenceRepository {
 
   get(feedId: string): WebsiteParsePreference | null {
     return this.load().find((item) => item.feedId === feedId) ?? null
+  }
+
+  getUserSyncState(feedId: string): WebsiteParsePreferenceUserSyncState | null {
+    const current = this.get(feedId)
+    if (!current) return null
+    const state: WebsiteParsePreferenceUserSyncState = {
+      dynamicRenderingEnabled: current.dynamicRenderingEnabled,
+      preferredRuleId: current.preferredRuleId,
+      preferredRuleName: current.preferredRuleName
+    }
+    return isDefaultUserSyncState(state) ? null : state
+  }
+
+  listUserSyncStates(feedIds: Set<string>): Map<string, WebsiteParsePreferenceUserSyncState> {
+    return new Map(
+      this.load()
+        .filter((item) => feedIds.has(item.feedId))
+        .map((item) => [
+          item.feedId,
+          {
+            dynamicRenderingEnabled: item.dynamicRenderingEnabled,
+            preferredRuleId: item.preferredRuleId,
+            preferredRuleName: item.preferredRuleName
+          } satisfies WebsiteParsePreferenceUserSyncState
+        ] as const)
+        .filter(([, state]) => !isDefaultUserSyncState(state))
+    )
+  }
+
+  applyUserSyncState(feedId: string, state: WebsiteParsePreferenceUserSyncState | null): void {
+    const existing = this.get(feedId)
+    if (!existing && state === null) return
+    const current = existing ?? defaultPreference(feedId)
+    this.save({
+      ...current,
+      dynamicRenderingEnabled: state?.dynamicRenderingEnabled ?? false,
+      preferredRuleId: state?.preferredRuleId ?? null,
+      preferredRuleName: state?.preferredRuleName ?? null
+    })
   }
 
   setPreferredRule(feedId: string, ruleId: string | null, ruleName: string | null = null): void {
@@ -120,6 +165,14 @@ export class WebsiteParsePreferenceRepository {
     this.decode(content)
   }
 
+  mappedBackupFeedIds(content: string, feedIdMap: Map<string, string>): Set<string> {
+    return new Set(
+      this.decode(content).items
+        .map((item) => feedIdMap.get(item.feedId) ?? null)
+        .filter((feedId): feedId is string => feedId !== null)
+    )
+  }
+
   restoreBackup(content: string, feedIdMap: Map<string, string>): void {
     const restored = this.decode(content).items
       .map((item) => feedIdMap.get(item.feedId) ? { ...item, feedId: feedIdMap.get(item.feedId)! } : null)
@@ -137,12 +190,8 @@ export class WebsiteParsePreferenceRepository {
   }
 
   private load(): WebsiteParsePreference[] {
-    try {
-      if (!existsSync(this.preferenceFile)) return []
-      return this.decode(readFileSync(this.preferenceFile, 'utf8')).items
-    } catch {
-      return []
-    }
+    const content = readUtf8FileOrNull(this.preferenceFile)
+    return content == null ? [] : this.decode(content).items
   }
 
   private decode(content: string): PreferenceBundle {
@@ -152,7 +201,10 @@ export class WebsiteParsePreferenceRepository {
   }
 
   private write(items: WebsiteParsePreference[]): void {
-    writeFileSync(this.preferenceFile, JSON.stringify({ items: items.sort((a, b) => a.feedId.localeCompare(b.feedId)) }, null, 2), 'utf8')
+    writeUtf8FileAtomic(
+      this.preferenceFile,
+      JSON.stringify({ items: items.sort((a, b) => a.feedId.localeCompare(b.feedId)) }, null, 2)
+    )
   }
 }
 
@@ -185,4 +237,8 @@ function historyEntry(ruleId: string, fullScanAppearances = 0, lastSeenAt: numbe
 }
 
 function increment(value: number): number { return Math.min(MAX_HISTORY_COUNTER, value + 1) }
+
+function isDefaultUserSyncState(state: WebsiteParsePreferenceUserSyncState): boolean {
+  return !state.dynamicRenderingEnabled && state.preferredRuleId == null && state.preferredRuleName == null
+}
 

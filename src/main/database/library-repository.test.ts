@@ -17,6 +17,22 @@ afterEach(() => {
 })
 
 describe('LibraryRepository', () => {
+  it('preserves synced read-later state across refresh and allows clearing it', () => {
+    const database = new DesktopDatabase(':memory:')
+    try {
+      const repository = new LibraryRepository(database.connection)
+      const feed = createFeed()
+      const article = createArticle(feed.id)
+      repository.upsertFeed(feed)
+      repository.upsertArticle({ ...article, isReadLater: true })
+      repository.upsertArticle({ ...article, isReadLater: false, title: 'Refreshed' })
+      expect(repository.getArticleById(article.id)?.isReadLater).toBe(true)
+      expect(repository.listArticlesForAccount(1).find((row) => row.id === article.id)?.isReadLater).toBe(true)
+      repository.setArticleReadLater(article.id, false)
+      expect(repository.getArticleById(article.id)?.isReadLater).toBe(false)
+    } finally { database.close() }
+  })
+
   it('creates schema and default group', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)

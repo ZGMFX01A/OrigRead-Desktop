@@ -11,6 +11,7 @@ import type {
 } from '../../shared/library'
 import { sourceUrlComparisonKey } from '../../shared/source-url-normalizer'
 import { CURRENT_ACCOUNT_SETTING_KEY, DEFAULT_LOCAL_ACCOUNT_ID } from './migrations'
+import type { LibrarySyncMutationCapture } from '../sync/library-sync-mutation-capture'
 
 type PreparedStatement = ReturnType<DatabaseSync['prepare']>
 const ARTICLE_ID_QUERY_CHUNK_SIZE = 800
@@ -70,6 +71,7 @@ interface ArticleRow {
   image_url: string | null
   is_unread: number
   is_starred: number
+  is_read_later: number
   created_at: number
   updated_at: number
 }
@@ -89,7 +91,10 @@ interface ArticleSearchRow {
 }
 
 export class LibraryRepository {
-  constructor(private readonly database: DatabaseSync) {}
+  constructor(
+    private readonly database: DatabaseSync,
+    private readonly syncMutations?: LibrarySyncMutationCapture
+  ) {}
 
   getCurrentAccountId(): number {
     const row = this.database.prepare('SELECT value FROM app_settings WHERE key = ?')
@@ -120,6 +125,22 @@ export class LibraryRepository {
 
   setArticleFullContent(articleId: string, html: string | null): void {
     const accountId = this.getCurrentAccountId()
+    const mutate = (): void => {
+      this.database
+        .prepare('UPDATE articles SET full_content_html = ?, updated_at = ? WHERE account_id = ? AND id = ?')
+        .run(html, Date.now(), accountId, articleId)
+    }
+    if (html?.trim() && this.syncMutations) {
+      this.syncMutations.captureArticleFullContent(accountId, articleId, html, mutate)
+      return
+    }
+    if (html == null) this.syncMutations?.markArticleFullContentEvicted(accountId, articleId)
+    mutate()
+  }
+
+  /** Remote Sync materialization/recovery path. Bypasses mutation capture to prevent echo. */
+  setArticleFullContentFromSync(articleId: string, html: string): void {
+    const accountId = this.getCurrentAccountId()
     this.database
       .prepare('UPDATE articles SET full_content_html = ?, updated_at = ? WHERE account_id = ? AND id = ?')
       .run(html, Date.now(), accountId, articleId)
@@ -129,7 +150,7 @@ export class LibraryRepository {
     const accountId = this.getCurrentAccountId()
     const row = this.database.prepare(`
       SELECT id, account_id, feed_id, title, url, author, published_at, description,
-             content_html, full_content_html, image_url, is_unread, is_starred,
+             content_html, full_content_html, image_url, is_unread, is_starred, is_read_later,
              created_at, updated_at
       FROM articles
       WHERE account_id = ? AND id = ?
@@ -141,7 +162,7 @@ export class LibraryRepository {
     const accountId = this.getCurrentAccountId()
     return (this.database.prepare(`
       SELECT id, account_id, feed_id, title, url, author, published_at, description,
-             content_html, full_content_html, image_url, is_unread, is_starred,
+             content_html, full_content_html, image_url, is_unread, is_starred, is_read_later,
              created_at, updated_at
       FROM articles
       WHERE account_id = ? AND feed_id = ?
@@ -153,7 +174,7 @@ export class LibraryRepository {
     const accountId = this.getCurrentAccountId()
     return (this.database.prepare(`
       SELECT a.id, a.account_id, a.feed_id, a.title, a.url, a.author, a.published_at, a.description,
-             a.content_html, a.full_content_html, a.image_url, a.is_unread, a.is_starred,
+             a.content_html, a.full_content_html, a.image_url, a.is_unread, a.is_starred, a.is_read_later,
              a.created_at, a.updated_at
       FROM articles a
       INNER JOIN feeds f ON f.id = a.feed_id AND f.account_id = a.account_id
@@ -318,7 +339,7 @@ export class LibraryRepository {
   }
 
   upsertGroup(group: GroupRecord): void {
-    this.database.prepare(`
+    const mutate = (): void => { this.database.prepare(`
       INSERT INTO groups (id, account_id, name, sort_order, is_default)
       VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
@@ -326,18 +347,44 @@ export class LibraryRepository {
         name = excluded.name,
         sort_order = excluded.sort_order,
         is_default = excluded.is_default
-    `).run(group.id, group.accountId ?? this.getCurrentAccountId(), group.name, group.sortOrder, toSqlBoolean(group.isDefault))
+    `).run(group.id, group.accountId ?? this.getCurrentAccountId(), group.name, group.sortOrder, toSqlBoolean(group.isDefault)) }
+    if (this.syncMutations?.captureLibraryMutation) this.syncMutations.captureLibraryMutation(group.accountId ?? this.getCurrentAccountId(), mutate)
+    else mutate()
   }
 
   deleteArticlesByFeed(feedId: string, includeStarred = false): void {
+    // R10: this is LOCAL_EVICT / index-retention, not an Article entity lifetime delete.
+    // Intentionally bypass captureLibraryMutation so "清空来源文章"/retention cleanup never emits
+    // GLOBAL_DELETE Tombstones. Deleting the Feed itself goes through deleteFeed(), whose captured
+    // FK cascade is the domain-level global subscription deletion path.
     this.database
       .prepare(`DELETE FROM articles WHERE feed_id = ?${includeStarred ? '' : ' AND is_starred = 0'}`)
       .run(feedId)
   }
 
   deleteFeed(feedId: string): void {
-    this.database.prepare('DELETE FROM feeds WHERE account_id = ? AND id = ?')
-      .run(this.getCurrentAccountId(), feedId)
+    const accountId = this.getCurrentAccountId()
+    const deleteFeedRow = (): void => {
+      this.database.prepare('DELETE FROM feeds WHERE account_id = ? AND id = ?').run(accountId, feedId)
+    }
+    const captureLibraryDelete = (): void => {
+      if (this.syncMutations?.captureLibraryMutation) {
+        this.syncMutations.captureLibraryMutation(accountId, deleteFeedRow)
+      } else {
+        deleteFeedRow()
+      }
+    }
+    if (this.syncMutations?.captureRssHubSubscriptionSourceMutation) {
+      this.syncMutations.captureRssHubSubscriptionSourceMutation(
+        accountId,
+        feedId,
+        () => this.getRssHubSourceUrl(feedId),
+        (state) => this.replaceRssHubSourceUrlFromSync(feedId, state),
+        captureLibraryDelete
+      )
+    } else {
+      captureLibraryDelete()
+    }
   }
 
   listFeeds(): FeedRecord[] {
@@ -356,7 +403,7 @@ export class LibraryRepository {
   }
 
   upsertFeed(feed: FeedRecord): void {
-    this.database.prepare(`
+    const mutate = (): void => { this.database.prepare(`
       INSERT INTO feeds (
         id, account_id, group_id, name, url, source_page_url, source_type, icon,
         is_notification, is_full_content, is_browser, dynamic_rendering,
@@ -390,20 +437,28 @@ export class LibraryRepository {
       toSqlBoolean(feed.dynamicRendering),
       feed.createdAt,
       feed.updatedAt
-    )
+    ) }
+    if (this.syncMutations?.captureLibraryMutation) this.syncMutations.captureLibraryMutation(feed.accountId ?? this.getCurrentAccountId(), mutate)
+    else mutate()
   }
 
   upsertArticle(article: ArticleRecord): void {
-    this.runArticleUpsert(this.prepareArticleUpsert(), article)
+    const accountId = article.accountId ?? this.getCurrentAccountId()
+    const mutate = (): void => this.runArticleUpsert(this.prepareArticleUpsert(), article)
+    if (this.syncMutations?.captureLibraryMutation) {
+      this.syncMutations.captureLibraryMutation(accountId, mutate)
+    } else {
+      mutate()
+    }
   }
 
   private prepareArticleUpsert(): PreparedStatement {
     return this.database.prepare(`
       INSERT INTO articles (
         id, account_id, feed_id, title, url, author, published_at, description,
-        content_html, full_content_html, image_url, is_unread, is_starred,
+        content_html, full_content_html, image_url, is_unread, is_starred, is_read_later,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         account_id = excluded.account_id,
         feed_id = excluded.feed_id,
@@ -434,6 +489,7 @@ export class LibraryRepository {
       article.imageUrl,
       toSqlBoolean(article.isUnread),
       toSqlBoolean(article.isStarred),
+      toSqlBoolean(article.isReadLater ?? false),
       article.createdAt,
       article.updatedAt
     )
@@ -441,8 +497,19 @@ export class LibraryRepository {
 
   private upsertArticlesPrepared(articles: ArticleRecord[]): void {
     if (articles.length === 0) return
-    const statement = this.prepareArticleUpsert()
-    for (const article of articles) this.runArticleUpsert(statement, article)
+    const accountId = articles[0]!.accountId ?? this.getCurrentAccountId()
+    if (articles.some((article) => (article.accountId ?? accountId) !== accountId)) {
+      throw new Error('Article batch must belong to one account')
+    }
+    const mutate = (): void => {
+      const statement = this.prepareArticleUpsert()
+      for (const article of articles) this.runArticleUpsert(statement, article)
+    }
+    if (this.syncMutations?.captureLibraryMutation) {
+      this.syncMutations.captureLibraryMutation(accountId, mutate)
+    } else {
+      mutate()
+    }
   }
 
   private upsertRssHttpCache(cache: RssHttpCacheRecord): void {
@@ -512,7 +579,7 @@ export class LibraryRepository {
     const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 1_000)
     return (this.database.prepare(`
       SELECT id, account_id, feed_id, title, url, author, published_at, description,
-             content_html, full_content_html, image_url, is_unread, is_starred,
+             content_html, full_content_html, image_url, is_unread, is_starred, is_read_later,
              created_at, updated_at
       FROM articles
       WHERE account_id = ?
@@ -603,13 +670,25 @@ export class LibraryRepository {
   }
 
   setArticleUnreadForAccount(accountId:number, articleId:string, unread:boolean):void {
-    this.database
-      .prepare('UPDATE articles SET is_unread = ? WHERE account_id = ? AND id = ?')
-      .run(toSqlBoolean(unread), accountId, articleId)
+    const mutate = (): void => {
+      this.database
+        .prepare('UPDATE articles SET is_unread = ? WHERE account_id = ? AND id = ?')
+        .run(toSqlBoolean(unread), accountId, articleId)
+    }
+    if (this.syncMutations) {
+      this.syncMutations.captureArticleField(accountId, [articleId], 'isUnread', unread, mutate)
+    } else {
+      mutate()
+    }
   }
 
   setArticleUnreadBatchForAccount(accountId:number, articleIds:string[], unread:boolean):void {
-    this.updateArticleBooleanBatch(accountId, articleIds, 'is_unread', unread)
+    const mutate = (): void => this.updateArticleBooleanBatch(accountId, articleIds, 'is_unread', unread)
+    if (this.syncMutations) {
+      this.syncMutations.captureArticleField(accountId, articleIds, 'isUnread', unread, mutate)
+    } else {
+      mutate()
+    }
   }
 
   setArticleStarred(articleId: string, starred: boolean): void {
@@ -617,21 +696,60 @@ export class LibraryRepository {
   }
 
   setArticleStarredForAccount(accountId:number, articleId:string, starred:boolean):void {
-    this.database
-      .prepare('UPDATE articles SET is_starred = ? WHERE account_id = ? AND id = ?')
-      .run(toSqlBoolean(starred), accountId, articleId)
+    const mutate = (): void => {
+      this.database
+        .prepare('UPDATE articles SET is_starred = ? WHERE account_id = ? AND id = ?')
+        .run(toSqlBoolean(starred), accountId, articleId)
+    }
+    if (this.syncMutations) {
+      this.syncMutations.captureArticleField(accountId, [articleId], 'isStarred', starred, mutate)
+    } else {
+      mutate()
+    }
   }
 
   setArticleStarredBatchForAccount(accountId:number, articleIds:string[], starred:boolean):void {
-    this.updateArticleBooleanBatch(accountId, articleIds, 'is_starred', starred)
+    const mutate = (): void => this.updateArticleBooleanBatch(accountId, articleIds, 'is_starred', starred)
+    if (this.syncMutations) {
+      this.syncMutations.captureArticleField(accountId, articleIds, 'isStarred', starred, mutate)
+    } else {
+      mutate()
+    }
   }
 
   setRssHubSourceUrl(feedId: string, sourceUrl: string): void {
+    const feed = this.getFeedById(feedId)
+    if (!feed) throw new Error('RSSHub source Feed does not exist: ' + feedId)
+    const normalized = sourceUrl.trim()
+    const mutate = (): void => this.replaceRssHubSourceUrlFromSync(
+      feedId,
+      normalized || null
+    )
+    if (this.syncMutations?.captureRssHubSubscriptionSourceMutation) {
+      this.syncMutations.captureRssHubSubscriptionSourceMutation(
+        feed.accountId ?? this.getCurrentAccountId(),
+        feedId,
+        () => this.getRssHubSourceUrl(feedId),
+        (state) => this.replaceRssHubSourceUrlFromSync(feedId, state),
+        mutate
+      )
+    } else {
+      mutate()
+    }
+  }
+
+  /** Remote Sync / rollback materialization path. Bypasses Outbox capture to prevent echo. */
+  replaceRssHubSourceUrlFromSync(feedId: string, sourceUrl: string | null): void {
+    const normalized = sourceUrl?.trim() ?? ''
+    if (!normalized) {
+      this.database.prepare('DELETE FROM rsshub_source_urls WHERE feed_id = ?').run(feedId)
+      return
+    }
     this.database.prepare(`
       INSERT INTO rsshub_source_urls (feed_id, source_url)
       VALUES (?, ?)
       ON CONFLICT(feed_id) DO UPDATE SET source_url = excluded.source_url
-    `).run(feedId, sourceUrl)
+    `).run(feedId, normalized)
   }
 
   getRssHubSourceUrl(feedId: string): string | null {
@@ -658,13 +776,25 @@ export class LibraryRepository {
   }
 
   deleteNonStarredArticlesForAccount(accountId: number): void {
+    // R10 LOCAL_EVICT / local index cleanup: clearing cached/read article rows on this device
+    // must not emit ARTICLE GLOBAL_DELETE tombstones for the Sync Space.
     this.database.prepare('DELETE FROM articles WHERE account_id = ? AND is_starred = 0').run(accountId)
   }
 
-  listArticleStateForAccount(accountId: number): Array<{ id:string;isUnread:boolean;isStarred:boolean }> {
-    const rows = this.database.prepare('SELECT id,is_unread,is_starred FROM articles WHERE account_id = ?')
-      .all(accountId) as unknown as Array<{ id:string;is_unread:number;is_starred:number }>
-    return rows.map((row)=>({ id:row.id, isUnread:row.is_unread===1, isStarred:row.is_starred===1 }))
+  setArticleReadLater(articleId: string, readLater: boolean): void {
+    const accountId = this.getCurrentAccountId()
+    const mutate = (): void => {
+      this.database.prepare('UPDATE articles SET is_read_later=?,updated_at=? WHERE account_id=? AND id=?')
+        .run(toSqlBoolean(readLater), Date.now(), accountId, articleId)
+    }
+    if (this.syncMutations) this.syncMutations.captureArticleField(accountId, [articleId], 'isReadLater', readLater, mutate)
+    else mutate()
+  }
+
+  listArticleStateForAccount(accountId: number): Array<{ id:string;isUnread:boolean;isStarred:boolean;isReadLater:boolean }> {
+    const rows = this.database.prepare('SELECT id,is_unread,is_starred,is_read_later FROM articles WHERE account_id = ?')
+      .all(accountId) as unknown as Array<{ id:string;is_unread:number;is_starred:number;is_read_later:number }>
+    return rows.map((row)=>({ id:row.id, isUnread:row.is_unread===1, isStarred:row.is_starred===1, isReadLater:row.is_read_later===1 }))
   }
 
   isArchivedLink(feedId:string,link:string|null|undefined):boolean {
@@ -689,6 +819,8 @@ export class LibraryRepository {
   }
 
   archiveExpiredArticlesForAccount(accountId:number,keepArchivedMillis:number,now=Date.now()):number {
+    // R10 LOCAL_EVICT / retention path. The archived link suppresses local refetch, while the
+    // physical Article-row removal intentionally bypasses captureLibraryMutation.
     if(keepArchivedMillis<=0)return 0
     const cutoff=now-keepArchivedMillis
     const rows=this.database.prepare(`
@@ -716,20 +848,26 @@ export class LibraryRepository {
   }
 
   deleteFeedForAccountIfNoStarred(accountId:number,feedId:string):boolean {
+    const mutate = (): boolean => {
     const row=this.database.prepare('SELECT COUNT(*) AS count FROM articles WHERE account_id=? AND feed_id=? AND is_starred=1')
       .get(accountId,feedId) as {count:number|bigint}
     if(Number(row.count)>0)return false
     this.database.prepare('DELETE FROM feeds WHERE account_id=? AND id=?').run(accountId,feedId)
     return true
+    }
+    return this.syncMutations?.captureLibraryMutation ? this.syncMutations.captureLibraryMutation(accountId, mutate) : mutate()
   }
 
   deleteGroupForAccountIfNoStarred(accountId:number,groupId:string):boolean {
+    const mutate = (): boolean => {
     const row=this.database.prepare(`SELECT COUNT(*) AS count FROM articles a JOIN feeds f ON f.id=a.feed_id WHERE a.account_id=? AND f.group_id=? AND a.is_starred=1`)
       .get(accountId,groupId) as {count:number|bigint}
     if(Number(row.count)>0)return false
     this.database.prepare('DELETE FROM feeds WHERE account_id=? AND group_id=?').run(accountId,groupId)
     this.database.prepare('DELETE FROM groups WHERE account_id=? AND id=?').run(accountId,groupId)
     return true
+    }
+    return this.syncMutations?.captureLibraryMutation ? this.syncMutations.captureLibraryMutation(accountId, mutate) : mutate()
   }
 
   private updateArticleBooleanBatch(
@@ -844,6 +982,7 @@ function toArticleRecord(row: ArticleRow): ArticleRecord {
     imageUrl: row.image_url,
     isUnread: row.is_unread === 1,
     isStarred: row.is_starred === 1,
+    isReadLater: row.is_read_later === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }

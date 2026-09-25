@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS, type FeedSettingsPatch, type OrigReadDesktopApi } from '../shared/contracts'
 import type { DesktopSettingsPatch } from '../shared/settings'
 import type { SyncRuntimeState } from '../shared/sync-runtime'
+import type { SyncEndpointInput, SyncPeerRegistration } from '../shared/sync-control'
 import type {
   OriginalArticleViewState,
   OriginalNavigationAction,
@@ -124,6 +125,13 @@ const api: OrigReadDesktopApi = Object.freeze({
     ipcRenderer.on(IPC_CHANNELS.syncRuntimeStateChanged, wrapped)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.syncRuntimeStateChanged, wrapped)
   },
+  getSyncStatus: () => ipcRenderer.invoke(IPC_CHANNELS.getSyncStatus),
+  activateSyncGenesis: () => ipcRenderer.invoke(IPC_CHANNELS.activateSyncGenesis),
+  configureSyncEndpoint: (input: SyncEndpointInput) => ipcRenderer.invoke(IPC_CHANNELS.configureSyncEndpoint, input),
+  removeSyncEndpoint: (endpointId: string) => ipcRenderer.invoke(IPC_CHANNELS.removeSyncEndpoint, endpointId),
+  registerSyncPeer: (input: SyncPeerRegistration) => ipcRenderer.invoke(IPC_CHANNELS.registerSyncPeer, input),
+  syncNow: (endpointId: string) => ipcRenderer.invoke(IPC_CHANNELS.syncNow, endpointId),
+  discoverSyncPeers: (timeoutMs?: number) => ipcRenderer.invoke(IPC_CHANNELS.discoverSyncPeers, timeoutMs),
   getReaderContent: (articleId: string, preferFull?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.getReaderContent, articleId, preferFull),
   fetchFullContent: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.fetchFullContent, articleId),
   getAiSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getAiSettings),

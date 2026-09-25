@@ -2241,6 +2241,8 @@ mark.reader-search-match.current { background: #ffc96b; outline: 2px solid #d9a2
 .reader-ai-source-citations button.focused,.reader-ai-source-citations button:focus-visible { border-color: var(--reader-link-color,#397fc5); background: color-mix(in srgb,var(--reader-link-color,#397fc5) 16%,transparent); outline: none; }
 .reader-ai-source-citations small,.reader-ai-source-no-citation { color: var(--reader-muted-color,#8190a0); font-size: 7.8px; }
 .reader-ai-source-preview { margin: 0; padding: 7px 9px; border-left: 2px solid color-mix(in srgb,var(--reader-link-color,#397fc5) 28%,var(--reader-border-color,#d9e4ee)); background: color-mix(in srgb,var(--reader-soft-background,#eef3f8) 54%,transparent); color: var(--reader-text-color,#566474); font-size: 8.5px; line-height: 1.55; }
+.reader-ai-source-sync-state { color: var(--reader-muted-color,#8190a0); font-size: 7.8px; }
+.reader-ai-source-sync-state.failed { color: var(--error-color,#b44b4b); }
 .reader-ai-source-tool-meta { display: flex; flex-wrap: wrap; gap: 4px 8px; color: var(--reader-muted-color,#778596); font-size: 7.8px; overflow-wrap: anywhere; }
 .reader-ai-source-card-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .reader-ai-source-card-actions button { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; border: 0; border-radius: 6px; background: var(--reader-soft-background,#eef3f8); color: var(--reader-link-color,#397fc5); font: inherit; font-size: 8px; cursor: pointer; }

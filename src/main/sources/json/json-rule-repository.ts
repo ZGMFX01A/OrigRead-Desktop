@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import type { JsonRule, JsonRuleBundle } from '../../../shared/json-source'
 import { JSON_RULE_SCHEMA_VERSION, normalizeJsonRule } from '../../../shared/json-source'
+import { readUtf8FileOrNull, writeUtf8FileAtomic } from '../../utils/atomic-utf8-file'
 import { validateJsonPath } from './simple-json-path'
 
 const HOST_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/
@@ -10,6 +10,18 @@ export class JsonRuleRepository {
 
   listRules(): JsonRule[] {
     return this.loadRules().sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  listSyncRules(): JsonRule[] {
+    return this.loadRules().sort((a, b) => a.id.localeCompare(b.id))
+  }
+
+  replaceSyncRules(rules: JsonRule[]): number {
+    rules.forEach((rule) => this.validateRule(rule))
+    const normalized = [...new Map(rules.map((rule) => [rule.id, normalizeJsonRule(rule)])).values()]
+      .sort((a, b) => a.id.localeCompare(b.id))
+    this.writeRules(normalized)
+    return normalized.length
   }
 
   findRules(url: string): JsonRule[] {
@@ -162,20 +174,14 @@ export class JsonRuleRepository {
   }
 
   private loadRules(): JsonRule[] {
-    try {
-      if (!existsSync(this.ruleFile)) return []
-      const bundle = this.decodeBundle(readFileSync(this.ruleFile, 'utf8'))
-      return bundle.rules
-    } catch {
-      return []
-    }
+    const content = readUtf8FileOrNull(this.ruleFile)
+    return content == null ? [] : this.decodeBundle(content).rules
   }
 
   private writeRules(rules: JsonRule[]): void {
-    writeFileSync(
+    writeUtf8FileAtomic(
       this.ruleFile,
-      JSON.stringify({ schemaVersion: JSON_RULE_SCHEMA_VERSION, rules }, null, 2),
-      'utf8'
+      JSON.stringify({ schemaVersion: JSON_RULE_SCHEMA_VERSION, rules }, null, 2)
     )
   }
 }

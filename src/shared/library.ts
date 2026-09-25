@@ -46,6 +46,7 @@ export interface ArticleRecord {
   imageUrl: string | null
   isUnread: boolean
   isStarred: boolean
+  isReadLater?: boolean
   createdAt: number
   updatedAt: number
 }

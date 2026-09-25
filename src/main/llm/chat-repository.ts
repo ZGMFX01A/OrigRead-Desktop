@@ -15,6 +15,21 @@ import {
   type LlmMessageRecord,
   type LlmToolCallRecord
 } from '../../shared/llm-chat'
+import type { LlmSyncMutationCapture } from '../sync/llm-sync-mutation-capture'
+import type { LlmSyncMutationDraft } from '../sync/llm-sync-mutation-capture'
+import { relationLocalId } from '../sync/sync-canonical-identity'
+import {
+  citationAnnotationRefSyncPayload,
+  citationAnnotationSyncPayload,
+  citationRefSyncPayload,
+  contextRefSyncPayload,
+  conversationArticleSyncPayload,
+  conversationSyncPayload,
+  evidenceBlockSyncPayload,
+  messageSyncPayload,
+  toolCallSyncPayload
+} from '../sync/llm-sync-payloads'
+import { DesktopSyncLocalBlobStore } from '../sync/sync-local-blob-store'
 
 type DbRowValue = string | number | bigint | null | undefined
 type Row = Record<string, DbRowValue>
@@ -44,7 +59,11 @@ export interface AppendLlmMessageInput {
 
 /** Main-only persistence layer. Renderer never receives the raw DatabaseSync handle. */
 export class LlmChatRepository {
-  constructor(private readonly database: DatabaseSync) {}
+  constructor(
+    private readonly database: DatabaseSync,
+    private readonly syncMutations?: LlmSyncMutationCapture,
+    private readonly syncBlobStore?: DesktopSyncLocalBlobStore
+  ) {}
 
   createConversation(input: CreateLlmConversationInput = {}): LlmConversationRecord {
     const now = input.now ?? Date.now()
@@ -60,14 +79,17 @@ export class LlmChatRepository {
       createdAt: now,
       updatedAt: now
     }
-    this.database.prepare(`
-      INSERT INTO llm_conversations (
-        id,title,provider_id,model,skill_id,article_id,article_title,article_link,created_at,updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?)
-    `).run(
-      record.id, record.title, record.providerId, record.model, record.skillId, record.articleId,
-      record.articleTitle, record.articleLink, record.createdAt, record.updatedAt
-    )
+    const mutate = (): void => {
+      this.database.prepare(`
+        INSERT INTO llm_conversations (
+          id,title,provider_id,model,skill_id,article_id,article_title,article_link,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?)
+      `).run(
+        record.id, record.title, record.providerId, record.model, record.skillId, record.articleId,
+        record.articleTitle, record.articleLink, record.createdAt, record.updatedAt
+      )
+    }
+    this.captureStable('conversation', record.id, 'UPSERT', record, mutate)
     return record
   }
 
@@ -116,8 +138,19 @@ export class LlmChatRepository {
   updateConversationTitle(id: string, title: string, now = Date.now()): LlmConversationRecord {
     const conversationId = id.trim()
     const normalized = normalizeTitle(title)
-    const result = this.database.prepare('UPDATE llm_conversations SET title=?,updated_at=? WHERE id=?').run(normalized, now, conversationId)
-    if (Number(result.changes) !== 1) throw new Error('会话不存在')
+    const current = this.getConversation(conversationId)
+    if (!current) throw new Error('会话不存在')
+    const mutate = (): void => {
+      const result = this.database.prepare('UPDATE llm_conversations SET title=?,updated_at=? WHERE id=?').run(normalized, now, conversationId)
+      if (Number(result.changes) !== 1) throw new Error('会话不存在')
+    }
+    if (!this.syncMutations) mutate()
+    else this.syncMutations.captureMany([{
+      entityType: 'conversation',
+      localId: conversationId,
+      mutationType: 'FIELD_SET',
+      payloadJson: JSON.stringify({ field: 'title', value: normalized })
+    }], mutate)
     const updated = this.getConversation(conversationId)
     if (!updated) throw new Error('会话不存在')
     return updated
@@ -130,17 +163,46 @@ export class LlmChatRepository {
     now = Date.now()
   ): LlmConversationRecord {
     const conversationId = id.trim()
-    const result = this.database.prepare(`
-      UPDATE llm_conversations SET provider_id=?,model=?,updated_at=? WHERE id=?
-    `).run(nullableText(providerId), nullableText(model), now, conversationId)
-    if (Number(result.changes) !== 1) throw new Error('会话不存在')
+    const current = this.getConversation(conversationId)
+    if (!current) throw new Error('会话不存在')
+    const normalizedProviderId = nullableText(providerId)
+    const normalizedModel = nullableText(model)
+    const mutate = (): void => {
+      const result = this.database.prepare(`
+        UPDATE llm_conversations SET provider_id=?,model=?,updated_at=? WHERE id=?
+      `).run(normalizedProviderId, normalizedModel, now, conversationId)
+      if (Number(result.changes) !== 1) throw new Error('会话不存在')
+    }
+    if (!this.syncMutations) mutate()
+    else this.syncMutations.captureMany([
+      {
+        entityType: 'conversation',
+        localId: conversationId,
+        mutationType: 'FIELD_SET',
+        payloadJson: JSON.stringify({ field: 'providerId', value: normalizedProviderId })
+      },
+      {
+        entityType: 'conversation',
+        localId: conversationId,
+        mutationType: 'FIELD_SET',
+        payloadJson: JSON.stringify({ field: 'model', value: normalizedModel })
+      }
+    ], mutate)
     const updated = this.getConversation(conversationId)
     if (!updated) throw new Error('会话不存在')
     return updated
   }
 
   deleteConversation(id: string): boolean {
-    return Number(this.database.prepare('DELETE FROM llm_conversations WHERE id=?').run(id.trim()).changes) === 1
+    const conversationId = id.trim()
+    if (!this.getConversation(conversationId)) return false
+    return this.captureStable(
+      'conversation',
+      conversationId,
+      'GLOBAL_DELETE',
+      { id: conversationId },
+      () => Number(this.database.prepare('DELETE FROM llm_conversations WHERE id=?').run(conversationId).changes) === 1
+    )
   }
 
   appendMessage(conversationId: string, input: AppendLlmMessageInput): LlmMessageRecord {
@@ -171,8 +233,12 @@ export class LlmChatRepository {
       createdAt: now,
       updatedAt: now
     }
-    this.insertMessage(record)
-    this.touchConversation(record.conversationId, now)
+    const mutate = (): void => {
+      this.insertMessage(record)
+      this.touchConversation(record.conversationId, now)
+    }
+    if (record.status === 'STREAMING') mutate()
+    else this.captureStable('message', record.id, 'UPSERT', record, mutate)
     return record
   }
 
@@ -191,19 +257,39 @@ export class LlmChatRepository {
   }
 
   updateMessage(record: LlmMessageRecord, touchConversation = true): void {
-    this.database.prepare(`
-      UPDATE llm_messages SET
-        content=?,request_task=?,provider_id=?,model=?,reasoning=?,status=?,error_message=?,history_active=?,
-        web_search_status=?,web_search_query=?,web_search_provider_name=?,web_search_result_count=?,web_search_error_message=?,
-        prompt_tokens=?,completion_tokens=?,duration_ms=?,token_usage_estimated=?,finish_reason=?,updated_at=?
-      WHERE id=? AND conversation_id=?
-    `).run(
-      record.content, record.requestTask, record.providerId, record.model, record.reasoning, record.status, record.errorMessage, boolInt(record.historyActive),
-      record.webSearchStatus, record.webSearchQuery, record.webSearchProviderName, record.webSearchResultCount, record.webSearchErrorMessage,
-      record.promptTokens, record.completionTokens, record.durationMs, boolInt(record.tokenUsageEstimated), record.finishReason,
-      record.updatedAt, record.id, record.conversationId
-    )
-    if (touchConversation) this.touchConversation(record.conversationId, record.updatedAt)
+    const mutate = (): void => {
+      this.database.prepare(`
+        UPDATE llm_messages SET
+          content=?,request_task=?,provider_id=?,model=?,reasoning=?,status=?,error_message=?,history_active=?,
+          web_search_status=?,web_search_query=?,web_search_provider_name=?,web_search_result_count=?,web_search_error_message=?,
+          prompt_tokens=?,completion_tokens=?,duration_ms=?,token_usage_estimated=?,finish_reason=?,updated_at=?
+        WHERE id=? AND conversation_id=?
+      `).run(
+        record.content, record.requestTask, record.providerId, record.model, record.reasoning, record.status, record.errorMessage, boolInt(record.historyActive),
+        record.webSearchStatus, record.webSearchQuery, record.webSearchProviderName, record.webSearchResultCount, record.webSearchErrorMessage,
+        record.promptTokens, record.completionTokens, record.durationMs, boolInt(record.tokenUsageEstimated), record.finishReason,
+        record.updatedAt, record.id, record.conversationId
+      )
+      if (touchConversation) this.touchConversation(record.conversationId, record.updatedAt)
+    }
+    if (record.status === 'STREAMING') mutate()
+    else this.captureStable('message', record.id, 'UPSERT', record, mutate)
+  }
+
+  private captureStable<T>(
+    entityType: 'conversation' | 'message',
+    localId: string,
+    mutationType: 'UPSERT' | 'GLOBAL_DELETE',
+    payload: unknown,
+    mutate: () => T
+  ): T {
+    if (!this.syncMutations) return mutate()
+    const payloadJson = mutationType === 'GLOBAL_DELETE'
+      ? JSON.stringify(payload)
+      : entityType === 'conversation'
+        ? conversationSyncPayload(payload as LlmConversationRecord)
+        : messageSyncPayload(payload as LlmMessageRecord)
+    return this.syncMutations.capture(entityType, localId, mutationType, payloadJson, mutate)
   }
 
   /**
@@ -241,10 +327,22 @@ export class LlmChatRepository {
     const ids = [...new Set(messageIds.map((id) => id.trim()).filter(Boolean))]
     if (ids.length === 0) return 0
     const placeholders = ids.map(() => '?').join(',')
-    const result = this.database.prepare(`
-      UPDATE llm_messages SET history_active=?,updated_at=? WHERE id IN (${placeholders})
-    `).run(boolInt(active), now, ...ids)
-    return Number(result.changes)
+    const mutate = (): number => {
+      const result = this.database.prepare(`
+        UPDATE llm_messages SET history_active=?,updated_at=? WHERE id IN (${placeholders})
+      `).run(boolInt(active), now, ...ids)
+      return Number(result.changes)
+    }
+    if (!this.syncMutations) return mutate()
+    return this.syncMutations.captureMany(
+      ids.map((id) => ({
+        entityType: 'message' as const,
+        localId: id,
+        mutationType: 'FIELD_SET' as const,
+        payloadJson: JSON.stringify({ field: 'historyActive', value: active })
+      })),
+      mutate
+    )
   }
 
   appendRegeneratedAssistant(
@@ -307,7 +405,7 @@ export class LlmChatRepository {
 
   replaceConversationArticles(conversationId: string, records: readonly LlmConversationArticleRecord[]): void {
     const id = conversationId.trim()
-    this.transaction(() => {
+    const mutate = (): void => {
       this.database.prepare('DELETE FROM llm_conversation_articles WHERE conversation_id=?').run(id)
       const statement = this.database.prepare(`
         INSERT INTO llm_conversation_articles (
@@ -318,7 +416,37 @@ export class LlmChatRepository {
         if (record.conversationId !== id) throw new Error('附加文章 conversationId 与目标会话不一致')
         statement.run(id, record.articleId, record.title, record.link, record.originalContent, record.summary, record.position, record.createdAt)
       }
-    })
+    }
+    if (!this.syncMutations) {
+      this.transaction(mutate)
+      return
+    }
+    const blobStore = this.requireSyncBlobStore()
+    const previous = this.getConversationArticles(id)
+    const incomingIds = new Set(records.map((record) =>
+      relationLocalId('conversation_article', record.conversationId, record.articleId)
+    ))
+    const drafts: LlmSyncMutationDraft[] = []
+    for (const record of previous) {
+      const localId = relationLocalId('conversation_article', record.conversationId, record.articleId)
+      if (!incomingIds.has(localId)) {
+        drafts.push({
+          entityType: 'conversation_article',
+          localId,
+          mutationType: 'GLOBAL_DELETE',
+          payloadJson: JSON.stringify({ localId })
+        })
+      }
+    }
+    for (const record of records) {
+      drafts.push({
+        entityType: 'conversation_article',
+        localId: relationLocalId('conversation_article', record.conversationId, record.articleId),
+        mutationType: 'RELATION_SET',
+        payloadJson: conversationArticleSyncPayload(record, blobStore)
+      })
+    }
+    this.syncMutations.captureMany(drafts, mutate)
   }
 
   getConversationArticles(conversationId: string): LlmConversationArticleRecord[] {
@@ -450,8 +578,8 @@ export class LlmChatRepository {
     if (message.role !== 'ASSISTANT') throw new Error('Citation terminal state 只能属于 Assistant 消息')
     const citationIds = new Set(citationRefs.map((ref) => ref.id))
     const annotationIds = new Set(annotations.map((annotation) => annotation.id))
-    this.transaction(() => {
-      this.updateMessage(message, false)
+    const mutate = (): void => {
+      this.writeMessage(message, false)
       // Delete occurrences first so no old occurrence can temporarily refer to the replacement ref graph.
       this.database.prepare('DELETE FROM llm_citation_annotations WHERE assistant_message_id=?').run(assistantId)
       this.database.prepare('DELETE FROM llm_citation_refs WHERE assistant_message_id=?').run(assistantId)
@@ -502,12 +630,70 @@ export class LlmChatRepository {
         annotationRefStatement.run(record.annotationId, record.citationRefId, record.refOrdinal)
       }
       this.touchConversation(message.conversationId, message.updatedAt)
-    })
+    }
+    if (!this.syncMutations) {
+      this.transaction(mutate)
+      return
+    }
+
+    const blobStore = this.requireSyncBlobStore()
+    const contextRefs = this.getContextRefsForAssistant(assistantId)
+    const evidenceBlocks = contextRefs.flatMap((ref) => this.getEvidenceBlocks(ref.id))
+    const previousRefs = this.getCitationRefsForAssistant(assistantId)
+    const previousAnnotations = this.getCitationAnnotationsForAssistant(assistantId)
+    const previousAnnotationRefs = this.getCitationAnnotationRefsForAssistant(assistantId)
+    const incomingRelationIds = new Set(annotationRefs.map((record) =>
+      relationLocalId('citation_annotation_ref', record.annotationId, record.citationRefId)
+    ))
+    const drafts: LlmSyncMutationDraft[] = []
+    for (const record of previousAnnotationRefs) {
+      const localId = relationLocalId('citation_annotation_ref', record.annotationId, record.citationRefId)
+      if (!incomingRelationIds.has(localId)) {
+        drafts.push({ entityType: 'citation_annotation_ref', localId, mutationType: 'GLOBAL_DELETE', payloadJson: JSON.stringify({ localId }) })
+      }
+    }
+    for (const record of previousAnnotations) {
+      if (!annotationIds.has(record.id)) {
+        drafts.push({ entityType: 'citation_annotation', localId: record.id, mutationType: 'GLOBAL_DELETE', payloadJson: JSON.stringify({ localId: record.id }) })
+      }
+    }
+    for (const record of previousRefs) {
+      if (!citationIds.has(record.id)) {
+        drafts.push({ entityType: 'citation_ref', localId: record.id, mutationType: 'GLOBAL_DELETE', payloadJson: JSON.stringify({ localId: record.id }) })
+      }
+    }
+    drafts.push({ entityType: 'message', localId: message.id, mutationType: 'UPSERT', payloadJson: messageSyncPayload(message) })
+    for (const record of contextRefs) {
+      drafts.push({ entityType: 'context_ref', localId: record.id, mutationType: 'UPSERT', payloadJson: contextRefSyncPayload(record, blobStore) })
+    }
+    for (const record of evidenceBlocks) {
+      drafts.push({ entityType: 'evidence_block', localId: record.id, mutationType: 'UPSERT', payloadJson: evidenceBlockSyncPayload(record, blobStore) })
+    }
+    for (const record of citationRefs) {
+      drafts.push({
+        entityType: 'citation_ref',
+        localId: record.id,
+        mutationType: 'UPSERT',
+        payloadJson: citationRefSyncPayload(record, blobStore)
+      })
+    }
+    for (const record of annotations) {
+      drafts.push({ entityType: 'citation_annotation', localId: record.id, mutationType: 'UPSERT', payloadJson: citationAnnotationSyncPayload(record) })
+    }
+    for (const record of annotationRefs) {
+      drafts.push({
+        entityType: 'citation_annotation_ref',
+        localId: relationLocalId('citation_annotation_ref', record.annotationId, record.citationRefId),
+        mutationType: 'RELATION_SET',
+        payloadJson: citationAnnotationRefSyncPayload(record)
+      })
+    }
+    this.syncMutations.captureMany(drafts, mutate)
   }
 
   appendToolCalls(records: readonly LlmToolCallRecord[]): void {
     if (records.length === 0) return
-    this.transaction(() => {
+    const mutate = (): void => {
       const statement = this.database.prepare(`
         INSERT INTO llm_tool_calls (
           id,conversation_id,assistant_message_id,provider_call_id,tool_id,api_name,arguments_json,status,
@@ -521,7 +707,22 @@ export class LlmChatRepository {
           record.createdAt, record.updatedAt
         )
       }
-    })
+    }
+    const terminal = records.filter((record) => isStableToolCallStatus(record.status))
+    if (!this.syncMutations || terminal.length === 0) {
+      this.transaction(mutate)
+      return
+    }
+    const blobStore = this.requireSyncBlobStore()
+    this.syncMutations.captureMany(
+      terminal.map((record) => ({
+        entityType: 'tool_call' as const,
+        localId: record.id,
+        mutationType: 'UPSERT' as const,
+        payloadJson: toolCallSyncPayload(record, blobStore)
+      })),
+      mutate
+    )
   }
 
   getToolCalls(conversationId: string): LlmToolCallRecord[] {
@@ -531,35 +732,169 @@ export class LlmChatRepository {
   }
 
   updateToolCall(record: LlmToolCallRecord): void {
-    this.database.prepare(`
-      UPDATE llm_tool_calls SET status=?,result_content=?,error_message=?,updated_at=? WHERE id=?
-    `).run(record.status, record.resultContent, record.errorMessage, record.updatedAt, record.id)
-    this.touchConversation(record.conversationId, record.updatedAt)
+    const mutate = (): void => {
+      this.database.prepare(`
+        UPDATE llm_tool_calls SET status=?,result_content=?,error_message=?,updated_at=? WHERE id=?
+      `).run(record.status, record.resultContent, record.errorMessage, record.updatedAt, record.id)
+      this.touchConversation(record.conversationId, record.updatedAt)
+    }
+    if (!this.syncMutations || !isStableToolCallStatus(record.status)) {
+      mutate()
+      return
+    }
+    this.syncMutations.capture(
+      'tool_call',
+      record.id,
+      'UPSERT',
+      toolCallSyncPayload(record, this.requireSyncBlobStore()),
+      mutate
+    )
   }
 
   /** Crash recovery never replays external work whose result is unknown. */
   recoverInterruptedState(now = Date.now()): { messages: number; toolCalls: number } {
-    return this.transaction(() => {
-      const messages = this.database.prepare(`
-        UPDATE llm_messages SET
-          status='STOPPED',
-          web_search_status=CASE WHEN web_search_status='TRIGGERED' THEN 'CANCELLED' ELSE web_search_status END,
-          finish_reason='CANCELLED',
-          updated_at=?
-        WHERE status='STREAMING'
-      `).run(now)
-      const toolCalls = this.database.prepare(`
-        UPDATE llm_tool_calls SET
-          status='ERROR',
-          error_message=COALESCE(error_message,CASE
-            WHEN status='PENDING_APPROVAL' THEN '应用退出时 Tool 仍在等待审批，本次审批已失效，Tool 未执行。'
-            ELSE '应用退出时 Tool 仍在执行，结果未知，未自动重放。'
-          END),
-          updated_at=?
-        WHERE status IN ('RUNNING','PENDING_APPROVAL')
-      `).run(now)
-      return { messages: Number(messages.changes), toolCalls: Number(toolCalls.changes) }
-    })
+    const recoveredMessages = (
+      this.database.prepare(
+        "SELECT * FROM llm_messages WHERE status='STREAMING' ORDER BY created_at,id"
+      ).all() as Row[]
+    ).map(messageFromRow).map((message) => ({
+      ...message,
+      status: 'STOPPED' as const,
+      webSearchStatus: message.webSearchStatus === 'TRIGGERED' ? 'CANCELLED' as const : message.webSearchStatus,
+      finishReason: 'CANCELLED' as const,
+      updatedAt: now
+    }))
+    const recoveredToolCalls = (
+      this.database.prepare(
+        "SELECT * FROM llm_tool_calls WHERE status IN ('RUNNING','PENDING_APPROVAL') ORDER BY created_at,id"
+      ).all() as Row[]
+    ).map(toolCallFromRow).map((toolCall) => ({
+      ...toolCall,
+      status: 'ERROR' as const,
+      errorMessage: toolCall.errorMessage ?? (
+        toolCall.status === 'PENDING_APPROVAL'
+          ? '应用退出时 Tool 仍在等待审批，本次审批已失效，Tool 未执行。'
+          : '应用退出时 Tool 仍在执行，结果未知，未自动重放。'
+      ),
+      updatedAt: now
+    }))
+    if (recoveredMessages.length === 0 && recoveredToolCalls.length === 0) {
+      return { messages: 0, toolCalls: 0 }
+    }
+
+    const drafts: LlmSyncMutationDraft[] = []
+    let blobStore: DesktopSyncLocalBlobStore | null = null
+    if (this.syncMutations) {
+      blobStore = this.requireSyncBlobStore()
+      for (const message of recoveredMessages) {
+        drafts.push({
+          entityType: 'message',
+          localId: message.id,
+          mutationType: 'UPSERT',
+          payloadJson: messageSyncPayload(message)
+        })
+        const contextRefs = this.getContextRefsForAssistant(message.id)
+        for (const contextRef of contextRefs) {
+          drafts.push({
+            entityType: 'context_ref',
+            localId: contextRef.id,
+            mutationType: 'UPSERT',
+            payloadJson: contextRefSyncPayload(contextRef, blobStore)
+          })
+          for (const evidence of this.getEvidenceBlocks(contextRef.id)) {
+            drafts.push({
+              entityType: 'evidence_block',
+              localId: evidence.id,
+              mutationType: 'UPSERT',
+              payloadJson: evidenceBlockSyncPayload(evidence, blobStore)
+            })
+          }
+        }
+        for (const citation of this.getCitationRefsForAssistant(message.id)) {
+          drafts.push({
+            entityType: 'citation_ref',
+            localId: citation.id,
+            mutationType: 'UPSERT',
+            payloadJson: citationRefSyncPayload(citation, blobStore)
+          })
+        }
+        for (const annotation of this.getCitationAnnotationsForAssistant(message.id)) {
+          drafts.push({
+            entityType: 'citation_annotation',
+            localId: annotation.id,
+            mutationType: 'UPSERT',
+            payloadJson: citationAnnotationSyncPayload(annotation)
+          })
+        }
+        for (const ref of this.getCitationAnnotationRefsForAssistant(message.id)) {
+          drafts.push({
+            entityType: 'citation_annotation_ref',
+            localId: relationLocalId('citation_annotation_ref', ref.annotationId, ref.citationRefId),
+            mutationType: 'RELATION_SET',
+            payloadJson: citationAnnotationRefSyncPayload(ref)
+          })
+        }
+      }
+      for (const toolCall of recoveredToolCalls) {
+        drafts.push({
+          entityType: 'tool_call',
+          localId: toolCall.id,
+          mutationType: 'UPSERT',
+          payloadJson: toolCallSyncPayload(toolCall, blobStore)
+        })
+      }
+    }
+
+    const mutate = (): void => {
+      recoveredMessages.forEach((message) => this.writeMessage(message, false))
+      const toolStatement = this.database.prepare(
+        'UPDATE llm_tool_calls SET status=?,result_content=?,error_message=?,updated_at=? WHERE id=?'
+      )
+      recoveredToolCalls.forEach((toolCall) => {
+        toolStatement.run(
+          toolCall.status,
+          toolCall.resultContent,
+          toolCall.errorMessage,
+          toolCall.updatedAt,
+          toolCall.id
+        )
+      })
+      const conversations = new Set<string>()
+      recoveredMessages.forEach((message) => conversations.add(message.conversationId))
+      recoveredToolCalls.forEach((toolCall) => conversations.add(toolCall.conversationId))
+      conversations.forEach((conversationId) => this.touchConversation(conversationId, now))
+    }
+
+    if (!this.syncMutations) {
+      this.transaction(mutate)
+    } else {
+      this.syncMutations.captureMany(
+        drafts,
+        mutate
+      )
+    }
+    return { messages: recoveredMessages.length, toolCalls: recoveredToolCalls.length }
+  }
+
+  private writeMessage(record: LlmMessageRecord, touchConversation = true): void {
+    const sql =
+      'UPDATE llm_messages SET ' +
+      'content=?,request_task=?,provider_id=?,model=?,reasoning=?,status=?,error_message=?,history_active=?,' +
+      'web_search_status=?,web_search_query=?,web_search_provider_name=?,web_search_result_count=?,web_search_error_message=?,' +
+      'prompt_tokens=?,completion_tokens=?,duration_ms=?,token_usage_estimated=?,finish_reason=?,updated_at=? ' +
+      'WHERE id=? AND conversation_id=?'
+    this.database.prepare(sql).run(
+      record.content, record.requestTask, record.providerId, record.model, record.reasoning, record.status, record.errorMessage, boolInt(record.historyActive),
+      record.webSearchStatus, record.webSearchQuery, record.webSearchProviderName, record.webSearchResultCount, record.webSearchErrorMessage,
+      record.promptTokens, record.completionTokens, record.durationMs, boolInt(record.tokenUsageEstimated), record.finishReason,
+      record.updatedAt, record.id, record.conversationId
+    )
+    if (touchConversation) this.touchConversation(record.conversationId, record.updatedAt)
+  }
+
+  private requireSyncBlobStore(): DesktopSyncLocalBlobStore {
+    if (!this.syncBlobStore) throw new Error('AI_HISTORY Blob store is not configured')
+    return this.syncBlobStore
   }
 
   private insertMessage(record: LlmMessageRecord): void {
@@ -618,6 +953,9 @@ function nullableText(value: string | null | undefined): string | null {
 }
 
 function boolInt(value: boolean): number { return value ? 1 : 0 }
+function isStableToolCallStatus(status: LlmToolCallRecord['status']): boolean {
+  return status === 'COMPLETE' || status === 'DENIED' || status === 'ERROR'
+}
 function numberValue(value: DbRowValue): number { return Number(value ?? 0) }
 function stringValue(value: DbRowValue): string { return typeof value === 'string' ? value : String(value ?? '') }
 function nullableString(value: DbRowValue): string | null { return value == null ? null : stringValue(value) }

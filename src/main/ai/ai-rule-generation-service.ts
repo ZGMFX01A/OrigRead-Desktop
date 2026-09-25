@@ -133,6 +133,15 @@ export class AiRuleGenerationService {
     this.previews.delete(previewId)
   }
 
+  previewKind(previewId: string): AiGeneratedRuleKind {
+    this.prune()
+    const stored = this.previews.get(previewId)
+    if (!stored) throw new Error('AI 规则预览已过期，请重新生成')
+    if (stored.websiteRule) return 'WEBSITE'
+    if (stored.jsonRule) return 'JSON'
+    throw new Error('AI 规则预览无效')
+  }
+
   private async generateWithOneRepair(
     kind: AiGeneratedRuleKind,
     systemPrompt: string,

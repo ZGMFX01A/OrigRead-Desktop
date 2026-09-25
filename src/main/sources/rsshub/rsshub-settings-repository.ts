@@ -28,6 +28,11 @@ export class RssHubSettingsRepository {
     }
   }
 
+  /** Remote Sync materialization path. Keeps device-local runtime health state intact. */
+  replaceSyncSettings(settings: RssHubSettings): RssHubSettings {
+    return this.save(settings)
+  }
+
   setEnabled(enabled: boolean): RssHubSettings {
     return this.save({ ...this.current(), enabled })
   }

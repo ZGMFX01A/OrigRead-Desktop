@@ -6,7 +6,7 @@ import {
   ORIGREAD_DESKTOP_RELEASES_URL
 } from '../../shared/origread-release'
 
-export const CURRENT_SCHEMA_VERSION = 12
+export const CURRENT_SCHEMA_VERSION = 31
 export const DEFAULT_LOCAL_ACCOUNT_ID = 1
 export const CURRENT_ACCOUNT_SETTING_KEY = 'account.current_id'
 
@@ -19,6 +19,17 @@ export const DEFAULT_GROUP_ID = defaultGroupId(DEFAULT_LOCAL_ACCOUNT_ID)
 interface Migration {
   version: number
   up(database: DatabaseSync): void
+}
+
+function ensureColumnIfTableExists(
+  database: DatabaseSync,
+  table: string,
+  column: string,
+  definition: string
+): void {
+  const columns = database.prepare(`PRAGMA table_info('${table}')`).all() as Array<{ name: string }>
+  if (columns.length === 0 || columns.some((item) => item.name === column)) return
+  database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
 }
 
 function ensureWebSearchMessageColumns(database: DatabaseSync): void {
@@ -557,6 +568,575 @@ const migrations: Migration[] = [
         CREATE INDEX llm_citation_annotation_refs_citation_idx
           ON llm_citation_annotation_refs(citation_ref_id, annotation_id);
       `)
+    }
+  },
+  {
+    version: 13,
+    up(database) {
+      // R10 SYNC-0 only establishes the identity namespace. Existing library/chat rows are
+      // intentionally not backfilled here; Genesis Backfill is a separate, resumable step.
+      database.exec(`
+        CREATE TABLE sync_spaces (
+          sync_space_id TEXT PRIMARY KEY,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+
+        CREATE TABLE sync_identity_mapping (
+          sync_space_id TEXT NOT NULL,
+          entity_type TEXT NOT NULL,
+          local_id TEXT NOT NULL,
+          sync_id TEXT NOT NULL,
+          canonical_key TEXT,
+          generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (sync_space_id, entity_type, local_id)
+        ) STRICT;
+
+        CREATE UNIQUE INDEX sync_identity_mapping_space_type_sync_idx
+          ON sync_identity_mapping(sync_space_id, entity_type, sync_id);
+        CREATE INDEX sync_identity_mapping_space_type_canonical_idx
+          ON sync_identity_mapping(sync_space_id, entity_type, canonical_key);
+      `)
+    }
+  },
+  {
+    version: 14,
+    up(database) {
+      database.exec(`
+        CREATE TABLE sync_local_space_binding (
+          local_account_id INTEGER PRIMARY KEY,
+          sync_space_id TEXT NOT NULL UNIQUE,
+          lifecycle_state TEXT NOT NULL,
+          genesis_session_id TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+
+        CREATE TABLE sync_device_identity (
+          singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+          device_id TEXT NOT NULL,
+          witness_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+
+        CREATE TABLE sync_actor_incarnation (
+          actor_incarnation_id TEXT PRIMARY KEY,
+          sync_space_id TEXT NOT NULL,
+          device_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('ACTIVE','RETIRED')),
+          created_at INTEGER NOT NULL,
+          retired_at INTEGER
+        ) STRICT;
+        CREATE INDEX sync_actor_incarnation_space_status_idx
+          ON sync_actor_incarnation(sync_space_id, status);
+        CREATE INDEX sync_actor_incarnation_device_idx
+          ON sync_actor_incarnation(device_id);
+
+        CREATE TABLE sync_lane_writer_state (
+          sync_space_id TEXT NOT NULL,
+          actor_incarnation_id TEXT NOT NULL,
+          replication_lane_id TEXT NOT NULL,
+          last_sequence INTEGER NOT NULL CHECK (last_sequence >= 0),
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (sync_space_id, actor_incarnation_id, replication_lane_id)
+        ) STRICT;
+        CREATE INDEX sync_lane_writer_state_space_lane_idx
+          ON sync_lane_writer_state(sync_space_id, replication_lane_id);
+
+        CREATE TABLE sync_applied_frontier (
+          sync_space_id TEXT NOT NULL,
+          replication_lane_id TEXT NOT NULL,
+          actor_incarnation_id TEXT NOT NULL,
+          applied_prefix INTEGER NOT NULL CHECK (applied_prefix >= 0),
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (sync_space_id, replication_lane_id, actor_incarnation_id)
+        ) STRICT;
+        CREATE INDEX sync_applied_frontier_space_lane_idx
+          ON sync_applied_frontier(sync_space_id, replication_lane_id);
+
+        CREATE TABLE sync_outbox (
+          outbox_id TEXT PRIMARY KEY,
+          sync_space_id TEXT NOT NULL,
+          actor_incarnation_id TEXT NOT NULL,
+          replication_lane_id TEXT NOT NULL,
+          sequence INTEGER NOT NULL CHECK (sequence > 0),
+          entity_type TEXT NOT NULL,
+          entity_sync_id TEXT NOT NULL,
+          entity_generation INTEGER NOT NULL CHECK (entity_generation >= 0),
+          mutation_type TEXT NOT NULL,
+          payload_schema_version INTEGER NOT NULL,
+          payload_json TEXT NOT NULL,
+          causal_context_json TEXT NOT NULL,
+          observed_entity_version_json TEXT,
+          status TEXT NOT NULL CHECK (status IN ('PENDING_BUILD','BUILT','FAILED')),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+        CREATE UNIQUE INDEX sync_outbox_actor_lane_sequence_idx
+          ON sync_outbox(actor_incarnation_id, replication_lane_id, sequence);
+        CREATE INDEX sync_outbox_space_status_created_idx
+          ON sync_outbox(sync_space_id, status, created_at);
+        CREATE INDEX sync_outbox_space_entity_idx
+          ON sync_outbox(sync_space_id, entity_type, entity_sync_id);
+      `)
+    }
+  },
+  {
+    version: 15,
+    up(database) {
+      database.exec(`
+        CREATE TABLE sync_operation_log (
+          operation_id TEXT PRIMARY KEY,
+          sync_space_id TEXT NOT NULL,
+          author_device_id TEXT NOT NULL,
+          actor_incarnation_id TEXT NOT NULL,
+          replication_lane_id TEXT NOT NULL,
+          sequence INTEGER NOT NULL CHECK (sequence > 0),
+          logical_clock INTEGER NOT NULL CHECK (logical_clock > 0),
+          causal_context_json TEXT NOT NULL,
+          dependency_dots_json TEXT NOT NULL,
+          entity_type TEXT NOT NULL,
+          entity_sync_id TEXT NOT NULL,
+          entity_generation INTEGER NOT NULL CHECK (entity_generation >= 0),
+          operation_type TEXT NOT NULL,
+          payload_schema_version INTEGER NOT NULL,
+          payload_json TEXT NOT NULL,
+          schema_version INTEGER NOT NULL,
+          auth_grant_id TEXT,
+          auth_epoch INTEGER,
+          created_wall_clock INTEGER NOT NULL,
+          payload_hash TEXT NOT NULL,
+          signing_digest TEXT NOT NULL,
+          author_signature TEXT,
+          build_status TEXT NOT NULL CHECK (build_status IN ('AWAITING_SIGNATURE','SIGNED','REJECTED')),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+        CREATE UNIQUE INDEX sync_operation_log_actor_lane_sequence_idx
+          ON sync_operation_log(actor_incarnation_id, replication_lane_id, sequence);
+        CREATE INDEX sync_operation_log_space_status_created_idx
+          ON sync_operation_log(sync_space_id, build_status, created_wall_clock);
+        CREATE INDEX sync_operation_log_space_entity_idx
+          ON sync_operation_log(sync_space_id, entity_type, entity_sync_id);
+      `)
+    }
+  },
+  {
+    version: 16,
+    up(database) {
+      database.exec(`
+        ALTER TABLE sync_outbox ADD COLUMN genesis_included_at INTEGER;
+
+        CREATE TABLE sync_genesis_session (
+          genesis_session_id TEXT PRIMARY KEY,
+          sync_space_id TEXT NOT NULL,
+          genesis_baseline_id TEXT NOT NULL,
+          cross_db_cut_id TEXT NOT NULL,
+          stage TEXT NOT NULL CHECK (stage IN ('CAPTURING','CUT_CAPTURED','SNAPSHOT_BUILT','TAIL_REPLAY','ACTIVE','FAILED')),
+          captured_at INTEGER,
+          lane_frontiers_json TEXT NOT NULL,
+          error_message TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE (sync_space_id, genesis_baseline_id)
+        ) STRICT;
+        CREATE INDEX sync_genesis_session_space_stage_idx
+          ON sync_genesis_session(sync_space_id, stage, updated_at);
+
+        CREATE TABLE sync_snapshot_bundle (
+          snapshot_bundle_id TEXT PRIMARY KEY,
+          sync_space_id TEXT NOT NULL,
+          genesis_session_id TEXT NOT NULL,
+          genesis_baseline_id TEXT NOT NULL,
+          snapshot_class TEXT NOT NULL CHECK (snapshot_class IN ('WORKING','GC_BASELINE','BOOTSTRAP_RECOVERY')),
+          root_hash TEXT NOT NULL,
+          policy_hash TEXT NOT NULL,
+          captured_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          UNIQUE (sync_space_id, genesis_baseline_id, snapshot_class)
+        ) STRICT;
+        CREATE INDEX sync_snapshot_bundle_space_created_idx
+          ON sync_snapshot_bundle(sync_space_id, created_at);
+
+        CREATE TABLE sync_snapshot_shard (
+          snapshot_bundle_id TEXT NOT NULL,
+          sync_space_id TEXT NOT NULL,
+          replication_lane_id TEXT NOT NULL,
+          frontier_json TEXT NOT NULL,
+          entity_state_json TEXT NOT NULL,
+          field_version_state_json TEXT NOT NULL,
+          causal_metadata_json TEXT NOT NULL,
+          genesis_coverage_json TEXT NOT NULL,
+          deletion_generation_summary_json TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (snapshot_bundle_id, replication_lane_id)
+        ) STRICT;
+        CREATE INDEX sync_snapshot_shard_space_lane_idx
+          ON sync_snapshot_shard(sync_space_id, replication_lane_id, created_at);
+
+        CREATE TABLE sync_genesis_operation_coverage (
+          operation_id TEXT PRIMARY KEY,
+          genesis_session_id TEXT NOT NULL,
+          included_at INTEGER NOT NULL
+        ) STRICT;
+        CREATE INDEX sync_genesis_operation_coverage_session_idx
+          ON sync_genesis_operation_coverage(genesis_session_id);
+      `)
+    }
+  },
+  {
+    version: 17,
+    up(database) {
+      // R10/R11/R12 durable receive/apply state. Operation log rows are the canonical signed
+      // history; these tables deliberately keep transport progress separate from business apply.
+      database.exec(`
+        CREATE TABLE sync_inbox_operation (
+          operation_id TEXT PRIMARY KEY,
+          sync_space_id TEXT NOT NULL,
+          actor_incarnation_id TEXT NOT NULL,
+          replication_lane_id TEXT NOT NULL,
+          sequence INTEGER NOT NULL CHECK (sequence > 0),
+          state TEXT NOT NULL CHECK (state IN ('PENDING','APPLIED','REJECTED')),
+          operation_json TEXT NOT NULL,
+          rejection_reason TEXT,
+          rejection_digest TEXT,
+          received_at INTEGER NOT NULL,
+          applied_at INTEGER,
+          last_error TEXT
+        ) STRICT;
+        CREATE UNIQUE INDEX sync_inbox_operation_actor_lane_sequence_idx
+          ON sync_inbox_operation(actor_incarnation_id, replication_lane_id, sequence);
+        CREATE INDEX sync_inbox_operation_space_state_idx
+          ON sync_inbox_operation(sync_space_id, state, received_at);
+
+        CREATE TABLE sync_coverage (
+          sync_space_id TEXT NOT NULL,
+          replication_lane_id TEXT NOT NULL,
+          actor_incarnation_id TEXT NOT NULL,
+          received_prefix INTEGER NOT NULL DEFAULT 0 CHECK (received_prefix >= 0),
+          applied_prefix INTEGER NOT NULL DEFAULT 0 CHECK (applied_prefix >= 0),
+          retained_prefix INTEGER NOT NULL DEFAULT 0 CHECK (retained_prefix >= 0),
+          snapshot_prefix INTEGER NOT NULL DEFAULT 0 CHECK (snapshot_prefix >= 0),
+          stable_gc_prefix INTEGER NOT NULL DEFAULT 0 CHECK (stable_gc_prefix >= 0),
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (sync_space_id, replication_lane_id, actor_incarnation_id)
+        ) STRICT;
+
+        CREATE TABLE sync_apply_journal (
+          operation_id TEXT PRIMARY KEY,
+          sync_space_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('STARTED','COMMITTED','FAILED')),
+          started_at INTEGER NOT NULL,
+          completed_at INTEGER,
+          error_message TEXT
+        ) STRICT;
+
+        CREATE TABLE sync_peer_identity (
+          sync_space_id TEXT NOT NULL,
+          device_id TEXT NOT NULL,
+          public_key_spki_base64 TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('ACTIVE','REVOKED')),
+          auth_epoch INTEGER NOT NULL DEFAULT 0 CHECK (auth_epoch >= 0),
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (sync_space_id, device_id)
+        ) STRICT;
+
+        CREATE TABLE sync_endpoint_config (
+          endpoint_id TEXT PRIMARY KEY,
+          sync_space_id TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('LAN','SERVER','MANUAL')),
+          url TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          last_error TEXT
+        ) STRICT;
+        CREATE INDEX sync_endpoint_config_space_enabled_idx
+          ON sync_endpoint_config(sync_space_id, enabled, updated_at);
+
+        CREATE TABLE sync_peer_cursor (
+          endpoint_id TEXT PRIMARY KEY REFERENCES sync_endpoint_config(endpoint_id) ON DELETE CASCADE,
+          sync_space_id TEXT NOT NULL,
+          cursor_json TEXT,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+
+        CREATE TABLE sync_blob_manifest (
+          hash TEXT PRIMARY KEY,
+          total_bytes INTEGER NOT NULL CHECK (total_bytes >= 0),
+          media_type TEXT,
+          durability TEXT NOT NULL CHECK (durability IN ('CACHE','REHYDRATABLE','SYNC_DURABLE')),
+          reference_count INTEGER NOT NULL DEFAULT 0 CHECK (reference_count >= 0),
+          persisted_at INTEGER,
+          last_accessed_at INTEGER
+        ) STRICT;
+      `)
+    }
+  },
+  {
+    version: 18,
+    up(database) {
+      database.exec(`
+        CREATE TABLE sync_field_version (
+          sync_space_id TEXT NOT NULL,
+          entity_type TEXT NOT NULL,
+          entity_sync_id TEXT NOT NULL,
+          field_id TEXT NOT NULL,
+          entity_generation INTEGER NOT NULL CHECK (entity_generation >= 0),
+          version_token TEXT NOT NULL,
+          source_operation_id TEXT,
+          value_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (sync_space_id,entity_type,entity_sync_id,field_id)
+        ) STRICT;
+        CREATE INDEX sync_field_version_space_entity_idx
+          ON sync_field_version(sync_space_id,entity_type,entity_sync_id);
+
+        CREATE TABLE sync_entity_alias (
+          sync_space_id TEXT NOT NULL,
+          entity_type TEXT NOT NULL,
+          alias_sync_id TEXT NOT NULL,
+          canonical_sync_id TEXT NOT NULL,
+          generation INTEGER NOT NULL CHECK (generation >= 0),
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (sync_space_id,entity_type,alias_sync_id)
+        ) STRICT;
+
+        CREATE TABLE sync_entity_tombstone (
+          sync_space_id TEXT NOT NULL,
+          entity_type TEXT NOT NULL,
+          entity_sync_id TEXT NOT NULL,
+          generation INTEGER NOT NULL CHECK (generation >= 0),
+          version_token TEXT NOT NULL,
+          deleted_at INTEGER NOT NULL,
+          PRIMARY KEY (sync_space_id,entity_type,entity_sync_id)
+        ) STRICT;
+      `)
+    }
+  },
+  {
+    version: 19,
+    up(database) {
+      database.exec(`
+        CREATE TABLE sync_auth_ledger (
+          auth_object_id TEXT PRIMARY KEY,
+          sync_space_id TEXT NOT NULL,
+          auth_epoch INTEGER NOT NULL CHECK (auth_epoch >= 0),
+          auth_object_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+        CREATE INDEX sync_auth_ledger_space_epoch_idx
+          ON sync_auth_ledger(sync_space_id, auth_epoch);
+      `)
+    }
+  },
+  {
+    version: 20,
+    up(database) {
+      database.exec(`
+        CREATE TABLE sync_field_rollback_baseline (
+          sync_space_id TEXT NOT NULL,
+          entity_type TEXT NOT NULL,
+          entity_sync_id TEXT NOT NULL,
+          entity_generation INTEGER NOT NULL,
+          field_id TEXT NOT NULL,
+          value_json TEXT NOT NULL,
+          PRIMARY KEY(sync_space_id,entity_type,entity_sync_id,entity_generation,field_id)
+        ) STRICT;
+      `)
+    }
+  },
+  {
+    version: 21,
+    up(database) {
+      database.exec(`
+        ALTER TABLE sync_inbox_operation
+          ADD COLUMN authorization_state TEXT NOT NULL DEFAULT 'PROVISIONAL_AUTHORIZED';
+        ALTER TABLE sync_inbox_operation
+          ADD COLUMN stabilized_by_auth_object_id TEXT;
+        CREATE INDEX sync_inbox_operation_space_auth_state_idx
+          ON sync_inbox_operation(sync_space_id, state, authorization_state);
+      `)
+    }
+  },
+  {
+    version: 22,
+    up(database) {
+      database.exec(`
+        CREATE TABLE sync_recovery_capsule (
+          capsule_id TEXT PRIMARY KEY,
+          sync_space_id TEXT NOT NULL,
+          target_snapshot_bundle_id TEXT NOT NULL,
+          coverage_json TEXT NOT NULL,
+          operation_ids_json TEXT NOT NULL,
+          pending_outbox_ids_json TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        ) STRICT;
+        CREATE INDEX sync_recovery_capsule_space_created_idx
+          ON sync_recovery_capsule(sync_space_id, created_at DESC);
+      `)
+    }
+  },
+  {
+    version: 23,
+    up(database) {
+      database.exec(`
+        ALTER TABLE sync_recovery_capsule
+          ADD COLUMN recovery_state_json TEXT NOT NULL DEFAULT '{}';
+      `)
+    }
+  },
+  {
+    version: 24,
+    up(database) {
+      database.exec(`
+        CREATE TABLE sync_alias_edge (
+          sync_space_id TEXT NOT NULL,
+          entity_type TEXT NOT NULL,
+          left_sync_id TEXT NOT NULL,
+          left_generation INTEGER NOT NULL CHECK (left_generation >= 0),
+          right_sync_id TEXT NOT NULL,
+          right_generation INTEGER NOT NULL CHECK (right_generation >= 0),
+          source_operation_id TEXT,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY(sync_space_id,entity_type,left_sync_id,left_generation,right_sync_id,right_generation)
+        ) STRICT;
+
+        CREATE TABLE sync_entity_alias_v2 (
+          sync_space_id TEXT NOT NULL,
+          entity_type TEXT NOT NULL,
+          alias_sync_id TEXT NOT NULL,
+          canonical_sync_id TEXT NOT NULL,
+          generation INTEGER NOT NULL CHECK (generation >= 0),
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY(sync_space_id,entity_type,alias_sync_id,generation)
+        ) STRICT;
+        INSERT INTO sync_entity_alias_v2(sync_space_id,entity_type,alias_sync_id,canonical_sync_id,generation,created_at)
+          SELECT sync_space_id,entity_type,alias_sync_id,canonical_sync_id,generation,created_at FROM sync_entity_alias;
+        DROP TABLE sync_entity_alias;
+        ALTER TABLE sync_entity_alias_v2 RENAME TO sync_entity_alias;
+
+        CREATE TABLE sync_local_eviction (
+          sync_space_id TEXT NOT NULL,
+          entity_type TEXT NOT NULL,
+          entity_sync_id TEXT NOT NULL,
+          entity_generation INTEGER NOT NULL CHECK (entity_generation >= 0),
+          resource_kind TEXT NOT NULL,
+          evicted_at INTEGER NOT NULL,
+          PRIMARY KEY(sync_space_id,entity_type,entity_sync_id,entity_generation,resource_kind)
+        ) STRICT;
+      `)
+    }
+  },
+  {
+    version: 25,
+    up(database) {
+      database.exec(`
+        ALTER TABLE sync_blob_manifest ADD COLUMN compression TEXT;
+        ALTER TABLE sync_blob_manifest ADD COLUMN encryption_info_json TEXT;
+        ALTER TABLE sync_blob_manifest ADD COLUMN availability_policy TEXT NOT NULL DEFAULT 'LAZY';
+        ALTER TABLE sync_blob_manifest ADD COLUMN availability_state TEXT NOT NULL DEFAULT 'METADATA_READY';
+        ALTER TABLE sync_blob_manifest ADD COLUMN failure_reason TEXT;
+        ALTER TABLE sync_snapshot_shard ADD COLUMN blob_manifest_index_json TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE sync_snapshot_shard ADD COLUMN blob_reference_index_json TEXT NOT NULL DEFAULT '[]';
+
+        CREATE TABLE sync_blob_reference (
+          sync_space_id TEXT NOT NULL,
+          replication_lane_id TEXT NOT NULL,
+          owner_entity_type TEXT NOT NULL,
+          owner_entity_sync_id TEXT NOT NULL,
+          owner_entity_generation INTEGER NOT NULL CHECK(owner_entity_generation >= 0),
+          reference_kind TEXT NOT NULL,
+          hash TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY(sync_space_id,replication_lane_id,owner_entity_type,owner_entity_sync_id,owner_entity_generation,reference_kind,hash)
+        ) STRICT;
+        CREATE INDEX sync_blob_reference_space_lane_idx ON sync_blob_reference(sync_space_id,replication_lane_id);
+        CREATE INDEX sync_blob_reference_hash_idx ON sync_blob_reference(hash);
+
+        CREATE TABLE sync_blob_persisted_ack (
+          sync_space_id TEXT NOT NULL,
+          hash TEXT NOT NULL,
+          replica_id TEXT NOT NULL,
+          total_bytes INTEGER NOT NULL CHECK(total_bytes >= 0),
+          persisted_at INTEGER NOT NULL,
+          PRIMARY KEY(sync_space_id,hash,replica_id)
+        ) STRICT;
+        CREATE INDEX sync_blob_persisted_ack_hash_idx ON sync_blob_persisted_ack(hash);
+      `)
+    }
+  },
+  {
+    version: 26,
+    up(database) {
+      database.exec(`
+        ALTER TABLE sync_snapshot_bundle
+          ADD COLUMN auth_stability_checkpoint_id TEXT;
+      `)
+    }
+  },
+  {
+    version: 27,
+    up(database) {
+      database.exec(`
+        CREATE TABLE sync_actor_author (
+          sync_space_id TEXT NOT NULL,
+          actor_incarnation_id TEXT NOT NULL,
+          author_device_id TEXT NOT NULL,
+          PRIMARY KEY(sync_space_id,actor_incarnation_id)
+        ) STRICT;
+        INSERT INTO sync_actor_author
+          SELECT DISTINCT sync_space_id,actor_incarnation_id,author_device_id FROM sync_operation_log;
+        CREATE TRIGGER sync_operation_bind_author BEFORE INSERT ON sync_operation_log BEGIN
+          INSERT OR IGNORE INTO sync_actor_author VALUES(NEW.sync_space_id,NEW.actor_incarnation_id,NEW.author_device_id);
+          SELECT CASE WHEN EXISTS(SELECT 1 FROM sync_actor_author WHERE sync_space_id=NEW.sync_space_id
+            AND actor_incarnation_id=NEW.actor_incarnation_id AND author_device_id<>NEW.author_device_id)
+            THEN RAISE(ABORT,'AUTH_FAILED: actor belongs to another author') END;
+        END;
+      `)
+    }
+  },
+  {
+    version: 28,
+    up(database) {
+      ensureColumnIfTableExists(
+        database,
+        'articles',
+        'is_read_later',
+        'INTEGER NOT NULL DEFAULT 0 CHECK(is_read_later IN (0,1))'
+      )
+    }
+  },
+  {
+    version: 29,
+    up(database) {
+      ensureColumnIfTableExists(database, 'sync_field_version', 'causal_context_json', 'TEXT')
+      ensureColumnIfTableExists(database, 'sync_field_version', 'logical_clock', 'INTEGER')
+    }
+  },
+  {
+    version: 30,
+    up(database) {
+      database.exec(`CREATE TABLE IF NOT EXISTS sync_field_candidate (
+        sync_space_id TEXT NOT NULL, entity_type TEXT NOT NULL, entity_sync_id TEXT NOT NULL,
+        field_id TEXT NOT NULL, entity_generation INTEGER NOT NULL, version_token TEXT NOT NULL,
+        source_operation_id TEXT, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL,
+        causal_context_json TEXT, logical_clock INTEGER,
+        PRIMARY KEY(sync_space_id,entity_type,entity_sync_id,entity_generation,field_id,version_token)
+      ) STRICT;
+      INSERT OR IGNORE INTO sync_field_candidate SELECT * FROM sync_field_version;`)
+    }
+  },
+  {
+    version: 31,
+    up(database) {
+      ensureColumnIfTableExists(database, 'sync_entity_tombstone', 'source_operation_id', 'TEXT')
     }
   }
 ]

@@ -7,6 +7,7 @@ export type FullContentFailureReason =
   | 'PAGE_UNAVAILABLE'
   | 'INVALID_URL'
   | 'NETWORK'
+  | 'SYNC_PENDING'
   | 'UNKNOWN'
 
 export interface ReaderArticleContent {

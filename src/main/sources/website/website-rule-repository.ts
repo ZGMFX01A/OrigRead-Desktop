@@ -1,4 +1,3 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import {
   BUILT_IN_WEBSITE_RULES,
   normalizeWebsiteRule,
@@ -6,6 +5,7 @@ import {
   type WebsiteRule,
   type WebsiteRuleBundle
 } from '../../../shared/website'
+import { readUtf8FileOrNull, writeUtf8FileAtomic } from '../../utils/atomic-utf8-file'
 import { compileAndroidRegex } from './website-dom'
 
 const HOST_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/
@@ -19,6 +19,18 @@ export class WebsiteRuleRepository {
     // 用户保存的状态覆盖同 id 内置规则；这样内置规则仍默认可用，但禁用状态可以持久化。
     for (const rule of this.loadCustomRules()) merged.set(rule.id, rule)
     return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  listSyncRules(): WebsiteRule[] {
+    return this.loadCustomRules().sort((a, b) => a.id.localeCompare(b.id))
+  }
+
+  replaceSyncRules(rules: WebsiteRule[]): number {
+    rules.forEach((rule) => this.validateRule(rule))
+    const normalized = [...new Map(rules.map((rule) => [rule.id, normalizeWebsiteRule(rule)])).values()]
+      .sort((a, b) => a.id.localeCompare(b.id))
+    this.writeCustomRules(normalized)
+    return normalized.length
   }
 
   findRules(url: string): WebsiteRule[] {
@@ -152,16 +164,15 @@ export class WebsiteRuleRepository {
   }
 
   private loadCustomRules(): WebsiteRule[] {
-    try {
-      if (!existsSync(this.ruleFile)) return []
-      return this.decodeBundle(readFileSync(this.ruleFile, 'utf8')).rules
-    } catch {
-      return []
-    }
+    const content = readUtf8FileOrNull(this.ruleFile)
+    return content == null ? [] : this.decodeBundle(content).rules
   }
 
   private writeCustomRules(rules: WebsiteRule[]): void {
-    writeFileSync(this.ruleFile, JSON.stringify({ schemaVersion: WEBSITE_RULE_SCHEMA_VERSION, rules }, null, 2), 'utf8')
+    writeUtf8FileAtomic(
+      this.ruleFile,
+      JSON.stringify({ schemaVersion: WEBSITE_RULE_SCHEMA_VERSION, rules }, null, 2)
+    )
   }
 }
 

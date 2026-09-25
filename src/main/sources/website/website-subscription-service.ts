@@ -9,7 +9,8 @@ export class WebsiteSubscriptionService {
   constructor(
     private readonly repository: LibraryRepository,
     private readonly sourceService: WebsiteSourceService,
-    private readonly articleFilters?: ArticleFilterRepository
+    private readonly articleFilters?: ArticleFilterRepository,
+    private readonly capturePreferenceMutation?: <T>(feedId: string, mutate: () => T) => T
   ) {}
 
   /**
@@ -45,7 +46,14 @@ export class WebsiteSubscriptionService {
     const candidateArticles = candidates.filter((article) => !article.url || !archivedLinks.has(article.url))
     const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
     this.repository.upsertFeedWithArticles(feed, articles)
-    this.sourceService.setDynamicRenderingEnabled(feedId, dynamicRendering)
+    if (this.capturePreferenceMutation) {
+      this.capturePreferenceMutation(
+        feedId,
+        () => this.sourceService.setDynamicRenderingEnabled(feedId, dynamicRendering)
+      )
+    } else {
+      this.sourceService.setDynamicRenderingEnabled(feedId, dynamicRendering)
+    }
     return { feedId, insertedArticles: articles.length }
   }
 

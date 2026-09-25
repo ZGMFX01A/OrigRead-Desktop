@@ -111,7 +111,8 @@ export class RemoteAccountSyncService {
     if(account.type==='local')throw new Error('Local 账户应使用本地来源维护')
     if(account.type==='fever')throw new Error('Fever 账户不支持在客户端删除订阅')
     await this.googleApi(account).subscriptionEdit({action:'unsubscribe',feedId:remoteId(feed.id)})
-    this.library.deleteArticlesByFeed(feed.id,true)
+    // Keep cached Article cascade inside LibraryRepository.deleteFeed()'s Sync capture.
+    // Deleting them beforehand would make the capture miss Article GLOBAL_DELETE.
     this.library.deleteFeed(feed.id)
   }
 

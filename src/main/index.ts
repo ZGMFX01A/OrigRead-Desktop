@@ -4,6 +4,7 @@ import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { IPC_CHANNELS, type AppInfo, type FeedSettingsPatch } from '../shared/contracts'
+import type { SyncEndpointInput, SyncPeerRegistration } from '../shared/sync-control'
 import { resolveBrandName } from '../shared/locale'
 import { DesktopDatabase } from './database/database'
 import { LibraryRepository } from './database/library-repository'
@@ -47,6 +48,29 @@ import {
 import type { OriginalNavigationAction } from '../shared/original-view'
 import { PeriodicSyncScheduler } from './sync/periodic-sync-scheduler'
 import { ElectronSecretStore } from './security/secret-store'
+import { SyncIdentityRepository } from './sync/sync-identity-repository'
+import { SyncRuntimeRepository } from './sync/sync-runtime-repository'
+import { DesktopSyncRollbackWitnessStore } from './sync/sync-rollback-witness'
+import { DesktopSyncRuntimeCoordinator } from './sync/sync-runtime-coordinator'
+import { DesktopSyncOutboxAllocator } from './sync/sync-outbox-allocator'
+import { DesktopLibrarySyncMutationCapture } from './sync/library-sync-mutation-capture'
+import { DesktopLlmSyncMutationCapture } from './sync/llm-sync-mutation-capture'
+import { DesktopSyncLocalBlobStore } from './sync/sync-local-blob-store'
+import { DesktopSyncStableGcCoordinator } from './sync/sync-stable-gc-coordinator'
+import { DesktopSyncBlobStateService } from './sync/sync-blob-state'
+import { DesktopSyncBlobTransferCoordinator } from './sync/sync-blob-transfer-coordinator'
+import { SyncStateRepository } from './sync/sync-state-repository'
+import { DesktopOperationBuilder } from './sync/sync-operation-builder'
+import { DesktopSyncDeviceSigningKeyStore } from './sync/sync-device-signing-key-store'
+import { DesktopSyncOperationSigner } from './sync/sync-operation-signer'
+import { SyncApplyCoordinator } from './sync/sync-apply-coordinator'
+import { DesktopSyncBusinessApplier } from './sync/desktop-sync-business-applier'
+import { DesktopAiHistoryApplier } from './sync/desktop-ai-history-applier'
+import { DesktopExternalConfigReconciler } from './sync/desktop-external-config-reconciler'
+import { SyncSessionCoordinator } from './sync/sync-session-coordinator'
+import { DesktopGenesisSnapshotService } from './sync/genesis-snapshot-service'
+import { DesktopSnapshotInstallService } from './sync/desktop-snapshot-install-service'
+import { DesktopSyncService } from './sync/desktop-sync-service'
 import { isAllowedRendererUrl } from './security/renderer-trust'
 import { AiSettingsRepository } from './ai/ai-settings-repository'
 import { AiSummaryService } from './ai/ai-summary-service'
@@ -70,12 +94,14 @@ import { AccountSyncSettingsProvider, DesktopAccountService } from './accounts/d
 import type { AccountCreateInput, AccountPatch, AccountType } from '../shared/account'
 import type {
   LlmAppendUserMessageRequest,
+  LlmAssistantEvidenceSnapshot,
   LlmCreateConversationRequest,
   LlmExecuteManualToolRequest,
   LlmReaderContextSnapshot,
   LlmReplaceConversationArticlesRequest,
   LlmStartExecutionRequest,
   LlmStartExecutionProfile,
+  LlmSyncAttachmentStateView,
   LlmUpdateConversationRequest
 } from '../shared/llm-ipc'
 import type { LlmConversationRecord } from '../shared/llm-chat'
@@ -157,6 +183,7 @@ let readerContentService: ReaderContentService | null = null
 let articleFullContentService: ArticleFullContentService | null = null
 let originalArticleViewController: OriginalArticleViewController | null = null
 let periodicSyncScheduler: PeriodicSyncScheduler | null = null
+let desktopSyncService: DesktopSyncService | null = null
 let aiSettingsRepository: AiSettingsRepository | null = null
 let aiSummaryService: AiSummaryService | null = null
 let webSearchRepository: WebSearchRepository | null = null
@@ -174,6 +201,7 @@ let translationSettingsRepository: TranslationSettingsRepository | null = null
 let translationService: TranslationService | null = null
 let activeTranslationRequest: { articleId: string; controller: AbortController } | null = null
 let articleFilterRepository: ArticleFilterRepository | null = null
+let librarySyncMutations: DesktopLibrarySyncMutationCapture | null = null
 let configurationBackupService: ConfigurationBackupService | null = null
 let opmlService: OpmlService | null = null
 let feedDiscoveryCatalog: FeedDiscoveryCatalog | null = null
@@ -190,6 +218,104 @@ let manualToolContextService: ManualToolContextService | null = null
 let llmRuntime: LlmRuntime | null = null
 let llmExecutionService: LlmChatExecutionService | null = null
 const llmExecutionRegistry = new LlmExecutionRegistry()
+
+function captureArticleFilterMutation<T>(mutate: () => T): T {
+  if (!articleFilterRepository || !libraryRepository) {
+    throw new Error('Article filters are not ready')
+  }
+  if (!librarySyncMutations) return mutate()
+  return librarySyncMutations.captureFilterRulesMutation(
+    libraryRepository.getCurrentAccountId(),
+    () => articleFilterRepository!.getAll(),
+    (rules) => articleFilterRepository!.replaceRules(rules),
+    mutate
+  )
+}
+
+function captureWebsiteRuleMutation<T>(mutate: () => T): T {
+  if (!websiteRuleRepository || !libraryRepository) throw new Error('Website rules are not ready')
+  if (!librarySyncMutations) return mutate()
+  return librarySyncMutations.captureWebsiteRulesMutation(
+    libraryRepository.getCurrentAccountId(),
+    () => websiteRuleRepository!.listSyncRules(),
+    (rules) => websiteRuleRepository!.replaceSyncRules(rules),
+    mutate
+  )
+}
+
+function captureJsonRuleMutation<T>(mutate: () => T): T {
+  if (!jsonRuleRepository || !libraryRepository) throw new Error('JSON rules are not ready')
+  if (!librarySyncMutations) return mutate()
+  return librarySyncMutations.captureJsonRulesMutation(
+    libraryRepository.getCurrentAccountId(),
+    () => jsonRuleRepository!.listSyncRules(),
+    (rules) => jsonRuleRepository!.replaceSyncRules(rules),
+    mutate
+  )
+}
+
+function captureRssHubSettingsMutation<T>(mutate: () => T): T {
+  if (!rssHubSettingsRepository || !libraryRepository) throw new Error('RSSHub settings are not ready')
+  if (!librarySyncMutations) return mutate()
+  return librarySyncMutations.captureRssHubSettingsMutation(
+    libraryRepository.getCurrentAccountId(),
+    () => rssHubSettingsRepository!.current(),
+    (settings) => rssHubSettingsRepository!.replaceSyncSettings(settings),
+    mutate
+  )
+}
+
+function captureWebsiteParsePreferenceMutation<T>(feedId: string, mutate: () => T): T {
+  if (!websitePreferenceRepository || !libraryRepository) {
+    throw new Error('Website preferences are not ready')
+  }
+  if (!librarySyncMutations?.captureWebsiteParsePreferenceMutation) return mutate()
+  return librarySyncMutations.captureWebsiteParsePreferenceMutation(
+    libraryRepository.getCurrentAccountId(),
+    feedId,
+    () => websitePreferenceRepository!.getUserSyncState(feedId),
+    (state) => websitePreferenceRepository!.applyUserSyncState(feedId, state),
+    mutate
+  )
+}
+
+function cleanupDeletedFeedSidecars(feedIds: Set<string>, accountId: number): void {
+  if (feedIds.size === 0) return
+  if (!articleFilterRepository || !websitePreferenceRepository) {
+    throw new Error('Feed sidecar repositories are not ready')
+  }
+  if (librarySyncMutations) {
+    librarySyncMutations.captureFilterRulesMutation(
+      accountId,
+      () => articleFilterRepository!.getAll(),
+      (rules) => articleFilterRepository!.replaceRules(rules),
+      () => {
+        for (const feedId of feedIds) articleFilterRepository!.deleteByFeed(feedId)
+      }
+    )
+    librarySyncMutations.captureWebsiteParsePreferencesMutation(
+      accountId,
+      feedIds,
+      () => new Map([...feedIds].map((feedId) => [feedId, websitePreferenceRepository!.getUserSyncState(feedId)])),
+      (states) => {
+        for (const [feedId, state] of states) {
+          websitePreferenceRepository!.applyUserSyncState(feedId, state)
+        }
+      },
+      () => {
+        for (const feedId of feedIds) {
+          websitePreferenceRepository!.applyUserSyncState(feedId, null)
+        }
+      }
+    )
+  } else {
+    for (const feedId of feedIds) {
+      articleFilterRepository.deleteByFeed(feedId)
+      websitePreferenceRepository.applyUserSyncState(feedId, null)
+    }
+  }
+  for (const feedId of feedIds) websitePreferenceRepository.delete(feedId)
+}
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
@@ -318,6 +444,72 @@ function createMainWindow(): BrowserWindow {
   }
 
   return window
+}
+
+function buildLlmAssistantEvidenceSnapshot(assistantMessageId: string): LlmAssistantEvidenceSnapshot {
+  if (!llmChatRepository) throw new Error('LLM chat repository is not ready')
+  const contextRefs = llmChatRepository.getContextRefsForAssistant(assistantMessageId)
+  const evidenceBlocks = contextRefs.flatMap((ref) => llmChatRepository!.getEvidenceBlocks(ref.id))
+  const citations = llmChatRepository.getCitationRefsForAssistant(assistantMessageId)
+  const expectedOwners = new Set<string>([
+    ...contextRefs.map((ref) => `context_ref\u0000${ref.id}`),
+    ...evidenceBlocks.map((block) => `evidence_block\u0000${block.id}`),
+    ...citations.map((citation) => `citation_ref\u0000${citation.id}`)
+  ])
+  const syncAttachments: LlmSyncAttachmentStateView[] = []
+  if (desktopDatabase && accountRepository && expectedOwners.size > 0) {
+    const rows = desktopDatabase.connection.prepare(`
+      SELECT i.entity_type AS entity_type,
+             i.local_id AS local_id,
+             r.reference_kind AS reference_kind,
+             m.availability_state AS availability_state,
+             m.failure_reason AS failure_reason
+      FROM sync_blob_reference r
+      INNER JOIN sync_blob_manifest m ON m.hash=r.hash
+      INNER JOIN sync_identity_mapping i
+        ON i.sync_space_id=r.sync_space_id
+       AND i.entity_type=r.owner_entity_type
+       AND i.sync_id=r.owner_entity_sync_id
+       AND i.generation=r.owner_entity_generation
+      INNER JOIN sync_local_space_binding b ON b.sync_space_id=r.sync_space_id
+      WHERE b.local_account_id=?
+        AND r.replication_lane_id='AI_HISTORY'
+        AND r.owner_entity_type IN ('context_ref','evidence_block','citation_ref')
+      ORDER BY i.entity_type,i.local_id,r.reference_kind
+    `).all(accountRepository.currentId()) as unknown as Array<{
+      entity_type: LlmSyncAttachmentStateView['entityType']
+      local_id: string
+      reference_kind: string
+      availability_state: LlmSyncAttachmentStateView['availability']
+      failure_reason: string | null
+    }>
+    const allowedAvailability = new Set<LlmSyncAttachmentStateView['availability']>([
+      'METADATA_READY',
+      'BLOB_MISSING',
+      'BLOB_FETCHING',
+      'READY',
+      'BLOB_FAILED'
+    ])
+    for (const row of rows) {
+      if (!expectedOwners.has(`${row.entity_type}\u0000${row.local_id}`)) continue
+      if (!allowedAvailability.has(row.availability_state)) continue
+      syncAttachments.push({
+        entityType: row.entity_type,
+        localId: row.local_id,
+        referenceKind: row.reference_kind,
+        availability: row.availability_state,
+        failureReason: row.failure_reason
+      })
+    }
+  }
+  return {
+    contextRefs,
+    evidenceBlocks,
+    citations,
+    citationAnnotations: llmChatRepository.getCitationAnnotationsForAssistant(assistantMessageId),
+    citationAnnotationRefs: llmChatRepository.getCitationAnnotationRefsForAssistant(assistantMessageId),
+    syncAttachments
+  }
 }
 
 function registerIpcHandlers(): void {
@@ -503,9 +695,11 @@ function registerIpcHandlers(): void {
     if (!libraryRepository || !accountService) throw new Error('Account service is not ready')
     const id = validateId(feedId, 'feedId')
     if (!libraryRepository.getFeedById(id)) return
-    articleFilterRepository?.deleteByFeed(id)
-    websitePreferenceRepository?.delete(id)
+    const accountId = libraryRepository.getCurrentAccountId()
     await accountService.deleteFeed(id)
+    if (!libraryRepository.getFeedById(id)) {
+      cleanupDeletedFeedSidecars(new Set([id]), accountId)
+    }
   })
   ipcMain.handle(IPC_CHANNELS.reloadFeedIcon, async (event, feedId: unknown) => {
     assertTrustedSender(event)
@@ -639,25 +833,33 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.setRssHubEnabled, (event, enabled: unknown) => {
     assertTrustedSender(event)
     if (!rssHubSettingsRepository) throw new Error('RSSHub settings are not ready')
-    return rssHubSettingsRepository.setEnabled(validateBoolean(enabled, 'enabled'))
+    return captureRssHubSettingsMutation(
+      () => rssHubSettingsRepository!.setEnabled(validateBoolean(enabled, 'enabled'))
+    )
   })
   ipcMain.handle(IPC_CHANNELS.addRssHubInstance, (event, url: unknown) => {
     assertTrustedSender(event)
     if (!rssHubSettingsRepository) throw new Error('RSSHub settings are not ready')
-    return rssHubSettingsRepository.addInstance(validateUrlInput(url))
+    return captureRssHubSettingsMutation(
+      () => rssHubSettingsRepository!.addInstance(validateUrlInput(url))
+    )
   })
   ipcMain.handle(IPC_CHANNELS.setRssHubInstanceEnabled, (event, id: unknown, enabled: unknown) => {
     assertTrustedSender(event)
     if (!rssHubSettingsRepository) throw new Error('RSSHub settings are not ready')
-    return rssHubSettingsRepository.setInstanceEnabled(
-      validateId(id, 'instanceId'),
-      validateBoolean(enabled, 'enabled')
+    return captureRssHubSettingsMutation(
+      () => rssHubSettingsRepository!.setInstanceEnabled(
+        validateId(id, 'instanceId'),
+        validateBoolean(enabled, 'enabled')
+      )
     )
   })
   ipcMain.handle(IPC_CHANNELS.deleteRssHubInstance, (event, id: unknown) => {
     assertTrustedSender(event)
     if (!rssHubSettingsRepository) throw new Error('RSSHub settings are not ready')
-    return rssHubSettingsRepository.deleteInstance(validateId(id, 'instanceId'))
+    return captureRssHubSettingsMutation(
+      () => rssHubSettingsRepository!.deleteInstance(validateId(id, 'instanceId'))
+    )
   })
   ipcMain.handle(IPC_CHANNELS.testRssHubInstance, async (event, url: unknown) => {
     assertTrustedSender(event)
@@ -672,7 +874,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.restoreDefaultRssHubSettings, (event) => {
     assertTrustedSender(event)
     if (!rssHubSettingsRepository) throw new Error('RSSHub settings are not ready')
-    return rssHubSettingsRepository.restoreDefault()
+    return captureRssHubSettingsMutation(() => rssHubSettingsRepository!.restoreDefault())
   })
   ipcMain.handle(IPC_CHANNELS.getSourceCatalog, (event) => {
     assertTrustedSender(event)
@@ -692,7 +894,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.importJsonRules, (event, content: unknown) => {
     assertTrustedSender(event)
     if (!jsonRuleRepository) throw new Error('JSON rule repository is not ready')
-    return jsonRuleRepository.importRules(validateText(content, 'content', 2_000_000))
+    return captureJsonRuleMutation(
+      () => jsonRuleRepository!.importRules(validateText(content, 'content', 2_000_000))
+    )
   })
   ipcMain.handle(IPC_CHANNELS.exportJsonRules, (event) => {
     assertTrustedSender(event)
@@ -707,12 +911,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.setJsonRuleEnabled, (event, id: unknown, enabled: unknown) => {
     assertTrustedSender(event)
     if (!jsonRuleRepository) throw new Error('JSON rule repository is not ready')
-    jsonRuleRepository.setEnabled(validateId(id, 'ruleId'), validateBoolean(enabled, 'enabled'))
+    captureJsonRuleMutation(
+      () => jsonRuleRepository!.setEnabled(validateId(id, 'ruleId'), validateBoolean(enabled, 'enabled'))
+    )
   })
   ipcMain.handle(IPC_CHANNELS.deleteJsonRule, (event, id: unknown) => {
     assertTrustedSender(event)
     if (!jsonRuleRepository) throw new Error('JSON rule repository is not ready')
-    jsonRuleRepository.deleteRule(validateId(id, 'ruleId'))
+    captureJsonRuleMutation(() => jsonRuleRepository!.deleteRule(validateId(id, 'ruleId')))
   })
   ipcMain.handle(IPC_CHANNELS.getRuleGuide, (event, kind: unknown, language: unknown) => {
     assertTrustedSender(event)
@@ -752,7 +958,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.saveAiGeneratedRule, (event, previewId: unknown) => {
     assertTrustedSender(event)
     if (!aiRuleGenerationService) throw new Error('AI rule generation service is not ready')
-    aiRuleGenerationService.save(validateId(previewId, 'previewId'))
+    const id = validateId(previewId, 'previewId')
+    const kind = aiRuleGenerationService.previewKind(id)
+    if (kind === 'WEBSITE') {
+      captureWebsiteRuleMutation(() => aiRuleGenerationService!.save(id))
+    } else {
+      captureJsonRuleMutation(() => aiRuleGenerationService!.save(id))
+    }
   })
   ipcMain.handle(IPC_CHANNELS.exportRuleTemplateFile, async (event, kind: unknown) => {
     assertTrustedSender(event)
@@ -799,7 +1011,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.importWebsiteRules, (event, content: unknown) => {
     assertTrustedSender(event)
     if (!websiteRuleRepository) throw new Error('Website rule repository is not ready')
-    return websiteRuleRepository.importRules(validateText(content, 'content', 2_000_000))
+    return captureWebsiteRuleMutation(
+      () => websiteRuleRepository!.importRules(validateText(content, 'content', 2_000_000))
+    )
   })
   ipcMain.handle(IPC_CHANNELS.exportWebsiteRules, (event) => {
     assertTrustedSender(event)
@@ -814,12 +1028,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.setWebsiteRuleEnabled, (event, id: unknown, enabled: unknown) => {
     assertTrustedSender(event)
     if (!websiteRuleRepository) throw new Error('Website rule repository is not ready')
-    websiteRuleRepository.setEnabled(validateId(id, 'ruleId'), validateBoolean(enabled, 'enabled'))
+    captureWebsiteRuleMutation(
+      () => websiteRuleRepository!.setEnabled(validateId(id, 'ruleId'), validateBoolean(enabled, 'enabled'))
+    )
   })
   ipcMain.handle(IPC_CHANNELS.deleteWebsiteRule, (event, id: unknown) => {
     assertTrustedSender(event)
     if (!websiteRuleRepository) throw new Error('Website rule repository is not ready')
-    websiteRuleRepository.deleteRule(validateId(id, 'ruleId'))
+    captureWebsiteRuleMutation(() => websiteRuleRepository!.deleteRule(validateId(id, 'ruleId')))
   })
   ipcMain.handle(IPC_CHANNELS.testWebsiteRule, async (event, url: unknown) => {
     assertTrustedSender(event)
@@ -902,6 +1118,42 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (!periodicSyncScheduler) throw new Error('Periodic sync scheduler is not ready')
     return periodicSyncScheduler.currentState()
+  })
+  ipcMain.handle(IPC_CHANNELS.getSyncStatus, (event) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    return desktopSyncService.status()
+  })
+  ipcMain.handle(IPC_CHANNELS.activateSyncGenesis, (event) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    return desktopSyncService.activateGenesis()
+  })
+  ipcMain.handle(IPC_CHANNELS.configureSyncEndpoint, (event, rawInput: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    return desktopSyncService.configureEndpoint(validateSyncEndpointInput(rawInput))
+  })
+  ipcMain.handle(IPC_CHANNELS.removeSyncEndpoint, (event, endpointId: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    desktopSyncService.removeEndpoint(validateId(endpointId, 'endpointId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.registerSyncPeer, (event, rawInput: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    return desktopSyncService.registerPeer(validateSyncPeerRegistration(rawInput))
+  })
+  ipcMain.handle(IPC_CHANNELS.syncNow, async (event, endpointId: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    return desktopSyncService.run(validateId(endpointId, 'endpointId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.discoverSyncPeers, async (event, timeoutMs?: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    const timeout = timeoutMs === undefined ? 1_500 : validateFiniteNumber(timeoutMs, 'timeoutMs')
+    return desktopSyncService.discoverLan(Math.min(Math.max(timeout, 250), 10_000))
   })
   ipcMain.handle(IPC_CHANNELS.getReaderContent, (event, articleId: unknown, preferFull?: unknown) => {
     assertTrustedSender(event)
@@ -1433,14 +1685,7 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (!llmChatRepository) throw new Error('LLM chat repository is not ready')
     const id = validateId(assistantMessageId, 'assistantMessageId')
-    const contextRefs = llmChatRepository.getContextRefsForAssistant(id)
-    return {
-      contextRefs,
-      evidenceBlocks: contextRefs.flatMap((ref) => llmChatRepository!.getEvidenceBlocks(ref.id)),
-      citations: llmChatRepository.getCitationRefsForAssistant(id),
-      citationAnnotations: llmChatRepository.getCitationAnnotationsForAssistant(id),
-      citationAnnotationRefs: llmChatRepository.getCitationAnnotationRefsForAssistant(id)
-    }
+    return buildLlmAssistantEvidenceSnapshot(id)
   })
   ipcMain.handle(IPC_CHANNELS.getLlmRestorableCitation, (event, articleId: unknown) => {
     assertTrustedSender(event)
@@ -1448,16 +1693,9 @@ function registerIpcHandlers(): void {
     const id = validateId(articleId, 'articleId')
     const message = llmChatRepository.getLatestRestorableCitationAssistant(id)
     if (!message) return null
-    const contextRefs = llmChatRepository.getContextRefsForAssistant(message.id)
     return {
       message,
-      evidence: {
-        contextRefs,
-        evidenceBlocks: contextRefs.flatMap((ref) => llmChatRepository!.getEvidenceBlocks(ref.id)),
-        citations: llmChatRepository.getCitationRefsForAssistant(message.id),
-        citationAnnotations: llmChatRepository.getCitationAnnotationsForAssistant(message.id),
-        citationAnnotationRefs: llmChatRepository.getCitationAnnotationRefsForAssistant(message.id)
-      }
+      evidence: buildLlmAssistantEvidenceSnapshot(message.id)
     }
   })
   ipcMain.handle(IPC_CHANNELS.startLlmExecution, (event, request: unknown) => {
@@ -1611,13 +1849,13 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event); if(!articleFilterRepository)throw new Error('Article filters are not ready');return articleFilterRepository.snapshot()
   })
   ipcMain.handle(IPC_CHANNELS.addArticleFilter, (event, keyword: unknown, type: unknown, feedId?: unknown) => {
-    assertTrustedSender(event); if(!articleFilterRepository||!libraryRepository)throw new Error('Article filters are not ready');const normalizedFeedId=feedId===undefined||feedId===null?null:validateId(feedId,'feedId');const feedName=normalizedFeedId?libraryRepository.getFeedById(normalizedFeedId)?.name??null:null;articleFilterRepository.add(validateText(keyword,'keyword',2_000),validateFilterRuleType(type),normalizedFeedId,feedName);return articleFilterRepository.snapshot()
+    assertTrustedSender(event); if(!articleFilterRepository||!libraryRepository)throw new Error('Article filters are not ready');const normalizedFeedId=feedId===undefined||feedId===null?null:validateId(feedId,'feedId');const feedName=normalizedFeedId?libraryRepository.getFeedById(normalizedFeedId)?.name??null:null;captureArticleFilterMutation(()=>articleFilterRepository!.add(validateText(keyword,'keyword',2_000),validateFilterRuleType(type),normalizedFeedId,feedName));return articleFilterRepository.snapshot()
   })
   ipcMain.handle(IPC_CHANNELS.setArticleFilterEnabled, (event, id: unknown, enabled: unknown) => {
-    assertTrustedSender(event); if(!articleFilterRepository)throw new Error('Article filters are not ready');articleFilterRepository.setEnabled(validateId(id,'ruleId'),validateBoolean(enabled,'enabled'));return articleFilterRepository.snapshot()
+    assertTrustedSender(event); if(!articleFilterRepository)throw new Error('Article filters are not ready');captureArticleFilterMutation(()=>articleFilterRepository!.setEnabled(validateId(id,'ruleId'),validateBoolean(enabled,'enabled')));return articleFilterRepository.snapshot()
   })
   ipcMain.handle(IPC_CHANNELS.deleteArticleFilter, (event, id: unknown) => {
-    assertTrustedSender(event); if(!articleFilterRepository)throw new Error('Article filters are not ready');articleFilterRepository.delete(validateId(id,'ruleId'));return articleFilterRepository.snapshot()
+    assertTrustedSender(event); if(!articleFilterRepository)throw new Error('Article filters are not ready');captureArticleFilterMutation(()=>articleFilterRepository!.delete(validateId(id,'ruleId')));return articleFilterRepository.snapshot()
   })
   ipcMain.handle(IPC_CHANNELS.getWebsiteSourceRuleSettings, (event, feedId: unknown) => {
     assertTrustedSender(event); return websiteSourceRuleSettings(validateId(feedId,'feedId'))
@@ -1626,10 +1864,10 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event);const id=validateId(feedId,'feedId');if(!websiteSourceService||!libraryRepository)throw new Error('Website source service is not ready');const feed=libraryRepository.getFeedById(id);if(!feed||feed.sourceType!=='website')throw new Error('来源不是网站类型');return websiteSourceService.evaluateCandidates(feed)
   })
   ipcMain.handle(IPC_CHANNELS.setWebsiteSourcePreferredRule, async (event, feedId: unknown, ruleId: unknown) => {
-    assertTrustedSender(event);const id=validateId(feedId,'feedId');if(!websitePreferenceRepository||!websiteRuleRepository||!websiteSourceService||!libraryRepository)throw new Error('Website preferences are not ready');const normalized=ruleId===null?null:validateId(ruleId,'ruleId');let rule=normalized?websiteRuleRepository.listRules().find((item)=>item.id===normalized):null;if(normalized&&!rule&&normalized.startsWith('auto-dom:')){const feed=libraryRepository.getFeedById(id);if(!feed)throw new Error('来源不存在');const candidate=(await websiteSourceService.evaluateCandidates(feed)).find((item)=>item.rule.id===normalized);if(candidate){websitePreferenceRepository.saveAutomaticRule(id,candidate.rule);rule=candidate.rule}}if(normalized&&!rule)throw new Error('网站规则不存在');websitePreferenceRepository.setPreferredRule(id,normalized,rule?.name??null);return websiteSourceRuleSettings(id)!
+    assertTrustedSender(event);const id=validateId(feedId,'feedId');if(!websitePreferenceRepository||!websiteRuleRepository||!websiteSourceService||!libraryRepository)throw new Error('Website preferences are not ready');const normalized=ruleId===null?null:validateId(ruleId,'ruleId');let rule=normalized?websiteRuleRepository.listRules().find((item)=>item.id===normalized):null;if(normalized&&!rule&&normalized.startsWith('auto-dom:')){const feed=libraryRepository.getFeedById(id);if(!feed)throw new Error('来源不存在');const candidate=(await websiteSourceService.evaluateCandidates(feed)).find((item)=>item.rule.id===normalized);if(candidate){websitePreferenceRepository.saveAutomaticRule(id,candidate.rule);rule=candidate.rule}}if(normalized&&!rule)throw new Error('网站规则不存在');captureWebsiteParsePreferenceMutation(id,()=>websitePreferenceRepository!.setPreferredRule(id,normalized,rule?.name??null));return websiteSourceRuleSettings(id)!
   })
   ipcMain.handle(IPC_CHANNELS.setWebsiteSourceDynamicRendering, (event, feedId: unknown, enabled: unknown) => {
-    assertTrustedSender(event);const id=validateId(feedId,'feedId');if(!websitePreferenceRepository)throw new Error('Website preferences are not ready');websitePreferenceRepository.setDynamicRenderingEnabled(id,validateBoolean(enabled,'enabled'));return websiteSourceRuleSettings(id)!
+    assertTrustedSender(event);const id=validateId(feedId,'feedId');if(!websitePreferenceRepository)throw new Error('Website preferences are not ready');captureWebsiteParsePreferenceMutation(id,()=>websitePreferenceRepository!.setDynamicRenderingEnabled(id,validateBoolean(enabled,'enabled')));return websiteSourceRuleSettings(id)!
   })
   ipcMain.handle(IPC_CHANNELS.importOpml, async (event) => {
     assertTrustedSender(event)
@@ -1694,7 +1932,32 @@ function registerIpcHandlers(): void {
     }catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
   })
   ipcMain.handle(IPC_CHANNELS.importRuleFile, async (event, kind: unknown) => {
-    assertTrustedSender(event);const ruleKind=validateRuleKind(kind);try{const selected=await showOpenDialog({title:'导入 OrigRead 规则',properties:['openFile'],filters:[{name:'JSON',extensions:['json']}]});if(selected.canceled||!selected.filePaths[0])return{ok:false,cancelled:true,count:0,error:null};const content=readFileSync(selected.filePaths[0],'utf8');const count=ruleKind==='website'?websiteRuleRepository!.importRules(content):ruleKind==='json'?jsonRuleRepository!.importRules(content):articleFilterRepository!.importRules(content);return{ok:true,cancelled:false,count,error:null}}catch(error){return{ok:false,cancelled:false,count:0,error:error instanceof Error?error.message:String(error)}}
+    assertTrustedSender(event)
+    const ruleKind = validateRuleKind(kind)
+    try {
+      const selected = await showOpenDialog({
+        title: '导入 OrigRead 规则',
+        properties: ['openFile'],
+        filters: [{ name: 'JSON', extensions: ['json'] }]
+      })
+      if (selected.canceled || !selected.filePaths[0]) {
+        return { ok: false, cancelled: true, count: 0, error: null }
+      }
+      const content = readFileSync(selected.filePaths[0], 'utf8')
+      const count = ruleKind === 'website'
+        ? captureWebsiteRuleMutation(() => websiteRuleRepository!.importRules(content))
+        : ruleKind === 'json'
+          ? captureJsonRuleMutation(() => jsonRuleRepository!.importRules(content))
+          : captureArticleFilterMutation(() => articleFilterRepository!.importRules(content))
+      return { ok: true, cancelled: false, count, error: null }
+    } catch (error) {
+      return {
+        ok: false,
+        cancelled: false,
+        count: 0,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
   })
   ipcMain.handle(IPC_CHANNELS.exportRuleFile, async (event, kind: unknown) => {
     assertTrustedSender(event);const ruleKind=validateRuleKind(kind);try{const content=ruleKind==='website'?websiteRuleRepository!.exportRules():ruleKind==='json'?jsonRuleRepository!.exportRules():articleFilterRepository!.exportRules();const selected=await showSaveDialog({title:'导出 OrigRead 规则',defaultPath:`OrigRead-${ruleKind}-rules.json`,filters:[{name:'JSON',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};writeFileSync(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
@@ -2169,6 +2432,42 @@ function validateBoolean(value: unknown, field: string): boolean {
   return value
 }
 
+function validateFiniteNumber(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError(`${field} must be a finite number`)
+  return value
+}
+
+function validateSyncEndpointInput(value: unknown): SyncEndpointInput {
+  const record = validateRecord(value, 'Sync endpoint input')
+  const kind = record.kind
+  if (kind !== 'LAN' && kind !== 'SERVER' && kind !== 'MANUAL') throw new TypeError('Unsupported Sync endpoint kind')
+  const result: SyncEndpointInput = {
+    syncSpaceId: validateText(record.syncSpaceId, 'syncSpaceId', 256).trim(),
+    kind,
+    url: validateText(record.url, 'url', 4_096).trim(),
+    displayName: validateText(record.displayName, 'displayName', 200).trim()
+  }
+  if (record.endpointId !== undefined) result.endpointId = validateId(record.endpointId, 'endpointId')
+  if (record.accessToken !== undefined) result.accessToken = validateOptionalText(record.accessToken, 'accessToken', 16_384)
+  if (record.enabled !== undefined) result.enabled = validateBoolean(record.enabled, 'enabled')
+  return result
+}
+
+function validateSyncPeerRegistration(value: unknown): SyncPeerRegistration {
+  const record = validateRecord(value, 'Sync peer registration')
+  const result: SyncPeerRegistration = {
+    syncSpaceId: validateText(record.syncSpaceId, 'syncSpaceId', 256).trim(),
+    deviceId: validateText(record.deviceId, 'deviceId', 256).trim(),
+    publicKeySpkiBase64: validateText(record.publicKeySpkiBase64, 'publicKeySpkiBase64', 16_384).trim()
+  }
+  if (record.authEpoch !== undefined) {
+    const epoch = validateFiniteNumber(record.authEpoch, 'authEpoch')
+    if (!Number.isSafeInteger(epoch) || epoch < 0) throw new TypeError('authEpoch must be a non-negative integer')
+    result.authEpoch = epoch
+  }
+  return result
+}
+
 function validateText(value: unknown, field: string, maxLength: number): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > maxLength) {
     throw new TypeError(`${field} must be a non-empty string no longer than ${maxLength}`)
@@ -2238,8 +2537,41 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   if (process.platform !== 'darwin') {
     Menu.setApplicationMenu(null)
   }
-  desktopDatabase = new DesktopDatabase(join(app.getPath('userData'), 'origread.db'))
-  libraryRepository = new LibraryRepository(desktopDatabase.connection)
+  const userDataPath = app.getPath('userData')
+  desktopDatabase = new DesktopDatabase(join(userDataPath, 'origread.db'))
+  const secretStore = new ElectronSecretStore(join(userDataPath, 'secrets.json'))
+  // Sequence rollback witness intentionally lives outside the normal profile directory. A copied or
+  // restored userData folder must not roll back both SQLite sequence state and its witness together.
+  // Electron safeStorage still binds the ciphertext to the OS account/machine protection available.
+  const syncWitnessSecretStore = new ElectronSecretStore(
+    join(app.getPath('appData'), 'origread-sync-rollback-witness.secrets.json')
+  )
+  const syncIdentityRepository = new SyncIdentityRepository(desktopDatabase.connection)
+  const syncRuntimeRepository = new SyncRuntimeRepository(desktopDatabase.connection)
+  const syncRollbackWitness = new DesktopSyncRollbackWitnessStore(syncWitnessSecretStore, userDataPath)
+  const syncRuntimeCoordinator = new DesktopSyncRuntimeCoordinator(
+    syncRuntimeRepository,
+    syncIdentityRepository,
+    syncRollbackWitness,
+    (localAccountId) => accountRepository?.get(localAccountId)?.type === 'local'
+  )
+  const syncOutboxAllocator = new DesktopSyncOutboxAllocator(syncRuntimeRepository, syncRollbackWitness)
+  const syncLocalBlobStore = new DesktopSyncLocalBlobStore(join(userDataPath, 'sync-blobs-v1'))
+  librarySyncMutations = new DesktopLibrarySyncMutationCapture(
+    desktopDatabase.connection,
+    syncRuntimeRepository,
+    syncRuntimeCoordinator,
+    syncOutboxAllocator,
+    syncLocalBlobStore
+  )
+  const llmSyncMutations = new DesktopLlmSyncMutationCapture(
+    desktopDatabase.connection,
+    syncRuntimeRepository,
+    syncRuntimeCoordinator,
+    syncOutboxAllocator,
+    syncLocalBlobStore
+  )
+  libraryRepository = new LibraryRepository(desktopDatabase.connection, librarySyncMutations)
   opmlService = new OpmlService(libraryRepository)
   readerContentService = new ReaderContentService(libraryRepository)
   settingsRepository = new SettingsRepository(desktopDatabase.connection)
@@ -2247,8 +2579,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     (input, init) => net.fetch(input, init),
     process.env.ORIGREAD_UPDATE_API_BASE || 'https://api.github.com'
   )
-  readerFontRepository = new ReaderFontRepository(join(app.getPath('userData'), 'reader-fonts'))
-  const secretStore = new ElectronSecretStore(join(app.getPath('userData'), 'secrets.json'))
+  readerFontRepository = new ReaderFontRepository(join(userDataPath, 'reader-fonts'))
   accountRepository = new AccountRepository(desktopDatabase.connection, secretStore)
   const legacySettings = settingsRepository.current()
   accountRepository.migrateLegacySyncSettings(legacySettings.syncIntervalMinutes, legacySettings.syncOnStart)
@@ -2288,7 +2619,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     mcpCombinedRuntime,
     mcpCombinedRuntime
   )
-  llmChatRepository = new LlmChatRepository(desktopDatabase.connection)
+  llmChatRepository = new LlmChatRepository(desktopDatabase.connection, llmSyncMutations, syncLocalBlobStore)
   llmChatRepository.recoverInterruptedState()
   llmSkillRepository = new LlmSkillRepository(desktopDatabase.connection)
   llmCustomizationSettingsRepository = new LlmCustomizationSettingsRepository(desktopDatabase.connection)
@@ -2315,9 +2646,124 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     webSearchRouter
   )
   translationSettingsRepository = new TranslationSettingsRepository(desktopDatabase.connection, secretStore, systemLanguage)
-  articleFilterRepository = new ArticleFilterRepository(join(app.getPath('userData'), 'article-filter-rules.json'))
-  feedDiscoveryCatalog = new FeedDiscoveryCatalog()
+  articleFilterRepository = new ArticleFilterRepository(join(app.getPath('userData'), 'article-filter-rules.json'), desktopDatabase.connection)
   rssHubSettingsRepository = new RssHubSettingsRepository(desktopDatabase.connection)
+  jsonRuleRepository = new JsonRuleRepository(join(app.getPath('userData'), 'json-source-rules.json'))
+  websiteRuleRepository = new WebsiteRuleRepository(join(app.getPath('userData'), 'website-rules.json'))
+  websitePreferenceRepository = new WebsiteParsePreferenceRepository(join(app.getPath('userData'), 'website-parse-preferences.json'))
+  const syncStateRepository = new SyncStateRepository(desktopDatabase.connection)
+  const syncOperationBuilder = new DesktopOperationBuilder(syncRuntimeRepository)
+  const syncSigningKeys = new DesktopSyncDeviceSigningKeyStore(secretStore)
+  const syncOperationSigner = new DesktopSyncOperationSigner(syncRuntimeRepository, syncSigningKeys)
+  const syncAiHistoryApplier = new DesktopAiHistoryApplier(
+    desktopDatabase.connection,
+    syncStateRepository,
+    syncLocalBlobStore
+  )
+  const syncBusinessApplier = new DesktopSyncBusinessApplier(
+    desktopDatabase.connection,
+    syncStateRepository,
+    syncAiHistoryApplier,
+    syncLocalBlobStore,
+    articleFilterRepository,
+    websiteRuleRepository,
+    jsonRuleRepository,
+    rssHubSettingsRepository,
+    websitePreferenceRepository
+  )
+  const syncApplyCoordinator = new SyncApplyCoordinator(syncRuntimeRepository, syncStateRepository, syncBusinessApplier)
+  const syncBlobTransfer = new DesktopSyncBlobTransferCoordinator(
+    new DesktopSyncBlobStateService(desktopDatabase.connection)
+  )
+  const syncSnapshotInstaller = new DesktopSnapshotInstallService(
+    desktopDatabase.connection,
+    syncRuntimeRepository,
+    syncStateRepository,
+    articleFilterRepository,
+    syncAiHistoryApplier,
+    syncBusinessApplier,
+    websiteRuleRepository,
+    jsonRuleRepository,
+    rssHubSettingsRepository,
+    websitePreferenceRepository
+  )
+  const syncGenesisService = new DesktopGenesisSnapshotService(
+    desktopDatabase.connection,
+    syncRuntimeRepository,
+    syncRuntimeCoordinator,
+    articleFilterRepository,
+    undefined,
+    syncOperationBuilder,
+    syncSigningKeys,
+    syncLocalBlobStore,
+    websiteRuleRepository,
+    jsonRuleRepository,
+    rssHubSettingsRepository,
+    websitePreferenceRepository
+  )
+  const syncStableGcCoordinator = new DesktopSyncStableGcCoordinator(
+    desktopDatabase.connection,
+    syncRuntimeRepository,
+    syncStateRepository,
+    syncLocalBlobStore
+  )
+  const syncExternalConfigReconciler = new DesktopExternalConfigReconciler(
+    desktopDatabase.connection,
+    syncRuntimeRepository,
+    librarySyncMutations,
+    websiteRuleRepository,
+    jsonRuleRepository,
+    websitePreferenceRepository
+  )
+  const syncSessionCoordinator = new SyncSessionCoordinator(
+    syncRuntimeRepository,
+    syncStateRepository,
+    syncOperationBuilder,
+    syncOperationSigner,
+    syncApplyCoordinator,
+    syncSnapshotInstaller,
+    syncBlobTransfer,
+    syncLocalBlobStore,
+    syncBusinessApplier,
+    syncGenesisService,
+    syncStableGcCoordinator,
+    (syncSpaceId) => syncExternalConfigReconciler.reconcile(syncSpaceId)
+  )
+  desktopSyncService = new DesktopSyncService(
+    syncRuntimeRepository,
+    syncStateRepository,
+    syncIdentityRepository,
+    syncSessionCoordinator,
+    syncSigningKeys,
+    secretStore,
+    () => accountRepository?.current().id ?? 1,
+    syncGenesisService,
+    (syncSpaceId) => {
+      if (!libraryRepository || !articleFilterRepository || !websitePreferenceRepository || !librarySyncMutations) {
+        throw new Error('Feed sidecar reconciliation is not ready')
+      }
+      const binding = syncRuntimeRepository.findBindingBySpace(syncSpaceId)
+      if (!binding || binding.lifecycleState !== 'ACTIVE' || !syncRuntimeRepository.findActiveActor(syncSpaceId)) return
+      const orphanFeedIds = new Set(
+        syncIdentityRepository
+          .listByType(syncSpaceId, 'feed')
+          .filter((mapping) => {
+            if (libraryRepository!.getFeedByIdForAccount(binding.localAccountId, mapping.localId)) return false
+            const tombstone = desktopDatabase!.connection.prepare(`
+              SELECT generation
+              FROM sync_entity_tombstone
+              WHERE sync_space_id=? AND entity_type='feed' AND entity_sync_id=?
+              LIMIT 1
+            `).get(syncSpaceId, mapping.syncId) as { generation: number } | undefined
+            return tombstone != null && Number(tombstone.generation) >= mapping.generation
+          })
+          .map((mapping) => mapping.localId)
+      )
+      cleanupDeletedFeedSidecars(orphanFeedIds, binding.localAccountId)
+    },
+    (localAccountId) => accountRepository?.get(localAccountId)?.type === 'local'
+  )
+  feedDiscoveryCatalog = new FeedDiscoveryCatalog()
   rssHubResolver = new RssHubResolver(
     new RssHubRouteMatcher(loadBundledRssHubRoutes()),
     rssHubSettingsRepository
@@ -2328,11 +2774,8 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     rssHubResolver,
     articleFilterRepository
   )
-  jsonRuleRepository = new JsonRuleRepository(join(app.getPath('userData'), 'json-source-rules.json'))
   jsonSourceService = new JsonSourceService(jsonRuleRepository, new JsonArticleParser())
   jsonSubscriptionService = new JsonSubscriptionService(libraryRepository, jsonSourceService, articleFilterRepository)
-  websiteRuleRepository = new WebsiteRuleRepository(join(app.getPath('userData'), 'website-rules.json'))
-  websitePreferenceRepository = new WebsiteParsePreferenceRepository(join(app.getPath('userData'), 'website-parse-preferences.json'))
   const dynamicWebsiteRenderer = new ElectronDynamicWebsiteRenderer()
   websiteSourceService = new WebsiteSourceService(
     websiteRuleRepository,
@@ -2349,9 +2792,17 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   articleFullContentService = new ArticleFullContentService(
     libraryRepository,
     contentExtractionService,
-    new DynamicArticleContentService(dynamicWebsiteRenderer, contentExtractionService)
+    new DynamicArticleContentService(dynamicWebsiteRenderer, contentExtractionService),
+    undefined,
+    desktopDatabase.connection,
+    syncLocalBlobStore
   )
-  websiteSubscriptionService = new WebsiteSubscriptionService(libraryRepository, websiteSourceService, articleFilterRepository)
+  websiteSubscriptionService = new WebsiteSubscriptionService(
+    libraryRepository,
+    websiteSourceService,
+    articleFilterRepository,
+    (feedId, mutate) => captureWebsiteParsePreferenceMutation(feedId, mutate)
+  )
   rssHubSubscriptionService = new RssHubSubscriptionService(libraryRepository, articleFilterRepository)
   aiSummaryService = new AiSummaryService(
     libraryRepository,
@@ -2375,7 +2826,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     app.getVersion(), libraryRepository, settingsRepository, websiteRuleRepository, jsonRuleRepository,
     articleFilterRepository, websitePreferenceRepository, rssHubSettingsRepository, translationSettingsRepository, aiSettingsRepository,
     accountRepository, llmSkillRepository, llmQuickMessageRepository, llmCustomizationSettingsRepository, webSearchRepository,
-    mcpRemoteRepository, mcpLocalRepository, desktopDatabase.connection, secretStore
+    mcpRemoteRepository, mcpLocalRepository, desktopDatabase.connection, secretStore, librarySyncMutations
   )
   sourceSyncService = new SourceSyncService(
     libraryRepository,
@@ -2399,7 +2850,13 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     }
   )
   const remoteAccountSyncService = new RemoteAccountSyncService(accountRepository, libraryRepository)
-  accountService = new DesktopAccountService(accountRepository, libraryRepository, remoteAccountSyncService, sourceSyncService)
+  accountService = new DesktopAccountService(
+    accountRepository,
+    libraryRepository,
+    remoteAccountSyncService,
+    sourceSyncService,
+    syncRuntimeCoordinator
+  )
   sourceDiscoveryService = new SourceDiscoveryService(
     new RssDiscoveryService(),
     rssSubscriptionService,
@@ -2467,6 +2924,7 @@ app.on('before-quit', (event) => {
     mcpRemoteRepository = null
     periodicSyncScheduler?.stop()
     periodicSyncScheduler = null
+    desktopSyncService = null
     originalArticleViewController?.dispose()
     originalArticleViewController = null
     mainWindow = null
