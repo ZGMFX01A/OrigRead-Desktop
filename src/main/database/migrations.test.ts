@@ -239,7 +239,7 @@ describe('database migration v2 -> current schema', () => {
     expect(tables).toEqual(expect.arrayContaining([
       'sync_inbox_operation', 'sync_coverage', 'sync_apply_journal', 'sync_peer_identity',
       'sync_endpoint_config', 'sync_peer_cursor', 'sync_blob_manifest',
-      'sync_blob_reference', 'sync_blob_persisted_ack'
+      'sync_blob_reference', 'sync_blob_persisted_ack', 'sync_trusted_device'
     ]))
     expect(tables).toEqual(expect.arrayContaining(['sync_field_version', 'sync_entity_alias', 'sync_entity_tombstone', 'sync_auth_ledger']))
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])

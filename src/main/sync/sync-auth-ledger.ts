@@ -164,6 +164,27 @@ export class DesktopAuthLedgerService {
         }
         this.runtime.upsertAuthObject(object, now)
         history.push(object)
+        const trustedDeviceId =
+          object.objectType === 'SPACE_ROOT'
+            ? object.ownerDeviceId
+            : ['MEMBER_GRANT', 'MEMBER_REVOKE', 'OWNER_TRANSFER', 'OWNER_RECOVERY'].includes(object.objectType)
+              ? object.targetDeviceId
+              : null
+        if (trustedDeviceId) {
+          const trusted = this.state.findTrustedDevice(space, trustedDeviceId)
+          if (trusted) {
+            const nextState = object.objectType === 'MEMBER_REVOKE' ? 'REVOKED' : 'TRUSTED'
+            if (trusted.trustState !== nextState || trusted.authEpoch !== object.authEpoch) {
+              this.state.updateTrustedDeviceState(space, trustedDeviceId, nextState, object.authEpoch, now)
+            }
+            if (nextState === 'REVOKED') {
+              const endpoint = this.state.findEndpoint(`lan:${trustedDeviceId}`)
+              if (endpoint && endpoint.syncSpaceId === space && endpoint.enabled) {
+                this.state.upsertEndpoint({ ...endpoint, enabled: false, updatedAt: now })
+              }
+            }
+          }
+        }
         if (object.objectType === 'AUTH_STABILITY_CHECKPOINT') {
           const payload = JSON.parse(object.payloadJson) as Record<string, unknown>
           const accepted = payload.acceptedPrefixByActorLane

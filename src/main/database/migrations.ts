@@ -6,7 +6,7 @@ import {
   ORIGREAD_DESKTOP_RELEASES_URL
 } from '../../shared/origread-release'
 
-export const CURRENT_SCHEMA_VERSION = 31
+export const CURRENT_SCHEMA_VERSION = 37
 export const DEFAULT_LOCAL_ACCOUNT_ID = 1
 export const CURRENT_ACCOUNT_SETTING_KEY = 'account.current_id'
 
@@ -1137,6 +1137,124 @@ const migrations: Migration[] = [
     version: 31,
     up(database) {
       ensureColumnIfTableExists(database, 'sync_entity_tombstone', 'source_operation_id', 'TEXT')
+    }
+  },
+  {
+    version: 32,
+    up(database) {
+      database.exec(`CREATE TABLE IF NOT EXISTS sync_trusted_device (
+        id TEXT PRIMARY KEY,
+        sync_space_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        static_public_key TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        trust_state TEXT NOT NULL CHECK (trust_state IN ('TRUSTED','REVOKED','PROVISIONAL')),
+        paired_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        auth_epoch INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(sync_space_id, device_id)
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS sync_trusted_device_space_state_idx
+        ON sync_trusted_device(sync_space_id, trust_state);`)
+    }
+  },
+  {
+    version: 33,
+    up(database) {
+      database.exec(`CREATE TABLE IF NOT EXISTS sync_run_history (
+        run_id TEXT PRIMARY KEY,
+        sync_space_id TEXT NOT NULL,
+        endpoint_id TEXT,
+        remote_device_id TEXT,
+        transport TEXT,
+        stage TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        pushed_operations INTEGER NOT NULL DEFAULT 0,
+        pulled_operations INTEGER NOT NULL DEFAULT 0,
+        applied_operations INTEGER NOT NULL DEFAULT 0,
+        rejected_operations INTEGER NOT NULL DEFAULT 0,
+        blob_bytes_sent INTEGER NOT NULL DEFAULT 0,
+        blob_bytes_received INTEGER NOT NULL DEFAULT 0,
+        retry_attempt INTEGER NOT NULL DEFAULT 0,
+        error_code TEXT,
+        error_message TEXT
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS sync_run_history_space_started_idx
+        ON sync_run_history(sync_space_id, started_at DESC);
+      CREATE INDEX IF NOT EXISTS sync_run_history_endpoint_started_idx
+        ON sync_run_history(endpoint_id, started_at DESC);`)
+    }
+  },
+  {
+    version: 34,
+    up(database) {
+      ensureColumnIfTableExists(database, 'sync_endpoint_config', 'local_bind_address', 'TEXT')
+    }
+  },
+  {
+    version: 35,
+    up(database) {
+      database.exec(`CREATE TABLE IF NOT EXISTS sync_peer_coverage_report (
+        sync_space_id TEXT NOT NULL,
+        peer_device_id TEXT NOT NULL,
+        received_json TEXT NOT NULL DEFAULT '{}',
+        applied_json TEXT NOT NULL DEFAULT '{}',
+        retained_json TEXT NOT NULL DEFAULT '{}',
+        coverage_json TEXT NOT NULL DEFAULT '{}',
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(sync_space_id,peer_device_id)
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS sync_peer_coverage_report_updated_idx
+        ON sync_peer_coverage_report(sync_space_id,updated_at DESC);`)
+    }
+  },
+  {
+    version: 36,
+    up(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS sync_snapshot_stream_stage (
+          sync_space_id TEXT NOT NULL,
+          snapshot_bundle_id TEXT NOT NULL,
+          source_snapshot_bundle_id TEXT NOT NULL,
+          transport_peer_device_id TEXT NOT NULL,
+          manifest_json TEXT NOT NULL,
+          state TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(sync_space_id,snapshot_bundle_id)
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS sync_snapshot_stream_stage_space_updated_idx
+          ON sync_snapshot_stream_stage(sync_space_id,updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS sync_snapshot_stream_shard (
+          sync_space_id TEXT NOT NULL,
+          snapshot_bundle_id TEXT NOT NULL,
+          replication_lane_id TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          shard_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(sync_space_id,snapshot_bundle_id,replication_lane_id)
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS sync_snapshot_stream_shard_bundle_idx
+          ON sync_snapshot_stream_shard(sync_space_id,snapshot_bundle_id);
+      `)
+    }
+  },
+  {
+    version: 37,
+    up(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS sync_space_join_bootstrap (
+          sync_space_id TEXT NOT NULL,
+          local_account_id INTEGER NOT NULL,
+          completed_at INTEGER NOT NULL,
+          PRIMARY KEY(sync_space_id,local_account_id)
+        ) STRICT;
+      `)
     }
   }
 ]

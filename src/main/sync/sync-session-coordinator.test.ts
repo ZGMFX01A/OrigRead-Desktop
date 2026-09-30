@@ -133,6 +133,7 @@ describe('R10/R11/R12 anti-entropy session', () => {
       const runtimeCoordinator = new DesktopSyncRuntimeCoordinator(runtime, new SyncIdentityRepository(db),
         new DesktopSyncRollbackWitnessStore(new MemorySecretStore(), 'resume'))
       runtimeCoordinator.prepareSpace(1, 'space', 1)
+      const localDeviceId = runtime.findDeviceIdentity()!.deviceId
       runtime.upsertBinding({ ...runtime.findBinding(1)!, lifecycleState: 'STAGING' })
       db.prepare(`INSERT INTO sync_recovery_capsule(capsule_id,sync_space_id,target_snapshot_bundle_id,
         coverage_json,operation_ids_json,pending_outbox_ids_json,recovery_state_json,reason,created_at)
@@ -142,7 +143,7 @@ describe('R10/R11/R12 anti-entropy session', () => {
       const coordinator = new SyncSessionCoordinator(runtime, state, new DesktopOperationBuilder(runtime),
         new DesktopSyncOperationSigner(runtime, keys), new SyncApplyCoordinator(runtime, state),
         { activateAfterTail } as any)
-      await coordinator.run('space', new SyncMemoryHub().session('space', 'device'), { localAccountId: 1, resolvePeerKey: () => null })
+      await coordinator.run('space', new SyncMemoryHub().session('space', localDeviceId), { localAccountId: 1, resolvePeerKey: () => null })
       expect(activateAfterTail).toHaveBeenCalledWith(1, 'bundle', expect.any(Number), [])
     } finally { db.close() }
   })
@@ -153,6 +154,7 @@ describe('R10/R11/R12 anti-entropy session', () => {
       const runtime = new SyncRuntimeRepository(db)
       const state = new SyncStateRepository(db)
       const keys = new DesktopSyncDeviceSigningKeyStore(new MemorySecretStore())
+      runtime.replaceDeviceIdentity({ deviceId: 'device', witnessId: 'witness-device', createdAt: 1, updatedAt: 1 })
       const endpoint = new SyncMemoryHub().session('space', 'device')
       vi.spyOn(endpoint, 'getRemoteStateVector').mockResolvedValue({
         coverage: { received: {}, applied: {}, retained: {}, snapshot: { ARTICLE_STATE: { remote: 10 } }, stableGc: {} },
@@ -173,6 +175,7 @@ describe('R10/R11/R12 anti-entropy session', () => {
     try {
       const runtime = new SyncRuntimeRepository(db)
       const state = new SyncStateRepository(db)
+      runtime.replaceDeviceIdentity({ deviceId: 'device', witnessId: 'witness-device', createdAt: 1, updatedAt: 1 })
       const builder = new DesktopOperationBuilder(runtime)
       const signer = new DesktopSyncOperationSigner(runtime, new DesktopSyncDeviceSigningKeyStore(new MemorySecretStore()))
       const build = vi.spyOn(builder, 'buildPending')
@@ -516,6 +519,7 @@ describe('R10/R11/R12 anti-entropy session', () => {
       const witness = new DesktopSyncRollbackWitnessStore(new MemorySecretStore(), 'test-witness-baseline')
       const coordinator = new DesktopSyncRuntimeCoordinator(runtime, identity, witness)
       coordinator.prepareSpace(1, 'space-baseline', 1)
+      const localDeviceId = runtime.findDeviceIdentity()!.deviceId
 
       const builder = new DesktopOperationBuilder(runtime)
       const keys = new DesktopSyncDeviceSigningKeyStore(new MemorySecretStore())
@@ -545,7 +549,7 @@ describe('R10/R11/R12 anti-entropy session', () => {
       let baselineRequiredInjected = false
       const mockSession: any = {
         negotiateProtocolAndCapabilities: async () => ({
-          protocolVersion: 1, syncSpaceId: 'space-baseline', localDeviceId: 'dev-1', remoteDeviceId: 'server-1',
+          protocolVersion: 1, syncSpaceId: 'space-baseline', localDeviceId, remoteDeviceId: 'server-1',
           capabilities: { protocolVersions: [1], replicationLanes: ['CORE_META', 'ARTICLE_STATE', 'AUTH'], snapshotClasses: ['GC_BASELINE'], blobTransfer: true, maxOperationBatch: 500, maxBlobChunkBytes: 1024, supportsRangeResume: true }
         }),
         getRemoteStateVector: async () => ({
@@ -608,6 +612,7 @@ describe('R10/R11/R12 anti-entropy session', () => {
       const witness = new DesktopSyncRollbackWitnessStore(new MemorySecretStore(), 'test-witness-fail')
       const coordinator = new DesktopSyncRuntimeCoordinator(runtime, identity, witness)
       coordinator.prepareSpace(1, 'space-fail', 1)
+      const localDeviceId = runtime.findDeviceIdentity()!.deviceId
 
       const builder = new DesktopOperationBuilder(runtime)
       const keys = new DesktopSyncDeviceSigningKeyStore(new MemorySecretStore())
@@ -626,7 +631,7 @@ describe('R10/R11/R12 anti-entropy session', () => {
       let reversePushed = false
       const mockSession: any = {
         negotiateProtocolAndCapabilities: async () => ({
-          protocolVersion: 1, syncSpaceId: 'space-fail', localDeviceId: 'dev-1', remoteDeviceId: 'server-1',
+          protocolVersion: 1, syncSpaceId: 'space-fail', localDeviceId, remoteDeviceId: 'server-1',
           capabilities: { protocolVersions: [1], replicationLanes: ['CORE_META', 'ARTICLE_STATE', 'AUTH'], snapshotClasses: ['GC_BASELINE'], blobTransfer: true, maxOperationBatch: 500, maxBlobChunkBytes: 1024, supportsRangeResume: true }
         }),
         getRemoteStateVector: async () => ({
@@ -672,6 +677,7 @@ describe('R10/R11/R12 anti-entropy session', () => {
       const coordinator = new DesktopSyncRuntimeCoordinator(runtime, identity, witness)
       const allocator = new DesktopSyncOutboxAllocator(runtime, witness)
       coordinator.prepareSpace(1, 'space-drain', 1)
+      const localDeviceId = runtime.findDeviceIdentity()!.deviceId
       const context = coordinator.beginGenesisCapture(1, 'genesis-drain', 2)
 
       // 本地生成 25 条待构建 Outbox（批次大小限制为 10，需 3 批完全排空）
@@ -694,7 +700,7 @@ describe('R10/R11/R12 anti-entropy session', () => {
       let pushCallCount = 0
       const mockSession: any = {
         negotiateProtocolAndCapabilities: async () => ({
-          protocolVersion: 1, syncSpaceId: 'space-drain', localDeviceId: 'dev-1', remoteDeviceId: 'server-1',
+          protocolVersion: 1, syncSpaceId: 'space-drain', localDeviceId, remoteDeviceId: 'server-1',
           capabilities: { protocolVersions: [1], replicationLanes: ['CORE_META', 'ARTICLE_STATE', 'AUTH'], snapshotClasses: ['GC_BASELINE'], blobTransfer: true, maxOperationBatch: 10, maxBlobChunkBytes: 1024, supportsRangeResume: true }
         }),
         getRemoteStateVector: async () => ({

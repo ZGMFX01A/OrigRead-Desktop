@@ -1,0 +1,7 @@
+node_modules
+out
+dist
+.git
+.sync-blobs
+sync-server.db
+sync-server.db-*

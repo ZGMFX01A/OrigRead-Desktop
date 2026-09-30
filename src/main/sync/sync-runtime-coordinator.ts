@@ -285,9 +285,7 @@ export class DesktopSyncRuntimeCoordinator {
   }
 
   private observedGenesisBaselines(syncSpaceId: string): Record<string, string[]> {
-    const session = this.runtime.findLatestGenesisSession(syncSpaceId)
-    if (!session || !['SNAPSHOT_BUILT', 'TAIL_REPLAY', 'ACTIVE'].includes(session.stage)) return {}
-    return Object.fromEntries(['CORE_META', 'LIBRARY', 'ARTICLE_STATE', 'CONFIG', 'AI_HISTORY', 'AUTH'].map((lane) => [lane, [session.genesisBaselineId]]))
+    return this.runtime.observedGenesisBaselinesByLane(syncSpaceId)
   }
 
   private ensureDeviceIdentity(now: number): SyncDeviceIdentityRecord {

@@ -126,12 +126,27 @@ const api: OrigReadDesktopApi = Object.freeze({
     return () => ipcRenderer.removeListener(IPC_CHANNELS.syncRuntimeStateChanged, wrapped)
   },
   getSyncStatus: () => ipcRenderer.invoke(IPC_CHANNELS.getSyncStatus),
+  getSyncRunHistory: (limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.getSyncRunHistory, limit),
   activateSyncGenesis: () => ipcRenderer.invoke(IPC_CHANNELS.activateSyncGenesis),
   configureSyncEndpoint: (input: SyncEndpointInput) => ipcRenderer.invoke(IPC_CHANNELS.configureSyncEndpoint, input),
   removeSyncEndpoint: (endpointId: string) => ipcRenderer.invoke(IPC_CHANNELS.removeSyncEndpoint, endpointId),
   registerSyncPeer: (input: SyncPeerRegistration) => ipcRenderer.invoke(IPC_CHANNELS.registerSyncPeer, input),
   syncNow: (endpointId: string) => ipcRenderer.invoke(IPC_CHANNELS.syncNow, endpointId),
   discoverSyncPeers: (timeoutMs?: number) => ipcRenderer.invoke(IPC_CHANNELS.discoverSyncPeers, timeoutMs),
+  toggleLanSync: (enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.toggleLanSync, enabled),
+  initiateSyncPairing: (targetHost: string, targetPort: number, localBindAddress?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.initiateSyncPairing, targetHost, targetPort, localBindAddress),
+  confirmSyncPairing: (sessionId: string) => ipcRenderer.invoke(IPC_CHANNELS.confirmSyncPairing, sessionId),
+  cancelSyncPairing: (sessionId: string) => ipcRenderer.invoke(IPC_CHANNELS.cancelSyncPairing, sessionId),
+  listSyncTrustedDevices: () => ipcRenderer.invoke(IPC_CHANNELS.listSyncTrustedDevices),
+  revokeSyncTrustedDevice: (deviceId: string) => ipcRenderer.invoke(IPC_CHANNELS.revokeSyncTrustedDevice, deviceId),
+  connectManualSyncPeer: (urlOrHost: string) => ipcRenderer.invoke(IPC_CHANNELS.connectManualSyncPeer, urlOrHost),
+  getSyncDiagnostics: () => ipcRenderer.invoke(IPC_CHANNELS.getSyncDiagnostics),
+  onSyncPairingUpdated: (listener: (session: any) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, session: any): void => listener(session)
+    ipcRenderer.on(IPC_CHANNELS.syncPairingUpdated, wrapped)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.syncPairingUpdated, wrapped)
+  },
   getReaderContent: (articleId: string, preferFull?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.getReaderContent, articleId, preferFull),
   fetchFullContent: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.fetchFullContent, articleId),
   getAiSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getAiSettings),

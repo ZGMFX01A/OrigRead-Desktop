@@ -419,6 +419,61 @@ export class DesktopSyncBusinessApplier {
     )
   }
 
+  materializeArticleBlobOwnersFromLocal(
+    syncSpaceId: string,
+    manifest: SyncBlobManifest,
+    owners: ReadonlyArray<{
+      ownerEntityType: string
+      ownerEntitySyncId: string
+      ownerEntityGeneration: number
+      referenceKind: string
+    }>
+  ): void {
+    const articleOwners = owners.filter((owner) =>
+      owner.ownerEntityType === 'article' &&
+      owner.referenceKind === SYNC_ARTICLE_FULL_CONTENT_REFERENCE_KIND &&
+      this.blobs.isCurrentReference(
+        syncSpaceId,
+        owner.ownerEntityType,
+        owner.ownerEntitySyncId,
+        owner.ownerEntityGeneration,
+        owner.referenceKind,
+        manifest.hash
+      )
+    )
+    if (!articleOwners.length) return
+    const bytes = this.localBlobStore?.readVerified(manifest.hash) ?? null
+    if (!bytes || bytes.byteLength !== manifest.totalBytes) {
+      this.blobs.markMissing(manifest.hash)
+      return
+    }
+    const binding = this.database.prepare(
+      'SELECT local_account_id FROM sync_local_space_binding WHERE sync_space_id=? LIMIT 1'
+    ).get(syncSpaceId) as { local_account_id: number } | undefined
+    if (!binding) throw new SyncApplyDeferredError('Missing local Space binding for Blob refill')
+    const content = Buffer.from(bytes).toString('utf8')
+    this.blobs.markReadyVerified(manifest.hash, bytes.byteLength)
+    for (const owner of articleOwners) {
+      if (this.localEviction.isEvicted(
+        syncSpaceId,
+        'article',
+        owner.ownerEntitySyncId,
+        owner.ownerEntityGeneration,
+        SYNC_ARTICLE_FULL_CONTENT_REFERENCE_KIND
+      )) continue
+      const mapping = this.aliases.resolveMapping(
+        syncSpaceId,
+        'article',
+        owner.ownerEntitySyncId,
+        owner.ownerEntityGeneration
+      )
+      if (!mapping) throw new SyncApplyDeferredError('Missing Article mapping for Blob refill')
+      this.database.prepare(
+        'UPDATE articles SET full_content_html=?,updated_at=? WHERE id=? AND account_id=?'
+      ).run(content, Date.now(), mapping.localId, binding.local_account_id)
+    }
+  }
+
   /**
    * 应用远端同步操作至本地 SQLite 数据库。
    *

@@ -28,9 +28,10 @@ import type {
   McpRemoteSettings,
   McpToolCatalogSnapshot
 } from '../../shared/mcp'
+import { SyncSettingsPanel } from './SyncSettingsPanel'
 
-export type SettingsPage = 'general' | 'accounts' | 'translation' | 'ai' | 'filters' | 'jsonRules' | 'websiteRules' | 'rsshub' | 'backup' | 'about' | 'update'
-const SETTINGS_PAGE_ORDER: SettingsPage[] = ['general', 'accounts', 'ai', 'translation', 'filters', 'jsonRules', 'websiteRules', 'rsshub', 'backup', 'about', 'update']
+export type SettingsPage = 'general' | 'accounts' | 'sync' | 'translation' | 'ai' | 'filters' | 'jsonRules' | 'websiteRules' | 'rsshub' | 'backup' | 'about' | 'update'
+const SETTINGS_PAGE_ORDER: SettingsPage[] = ['general', 'accounts', 'sync', 'ai', 'translation', 'filters', 'jsonRules', 'websiteRules', 'rsshub', 'backup', 'about', 'update']
 const INTERNAL_ITHOME_RULE_ID = 'ithome-home'
 const DESKTOP_REPOSITORY_URL = 'https://github.com/ZGMFX01A/OrigRead-Desktop'
 const ANDROID_REPOSITORY_URL = 'https://github.com/ZGMFX01A/OrigRead'
@@ -75,6 +76,7 @@ export function SettingsPanel({ settings, appInfo, syncState, initialPage = 'gen
         <span className="settings-nav-active-indicator" aria-hidden="true" style={{ transform: `translateY(${SETTINGS_PAGE_ORDER.indexOf(page) * 40}px)` }}/>
         <SettingsNavButton active={page==='general'} icon={<Globe2 size={16}/>} label={t('settingsGeneral')} onClick={()=>navigate('general')}/>
         <SettingsNavButton active={page==='accounts'} icon={<UserRound size={16}/>} label={t('accountsTitle')} onClick={()=>navigate('accounts')}/>
+        <SettingsNavButton active={page==='sync'} icon={<RadioTower size={16}/>} label={t('origreadSync', '多端同步')} onClick={()=>navigate('sync')}/>
         <SettingsNavButton active={page==='ai'} icon={<Bot size={16}/>} label={t('aiSettingsTitle')} onClick={()=>navigate('ai')}/>
         <SettingsNavButton active={page==='translation'} icon={<Languages size={16}/>} label={t('translationSettingsTitle')} onClick={()=>navigate('translation')}/>
         <SettingsNavButton active={page==='filters'} icon={<Filter size={16}/>} label={t('articleFilters')} onClick={()=>navigate('filters')}/>
@@ -92,6 +94,7 @@ export function SettingsPanel({ settings, appInfo, syncState, initialPage = 'gen
       <div key={page} className={`settings-page-motion settings-page-motion-${pageDirection}`} data-settings-page={page}>
         {page==='general' && <GeneralSettings settings={settings} onChange={onChange}/>}
         {page==='accounts' && <AccountsSettingsPage syncState={syncState} onChanged={onAccountChanged}/>}
+        {page==='sync' && <SyncSettingsPanel onStatusChange={onAccountChanged}/>}
         {page==='update' && <UpdateSettingsPage settings={settings} appInfo={appInfo} onChange={onChange}/>}
         {page==='translation' && <TranslationSettingsPage/>}
         {page==='ai' && <AiSettingsPage onUnsavedChange={setAiUnsaved}/>}

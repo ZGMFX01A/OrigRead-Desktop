@@ -1,0 +1,11 @@
+node_modules
+out
+release
+.git
+.idea
+.sync-blobs
+chatbox-main
+test-results
+data
+*.log
+.env*

@@ -1,6 +1,8 @@
 import {
   createPrivateKey,
   createPublicKey,
+  createSign,
+  createVerify,
   generateKeyPairSync,
   sign as cryptoSign,
   verify as cryptoVerify
@@ -31,6 +33,24 @@ export class DesktopSyncDeviceSigningKeyStore {
     return cryptoSign('sha256', Buffer.from(material, 'utf8'), privateKey).toString('base64')
   }
 
+  signChunksBase64(deviceId: string, chunks: Iterable<string | Uint8Array>): string {
+    const signer = createSign('sha256')
+    for (const chunk of chunks) signer.update(chunk)
+    return signer.sign(createPrivateKey(this.ensurePrivateKeyPem(deviceId))).toString('base64')
+  }
+
+  /**
+   * Returns the existing safeStorage-backed P-256 identity pair for the LAN TLS certificate.
+   * The private PEM remains in the main process and is never returned over IPC or written to disk.
+   */
+  lanTlsKeyPairPem(deviceId: string): { privateKeyPem: string; publicKeyPem: string } {
+    const privateKey = createPrivateKey(this.ensurePrivateKeyPem(deviceId))
+    return {
+      privateKeyPem: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+      publicKeyPem: createPublicKey(privateKey).export({ type: 'spki', format: 'pem' }).toString()
+    }
+  }
+
   verifyBase64(publicKeySpkiBase64: string, material: string, signatureBase64: string): boolean {
     try {
       const publicKey = createPublicKey({
@@ -44,6 +64,25 @@ export class DesktopSyncDeviceSigningKeyStore {
         publicKey,
         Buffer.from(signatureBase64, 'base64')
       )
+    } catch {
+      return false
+    }
+  }
+
+  verifyChunksBase64(
+    publicKeySpkiBase64: string,
+    chunks: Iterable<string | Uint8Array>,
+    signatureBase64: string
+  ): boolean {
+    try {
+      const verifier = createVerify('sha256')
+      for (const chunk of chunks) verifier.update(chunk)
+      const publicKey = createPublicKey({
+        key: Buffer.from(publicKeySpkiBase64, 'base64'),
+        format: 'der',
+        type: 'spki'
+      })
+      return verifier.verify(publicKey, Buffer.from(signatureBase64, 'base64'))
     } catch {
       return false
     }

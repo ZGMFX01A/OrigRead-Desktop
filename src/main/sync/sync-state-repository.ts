@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readSync, statSync, writeSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
@@ -51,6 +51,20 @@ export interface SyncPeerIdentityRecord {
   updatedAt: number
 }
 
+export interface SyncTrustedDeviceRecord {
+  id: string
+  syncSpaceId: string
+  deviceId: string
+  staticPublicKey: string
+  fingerprint: string
+  displayName: string
+  platform: string
+  trustState: 'TRUSTED' | 'REVOKED' | 'PROVISIONAL'
+  pairedAt: number
+  lastSeenAt: number
+  authEpoch: number
+}
+
 export interface SyncEndpointConfigRecord {
   endpointId: string
   syncSpaceId: string
@@ -58,6 +72,7 @@ export interface SyncEndpointConfigRecord {
   url: string
   displayName: string
   enabled: boolean
+  localBindAddress?: string | null
   createdAt: number
   updatedAt: number
   lastError: string | null
@@ -283,14 +298,100 @@ export class SyncStateRepository {
     } : null
   }
 
+  upsertTrustedDevice(record: SyncTrustedDeviceRecord): void {
+    this.database.prepare(`
+      INSERT INTO sync_trusted_device(id,sync_space_id,device_id,static_public_key,fingerprint,display_name,platform,trust_state,paired_at,last_seen_at,auth_epoch)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(sync_space_id,device_id) DO UPDATE SET
+        static_public_key=excluded.static_public_key,
+        fingerprint=excluded.fingerprint,
+        display_name=excluded.display_name,
+        platform=excluded.platform,
+        trust_state=excluded.trust_state,
+        paired_at=excluded.paired_at,
+        last_seen_at=excluded.last_seen_at,
+        auth_epoch=excluded.auth_epoch
+    `).run(
+      record.id, record.syncSpaceId, record.deviceId, record.staticPublicKey, record.fingerprint,
+      record.displayName, record.platform, record.trustState, record.pairedAt, record.lastSeenAt, record.authEpoch
+    )
+  }
+
+  listTrustedDevices(syncSpaceId: string): SyncTrustedDeviceRecord[] {
+    const rows = this.database.prepare('SELECT * FROM sync_trusted_device WHERE sync_space_id=? ORDER BY last_seen_at DESC')
+      .all(syncSpaceId) as unknown as Array<Record<string, unknown>>
+    return rows.map((row) => ({
+      id: String(row.id),
+      syncSpaceId: String(row.sync_space_id),
+      deviceId: String(row.device_id),
+      staticPublicKey: String(row.static_public_key),
+      fingerprint: String(row.fingerprint),
+      displayName: String(row.display_name),
+      platform: String(row.platform),
+      trustState: String(row.trust_state) as SyncTrustedDeviceRecord['trustState'],
+      pairedAt: Number(row.paired_at),
+      lastSeenAt: Number(row.last_seen_at),
+      authEpoch: Number(row.auth_epoch)
+    }))
+  }
+
+  findTrustedDevice(syncSpaceId: string, deviceId: string): SyncTrustedDeviceRecord | null {
+    const row = this.database.prepare('SELECT * FROM sync_trusted_device WHERE sync_space_id=? AND device_id=? LIMIT 1')
+      .get(syncSpaceId, deviceId) as Record<string, unknown> | undefined
+    return row ? {
+      id: String(row.id),
+      syncSpaceId: String(row.sync_space_id),
+      deviceId: String(row.device_id),
+      staticPublicKey: String(row.static_public_key),
+      fingerprint: String(row.fingerprint),
+      displayName: String(row.display_name),
+      platform: String(row.platform),
+      trustState: String(row.trust_state) as SyncTrustedDeviceRecord['trustState'],
+      pairedAt: Number(row.paired_at),
+      lastSeenAt: Number(row.last_seen_at),
+      authEpoch: Number(row.auth_epoch)
+    } : null
+  }
+
+  updateTrustedDeviceState(syncSpaceId: string, deviceId: string, state: 'TRUSTED' | 'REVOKED' | 'PROVISIONAL', authEpoch: number, lastSeenAt: number): void {
+    this.database.prepare(`
+      UPDATE sync_trusted_device
+      SET trust_state=?, auth_epoch=?, last_seen_at=?
+      WHERE sync_space_id=? AND device_id=?
+    `).run(state, authEpoch, lastSeenAt, syncSpaceId, deviceId)
+  }
+
+  updateTrustedDeviceLastSeen(syncSpaceId: string, deviceId: string, lastSeenAt: number): void {
+    this.database.prepare('UPDATE sync_trusted_device SET last_seen_at=? WHERE sync_space_id=? AND device_id=?')
+      .run(lastSeenAt, syncSpaceId, deviceId)
+  }
+
+  deleteTrustedDevice(syncSpaceId: string, deviceId: string): void {
+    this.database.prepare('DELETE FROM sync_trusted_device WHERE sync_space_id=? AND device_id=?')
+      .run(syncSpaceId, deviceId)
+  }
+
+  recordPersistedAck(ack: { syncSpaceId: string; hash: string; replicaId: string; totalBytes: number; persistedAt: number }): void {
+    this.database.prepare(`
+      INSERT INTO sync_blob_persisted_ack(sync_space_id,hash,replica_id,total_bytes,persisted_at)
+      VALUES(?,?,?,?,?)
+      ON CONFLICT(sync_space_id,hash,replica_id) DO UPDATE SET
+        total_bytes=excluded.total_bytes,persisted_at=MAX(sync_blob_persisted_ack.persisted_at,excluded.persisted_at)
+    `).run(ack.syncSpaceId, ack.hash, ack.replicaId, ack.totalBytes, ack.persistedAt)
+  }
+
   upsertEndpoint(value: SyncEndpointConfigRecord): void {
     this.database.prepare(`
-      INSERT INTO sync_endpoint_config(endpoint_id,sync_space_id,kind,url,display_name,enabled,created_at,updated_at,last_error)
-      VALUES(?,?,?,?,?,?,?,?,?)
+      INSERT INTO sync_endpoint_config(endpoint_id,sync_space_id,kind,url,display_name,enabled,local_bind_address,created_at,updated_at,last_error)
+      VALUES(?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(endpoint_id) DO UPDATE SET
         sync_space_id=excluded.sync_space_id,kind=excluded.kind,url=excluded.url,display_name=excluded.display_name,
-        enabled=excluded.enabled,updated_at=excluded.updated_at,last_error=excluded.last_error
-    `).run(value.endpointId, value.syncSpaceId, value.kind, value.url, value.displayName, value.enabled ? 1 : 0, value.createdAt, value.updatedAt, value.lastError)
+        enabled=excluded.enabled,local_bind_address=excluded.local_bind_address,
+        updated_at=excluded.updated_at,last_error=excluded.last_error
+    `).run(
+      value.endpointId, value.syncSpaceId, value.kind, value.url, value.displayName, value.enabled ? 1 : 0,
+      value.localBindAddress ?? null, value.createdAt, value.updatedAt, value.lastError
+    )
   }
 
   listEndpoints(syncSpaceId: string): SyncEndpointConfigRecord[] {
@@ -300,6 +401,7 @@ export class SyncStateRepository {
       endpointId: String(row.endpoint_id), syncSpaceId: String(row.sync_space_id),
       kind: String(row.kind) as SyncEndpointConfigRecord['kind'], url: String(row.url),
       displayName: String(row.display_name), enabled: Number(row.enabled) === 1,
+      localBindAddress: row.local_bind_address == null ? null : String(row.local_bind_address),
       createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
       lastError: row.last_error == null ? null : String(row.last_error)
     }))
@@ -311,6 +413,7 @@ export class SyncStateRepository {
       endpointId: String(row.endpoint_id), syncSpaceId: String(row.sync_space_id),
       kind: String(row.kind) as SyncEndpointConfigRecord['kind'], url: String(row.url), displayName: String(row.display_name),
       enabled: Number(row.enabled) === 1, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
+      localBindAddress: row.local_bind_address == null ? null : String(row.local_bind_address),
       lastError: row.last_error == null ? null : String(row.last_error)
     } : null
   }
@@ -488,6 +591,10 @@ export class SyncStateRepository {
     return row?.cursor_json ? JSON.parse(row.cursor_json) as SyncCursor : null
   }
 
+  deleteCursor(endpointId: string): void {
+    this.database.prepare('DELETE FROM sync_peer_cursor WHERE endpoint_id=?').run(endpointId)
+  }
+
   upsertBlobManifest(value: SyncBlobManifest, now = Date.now()): void {
     this.database.prepare(`
       INSERT INTO sync_blob_manifest(hash,total_bytes,media_type,durability,reference_count,persisted_at,last_accessed_at)
@@ -556,25 +663,61 @@ export class SyncBlobStore {
     if (!/^[a-f0-9]{64}$/.test(chunk.hash)) throw new Error('Blob hash must be a SHA-256 hex digest')
     if (!Number.isSafeInteger(chunk.offset) || chunk.offset < 0 || !Number.isSafeInteger(chunk.totalBytes) || chunk.totalBytes < 0) throw new Error('Invalid Blob range')
     const path = join(this.root, chunk.hash)
-    const current = existsSync(path) ? readFileSync(path) : Buffer.alloc(0)
-    if (chunk.offset !== current.length) throw new Error(`Blob offset mismatch: expected ${current.length}, got ${chunk.offset}`)
-    const next = Buffer.concat([current, Buffer.from(chunk.bytes)])
-    if (next.length > chunk.totalBytes) throw new Error('Blob exceeds declared size')
-    writeFileSync(path, next)
+    const currentLength = existsSync(path) ? statSync(path).size : 0
+    if (chunk.offset !== currentLength) throw new Error(`Blob offset mismatch: expected ${currentLength}, got ${chunk.offset}`)
+    const nextLength = chunk.offset + chunk.bytes.byteLength
+    if (nextLength > chunk.totalBytes) throw new Error('Blob exceeds declared size')
+    const fd = openSync(path, existsSync(path) ? 'r+' : 'w+')
+    try {
+      if (chunk.bytes.byteLength > 0) {
+        const bytes = Buffer.from(chunk.bytes)
+        const written = writeSync(fd, bytes, 0, bytes.byteLength, chunk.offset)
+        if (written !== bytes.byteLength) throw new Error('Blob chunk write was incomplete')
+      }
+    } finally {
+      closeSync(fd)
+    }
     if (chunk.isFinal) {
-      if (next.length !== chunk.totalBytes) throw new Error('Final Blob chunk has an incomplete size')
-      if (createHash('sha256').update(next).digest('hex') !== chunk.hash) throw new Error('Blob hash mismatch')
-      this.state.upsertBlobManifest({ hash: chunk.hash, totalBytes: next.length, mediaType: null, durability: 'SYNC_DURABLE', referenceCount: 0 }, now)
+      if (nextLength !== chunk.totalBytes) throw new Error('Final Blob chunk has an incomplete size')
+      if (sha256FileHex(path) !== chunk.hash) throw new Error('Blob hash mismatch')
+      this.state.upsertBlobManifest({ hash: chunk.hash, totalBytes: nextLength, mediaType: null, durability: 'SYNC_DURABLE', referenceCount: 0 }, now)
     }
   }
 
   getChunk(hash: string, offset = 0, length?: number): { hash: string; offset: number; totalBytes: number; bytes: Uint8Array; isFinal: boolean } {
     const path = join(this.root, hash)
     if (!existsSync(path)) throw new Error(`BLOB_MISSING ${hash}`)
-    const bytes = readFileSync(path)
-    const selected = bytes.subarray(offset, length == null ? bytes.length : Math.min(bytes.length, offset + length))
-    return { hash, offset, totalBytes: bytes.length, bytes: selected, isFinal: offset + selected.length >= bytes.length }
+    const totalBytes = statSync(path).size
+    const end = length == null ? totalBytes : Math.min(totalBytes, offset + Math.max(0, length))
+    if (offset > totalBytes) throw new Error(`Blob offset ${offset} is beyond durable bytes ${totalBytes}`)
+    const selected = Buffer.allocUnsafe(Math.max(0, end - offset))
+    if (selected.byteLength > 0) {
+      const fd = openSync(path, 'r')
+      try {
+        const read = readSync(fd, selected, 0, selected.byteLength, offset)
+        if (read !== selected.byteLength) throw new Error('Blob range read was incomplete')
+      } finally {
+        closeSync(fd)
+      }
+    }
+    return { hash, offset, totalBytes, bytes: selected, isFinal: end >= totalBytes }
   }
+}
+
+function sha256FileHex(path: string): string {
+  const hash = createHash('sha256')
+  const fd = openSync(path, 'r')
+  try {
+    const buffer = Buffer.allocUnsafe(64 * 1024)
+    while (true) {
+      const read = readSync(fd, buffer, 0, buffer.byteLength, null)
+      if (read <= 0) break
+      hash.update(buffer.subarray(0, read))
+    }
+  } finally {
+    closeSync(fd)
+  }
+  return hash.digest('hex')
 }
 
 function toInbox(row: Record<string, unknown>): SyncInboxRecord {

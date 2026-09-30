@@ -1,0 +1,24 @@
+services:
+  origread-sync:
+    build:
+      context: ..
+      dockerfile: sync-server/Dockerfile
+    restart: unless-stopped
+    environment:
+      SYNC_SERVER_ADMIN_TOKEN: ${SYNC_SERVER_ADMIN_TOKEN:?Set SYNC_SERVER_ADMIN_TOKEN in .env}
+      SYNC_SERVER_HOST: 0.0.0.0
+      SYNC_SERVER_PORT: 8787
+      SYNC_SERVER_DB: /data/sync-server.db
+      SYNC_SERVER_BLOBS: /data/blobs
+    ports:
+      - "${SYNC_SERVER_PORT:-8787}:8787"
+    volumes:
+      - origread_sync_data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  origread_sync_data:

@@ -138,7 +138,13 @@ export class SyncRuntimeRepository {
   }
 
   deleteBinding(localAccountId: number): void {
+    this.clearSpaceJoinBootstrap(localAccountId)
     this.database.prepare('DELETE FROM sync_local_space_binding WHERE local_account_id=?')
+      .run(localAccountId)
+  }
+
+  clearSpaceJoinBootstrap(localAccountId: number): void {
+    this.database.prepare('DELETE FROM sync_space_join_bootstrap WHERE local_account_id=?')
       .run(localAccountId)
   }
 
@@ -366,6 +372,35 @@ export class SyncRuntimeRepository {
     return row ? toGenesisSession(row) : null
   }
 
+  observedGenesisBaselinesByLane(syncSpaceId: string): Record<string, string[]> {
+    const observed = new Map<string, Set<string>>()
+    const latest = this.findLatestGenesisSession(syncSpaceId)
+    if (latest && ['SNAPSHOT_BUILT', 'TAIL_REPLAY', 'ACTIVE'].includes(latest.stage)) {
+      for (const lane of ['CORE_META', 'LIBRARY', 'ARTICLE_STATE', 'CONFIG', 'AI_HISTORY', 'AUTH']) {
+        observed.set(lane, new Set([latest.genesisBaselineId]))
+      }
+    }
+    const rows = this.database.prepare(`
+      SELECT replication_lane_id,genesis_coverage_json
+      FROM sync_snapshot_shard
+      WHERE sync_space_id=?
+    `).all(syncSpaceId) as unknown as Array<Record<string, unknown>>
+    for (const row of rows) {
+      const lane = String(row.replication_lane_id)
+      let baselines: unknown = []
+      try { baselines = JSON.parse(String(row.genesis_coverage_json ?? '[]')) } catch { baselines = [] }
+      if (!Array.isArray(baselines)) continue
+      const values = observed.get(lane) ?? new Set<string>()
+      for (const baseline of baselines) if (typeof baseline === 'string' && baseline) values.add(baseline)
+      if (values.size) observed.set(lane, values)
+    }
+    return Object.fromEntries(
+      [...observed.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([lane, values]) => [lane, [...values].sort()])
+    )
+  }
+
   upsertSnapshotBundle(value: SyncSnapshotBundleRecord): void {
     this.database.prepare(`
       INSERT INTO sync_snapshot_bundle(
@@ -400,6 +435,38 @@ export class SyncRuntimeRepository {
     const row = this.database.prepare(
       'SELECT * FROM sync_snapshot_bundle WHERE snapshot_bundle_id=? LIMIT 1'
     ).get(snapshotBundleId) as Record<string, unknown> | undefined
+    return row ? toSnapshotBundle(row) : null
+  }
+
+  findLatestSnapshotBundle(
+    syncSpaceId: string,
+    snapshotClass?: SyncSnapshotBundleRecord['snapshotClass']
+  ): SyncSnapshotBundleRecord | null {
+    const row = snapshotClass
+      ? this.database.prepare(
+          'SELECT * FROM sync_snapshot_bundle WHERE sync_space_id=? AND snapshot_class=? ' +
+          'ORDER BY created_at DESC,snapshot_bundle_id DESC LIMIT 1'
+        ).get(syncSpaceId, snapshotClass) as Record<string, unknown> | undefined
+      : this.database.prepare(
+          'SELECT * FROM sync_snapshot_bundle WHERE sync_space_id=? ' +
+          'ORDER BY created_at DESC,snapshot_bundle_id DESC LIMIT 1'
+        ).get(syncSpaceId) as Record<string, unknown> | undefined
+    return row ? toSnapshotBundle(row) : null
+  }
+
+  findLatestExportableSnapshotBundle(
+    syncSpaceId: string,
+    snapshotClass?: SyncSnapshotBundleRecord['snapshotClass']
+  ): SyncSnapshotBundleRecord | null {
+    const classClause = snapshotClass ? 'AND b.snapshot_class=?' : ''
+    const sql =
+      'SELECT b.* FROM sync_snapshot_bundle b ' +
+      'INNER JOIN sync_genesis_session g ON g.genesis_session_id=b.genesis_session_id ' +
+      'WHERE b.sync_space_id=? ' + classClause +
+      ' ORDER BY b.created_at DESC,b.snapshot_bundle_id DESC LIMIT 1'
+    const row = (snapshotClass
+      ? this.database.prepare(sql).get(syncSpaceId, snapshotClass)
+      : this.database.prepare(sql).get(syncSpaceId)) as Record<string, unknown> | undefined
     return row ? toSnapshotBundle(row) : null
   }
 
@@ -446,6 +513,176 @@ export class SyncRuntimeRepository {
       ORDER BY replication_lane_id ASC
     `).all(snapshotBundleId) as unknown as Array<Record<string, unknown>>
     return rows.map(toSnapshotShard)
+  }
+
+  listSnapshotShardDescriptors(snapshotBundleId: string): Array<{
+    replicationLaneId: SyncReplicationLane
+    frontierJson: string
+    contentHash: string
+  }> {
+    const rows = this.database.prepare(`
+      SELECT replication_lane_id,frontier_json,content_hash
+      FROM sync_snapshot_shard
+      WHERE snapshot_bundle_id=?
+      ORDER BY replication_lane_id ASC
+    `).all(snapshotBundleId) as unknown as Array<Record<string, unknown>>
+    return rows.map((row) => ({
+      replicationLaneId: String(row.replication_lane_id) as SyncReplicationLane,
+      frontierJson: String(row.frontier_json),
+      contentHash: String(row.content_hash)
+    }))
+  }
+
+  findSnapshotShard(snapshotBundleId: string, lane: SyncReplicationLane | string): SyncSnapshotShardRecord | null {
+    const row = this.database.prepare(`
+      SELECT * FROM sync_snapshot_shard
+      WHERE snapshot_bundle_id=? AND replication_lane_id=?
+      LIMIT 1
+    `).get(snapshotBundleId, lane) as Record<string, unknown> | undefined
+    return row ? toSnapshotShard(row) : null
+  }
+
+  upsertSnapshotStreamStage(value: {
+    syncSpaceId: string
+    snapshotBundleId: string
+    sourceSnapshotBundleId: string
+    transportPeerDeviceId: string
+    manifestJson: string
+    state: string
+    createdAt: number
+    updatedAt: number
+  }): void {
+    this.database.prepare(`
+      INSERT INTO sync_snapshot_stream_stage(
+        sync_space_id,snapshot_bundle_id,source_snapshot_bundle_id,transport_peer_device_id,
+        manifest_json,state,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?)
+      ON CONFLICT(sync_space_id,snapshot_bundle_id) DO UPDATE SET
+        source_snapshot_bundle_id=excluded.source_snapshot_bundle_id,
+        transport_peer_device_id=excluded.transport_peer_device_id,
+        manifest_json=excluded.manifest_json,
+        state=excluded.state,
+        updated_at=excluded.updated_at
+    `).run(
+      value.syncSpaceId,
+      value.snapshotBundleId,
+      value.sourceSnapshotBundleId,
+      value.transportPeerDeviceId,
+      value.manifestJson,
+      value.state,
+      value.createdAt,
+      value.updatedAt
+    )
+  }
+
+  findSnapshotStreamStage(syncSpaceId: string, snapshotBundleId: string): {
+    syncSpaceId: string
+    snapshotBundleId: string
+    sourceSnapshotBundleId: string
+    transportPeerDeviceId: string
+    manifestJson: string
+    state: string
+    createdAt: number
+    updatedAt: number
+  } | null {
+    const row = this.database.prepare(`
+      SELECT * FROM sync_snapshot_stream_stage
+      WHERE sync_space_id=? AND snapshot_bundle_id=?
+      LIMIT 1
+    `).get(syncSpaceId, snapshotBundleId) as Record<string, unknown> | undefined
+    if (!row) return null
+    return {
+      syncSpaceId: String(row.sync_space_id),
+      snapshotBundleId: String(row.snapshot_bundle_id),
+      sourceSnapshotBundleId: String(row.source_snapshot_bundle_id),
+      transportPeerDeviceId: String(row.transport_peer_device_id),
+      manifestJson: String(row.manifest_json),
+      state: String(row.state),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at)
+    }
+  }
+
+  upsertSnapshotStreamShard(value: {
+    syncSpaceId: string
+    snapshotBundleId: string
+    replicationLaneId: string
+    contentHash: string
+    shardJson: string
+    updatedAt: number
+  }): void {
+    this.database.prepare(`
+      INSERT INTO sync_snapshot_stream_shard(
+        sync_space_id,snapshot_bundle_id,replication_lane_id,content_hash,shard_json,updated_at
+      ) VALUES(?,?,?,?,?,?)
+      ON CONFLICT(sync_space_id,snapshot_bundle_id,replication_lane_id) DO UPDATE SET
+        content_hash=excluded.content_hash,
+        shard_json=excluded.shard_json,
+        updated_at=excluded.updated_at
+    `).run(
+      value.syncSpaceId,
+      value.snapshotBundleId,
+      value.replicationLaneId,
+      value.contentHash,
+      value.shardJson,
+      value.updatedAt
+    )
+  }
+
+  findSnapshotStreamShard(syncSpaceId: string, snapshotBundleId: string, lane: string): {
+    contentHash: string
+    shardJson: string
+    updatedAt: number
+  } | null {
+    const row = this.database.prepare(`
+      SELECT content_hash,shard_json,updated_at
+      FROM sync_snapshot_stream_shard
+      WHERE sync_space_id=? AND snapshot_bundle_id=? AND replication_lane_id=?
+      LIMIT 1
+    `).get(syncSpaceId, snapshotBundleId, lane) as Record<string, unknown> | undefined
+    return row
+      ? {
+          contentHash: String(row.content_hash),
+          shardJson: String(row.shard_json),
+          updatedAt: Number(row.updated_at)
+        }
+      : null
+  }
+
+  countSnapshotStreamShards(syncSpaceId: string, snapshotBundleId: string): number {
+    const row = this.database.prepare(`
+      SELECT COUNT(*) AS count
+      FROM sync_snapshot_stream_shard
+      WHERE sync_space_id=? AND snapshot_bundle_id=?
+    `).get(syncSpaceId, snapshotBundleId) as { count: number | bigint }
+    return Number(row.count)
+  }
+
+  deleteSnapshotStreamStage(syncSpaceId: string, snapshotBundleId: string): void {
+    this.database.prepare(
+      'DELETE FROM sync_snapshot_stream_shard WHERE sync_space_id=? AND snapshot_bundle_id=?'
+    ).run(syncSpaceId, snapshotBundleId)
+    this.database.prepare(
+      'DELETE FROM sync_snapshot_stream_stage WHERE sync_space_id=? AND snapshot_bundle_id=?'
+    ).run(syncSpaceId, snapshotBundleId)
+  }
+
+  deleteExpiredSnapshotStreamStages(cutoff: number): number {
+    return this.transaction(() => {
+      this.database.prepare(`
+        DELETE FROM sync_snapshot_stream_shard
+        WHERE EXISTS (
+          SELECT 1 FROM sync_snapshot_stream_stage s
+          WHERE s.sync_space_id = sync_snapshot_stream_shard.sync_space_id
+            AND s.snapshot_bundle_id = sync_snapshot_stream_shard.snapshot_bundle_id
+            AND s.updated_at < ?
+        )
+      `).run(cutoff)
+      const result = this.database.prepare(
+        'DELETE FROM sync_snapshot_stream_stage WHERE updated_at < ?'
+      ).run(cutoff)
+      return Number(result.changes)
+    })
   }
 
   upsertGenesisOperationCoverage(operationId: string, genesisSessionId: string, includedAt: number): void {
@@ -530,6 +767,25 @@ export class SyncRuntimeRepository {
       WHERE sync_space_id=?
       ORDER BY replication_lane_id,actor_incarnation_id,sequence
     `).all(syncSpaceId) as unknown as Array<Record<string, unknown>>
+    return rows.map(toOperation)
+  }
+
+  listRelayRange(
+    syncSpaceId: string,
+    actorIncarnationId: string,
+    replicationLaneId: string,
+    fromSequence: number,
+    toSequence: number,
+    limit = 500
+  ): SyncOperationRecord[] {
+    const rows = this.database.prepare(`
+      SELECT * FROM sync_operation_log
+      WHERE sync_space_id=? AND actor_incarnation_id=? AND replication_lane_id=?
+        AND sequence >= ? AND sequence <= ?
+        AND NOT EXISTS (SELECT 1 FROM sync_inbox_operation inbox WHERE inbox.operation_id=sync_operation_log.operation_id AND inbox.state='REJECTED')
+      ORDER BY sequence ASC
+      LIMIT ?
+    `).all(syncSpaceId, actorIncarnationId, replicationLaneId, fromSequence, toSequence, limit) as unknown as Array<Record<string, unknown>>
     return rows.map(toOperation)
   }
 

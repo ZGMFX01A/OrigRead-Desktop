@@ -24,7 +24,8 @@ import { DesktopSyncLocalBlobStore } from './sync-local-blob-store'
 import { DesktopSyncLocalEvictionService } from './sync-alias-protocol'
 
 export interface LibrarySyncMutationCapture {
-  captureLibraryMutation?<T>(accountId: number, mutate: () => T): T
+  captureLibraryMutation?<T>(accountId: number, mutate: () => T, forceEmitCurrentState?: boolean): T
+  bootstrapCurrentLibraryState?(accountId: number): boolean
   captureFilterRulesMutation?<T>(
     accountId: number,
     readRules: () => ArticleFilterRule[],
@@ -118,7 +119,28 @@ export class DesktopLibrarySyncMutationCapture implements LibrarySyncMutationCap
     this.localEviction = new DesktopSyncLocalEvictionService(database)
   }
 
-  captureLibraryMutation<T>(accountId: number, mutate: () => T): T {
+  bootstrapCurrentLibraryState(accountId: number): boolean {
+    const context = this.coordinator.currentWritableContext(accountId)
+    if (!context) return false
+    const completed = this.database.prepare(`
+      SELECT 1 AS present
+      FROM sync_space_join_bootstrap
+      WHERE sync_space_id=? AND local_account_id=?
+      LIMIT 1
+    `).get(context.syncSpaceId, accountId) as { present: number } | undefined
+    if (completed) return false
+
+    this.captureLibraryMutation(accountId, () => {
+      this.database.prepare(`
+        INSERT INTO sync_space_join_bootstrap(sync_space_id,local_account_id,completed_at)
+        VALUES(?,?,?)
+        ON CONFLICT(sync_space_id,local_account_id) DO UPDATE SET completed_at=excluded.completed_at
+      `).run(context.syncSpaceId, accountId, Date.now())
+    }, true)
+    return true
+  }
+
+  captureLibraryMutation<T>(accountId: number, mutate: () => T, forceEmitCurrentState = false): T {
     let context = this.coordinator.currentWritableContext(accountId)
     if (!context) return mutate()
     type LibraryRow = {
@@ -206,7 +228,7 @@ export class DesktopLibrarySyncMutationCapture implements LibrarySyncMutationCap
       for (const [key, row] of after) {
         const old = before.get(key)
         const known = this.identities.findByLocalId(context!.syncSpaceId, row.type, row.id)
-        if (known && old && JSON.stringify(old.fields) === JSON.stringify(row.fields)) continue
+        if (!forceEmitCurrentState && known && old && JSON.stringify(old.fields) === JSON.stringify(row.fields)) continue
         let mapping = ensure(row.type, row.id, row.fields, old == null)
         let canonicalKey = mapping.canonicalKey
         if (row.type === 'feed') {
@@ -247,7 +269,7 @@ export class DesktopLibrarySyncMutationCapture implements LibrarySyncMutationCap
           fields.feedGeneration = feedMapping.generation
           delete fields.feedLocalId
         }
-        if (known && old) {
+        if (!forceEmitCurrentState && known && old) {
           for (const field of Object.keys(fields)) {
             const sourceField = field === 'groupSyncId'
               ? 'groupLocalId'

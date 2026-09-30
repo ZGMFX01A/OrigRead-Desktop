@@ -8,7 +8,7 @@ import type { SourceDiscoveryProgress, SourceDiscoveryResult, SourceSubscription
 import type { SourceSyncBatchResult, SourceSyncItemResult } from './source-sync'
 import type { FullContentFetchResult, ReaderArticleContent } from './reader'
 import type { SyncRuntimeState } from './sync-runtime'
-import type { SyncDesktopRunResult, SyncDesktopStatus, SyncDiscoverySnapshot, SyncEndpointConfig, SyncEndpointInput, SyncPeerRegistration } from './sync-control'
+import type { SyncDesktopRunResult, SyncDesktopStatus, SyncDiscoverySnapshot, SyncEndpointConfig, SyncEndpointInput, SyncNetworkDiagnostics, SyncPeerRegistration, SyncRunHistorySummary, SyncTrustedDeviceSummary } from './sync-control'
 import type {
   OriginalArticleViewState,
   OriginalNavigationAction,
@@ -145,12 +145,22 @@ export interface OrigReadDesktopApi extends LlmChatDataApi {
   getSyncRuntimeState(): Promise<SyncRuntimeState>
   onSyncRuntimeStateChanged(listener: (state: SyncRuntimeState) => void): () => void
   getSyncStatus(): Promise<SyncDesktopStatus>
+  getSyncRunHistory(limit?: number): Promise<SyncRunHistorySummary[]>
   activateSyncGenesis(): Promise<{ syncSpaceId: string; genesisSessionId: string; genesisBaselineId: string; crossDbCutId: string; snapshotBundleId: string; capturedAt: number; tailOperationsBuilt: number }>
   configureSyncEndpoint(input: SyncEndpointInput): Promise<SyncEndpointConfig>
   removeSyncEndpoint(endpointId: string): Promise<void>
   registerSyncPeer(input: SyncPeerRegistration): Promise<{ fingerprint: string }>
   syncNow(endpointId: string): Promise<SyncDesktopRunResult>
   discoverSyncPeers(timeoutMs?: number): Promise<SyncDiscoverySnapshot>
+  toggleLanSync(enabled: boolean): Promise<{ enabled: boolean; port: number | null }>
+  initiateSyncPairing(targetHost: string, targetPort: number, localBindAddress?: string): Promise<any>
+  confirmSyncPairing(sessionId: string): Promise<any>
+  cancelSyncPairing(sessionId: string): Promise<void>
+  listSyncTrustedDevices(): Promise<SyncTrustedDeviceSummary[]>
+  revokeSyncTrustedDevice(deviceId: string): Promise<void>
+  connectManualSyncPeer(urlOrHost: string): Promise<SyncDesktopRunResult>
+  getSyncDiagnostics(): Promise<SyncNetworkDiagnostics>
+  onSyncPairingUpdated(listener: (session: any) => void): () => void
   getReaderContent(articleId: string, preferFull?: boolean): Promise<ReaderArticleContent>
   fetchFullContent(articleId: string): Promise<FullContentFetchResult>
   getAiSettings(): Promise<AiSettings>
@@ -319,12 +329,22 @@ export const IPC_CHANNELS = {
   getSyncRuntimeState: 'sync:get-runtime-state',
   syncRuntimeStateChanged: 'sync:runtime-state-changed',
   getSyncStatus: 'sync:get-status',
+  getSyncRunHistory: 'sync:get-run-history',
   activateSyncGenesis: 'sync:activate-genesis',
   configureSyncEndpoint: 'sync:endpoint:configure',
   removeSyncEndpoint: 'sync:endpoint:remove',
   registerSyncPeer: 'sync:peer:register',
   syncNow: 'sync:run-now',
   discoverSyncPeers: 'sync:discover-peers',
+  toggleLanSync: 'sync:lan:toggle',
+  initiateSyncPairing: 'sync:pairing:initiate',
+  confirmSyncPairing: 'sync:pairing:confirm',
+  cancelSyncPairing: 'sync:pairing:cancel',
+  listSyncTrustedDevices: 'sync:trusted-devices:list',
+  revokeSyncTrustedDevice: 'sync:trusted-devices:revoke',
+  connectManualSyncPeer: 'sync:manual-peer:connect',
+  getSyncDiagnostics: 'sync:diagnostics:get',
+  syncPairingUpdated: 'sync:pairing:updated',
   getReaderContent: 'reader:get-content',
   fetchFullContent: 'reader:fetch-full-content',
   getAiSettings: 'ai:settings:get',

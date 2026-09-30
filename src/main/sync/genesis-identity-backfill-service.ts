@@ -107,7 +107,8 @@ export class GenesisIdentityBackfillService {
     }
     for (const row of conversationArticleRows) referencedArticleIds.add(row.article_id)
 
-    this.database.exec('BEGIN IMMEDIATE')
+    const ownsTransaction = !this.database.isTransaction
+    if (ownsTransaction) this.database.exec('BEGIN IMMEDIATE')
     try {
       this.identities.insertSpaceIgnore({ syncSpaceId, createdAt: now, updatedAt: now })
       const results: SyncIdentityTypeBackfillResult[] = []
@@ -249,7 +250,7 @@ export class GenesisIdentityBackfillService {
         now
       ))
 
-      this.database.exec('COMMIT')
+      if (ownsTransaction) this.database.exec('COMMIT')
       const conflicts = results.flatMap((result) => result.conflicts)
       return {
         syncSpaceId,
@@ -260,7 +261,7 @@ export class GenesisIdentityBackfillService {
         conflicts
       }
     } catch (error) {
-      this.database.exec('ROLLBACK')
+      if (ownsTransaction) this.database.exec('ROLLBACK')
       throw error
     }
   }

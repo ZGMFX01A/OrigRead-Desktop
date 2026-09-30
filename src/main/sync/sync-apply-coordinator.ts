@@ -90,22 +90,69 @@ export class SyncApplyCoordinator {
           'SELECT 1 FROM sync_actor_author WHERE sync_space_id=? AND actor_incarnation_id=? AND author_device_id<>? LIMIT 1'
         ).get(envelope.syncSpaceId, envelope.actorIncarnationId, envelope.authorDeviceId)
         if (otherAuthor) throw new SyncApplyRejection('AUTH_FAILED', 'Actor belongs to another author')
+        const operation = operationRecordFromWire(envelope, now)
+        const existingOperation = this.runtime.findOperation(operation.operationId) ?? this.runtime.findOperationByDot(
+          operation.actorIncarnationId,
+          operation.replicationLaneId,
+          operation.sequence
+        )
+        if (existingOperation) {
+          this.assertExistingOperationMatches(operation)
+          this.runtime.transaction(() => {
+            const existingInbox = this.state.findInbox(operation.operationId)
+            if (!existingInbox) {
+              const stored = this.state.insertInbox(operation, canonicalOperationJson(envelope), now)
+              if (stored === 'DOT_COLLISION') {
+                throw new SyncApplyRejection(
+                  'DOT_COLLISION',
+                  `Dot collision at ${operation.actorIncarnationId}/${operation.replicationLaneId}/${operation.sequence}`
+                )
+              }
+              if (stored === 'INSERTED') this.state.markApplied(operation.operationId, now)
+            }
+          })
+          duplicateOperationIds.push(operation.operationId)
+          continue
+        }
         const authorization = this.authorizationRejection(envelope)
-        if (authorization || (this.runtime.listAuthObjects(envelope.syncSpaceId).length === 0 && (peer.status === 'REVOKED' || (envelope.authEpoch != null && envelope.authEpoch < peer.authEpoch)))) {
-          const operation = operationRecordFromWire(envelope, now)
-          const rejectionDigest = `rejected:${operation.operationId}:${peer.authEpoch}`
+        const fallbackAuthorization =
+          this.runtime.listAuthObjects(envelope.syncSpaceId).length === 0
+            ? peer.status === 'REVOKED'
+              ? 'AUTH_REVOKED'
+              : envelope.authEpoch != null && envelope.authEpoch < peer.authEpoch
+                ? 'AUTH_EPOCH_CUT'
+                : null
+            : null
+        const rejectionCode = authorization ?? fallbackAuthorization
+        if (rejectionCode) {
+          const rejectionDigest = `rejected:${operation.operationId}:${peer.authEpoch}:${rejectionCode}`
+          let stored: 'INSERTED' | 'DUPLICATE' | 'DOT_COLLISION' = 'DUPLICATE'
           this.runtime.transaction(() => {
             const operationInserted = this.runtime.insertOperationIgnore(operation)
             if (!operationInserted) this.assertExistingOperationMatches(operation)
-            const stored = this.state.insertInbox(operation, canonicalOperationJson(envelope), now)
-            if (stored !== 'DUPLICATE') {
-              this.state.markRejected(operation.operationId, 'AUTH_REVOKED', rejectionDigest, now)
+            stored = this.state.insertInbox(operation, canonicalOperationJson(envelope), now)
+            if (stored === 'DOT_COLLISION') {
+              throw new SyncApplyRejection(
+                'DOT_COLLISION',
+                `Dot collision at ${operation.actorIncarnationId}/${operation.replicationLaneId}/${operation.sequence}`
+              )
+            }
+            if (stored === 'INSERTED') {
+              this.state.markRejected(operation.operationId, rejectionCode, rejectionDigest, now)
             }
           })
-          acceptedOperationIds.push(operation.operationId)
+          if (stored === 'DUPLICATE') {
+            duplicateOperationIds.push(operation.operationId)
+          } else {
+            rejected.push({
+              operationId: operation.operationId,
+              code: rejectionCode,
+              message: 'Operation is outside the accepted AUTH coverage',
+              rejectionDigest
+            })
+          }
           continue
         }
-        const operation = operationRecordFromWire(envelope, now)
         let inserted = false
         this.runtime.transaction(() => {
           inserted = this.runtime.insertOperationIgnore(operation)
@@ -143,6 +190,12 @@ export class SyncApplyCoordinator {
           if (appliedOperationIds.length >= limit) break
           const processedPrefix = this.state.processedPrefix(syncSpaceId, inbox.replicationLaneId, inbox.actorIncarnationId)
           const operation = this.runtime.findOperation(inbox.operationId)
+          const localDeviceId = this.runtime.findDeviceIdentity()?.deviceId ?? null
+          if (operation && localDeviceId && operation.authorDeviceId === localDeviceId) {
+            this.runtime.transaction(() => this.state.markApplied(operation.operationId, now))
+            appliedOperationIds.push(operation.operationId)
+            continue
+          }
           const appliedKnowledge = this.runtime.listAppliedFrontiers(syncSpaceId)
             .reduce<SyncCoverage>((result, row) => {
               result[row.replicationLaneId] ??= {}
@@ -166,8 +219,14 @@ export class SyncApplyCoordinator {
                   'Genesis fixed-view capture is in progress; remote Apply is deferred'
                 )
               }
-              if (this.authorizationRejection(operation)) {
-                this.state.markRejected(operation.operationId, 'AUTH_REVOKED', `rejected:${operation.operationId}`, now)
+              const authorization = this.authorizationRejection(operation)
+              if (authorization) {
+                this.state.markRejected(
+                  operation.operationId,
+                  authorization,
+                  `rejected:${operation.operationId}:${authorization}`,
+                  now
+                )
                 return
               }
               if (operation.schemaVersion !== 1 || operation.payloadSchemaVersion !== 1 ||
@@ -230,10 +289,15 @@ export class SyncApplyCoordinator {
     }
   }
 
-  private authorizationRejection(operation: Pick<SyncOperationEnvelope, 'syncSpaceId' | 'authGrantId' | 'authEpoch' | 'authorDeviceId' | 'replicationLaneId' | 'actorIncarnationId' | 'sequence'>): boolean {
+  private authorizationRejection(
+    operation: Pick<
+      SyncOperationEnvelope,
+      'syncSpaceId' | 'authGrantId' | 'authEpoch' | 'authorDeviceId' | 'replicationLaneId' | 'actorIncarnationId' | 'sequence'
+    >
+  ): 'AUTH_REVOKED' | 'AUTH_EPOCH_CUT' | null {
     const history = this.runtime.listAuthObjects(operation.syncSpaceId)
     if (!history.length) {
-      if (this.options.allowUnanchoredTestOperations === true) return false
+      if (this.options.allowUnanchoredTestOperations === true) return null
       throw new SyncApplyRejection('AUTH_FAILED', 'Verified AUTH ledger is required')
     }
     if (operation.authEpoch == null || operation.authEpoch > history.at(-1)!.authEpoch) throw new SyncApplyRejection('AUTH_FAILED', 'Missing or unknown auth epoch')
@@ -241,12 +305,22 @@ export class SyncApplyCoordinator {
     if (!grant || grant.authEpoch > operation.authEpoch || (grant.objectType === 'SPACE_ROOT' ? grant.ownerDeviceId !== operation.authorDeviceId :
       !['MEMBER_GRANT', 'OWNER_TRANSFER', 'OWNER_RECOVERY'].includes(grant.objectType) || grant.targetDeviceId !== operation.authorDeviceId)) throw new SyncApplyRejection('AUTH_FAILED', 'Invalid author grant')
     const stable = this.stabilityCheckpointFor(operation) != null
-    return history.some((entry) => {
+    for (const entry of history) {
       const afterGrant = entry.authEpoch > grant.authEpoch || (entry.authEpoch === grant.authEpoch && (entry.authSequence ?? 0) > (grant.authSequence ?? 0))
-      if (!stable && entry.objectType === 'MEMBER_REVOKE' && entry.targetDeviceId === operation.authorDeviceId && afterGrant) return operation.sequence > (entry.revokeCutoffByActorLane?.[operation.replicationLaneId]?.[operation.actorIncarnationId] ?? 0)
-      if (['OWNER_TRANSFER', 'OWNER_RECOVERY'].includes(entry.objectType) && entry.authEpoch > operation.authEpoch!) return operation.sequence > (entry.previousEpochFinalAcceptedPrefixByActorLane[operation.replicationLaneId]?.[operation.actorIncarnationId] ?? 0)
-      return false
-    })
+      if (
+        !stable &&
+        entry.objectType === 'MEMBER_REVOKE' &&
+        entry.targetDeviceId === operation.authorDeviceId &&
+        afterGrant &&
+        operation.sequence > (entry.revokeCutoffByActorLane?.[operation.replicationLaneId]?.[operation.actorIncarnationId] ?? 0)
+      ) return 'AUTH_REVOKED'
+      if (
+        ['OWNER_TRANSFER', 'OWNER_RECOVERY'].includes(entry.objectType) &&
+        entry.authEpoch > operation.authEpoch! &&
+        operation.sequence > (entry.previousEpochFinalAcceptedPrefixByActorLane[operation.replicationLaneId]?.[operation.actorIncarnationId] ?? 0)
+      ) return 'AUTH_EPOCH_CUT'
+    }
+    return null
   }
 
   private stabilityCheckpointFor(operation: Pick<SyncOperationEnvelope, 'syncSpaceId' | 'authGrantId' | 'replicationLaneId' | 'actorIncarnationId' | 'sequence'>): string | null {

@@ -86,8 +86,11 @@ export class DesktopSyncStableGcCoordinator {
             build_status: string
           }>
           for (const operation of operations) {
-            if (operation.build_status === 'REJECTED') {
-              throw new Error('Stable GC cannot remove a rejected canonical operation: ' + operation.operation_id)
+            if (operation.build_status !== 'SIGNED') {
+              throw new Error(
+                'Stable GC cannot remove non-signed canonical operation ' +
+                operation.operation_id + ' (' + operation.build_status + ')'
+              )
             }
             const inbox = this.database.prepare(`
               SELECT state,authorization_state FROM sync_inbox_operation WHERE operation_id=? LIMIT 1

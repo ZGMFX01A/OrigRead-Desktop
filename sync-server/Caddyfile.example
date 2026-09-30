@@ -1,0 +1,5 @@
+# Reverse proxy example for a public TLS endpoint.
+# Replace sync.example.com and point DNS at the VPS before enabling this block.
+sync.example.com {
+  reverse_proxy origread-sync:8787
+}

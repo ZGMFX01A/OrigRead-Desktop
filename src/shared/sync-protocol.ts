@@ -65,6 +65,9 @@ export interface SyncPeerCapabilities {
   maxOperationBatch: number
   maxBlobChunkBytes: number
   supportsRangeResume: boolean
+  streamingSnapshots?: boolean
+  blobRangeRequests?: boolean
+  authStabilityCheckpoints?: boolean
 }
 
 export interface SyncDiscoveredPeer {
@@ -74,6 +77,8 @@ export interface SyncDiscoveredPeer {
   host: string
   port: number
   protocol: 'http' | 'https'
+  interfaceName?: string
+  localBindAddress?: string
   syncSpaceIds: string[]
   fingerprint: string | null
   capabilities: SyncPeerCapabilities | null
@@ -138,6 +143,36 @@ export interface SyncSnapshotBundleWire {
   authStabilityCheckpoint?: string | null
   authorDeviceId?: string | null
   authorSignature?: string | null
+}
+
+export interface SyncSnapshotShardDescriptorWire {
+  replicationLaneId: string
+  contentHash: string
+  frontierJson: string
+}
+
+/** R11 transport-only descriptor; shardDescriptors preserve the signed shard array order. */
+export interface SyncSnapshotStreamManifestWire {
+  /** Transport lookup id only; deliberately excluded from the signed full Snapshot wire. */
+  sourceSnapshotBundleId: string
+  snapshotBundleId: string
+  syncSpaceId: string
+  snapshotClass: SyncSnapshotClass
+  genesisBaselineId: string | null
+  rootHash: string
+  policyHash: string
+  capturedAt: number
+  shardDescriptors: SyncSnapshotShardDescriptorWire[]
+  coverage: SyncCoverage
+  hashSchemaVersion: number
+  schemaVersion: number
+  snapshotEpoch: number
+  crossDbCutId: string | null
+  requiredCoreShardIds: string[]
+  coverageCommitment: string | null
+  authStabilityCheckpoint: string | null
+  authorDeviceId: string | null
+  authorSignature: string | null
 }
 
 /** Signed AUTH-lane control objects. Registry rows are only a cache of these objects. */
@@ -246,6 +281,7 @@ export interface SyncCursor {
 export type SyncDiagnosticCode =
   | 'DISCOVERY_EMPTY'
   | 'PEER_UNREACHABLE'
+  | 'TLS_PEER_UNAVAILABLE'
   | 'PERMISSION_DENIED'
   | 'AUTH_FAILED'
   | 'ROUTE_CONFLICT'
@@ -274,6 +310,11 @@ export interface SyncEndpointSession {
   pushOperations(batch: SyncOperationEnvelope[]): Promise<SyncOperationBatchResult>
   getLatestSnapshot(requirement?: { class?: SyncSnapshotClass; lanes?: string[] }): Promise<SyncSnapshotBundleWire | null>
   pushSnapshot?(snapshot: SyncSnapshotBundleWire): Promise<void>
+  getLatestSnapshotStreamManifest?(requirement?: { class?: SyncSnapshotClass; lanes?: string[] }): Promise<SyncSnapshotStreamManifestWire | null>
+  fetchSnapshotStreamShard?(sourceSnapshotBundleId: string, lane: string): Promise<SyncSnapshotShardWire>
+  pushSnapshotStreamManifest?(manifest: SyncSnapshotStreamManifestWire): Promise<void>
+  pushSnapshotStreamShard?(snapshotBundleId: string, shard: SyncSnapshotShardWire): Promise<void>
+  commitSnapshotStream?(snapshotBundleId: string): Promise<void>
   acceptRecoverySnapshot?(snapshotBundleId: string, acceptance: SyncAuthProtocolObject): Promise<void>
   getBlobStatus?(hash: string): Promise<SyncBlobStatus | null>
   fetchBlob(hash: string, range?: { offset: number; length?: number }): Promise<SyncBlobChunk>

@@ -9,6 +9,7 @@ import { SyncRuntimeRepository } from './sync-runtime-repository'
 import { SyncStateRepository } from './sync-state-repository'
 import { DesktopSyncDeviceSigningKeyStore } from './sync-device-signing-key-store'
 import { operationId, operationSigningDigest, operationSigningMaterial, sha256Hex } from './sync-operation-canonicalizer'
+import { operationRecordFromWire } from './sync-operation-wire'
 
 function fixture(allowUnanchoredTestOperations = true) {
   const db = new DatabaseSync(':memory:')
@@ -39,10 +40,46 @@ function fixture(allowUnanchoredTestOperations = true) {
   const options = { resolvePeerKey: (_space: string, device: string) => ({
     publicKeySpkiBase64: keys.publicKeySpkiBase64(device), status: 'ACTIVE' as const, authEpoch: 0
   }) }
-  return { db, state, coordinator, applied, operation, options }
+  return { db, runtime, state, coordinator, applied, operation, options }
 }
 
 describe('R10 durable receive boundary', () => {
+  it('treats an echoed locally-known operation as already applied without invoking business apply', () => {
+    const f = fixture()
+    try {
+      f.runtime.replaceDeviceIdentity({ deviceId: 'author', witnessId: 'witness', createdAt: 1, updatedAt: 1 })
+      const envelope = f.operation()
+      expect(f.runtime.insertOperationIgnore(operationRecordFromWire(envelope, 1))).toBe(true)
+
+      const report = f.coordinator.ingest([envelope], f.options)
+
+      expect(report.acceptedOperationIds).toEqual([])
+      expect(report.duplicateOperationIds).toEqual([envelope.operationId])
+      expect(f.state.findInbox(envelope.operationId)).toMatchObject({ state: 'APPLIED' })
+      expect(f.state.getCoverage('space').received.ARTICLE_STATE?.actor).toBe(1)
+      expect(f.state.getCoverage('space').applied.ARTICLE_STATE?.actor).toBe(1)
+      expect(f.coordinator.applyPending('space').appliedOperationIds).toEqual([])
+      expect(f.applied).toEqual([])
+    } finally { f.db.close() }
+  })
+
+  it('self-heals a legacy pending inbox row for a locally-authored operation without business re-apply', () => {
+    const f = fixture()
+    try {
+      f.runtime.replaceDeviceIdentity({ deviceId: 'author', witnessId: 'witness', createdAt: 1, updatedAt: 1 })
+      const envelope = f.operation()
+      const operation = operationRecordFromWire(envelope, 1)
+      expect(f.runtime.insertOperationIgnore(operation)).toBe(true)
+      expect(f.state.insertInbox(operation, JSON.stringify(envelope), 2)).toBe('INSERTED')
+
+      expect(f.coordinator.applyPending('space').appliedOperationIds).toEqual([envelope.operationId])
+      expect(f.state.findInbox(envelope.operationId)).toMatchObject({ state: 'APPLIED' })
+      expect(f.applied).toEqual([])
+      expect(f.state.getCoverage('space').received.ARTICLE_STATE?.actor).toBe(1)
+      expect(f.state.getCoverage('space').applied.ARTICLE_STATE?.actor).toBe(1)
+    } finally { f.db.close() }
+  })
+
   it('reaches dependencies beyond a full deferred page', () => {
     const f = fixture()
     try {

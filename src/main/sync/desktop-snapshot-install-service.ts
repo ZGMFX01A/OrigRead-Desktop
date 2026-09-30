@@ -5,7 +5,9 @@ import type {
   SyncAuthProtocolObject,
   SyncBlobManifest,
   SyncCoverage,
-  SyncSnapshotBundleWire
+  SyncSnapshotBundleWire,
+  SyncSnapshotShardWire,
+  SyncSnapshotStreamManifestWire
 } from '../../shared/sync-protocol'
 import type { SyncOperationRecord, SyncReplicationLane } from '../../shared/sync-runtime'
 import type { SyncEntityType } from '../../shared/sync-identity'
@@ -26,7 +28,14 @@ import type {
   WebsiteParsePreferenceUserSyncState
 } from '../sources/website/website-parse-preference-repository'
 import type { WebsiteRuleRepository } from '../sources/website/website-rule-repository'
-import { assertSnapshotIntegrity, snapshotCoverageCommitment, verifySnapshotSignature } from './sync-snapshot-wire'
+import {
+  assertSnapshotIntegrity,
+  assertSnapshotStreamIntegrity,
+  snapshotBundleFromStreamManifest,
+  snapshotCoverageCommitment,
+  verifySnapshotSignature,
+  verifySnapshotStreamSignature
+} from './sync-snapshot-wire'
 import { canonicalJson } from './sync-operation-canonicalizer'
 import { DesktopSyncAliasResolver, type SyncAliasEdgePayloadV1 } from './sync-alias-protocol'
 import { DesktopSyncBlobStateService, type SyncBlobReferenceRecord } from './sync-blob-state'
@@ -78,6 +87,27 @@ export interface SnapshotInstallResult {
   syncSpaceId: string
   materializedEntities: number
   rebasedLanes: string[]
+}
+
+interface SnapshotShardSource {
+  readonly lanes: readonly string[]
+  load(lane: string): SyncSnapshotShardWire
+}
+
+class InMemorySnapshotShardSource implements SnapshotShardSource {
+  readonly lanes: readonly string[]
+  private readonly byLane: Map<string, SyncSnapshotShardWire>
+
+  constructor(shards: readonly SyncSnapshotShardWire[]) {
+    this.lanes = shards.map((shard) => shard.replicationLaneId)
+    this.byLane = new Map(shards.map((shard) => [shard.replicationLaneId, shard]))
+  }
+
+  load(lane: string): SyncSnapshotShardWire {
+    const shard = this.byLane.get(lane)
+    if (!shard) throw new SnapshotCorruptedError('Snapshot shard is missing for lane ' + lane)
+    return shard
+  }
 }
 
 const LANE_ORDER: Record<string, number> = {
@@ -218,6 +248,100 @@ export class DesktopSnapshotInstallService {
       throw new SyncRebaseUnsafeError(error instanceof Error ? error.message : String(error))
     }
 
+    return this.installVerifiedFromSource(
+      localAccountId,
+      bundle,
+      new InMemorySnapshotShardSource(bundle.shards),
+      manifestLanes,
+      now,
+      selectedLanes
+    )
+  }
+
+  installStream(
+    localAccountId: number,
+    manifest: SyncSnapshotStreamManifestWire,
+    shardLoader: (lane: string) => SyncSnapshotShardWire,
+    now = Date.now(),
+    selectedLanes?: ReadonlySet<string>
+  ): SnapshotInstallResult {
+    if (!manifest.snapshotBundleId || !manifest.syncSpaceId) {
+      throw new SnapshotCorruptedError('Invalid snapshot stream manifest: missing bundleId or syncSpaceId')
+    }
+    if (!manifest.rootHash || !manifest.policyHash) {
+      throw new SyncRebaseUnsafeError('Cannot rebase onto snapshot with empty rootHash or policyHash')
+    }
+    if (!manifest.authorDeviceId || !manifest.authorSignature) {
+      throw new SyncRebaseUnsafeError('REBASE_UNSAFE: snapshot author signature is missing')
+    }
+    const author = this.state.findPeer(manifest.syncSpaceId, manifest.authorDeviceId)
+    if (!author || author.status !== 'ACTIVE') {
+      throw new SyncRebaseUnsafeError('REBASE_UNSAFE: snapshot author is not active in the AUTH ledger')
+    }
+    if (manifest.snapshotClass === 'GC_BASELINE' && !manifest.authStabilityCheckpoint) {
+      throw new SyncRebaseUnsafeError('REBASE_UNSAFE: GC baseline has no AuthStabilityCheckpoint')
+    }
+    if (manifest.snapshotClass === 'BOOTSTRAP_RECOVERY' &&
+      (!manifest.coverageCommitment || !manifest.authStabilityCheckpoint)) {
+      throw new SyncRebaseUnsafeError('REBASE_UNSAFE: recovery snapshot proof is incomplete')
+    }
+
+    const lanes = manifest.shardDescriptors.map((descriptor) => descriptor.replicationLaneId)
+    const manifestLanes = new Set(lanes)
+    const supportedLanes = new Set(['CORE_META', 'LIBRARY', 'ARTICLE_STATE', 'CONFIG', 'AI_HISTORY', 'AUTH'])
+    if (manifestLanes.size !== lanes.length || lanes.some((lane) => !supportedLanes.has(lane))) {
+      throw new SyncRebaseUnsafeError('REBASE_UNSAFE: duplicate or unsupported snapshot lane')
+    }
+    for (const required of ['CORE_META', 'AUTH']) {
+      if (!manifestLanes.has(required)) {
+        throw new SnapshotCorruptedError('Missing required core shard: ' + required)
+      }
+    }
+
+    const metadataBundle = snapshotBundleFromStreamManifest(manifest, [])
+    this.validateStabilityProof(metadataBundle)
+    try {
+      assertSnapshotStreamIntegrity(manifest, shardLoader)
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('CORRUPTED')) {
+        throw new SnapshotCorruptedError(error.message)
+      }
+      throw new SyncRebaseUnsafeError(error instanceof Error ? error.message : String(error))
+    }
+    if (!verifySnapshotStreamSignature(manifest, author.publicKeySpkiBase64, shardLoader)) {
+      throw new SnapshotCorruptedError('Snapshot author signature verification failed')
+    }
+
+    const source: SnapshotShardSource = {
+      lanes,
+      load: shardLoader
+    }
+    return this.installVerifiedFromSource(
+      localAccountId,
+      metadataBundle,
+      source,
+      manifestLanes,
+      now,
+      selectedLanes
+    )
+  }
+
+  private installVerifiedFromSource(
+    localAccountId: number,
+    bundle: SyncSnapshotBundleWire,
+    source: SnapshotShardSource,
+    manifestLanes: ReadonlySet<string>,
+    now: number,
+    selectedLanes?: ReadonlySet<string>
+  ): SnapshotInstallResult {
+    const binding = this.runtime.findBinding(localAccountId)
+    if (!binding) {
+      throw new Error(`Local account ${localAccountId} has no sync space binding`)
+    }
+    if (binding.syncSpaceId !== bundle.syncSpaceId) {
+      throw new Error(`Snapshot bundle syncSpaceId ${bundle.syncSpaceId} does not match binding ${binding.syncSpaceId}`)
+    }
+    const requiredLanes = ['CORE_META', 'AUTH']
     const presentLanes = selectedLanes ? new Set(selectedLanes) : manifestLanes
     for (const lane of presentLanes) {
       if (!manifestLanes.has(lane)) {
@@ -234,16 +358,16 @@ export class DesktopSnapshotInstallService {
         'ARTICLE_STATE Snapshot requires LIBRARY in the same selected Snapshot scope'
       )
     }
-    const sortedManifestShards = [...bundle.shards].sort(
-      (a, b) => (LANE_ORDER[a.replicationLaneId] ?? 99) - (LANE_ORDER[b.replicationLaneId] ?? 99)
+    const sortedManifestLanes = [...source.lanes].sort(
+      (a, b) => (LANE_ORDER[a] ?? 99) - (LANE_ORDER[b] ?? 99)
     )
-    const sortedShards = sortedManifestShards.filter((shard) => presentLanes.has(shard.replicationLaneId))
+    const sortedLanes = sortedManifestLanes.filter((lane) => presentLanes.has(lane))
     const selectedCoverage = Object.fromEntries(
       Object.entries(bundle.coverage).filter(([lane]) => presentLanes.has(lane))
     )
     const selectedBundle: SyncSnapshotBundleWire = {
       ...bundle,
-      shards: sortedShards,
+      shards: [],
       coverage: selectedCoverage
     }
 
@@ -270,13 +394,13 @@ export class DesktopSnapshotInstallService {
         }).filter((operation) => presentLanes.has(operation.replicationLaneId) &&
           [undefined, 'APPLIED'].includes(this.state.findInbox(operation.operationId)?.state))
         this.runtime.transaction(() => {
-          const configShard = sortedShards.find((shard) => shard.replicationLaneId === 'CONFIG')
+          const configShard = presentLanes.has('CONFIG') ? source.load('CONFIG') : null
           if (configShard) this.applyExternalConfigState(bundle.syncSpaceId, configShard.entityStateJson, now)
-          this.replayRetainedTail(selectedBundle, tail, previous.applied, now)
+          this.replayRetainedTail(selectedBundle, tail, previous.applied, presentLanes, now)
           this.restoreRecoverableCoverage(bundle.syncSpaceId, previous, presentLanes, now)
         })
       } else {
-        const configShard = sortedShards.find((shard) => shard.replicationLaneId === 'CONFIG')
+        const configShard = presentLanes.has('CONFIG') ? source.load('CONFIG') : null
         if (configShard) {
           this.runtime.transaction(() =>
             this.applyExternalConfigState(bundle.syncSpaceId, configShard.entityStateJson, now))
@@ -297,14 +421,14 @@ export class DesktopSnapshotInstallService {
     // retained Operation / Outbox 精确重放，而不是靠当前 materialized row 猜历史。
     const pendingOutbox = this.runtime.listPendingOutbox(bundle.syncSpaceId, 10_000)
     if (pendingOutbox.length > 0) {
-      this.persistRecoveryCapsule(selectedBundle, pendingOutbox.map((row) => row.outboxId), 'PENDING_OUTBOX_REQUIRES_PREPARATION', now)
+      this.persistRecoveryCapsule(selectedBundle, presentLanes, pendingOutbox.map((row) => row.outboxId), 'PENDING_OUTBOX_REQUIRES_PREPARATION', now)
       throw new SyncRebaseUnsafeError(
         'REBASE_UNSAFE: local Outbox must be built and signed before Snapshot rebase'
       )
     }
     const coverageBeforeRebase = this.state.getCoverage(bundle.syncSpaceId)
-    if (this.snapshotIsBehindStableGc(selectedBundle, coverageBeforeRebase.stableGc)) {
-      this.persistRecoveryCapsule(selectedBundle, [], 'LOCAL_RECOVERY_SNAPSHOT_REQUIRED', now)
+    if (this.snapshotIsBehindStableGc(selectedBundle, coverageBeforeRebase.stableGc, presentLanes)) {
+      this.persistRecoveryCapsule(selectedBundle, presentLanes, [], 'LOCAL_RECOVERY_SNAPSHOT_REQUIRED', now)
       throw new SyncLocalRecoverySnapshotRequiredError(
         'LOCAL_RECOVERY_REQUIRED: target Snapshot is behind locally compacted stable history'
       )
@@ -315,13 +439,13 @@ export class DesktopSnapshotInstallService {
       Number.MAX_SAFE_INTEGER,
       (operation) => presentLanes.has(operation.replicationLaneId)
     )
-    this.assertRetainedTailIsComplete(selectedBundle, coverageBeforeRebase.retained, retainedTail)
+    this.assertRetainedTailIsComplete(selectedBundle, coverageBeforeRebase.retained, retainedTail, presentLanes)
     const replayTail = retainedTail.filter((operation) => {
       const inbox = this.state.findInbox(operation.operationId)
       return inbox == null || inbox.state === 'APPLIED'
     })
     if (retainedTail.length > 0) {
-      this.persistRecoveryCapsule(selectedBundle, [], 'REBASE_PREPARE_RETAINED_TAIL', now)
+      this.persistRecoveryCapsule(selectedBundle, presentLanes, [], 'REBASE_PREPARE_RETAINED_TAIL', now)
     }
     // REBASE_PREPARE remains writable through Transactional Outbox. Any user mutation
     // racing the baseline install is replayed after the target Snapshot instead of disappearing.
@@ -352,7 +476,8 @@ export class DesktopSnapshotInstallService {
 
         // Persist the complete signed manifest. Projection and coverage changes below
         // are restricted to the currently selected replication lanes.
-        for (const shard of sortedManifestShards) {
+        for (const lane of sortedManifestLanes) {
+          const shard = source.load(lane)
           this.runtime.upsertSnapshotShard({
             snapshotBundleId: bundle.snapshotBundleId,
             syncSpaceId: bundle.syncSpaceId,
@@ -371,7 +496,8 @@ export class DesktopSnapshotInstallService {
         }
 
         // 3. 按因果依赖顺序安装各 Shard 并恢复元数据与实例化业务实体
-        for (const shard of sortedShards) {
+        for (const lane of sortedLanes) {
+          const shard = source.load(lane)
           rebasedLanes.push(shard.replicationLaneId)
 
           // Snapshot only restores Blob metadata/reference state. Missing bytes remain BLOB_MISSING.
@@ -407,12 +533,13 @@ export class DesktopSnapshotInstallService {
 
         // 3.4 删除投影必须与创建方向相反：先 Article，再 Feed，最后 Group。
         // 否则 Android CASCADE 会吞掉尚未 Tombstone 的子实体，而 Desktop RESTRICT 会直接失败。
-        const tombstoneShards = [...sortedShards].sort(
+        const tombstoneLanes = [...sortedLanes].sort(
           (a, b) =>
-            (TOMBSTONE_LANE_ORDER[a.replicationLaneId] ?? 99) -
-            (TOMBSTONE_LANE_ORDER[b.replicationLaneId] ?? 99)
+            (TOMBSTONE_LANE_ORDER[a] ?? 99) -
+            (TOMBSTONE_LANE_ORDER[b] ?? 99)
         )
-        for (const shard of tombstoneShards) {
+        for (const lane of tombstoneLanes) {
+          const shard = source.load(lane)
           this.restoreTombstones(
             localAccountId,
             bundle.syncSpaceId,
@@ -425,9 +552,9 @@ export class DesktopSnapshotInstallService {
         // 4. 覆盖度重基线（Rebase Coverage）（R10-09, R10-10）
         this.state.rebaseSnapshotCoverage(bundle.syncSpaceId, selectedCoverage, now)
 
-        const configShard = sortedShards.find((shard) => shard.replicationLaneId === 'CONFIG')
+        const configShard = presentLanes.has('CONFIG') ? source.load('CONFIG') : null
         if (configShard) this.applyExternalConfigState(bundle.syncSpaceId, configShard.entityStateJson, now)
-        this.replayRetainedTail(selectedBundle, replayTail, coverageBeforeRebase.applied, now)
+        this.replayRetainedTail(selectedBundle, replayTail, coverageBeforeRebase.applied, presentLanes, now)
         this.restoreRecoverableCoverage(bundle.syncSpaceId, coverageBeforeRebase, presentLanes, now)
 
         // Snapshot is only the baseline. Keep STAGING until the coordinator
@@ -501,7 +628,8 @@ export class DesktopSnapshotInstallService {
   private assertRetainedTailIsComplete(
     bundle: SyncSnapshotBundleWire,
     retainedCoverage: SyncCoverage,
-    operations: SyncOperationRecord[]
+    operations: SyncOperationRecord[],
+    presentLanes: ReadonlySet<string>
   ): void {
     const byStream = new Map<string, number[]>()
     for (const operation of operations) {
@@ -525,7 +653,7 @@ export class DesktopSnapshotInstallService {
       }
     }
     for (const [lane, actors] of Object.entries(retainedCoverage)) {
-      if (!bundle.shards.some((shard) => shard.replicationLaneId === lane)) continue
+      if (!presentLanes.has(lane)) continue
       for (const [actor, prefix] of Object.entries(actors)) {
         const target = bundle.coverage[lane]?.[actor] ?? 0
         if (prefix <= target) continue
@@ -540,8 +668,11 @@ export class DesktopSnapshotInstallService {
     }
   }
 
-  private snapshotIsBehindStableGc(bundle: SyncSnapshotBundleWire, stableGc: SyncCoverage): boolean {
-    const presentLanes = new Set(bundle.shards.map((shard) => shard.replicationLaneId))
+  private snapshotIsBehindStableGc(
+    bundle: SyncSnapshotBundleWire,
+    stableGc: SyncCoverage,
+    presentLanes: ReadonlySet<string>
+  ): boolean {
     for (const [lane, actors] of Object.entries(stableGc)) {
       if (!presentLanes.has(lane)) continue
       for (const [actor, prefix] of Object.entries(actors)) {
@@ -556,13 +687,13 @@ export class DesktopSnapshotInstallService {
     bundle: SyncSnapshotBundleWire,
     operations: SyncOperationRecord[],
     preservedAppliedCoverage: SyncCoverage,
+    selectedLanes: ReadonlySet<string>,
     now: number
   ): void {
     if (operations.length === 0) return
     if (!this.businessApplier) {
       throw new SyncRebaseUnsafeError('REBASE_UNSAFE: business projection is unavailable for retained-tail replay')
     }
-    const selectedLanes = new Set(bundle.shards.map((shard) => shard.replicationLaneId))
     const progress: SyncCoverage = {}
     for (const [lane, actors] of Object.entries(preservedAppliedCoverage)) {
       if (selectedLanes.has(lane)) continue
@@ -571,6 +702,7 @@ export class DesktopSnapshotInstallService {
     for (const [lane, actors] of Object.entries(bundle.coverage)) {
       progress[lane] = { ...(progress[lane] ?? {}), ...actors }
     }
+    const localDeviceId = this.runtime.findDeviceIdentity()?.deviceId ?? null
 
     const remaining = [...operations]
     while (remaining.length > 0) {
@@ -583,7 +715,24 @@ export class DesktopSnapshotInstallService {
           index++
           continue
         }
-        this.businessApplier.apply(operation)
+        let legacyEmptyLocalUpsert = false
+        if (
+          localDeviceId &&
+          operation.authorDeviceId === localDeviceId &&
+          operation.operationType === 'UPSERT'
+        ) {
+          try {
+            const payload = JSON.parse(operation.payloadJson) as { fields?: unknown }
+            legacyEmptyLocalUpsert =
+              payload.fields != null &&
+              typeof payload.fields === 'object' &&
+              !Array.isArray(payload.fields) &&
+              Object.keys(payload.fields as Record<string, unknown>).length === 0
+          } catch {
+            legacyEmptyLocalUpsert = false
+          }
+        }
+        if (!legacyEmptyLocalUpsert) this.businessApplier.apply(operation)
         progress[operation.replicationLaneId] ??= {}
         progress[operation.replicationLaneId]![operation.actorIncarnationId] = operation.sequence
         remaining.splice(index, 1)
@@ -602,7 +751,7 @@ export class DesktopSnapshotInstallService {
   private restoreRecoverableCoverage(
     syncSpaceId: string,
     previous: ReturnType<SyncStateRepository['getCoverage']>,
-    presentLanes: Set<string>,
+    presentLanes: ReadonlySet<string>,
     now: number
   ): void {
     for (const lane of presentLanes) {
@@ -644,11 +793,11 @@ export class DesktopSnapshotInstallService {
 
   private persistRecoveryCapsule(
     bundle: SyncSnapshotBundleWire,
+    selectedLanes: ReadonlySet<string>,
     pendingOutboxIds: string[],
     reason: string,
     now: number
   ): void {
-    const selectedLanes = new Set(bundle.shards.map((shard) => shard.replicationLaneId))
     const operationIds = this.runtime.listAllOperationsForRecovery(bundle.syncSpaceId)
       .filter((operation) =>
         selectedLanes.has(operation.replicationLaneId) &&

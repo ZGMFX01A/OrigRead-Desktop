@@ -10,7 +10,8 @@ import {
   coverageDominates,
   type SyncCoverage,
   type SyncSnapshotBundleWire,
-  type SyncSnapshotShardWire
+  type SyncSnapshotShardWire,
+  type SyncSnapshotStreamManifestWire
 } from '../../shared/sync-protocol'
 import { SYNC_REPLICATION_LANES } from '../../shared/sync-runtime'
 import type { SyncEntityType } from '../../shared/sync-identity'
@@ -62,10 +63,12 @@ import {
 } from './llm-sync-payloads'
 import {
   SNAPSHOT_HASH_SCHEMA_VERSION,
+  snapshotBundleFromStreamManifest,
   snapshotCoverageCommitment,
   snapshotCoverageFromShards,
   snapshotRootHash,
   snapshotShardContentHash,
+  snapshotSigningChunks,
   snapshotSigningMaterial
 } from './sync-snapshot-wire'
 
@@ -176,6 +179,11 @@ export class DesktopGenesisSnapshotService {
       rssHubSettings,
       websiteParsePreferences
     )
+  }
+
+  /** Re-establish stable local identities when this device joins an existing Sync Space. */
+  backfillIdentitiesForSpace(syncSpaceId: string, localAccountId: number, now = Date.now()) {
+    return this.identityBackfill.backfill(syncSpaceId, localAccountId, now)
   }
 
   run(localAccountId: number, syncSpaceId?: string, genesisSessionId?: string, now = Date.now()): DesktopGenesisCutoverResult {
@@ -345,6 +353,120 @@ export class DesktopGenesisSnapshotService {
       ...withRoot,
       authorSignature: this.signingKeys.signBase64(authorDeviceId, snapshotSigningMaterial(withRoot))
     }
+  }
+
+  exportStreamShard(sourceSnapshotBundleId: string, lane: SyncReplicationLane | string): SyncSnapshotShardWire {
+    const shard = this.runtime.findSnapshotShard(sourceSnapshotBundleId, lane)
+    if (!shard) throw new Error(`Snapshot shard not found: ${sourceSnapshotBundleId}/${lane}`)
+    const summary = JSON.parse(shard.deletionGenerationSummaryJson || '{}') as {
+      deleted?: unknown
+      generations?: unknown
+    }
+    const unsigned: SyncSnapshotShardWire = {
+      replicationLaneId: shard.replicationLaneId,
+      frontierJson: shard.frontierJson,
+      entityStateJson: shard.entityStateJson,
+      fieldVersionStateJson: shard.fieldVersionStateJson,
+      causalMetadataJson: shard.causalMetadataJson,
+      genesisCoverageJson: shard.genesisCoverageJson,
+      deletionGenerationSummaryJson: shard.deletionGenerationSummaryJson,
+      contentHash: '',
+      deletionSummaryJson: canonicalJson(JSON.stringify(summary.deleted ?? [])),
+      generationSummaryJson: canonicalJson(JSON.stringify(summary.generations ?? {})),
+      blobManifestIndexJson: shard.blobManifestIndexJson,
+      blobReferenceIndexJson: shard.blobReferenceIndexJson
+    }
+    const contentHash = snapshotShardContentHash(unsigned, SNAPSHOT_HASH_SCHEMA_VERSION)
+    if (contentHash !== shard.contentHash) {
+      throw new Error('SNAPSHOT_CORRUPTED: persisted shard contentHash does not match its payload')
+    }
+    return { ...unsigned, contentHash }
+  }
+
+  exportStreamManifest(
+    snapshotBundleId: string,
+    selectedLanes?: ReadonlySet<SyncReplicationLane>
+  ): SyncSnapshotStreamManifestWire {
+    if (!this.signingKeys) throw new Error('Snapshot signing key store is not configured')
+    const bundle = this.runtime.findSnapshotBundle(snapshotBundleId)
+    if (!bundle) throw new Error('Snapshot bundle not found: ' + snapshotBundleId)
+    const session = this.runtime.findGenesisSession(bundle.genesisSessionId)
+    if (!session) throw new Error('Genesis session is missing for Snapshot bundle: ' + snapshotBundleId)
+
+    const descriptors = this.runtime.listSnapshotShardDescriptors(snapshotBundleId)
+    if (!descriptors.length) throw new Error('Snapshot bundle has no shards: ' + snapshotBundleId)
+    const manifestLanes = new Set<string>(descriptors.map((descriptor) => descriptor.replicationLaneId))
+    const effectiveLanes = selectedLanes ? new Set<string>(selectedLanes) : manifestLanes
+    for (const lane of effectiveLanes) {
+      if (!manifestLanes.has(lane)) throw new Error('Snapshot scope contains an unknown lane: ' + lane)
+    }
+    for (const lane of ['AUTH', 'CORE_META']) {
+      if (!effectiveLanes.has(lane)) throw new Error('Snapshot scope must include required core shard: ' + lane)
+    }
+
+    const selectedDescriptors = descriptors.filter((descriptor) => effectiveLanes.has(descriptor.replicationLaneId))
+    const lightweightShards: SyncSnapshotShardWire[] = selectedDescriptors.map((descriptor) => ({
+      replicationLaneId: descriptor.replicationLaneId,
+      frontierJson: descriptor.frontierJson,
+      entityStateJson: '',
+      fieldVersionStateJson: '',
+      causalMetadataJson: '',
+      genesisCoverageJson: '',
+      deletionGenerationSummaryJson: '',
+      contentHash: descriptor.contentHash
+    }))
+    const coverage = snapshotCoverageFromShards(lightweightShards)
+    const isScoped = effectiveLanes.size !== manifestLanes.size ||
+      [...effectiveLanes].some((lane) => !manifestLanes.has(lane))
+    const policyHash = isScoped
+      ? sha256Hex(canonicalJson(JSON.stringify({
+          basePolicyHash: bundle.policyHash,
+          lanes: [...effectiveLanes].sort()
+        })))
+      : bundle.policyHash
+    const wireBundleId = isScoped
+      ? `${bundle.snapshotBundleId}:scope:${policyHash.slice(0, 16)}`
+      : bundle.snapshotBundleId
+    const authorDeviceId = this.runtime.findDeviceIdentity()?.deviceId
+    if (!authorDeviceId) throw new Error('Device identity is unavailable for Snapshot signing')
+
+    const unsigned: SyncSnapshotStreamManifestWire = {
+      sourceSnapshotBundleId: bundle.snapshotBundleId,
+      snapshotBundleId: wireBundleId,
+      syncSpaceId: bundle.syncSpaceId,
+      snapshotClass: bundle.snapshotClass,
+      genesisBaselineId: bundle.genesisBaselineId,
+      rootHash: '',
+      policyHash,
+      capturedAt: bundle.capturedAt,
+      shardDescriptors: selectedDescriptors.map((descriptor) => ({
+        replicationLaneId: descriptor.replicationLaneId,
+        contentHash: descriptor.contentHash,
+        frontierJson: descriptor.frontierJson
+      })),
+      coverage,
+      hashSchemaVersion: SNAPSHOT_HASH_SCHEMA_VERSION,
+      schemaVersion: 1,
+      snapshotEpoch: 1,
+      crossDbCutId: session.crossDbCutId,
+      requiredCoreShardIds: ['AUTH', 'CORE_META'],
+      coverageCommitment: bundle.snapshotClass === 'BOOTSTRAP_RECOVERY'
+        ? snapshotCoverageCommitment(coverage)
+        : null,
+      authStabilityCheckpoint: bundle.authStabilityCheckpointId ?? null,
+      authorDeviceId,
+      authorSignature: null
+    }
+    const rootHash = snapshotRootHash(snapshotBundleFromStreamManifest(unsigned, lightweightShards))
+    if (!isScoped && rootHash !== bundle.rootHash) {
+      throw new Error('SNAPSHOT_CORRUPTED: persisted Snapshot rootHash does not match streamed manifest')
+    }
+    const withRoot = { ...unsigned, rootHash }
+    const authorSignature = this.signingKeys.signChunksBase64(
+      authorDeviceId,
+      snapshotSigningChunks(withRoot, (lane) => this.exportStreamShard(bundle.snapshotBundleId, lane))
+    )
+    return { ...withRoot, authorSignature }
   }
 
   /**
@@ -575,6 +697,21 @@ export class DesktopGenesisSnapshotService {
     now = Date.now(),
     selectedLanes?: ReadonlySet<SyncReplicationLane>
   ): SyncSnapshotBundleWire {
+    const promotedBundleId = this.promoteToGcBaselinePersisted(
+      snapshotBundleId,
+      checkpointId,
+      now,
+      selectedLanes
+    )
+    return this.exportWire(promotedBundleId)
+  }
+
+  promoteToGcBaselinePersisted(
+    snapshotBundleId: string,
+    checkpointId: string,
+    now = Date.now(),
+    selectedLanes?: ReadonlySet<SyncReplicationLane>
+  ): string {
     if (!checkpointId.trim()) throw new Error('GC_BASELINE requires AuthStabilityCheckpoint')
     const bundle = this.runtime.findSnapshotBundle(snapshotBundleId)
     if (!bundle) throw new Error('Snapshot bundle not found: ' + snapshotBundleId)
@@ -594,12 +731,12 @@ export class DesktopGenesisSnapshotService {
       throw new Error('AuthStabilityCheckpoint has no acceptedPrefixByActorLane')
     }
 
-    const currentWire = this.exportWire(snapshotBundleId, selectedLanes)
+    const currentManifest = this.exportStreamManifest(snapshotBundleId, selectedLanes)
     const accepted = acceptedRaw as SyncCoverage
-    if (!coverageDominates(accepted, currentWire.coverage)) {
+    if (!coverageDominates(accepted, currentManifest.coverage)) {
       throw new Error('GC_BASELINE Snapshot exceeds stable authorized coverage')
     }
-    for (const [lane, actors] of Object.entries(currentWire.coverage)) {
+    for (const [lane, actors] of Object.entries(currentManifest.coverage)) {
       for (const [actor, prefix] of Object.entries(actors)) {
         const provisional = this.database.prepare(`
           SELECT 1 FROM sync_inbox_operation
@@ -614,7 +751,13 @@ export class DesktopGenesisSnapshotService {
       }
     }
 
-    return this.promoteSnapshotVariant(bundle, currentWire, 'GC_BASELINE', checkpointId, now)
+    return this.promoteSnapshotVariantFromManifest(
+      bundle,
+      currentManifest,
+      'GC_BASELINE',
+      checkpointId,
+      now
+    )
   }
 
   promoteToBootstrapRecovery(
@@ -623,6 +766,21 @@ export class DesktopGenesisSnapshotService {
     now = Date.now(),
     selectedLanes?: ReadonlySet<SyncReplicationLane>
   ): SyncSnapshotBundleWire {
+    const promotedBundleId = this.promoteToBootstrapRecoveryPersisted(
+      snapshotBundleId,
+      checkpointId,
+      now,
+      selectedLanes
+    )
+    return this.exportWire(promotedBundleId)
+  }
+
+  promoteToBootstrapRecoveryPersisted(
+    snapshotBundleId: string,
+    checkpointId: string,
+    now = Date.now(),
+    selectedLanes?: ReadonlySet<SyncReplicationLane>
+  ): string {
     if (!checkpointId.trim()) throw new Error('BOOTSTRAP_RECOVERY requires AuthStabilityCheckpoint')
     const bundle = this.runtime.findSnapshotBundle(snapshotBundleId)
     if (!bundle) throw new Error('Snapshot bundle not found: ' + snapshotBundleId)
@@ -635,18 +793,57 @@ export class DesktopGenesisSnapshotService {
       throw new Error('BOOTSTRAP_RECOVERY must reference the current AuthStabilityCheckpoint')
     }
     const payload = JSON.parse(checkpoint.payloadJson) as Record<string, unknown>
-    const currentWire = this.exportWire(snapshotBundleId, selectedLanes)
-    if (payload.acceptedSnapshotBundleId !== currentWire.snapshotBundleId) {
-      throw new Error('Recovery checkpoint does not accept Snapshot ' + currentWire.snapshotBundleId)
+    const currentManifest = this.exportStreamManifest(snapshotBundleId, selectedLanes)
+    if (payload.acceptedSnapshotBundleId !== currentManifest.snapshotBundleId) {
+      throw new Error('Recovery checkpoint does not accept Snapshot ' + currentManifest.snapshotBundleId)
     }
     const accepted = payload.acceptedPrefixByActorLane
     if (!accepted || typeof accepted !== 'object' || Array.isArray(accepted)) {
       throw new Error('AuthStabilityCheckpoint has no acceptedPrefixByActorLane')
     }
-    if (!coverageDominates(accepted as SyncCoverage, currentWire.coverage)) {
+    if (!coverageDominates(accepted as SyncCoverage, currentManifest.coverage)) {
       throw new Error('BOOTSTRAP_RECOVERY Snapshot exceeds stable authorized coverage')
     }
-    return this.promoteSnapshotVariant(bundle, currentWire, 'BOOTSTRAP_RECOVERY', checkpointId, now)
+    return this.promoteSnapshotVariantFromManifest(
+      bundle,
+      currentManifest,
+      'BOOTSTRAP_RECOVERY',
+      checkpointId,
+      now
+    )
+  }
+
+  private promoteSnapshotVariantFromManifest(
+    baseBundle: SyncSnapshotBundleRecord,
+    currentManifest: SyncSnapshotStreamManifestWire,
+    snapshotClass: 'GC_BASELINE' | 'BOOTSTRAP_RECOVERY',
+    checkpointId: string,
+    now: number
+  ): string {
+    const selectedLanes = new Set(
+      currentManifest.shardDescriptors.map((descriptor) => descriptor.replicationLaneId)
+    )
+    const baseShards = this.runtime.listSnapshotShards(baseBundle.snapshotBundleId)
+      .filter((shard) => selectedLanes.has(shard.replicationLaneId))
+    const promotedBundle: SyncSnapshotBundleRecord = {
+      ...baseBundle,
+      snapshotBundleId: currentManifest.snapshotBundleId,
+      snapshotClass,
+      policyHash: currentManifest.policyHash,
+      rootHash: currentManifest.rootHash,
+      authStabilityCheckpointId: checkpointId,
+      createdAt: now
+    }
+    this.runtime.transaction(() => {
+      this.runtime.upsertSnapshotBundle(promotedBundle)
+      for (const shard of baseShards) {
+        this.runtime.upsertSnapshotShard({
+          ...shard,
+          snapshotBundleId: currentManifest.snapshotBundleId
+        })
+      }
+    })
+    return currentManifest.snapshotBundleId
   }
 
   private promoteSnapshotVariant(

@@ -31,12 +31,14 @@
     "test:gate:d8": "npm run test:gate:d8:unit && npm run build && npm run test:gate:d8:e2e && git diff --check",
     "test:web-search:live": "node scripts/run-web-search-live-smoke.mjs",
     "test:web-search:configured": "node scripts/web-search-configured-live-smoke.mjs",
+    "sync-server": "npm run build:sync-server && node out/sync-server/cli.mjs",
     "test:e2e": "npm run build && playwright test tests/e2e",
     "build": "npm run typecheck && electron-vite build",
     "package": "npm run build && electron-builder --publish never",
     "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "package:mac": "npm run build && electron-builder --mac dmg --arm64 --publish never",
-    "package:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never"
+    "package:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never",
+    "build:sync-server": "node scripts/build-sync-server.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
@@ -51,6 +53,7 @@
     "react-dom": "^19.2.8",
     "react-i18next": "^17.0.11",
     "rss-parser": "^3.13.0",
+    "selfsigned": "5.5.0",
     "unzipper": "^0.12.5"
   },
   "devDependencies": {
@@ -63,6 +66,7 @@
     "electron": "^43.4.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
+    "esbuild": "^0.25.12",
     "typescript": "^7.0.2",
     "vite": "^7.3.6",
     "vitest": "^4.1.10"

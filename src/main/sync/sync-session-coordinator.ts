@@ -8,7 +8,9 @@ import type {
   SyncOperationEnvelope,
   SyncPeerCapabilities,
   SyncPolicyByLane,
-  SyncSnapshotBundleWire
+  SyncSnapshotBundleWire,
+  SyncSnapshotShardWire,
+  SyncSnapshotStreamManifestWire
 } from '../../shared/sync-protocol'
 import {
   coverageDominates,
@@ -41,8 +43,14 @@ import {
   SYNC_REPLICATION_LANES,
   type SyncReplicationLane
 } from '../../shared/sync-runtime'
+import {
+  snapshotBundleFromStreamManifest,
+  snapshotStreamManifestFromBundle,
+  snapshotStreamManifestIdentityJson
+} from './sync-snapshot-wire'
 
 import { SyncLocalLanePolicy } from './sync-local-lane-policy'
+import type { SyncSessionProgress } from './sync-run-history'
 
 const KNOWN_REPLICATION_LANES = new Set<string>(SYNC_REPLICATION_LANES)
 
@@ -58,6 +66,7 @@ export interface SyncSessionRunOptions extends Omit<SyncIngestOptions, 'now'> {
   maxOperations?: number
   maxBatches?: number
   now?: number
+  onProgress?: (progress: SyncSessionProgress) => Promise<void> | void
 }
 
 export interface SyncSessionRunResult {
@@ -69,6 +78,8 @@ export interface SyncSessionRunResult {
   diagnostics: SyncDiagnostic[]
   remotePolicyByLane: SyncPolicyByLane
   remoteCapabilities: SyncPeerCapabilities | null
+  blobBytesSent: number
+  blobBytesReceived: number
 }
 
 /** Anti-entropy coordinator shared by LAN and Server sessions. */
@@ -97,6 +108,13 @@ export class SyncSessionCoordinator {
 
   private async runInternal(syncSpaceId: string, session: SyncEndpointSession, options: SyncSessionRunOptions): Promise<SyncSessionRunResult> {
     const now = options.now ?? Date.now()
+    const report = async (progress: SyncSessionProgress): Promise<void> => {
+      try {
+        await options.onProgress?.(progress)
+      } catch {
+        // Persistent progress is diagnostic state and must not break the Sync Core run.
+      }
+    }
     const blobState = new DesktopSyncBlobStateService(this.runtime.databaseHandle())
     const localPolicy = { ...new SyncLocalLanePolicy(this.runtime.databaseHandle()).read(syncSpaceId), ...options.localPolicyByLane }
     for (const lane of ['CORE_META', 'AUTH'] as const) {
@@ -108,9 +126,24 @@ export class SyncSessionCoordinator {
     const maxBatches = options.maxBatches ?? 20
     if (!Number.isSafeInteger(maxOperations) || maxOperations <= 0 || !Number.isSafeInteger(maxBatches) || maxBatches <= 0) throw new Error('Invalid sync batch limit')
 
+    await report({ stage: 'NEGOTIATING' })
     const negotiation = await session.negotiateProtocolAndCapabilities()
     if (negotiation.syncSpaceId !== syncSpaceId) {
       throw new Error('Sync session negotiated a different Sync Space')
+    }
+    const localDevice = this.runtime.findDeviceIdentity()
+    if (!localDevice) throw new Error('Sync Device Identity is not initialized')
+    if (negotiation.localDeviceId !== localDevice.deviceId) {
+      throw new Error('Sync session reflected a different local device identity')
+    }
+    if (!negotiation.remoteDeviceId || negotiation.remoteDeviceId === localDevice.deviceId) {
+      throw new Error('Sync session negotiated an invalid remote device identity')
+    }
+    if (options.endpointId?.startsWith('lan:')) {
+      const expectedRemoteDeviceId = options.endpointId.slice('lan:'.length)
+      if (negotiation.remoteDeviceId !== expectedRemoteDeviceId) {
+        throw new Error('LAN endpoint identity does not match the negotiated remote device')
+      }
     }
 
     if (!negotiation.capabilities.protocolVersions.includes(1)) throw new Error('Unsupported sync protocol')
@@ -120,8 +153,11 @@ export class SyncSessionCoordinator {
       }
     }
     if (!Number.isSafeInteger(negotiation.capabilities.maxOperationBatch) || negotiation.capabilities.maxOperationBatch <= 0) throw new Error('Invalid remote operation batch limit')
+    if (!Number.isSafeInteger(negotiation.capabilities.maxBlobChunkBytes) || negotiation.capabilities.maxBlobChunkBytes <= 0) throw new Error('Invalid remote Blob chunk limit')
     maxOperations = Math.min(maxOperations, negotiation.capabilities.maxOperationBatch)
+    const maxBlobChunkBytes = Math.min(1024 * 1024, negotiation.capabilities.maxBlobChunkBytes)
 
+    await report({ stage: 'AUTHORIZING', remoteDeviceId: negotiation.remoteDeviceId })
     const exchangeAuth = async (): Promise<void> => {
       if (Boolean(session.getAuthLedger) !== Boolean(session.pushAuthObjects)) throw new Error('Incomplete AUTH endpoint')
       if (session.getAuthLedger && session.pushAuthObjects) {
@@ -171,6 +207,23 @@ export class SyncSessionCoordinator {
     const deferredOperationIds: string[] = [...preflightDeferredOperationIds]
     const rejectedOperationIds: string[] = []
     const diagnostics: SyncDiagnostic[] = []
+    let blobBytesSent = 0
+    let blobBytesReceived = 0
+    const verifiedBlobPath = (hash: string): string | null => {
+      const path = this.localBlobStore?.getBlobPath(hash) ?? null
+      return path && this.localBlobStore?.verifyFile(hash, path) ? path : null
+    }
+    const reportStage = async (stage: string): Promise<void> => report({
+      stage,
+      remoteDeviceId: negotiation.remoteDeviceId,
+      pushedOperations: pushedOperationIds.length,
+      pulledOperations: pulledOperationIds.length,
+      appliedOperations: appliedOperationIds.length,
+      rejectedOperations: rejectedOperationIds.length,
+      blobBytesSent,
+      blobBytesReceived
+    })
+    await reportStage('PREPARING')
 
     const uploadReferencedBlobs = async (operations: readonly SyncOperationEnvelope[]): Promise<void> => {
       const transferred = new Set<string>()
@@ -182,19 +235,21 @@ export class SyncSessionCoordinator {
           if (!negotiation.capabilities.blobTransfer || !this.blobTransfer || !this.localBlobStore) {
             throw new Error('Remote endpoint or local runtime does not support required Blob transfer')
           }
-          const bytes = this.localBlobStore.readVerified(reference.manifest.hash)
-          if (!bytes || bytes.byteLength !== reference.manifest.totalBytes) {
+          const path = verifiedBlobPath(reference.manifest.hash)
+          if (!path) {
             throw new Error('Local operation references an unavailable Blob')
           }
-          await this.blobTransfer.upload(
+          await this.blobTransfer.uploadFile(
             syncSpaceId,
             reference.manifest,
-            bytes,
+            path,
             session,
             remoteState.policyByLane,
-            Math.max(1, negotiation.capabilities.maxBlobChunkBytes),
-            now
+            maxBlobChunkBytes,
+            now,
+            (sent) => { blobBytesSent += sent }
           )
+          await reportStage('SYNCING_BLOBS')
         }
       }
     }
@@ -218,7 +273,7 @@ export class SyncSessionCoordinator {
           ) continue
           if (transferred.has(reference.manifest.hash)) continue
           transferred.add(reference.manifest.hash)
-          if (this.localBlobStore?.readVerified(reference.manifest.hash)) continue
+          if (verifiedBlobPath(reference.manifest.hash)) continue
           const canApplyWithoutBlob =
             this.businessApplier?.canApplyWithoutBlob(operation.entityType, reference.referenceKind) ?? false
           if (!negotiation.capabilities.blobTransfer || !this.blobTransfer || !this.localBlobStore) {
@@ -226,29 +281,47 @@ export class SyncSessionCoordinator {
             throw new Error('Remote endpoint or local runtime does not support required Blob transfer')
           }
           try {
-            await this.blobTransfer.fetch(
-              syncSpaceId,
-              reference.manifest,
-              session,
-              remoteState.policyByLane,
-              (bytes) => {
-                if (this.businessApplier) {
-                  this.businessApplier.persistFetchedBlob(
-                    operation.syncSpaceId,
-                    operation.entityType,
-                    operation.entitySyncId,
-                    operation.entityGeneration,
-                    reference.referenceKind,
-                    reference.manifest,
-                    bytes
-                  )
-                } else {
-                  this.localBlobStore!.putVerified(reference.manifest.hash, bytes)
-                }
-              },
-              Math.max(1, negotiation.capabilities.maxBlobChunkBytes),
-              now
-            )
+            if (operation.entityType === 'article') {
+              await this.blobTransfer.fetchToFile(
+                syncSpaceId,
+                reference.manifest,
+                session,
+                remoteState.policyByLane,
+                this.localBlobStore.createStagingPath(reference.manifest.hash),
+                (path) => {
+                  this.localBlobStore!.installVerifiedFile(reference.manifest.hash, path)
+                },
+                maxBlobChunkBytes,
+                now,
+                (received) => { blobBytesReceived += received }
+              )
+            } else {
+              await this.blobTransfer.fetch(
+                syncSpaceId,
+                reference.manifest,
+                session,
+                remoteState.policyByLane,
+                (bytes) => {
+                  if (this.businessApplier) {
+                    this.businessApplier.persistFetchedBlob(
+                      operation.syncSpaceId,
+                      operation.entityType,
+                      operation.entitySyncId,
+                      operation.entityGeneration,
+                      reference.referenceKind,
+                      reference.manifest,
+                      bytes
+                    )
+                  } else {
+                    this.localBlobStore!.putVerified(reference.manifest.hash, bytes)
+                  }
+                },
+                maxBlobChunkBytes,
+                now,
+                (received) => { blobBytesReceived += received }
+              )
+            }
+            await reportStage('SYNCING_BLOBS')
           } catch (error) {
             transferred.delete(reference.manifest.hash)
             if (!canApplyWithoutBlob) throw error
@@ -341,42 +414,186 @@ export class SyncSessionCoordinator {
               this.businessApplier?.canApplyWithoutBlob(reference.ownerEntityType, reference.referenceKind) === true
             )
           transferred.add(manifest.hash)
-          if (this.localBlobStore?.readVerified(manifest.hash)) continue
+          if (verifiedBlobPath(manifest.hash)) continue
           if (!negotiation.capabilities.blobTransfer || !this.blobTransfer || !this.localBlobStore) {
             if (canApplyWithoutBlob) continue
             throw new Error('REBASE_UNSAFE: required Snapshot Blob transfer is unavailable')
           }
           try {
-            await this.blobTransfer.fetch(
-              syncSpaceId,
-              manifest,
-              session,
-              remoteState.policyByLane,
-              (bytes) => {
-                if (this.businessApplier && fetchOwners.length > 0) {
-                  for (const reference of fetchOwners) {
-                    this.businessApplier.persistFetchedBlob(
-                      syncSpaceId,
-                      reference.ownerEntityType,
-                      reference.ownerEntitySyncId,
-                      reference.ownerEntityGeneration,
-                      reference.referenceKind,
-                      manifest,
-                      bytes
-                    )
+            if (fetchOwners.every((reference) => reference.ownerEntityType === 'article')) {
+              await this.blobTransfer.fetchToFile(
+                syncSpaceId,
+                manifest,
+                session,
+                remoteState.policyByLane,
+                this.localBlobStore.createStagingPath(manifest.hash),
+                (path) => {
+                  this.localBlobStore!.installVerifiedFile(manifest.hash, path)
+                },
+                maxBlobChunkBytes,
+                now,
+                (received) => { blobBytesReceived += received }
+              )
+            } else {
+              await this.blobTransfer.fetch(
+                syncSpaceId,
+                manifest,
+                session,
+                remoteState.policyByLane,
+                (bytes) => {
+                  if (this.businessApplier && fetchOwners.length > 0) {
+                    for (const reference of fetchOwners) {
+                      this.businessApplier.persistFetchedBlob(
+                        syncSpaceId,
+                        reference.ownerEntityType,
+                        reference.ownerEntitySyncId,
+                        reference.ownerEntityGeneration,
+                        reference.referenceKind,
+                        manifest,
+                        bytes
+                      )
+                    }
+                  } else {
+                    this.localBlobStore!.putVerified(manifest.hash, bytes)
                   }
-                } else {
-                  this.localBlobStore!.putVerified(manifest.hash, bytes)
-                }
-              },
-              Math.max(1, negotiation.capabilities.maxBlobChunkBytes),
-              now
-            )
+                },
+                maxBlobChunkBytes,
+                now,
+                (received) => { blobBytesReceived += received }
+              )
+            }
+            await reportStage('SYNCING_BLOBS')
           } catch (error) {
             transferred.delete(manifest.hash)
             if (!canApplyWithoutBlob) throw error
           }
         }
+      }
+    }
+
+    const stageRemoteSnapshotStream = async (
+      manifest: SyncSnapshotStreamManifestWire,
+      selectedLanes: ReadonlySet<string>
+    ): Promise<(lane: string) => SyncSnapshotShardWire> => {
+      if (!session.fetchSnapshotStreamShard) {
+        throw new Error('REBASE_UNSAFE: endpoint cannot provide streamed Snapshot shards')
+      }
+      if (manifest.syncSpaceId !== syncSpaceId) {
+        throw new Error('REBASE_UNSAFE: streamed Snapshot belongs to a different Sync Space')
+      }
+      const manifestLanes = new Set(
+        manifest.shardDescriptors.map((descriptor) => descriptor.replicationLaneId)
+      )
+      if ([...selectedLanes].some((lane) => !manifestLanes.has(lane))) {
+        throw new Error('REBASE_UNSAFE: streamed Snapshot is outside the negotiated lane policy')
+      }
+
+      const manifestJson = JSON.stringify(manifest)
+      const existing = this.runtime.findSnapshotStreamStage(syncSpaceId, manifest.snapshotBundleId)
+      let existingManifestMatches = false
+      if (existing) {
+        try {
+          existingManifestMatches =
+            snapshotStreamManifestIdentityJson(JSON.parse(existing.manifestJson) as SyncSnapshotStreamManifestWire) ===
+              snapshotStreamManifestIdentityJson(manifest)
+        } catch {
+          existingManifestMatches = false
+        }
+      }
+      if (
+        existing &&
+        (
+          existing.transportPeerDeviceId !== negotiation.remoteDeviceId ||
+          !existingManifestMatches
+        )
+      ) {
+        throw new Error('REBASE_UNSAFE: local Snapshot stream staging conflicts with a different source')
+      }
+      const stagedAt = Date.now()
+      this.runtime.upsertSnapshotStreamStage({
+        syncSpaceId,
+        snapshotBundleId: manifest.snapshotBundleId,
+        sourceSnapshotBundleId: manifest.sourceSnapshotBundleId,
+        transportPeerDeviceId: negotiation.remoteDeviceId,
+        manifestJson,
+        state: 'RECEIVING',
+        createdAt: existing?.createdAt ?? stagedAt,
+        updatedAt: stagedAt
+      })
+
+      for (const descriptor of manifest.shardDescriptors) {
+        if (!selectedLanes.has(descriptor.replicationLaneId)) continue
+        let shard: SyncSnapshotShardWire | null = null
+        const staged = this.runtime.findSnapshotStreamShard(
+          syncSpaceId,
+          manifest.snapshotBundleId,
+          descriptor.replicationLaneId
+        )
+        if (staged?.contentHash === descriptor.contentHash) {
+          try {
+            const parsed = JSON.parse(staged.shardJson) as SyncSnapshotShardWire
+            if (
+              parsed.replicationLaneId === descriptor.replicationLaneId &&
+              parsed.contentHash === descriptor.contentHash &&
+              parsed.frontierJson === descriptor.frontierJson
+            ) {
+              shard = parsed
+            }
+          } catch {
+            shard = null
+          }
+        }
+        if (!shard) {
+          shard = await session.fetchSnapshotStreamShard(
+            manifest.sourceSnapshotBundleId,
+            descriptor.replicationLaneId
+          )
+          if (
+            shard.replicationLaneId !== descriptor.replicationLaneId ||
+            shard.contentHash !== descriptor.contentHash ||
+            shard.frontierJson !== descriptor.frontierJson
+          ) {
+            throw new Error(
+              'SNAPSHOT_CORRUPTED: fetched streamed shard does not match its signed descriptor'
+            )
+          }
+          this.runtime.upsertSnapshotStreamShard({
+            syncSpaceId,
+            snapshotBundleId: manifest.snapshotBundleId,
+            replicationLaneId: descriptor.replicationLaneId,
+            contentHash: descriptor.contentHash,
+            shardJson: JSON.stringify(shard),
+            updatedAt: Date.now()
+          })
+        }
+        await fetchSnapshotBlobs(
+          snapshotBundleFromStreamManifest(manifest, [shard]),
+          new Set([descriptor.replicationLaneId])
+        )
+      }
+
+      this.runtime.upsertSnapshotStreamStage({
+        syncSpaceId,
+        snapshotBundleId: manifest.snapshotBundleId,
+        sourceSnapshotBundleId: manifest.sourceSnapshotBundleId,
+        transportPeerDeviceId: negotiation.remoteDeviceId,
+        manifestJson,
+        state: 'READY',
+        createdAt: existing?.createdAt ?? stagedAt,
+        updatedAt: Date.now()
+      })
+
+      const descriptorsByLane = new Map(
+        manifest.shardDescriptors.map((descriptor) => [descriptor.replicationLaneId, descriptor])
+      )
+      return (lane: string): SyncSnapshotShardWire => {
+        const descriptor = descriptorsByLane.get(lane)
+        if (!descriptor) throw new Error('SNAPSHOT_CORRUPTED: descriptor is missing for lane ' + lane)
+        const row = this.runtime.findSnapshotStreamShard(syncSpaceId, manifest.snapshotBundleId, lane)
+        if (!row || row.contentHash !== descriptor.contentHash) {
+          throw new Error('SNAPSHOT_CORRUPTED: staged shard is missing or changed for lane ' + lane)
+        }
+        return JSON.parse(row.shardJson) as SyncSnapshotShardWire
       }
     }
 
@@ -442,8 +659,8 @@ export class SyncSessionCoordinator {
             remoteStatus.persistedAt != null
           if (alreadyDurable) continue
 
-          const bytes = this.localBlobStore?.readVerified(manifest.hash) ?? null
-          if (!bytes) {
+          const path = verifiedBlobPath(manifest.hash)
+          if (!path) {
             if (manifest.durability === 'SYNC_DURABLE') {
               throw new Error('REBASE_UNSAFE: durable Snapshot Blob ' + manifest.hash + ' has no recoverable replica')
             }
@@ -455,17 +672,95 @@ export class SyncSessionCoordinator {
             }
             continue
           }
-          await this.blobTransfer.upload(
+          await this.blobTransfer.uploadFile(
             syncSpaceId,
             manifest,
-            bytes,
+            path,
             session,
             remoteState.policyByLane,
-            Math.max(1, negotiation.capabilities.maxBlobChunkBytes),
-            now
+            maxBlobChunkBytes,
+            now,
+            (sent) => { blobBytesSent += sent }
           )
+          await reportStage('SYNCING_BLOBS')
         }
       }
+    }
+
+    const uploadPersistedSnapshotBlobs = async (
+      snapshotBundleId: string,
+      selectedLanes: ReadonlySet<SyncReplicationLane>
+    ): Promise<void> => {
+      if (!this.genesisSnapshotService) throw new Error('Snapshot exporter is not configured')
+      const manifest = this.genesisSnapshotService.exportStreamManifest(snapshotBundleId, selectedLanes)
+      for (const descriptor of manifest.shardDescriptors) {
+        const shard = this.genesisSnapshotService.exportStreamShard(
+          manifest.sourceSnapshotBundleId,
+          descriptor.replicationLaneId
+        )
+        await uploadSnapshotBlobs(
+          snapshotBundleFromStreamManifest(manifest, [shard]),
+          new Set([descriptor.replicationLaneId])
+        )
+      }
+    }
+
+    const pushSnapshotUsingNegotiatedTransport = async (
+      snapshot: SyncSnapshotBundleWire
+    ): Promise<void> => {
+      const canStream =
+        negotiation.capabilities.streamingSnapshots === true &&
+        Boolean(session.pushSnapshotStreamManifest) &&
+        Boolean(session.pushSnapshotStreamShard) &&
+        Boolean(session.commitSnapshotStream)
+      if (
+        canStream &&
+        session.pushSnapshotStreamManifest &&
+        session.pushSnapshotStreamShard &&
+        session.commitSnapshotStream
+      ) {
+        const manifest = snapshotStreamManifestFromBundle(snapshot)
+        await session.pushSnapshotStreamManifest(manifest)
+        for (const shard of snapshot.shards) {
+          await session.pushSnapshotStreamShard(manifest.snapshotBundleId, shard)
+        }
+        await session.commitSnapshotStream(manifest.snapshotBundleId)
+        return
+      }
+      if (!session.pushSnapshot) {
+        throw new Error('Snapshot transport is not supported by this endpoint')
+      }
+      await session.pushSnapshot(snapshot)
+    }
+
+    const pushPersistedSnapshotUsingNegotiatedTransport = async (
+      snapshotBundleId: string,
+      selectedLanes: ReadonlySet<SyncReplicationLane>
+    ): Promise<string> => {
+      if (!this.genesisSnapshotService) throw new Error('Snapshot exporter is not configured')
+      if (
+        negotiation.capabilities.streamingSnapshots === true &&
+        session.pushSnapshotStreamManifest &&
+        session.pushSnapshotStreamShard &&
+        session.commitSnapshotStream
+      ) {
+        const manifest = this.genesisSnapshotService.exportStreamManifest(snapshotBundleId, selectedLanes)
+        await session.pushSnapshotStreamManifest(manifest)
+        for (const descriptor of manifest.shardDescriptors) {
+          await session.pushSnapshotStreamShard(
+            manifest.snapshotBundleId,
+            this.genesisSnapshotService.exportStreamShard(
+              manifest.sourceSnapshotBundleId,
+              descriptor.replicationLaneId
+            )
+          )
+        }
+        await session.commitSnapshotStream(manifest.snapshotBundleId)
+        return manifest.snapshotBundleId
+      }
+      const wire = this.genesisSnapshotService.exportWire(snapshotBundleId, selectedLanes)
+      await pushSnapshotUsingNegotiatedTransport(wire)
+      return wire.snapshotBundleId
     }
 
     const retryMissingAppliedBlobs = async (): Promise<void> => {
@@ -482,7 +777,25 @@ export class SyncSessionCoordinator {
           )
         )
         if (!owners.length) continue
-        const localBytes = this.localBlobStore?.readVerified(candidate.manifest.hash) ?? null
+        const articleOnly = owners.every((owner) =>
+          owner.ownerEntityType === 'article' &&
+          owner.referenceKind === SYNC_ARTICLE_FULL_CONTENT_REFERENCE_KIND
+        )
+        const localPath = articleOnly ? this.localBlobStore?.getBlobPath(candidate.manifest.hash) ?? null : null
+        if (
+          articleOnly &&
+          localPath &&
+          this.localBlobStore?.verifyFile(candidate.manifest.hash, localPath)
+        ) {
+          this.businessApplier.materializeArticleBlobOwnersFromLocal(
+            syncSpaceId,
+            candidate.manifest,
+            owners
+          )
+          blobState.markReadyVerified(candidate.manifest.hash, candidate.manifest.totalBytes, now)
+          continue
+        }
+        const localBytes = articleOnly ? null : this.localBlobStore?.readVerified(candidate.manifest.hash) ?? null
         if (localBytes && localBytes.byteLength === candidate.manifest.totalBytes) {
           for (const owner of owners) {
             this.businessApplier.persistAndMaterializeFetchedBlob(
@@ -500,27 +813,50 @@ export class SyncSessionCoordinator {
         }
         if (!negotiation.capabilities.blobTransfer || !this.blobTransfer || !this.localBlobStore) continue
         try {
-          await this.blobTransfer.fetch(
-            syncSpaceId,
-            candidate.manifest,
-            session,
-            remoteState.policyByLane,
-            (bytes) => {
-              for (const owner of owners) {
-                this.businessApplier!.persistAndMaterializeFetchedBlob(
+          if (articleOnly) {
+            await this.blobTransfer.fetchToFile(
+              syncSpaceId,
+              candidate.manifest,
+              session,
+              remoteState.policyByLane,
+              this.localBlobStore.createStagingPath(candidate.manifest.hash),
+              (path) => {
+                this.localBlobStore!.installVerifiedFile(candidate.manifest.hash, path)
+                this.businessApplier!.materializeArticleBlobOwnersFromLocal(
                   syncSpaceId,
-                  owner.ownerEntityType,
-                  owner.ownerEntitySyncId,
-                  owner.ownerEntityGeneration,
-                  owner.referenceKind,
                   candidate.manifest,
-                  bytes
+                  owners
                 )
-              }
-            },
-            Math.max(1, negotiation.capabilities.maxBlobChunkBytes),
-            now
-          )
+              },
+              maxBlobChunkBytes,
+              now,
+              (received) => { blobBytesReceived += received }
+            )
+          } else {
+            await this.blobTransfer.fetch(
+              syncSpaceId,
+              candidate.manifest,
+              session,
+              remoteState.policyByLane,
+              (bytes) => {
+                for (const owner of owners) {
+                  this.businessApplier!.persistAndMaterializeFetchedBlob(
+                    syncSpaceId,
+                    owner.ownerEntityType,
+                    owner.ownerEntitySyncId,
+                    owner.ownerEntityGeneration,
+                    owner.referenceKind,
+                    candidate.manifest,
+                    bytes
+                  )
+                }
+              },
+              maxBlobChunkBytes,
+              now,
+              (received) => { blobBytesReceived += received }
+            )
+          }
+          await reportStage('SYNCING_BLOBS')
         } catch {
           // Metadata stays materialized; a later endpoint/session can recover the attachment.
         }
@@ -555,6 +891,7 @@ export class SyncSessionCoordinator {
         if (batch >= maxBatches) throw new Error('Sync push batch budget exhausted; retry to continue')
         const envelopes = records.map((operation) => toSyncOperationEnvelope(operation))
         await uploadReferencedBlobs(envelopes)
+        await reportStage('SYNCING_OPERATIONS')
         const result = await session.pushOperations(envelopes)
         const expected = new Set(records.map((operation) => operation.operationId))
         const receipts = [...result.acceptedOperationIds, ...result.duplicateOperationIds]
@@ -567,6 +904,7 @@ export class SyncSessionCoordinator {
           pushedOperationIds.push(id)
         }
         if (result.coverage?.received) received = result.coverage.received
+        await reportStage('SYNCING_OPERATIONS')
       }
     }
 
@@ -574,7 +912,16 @@ export class SyncSessionCoordinator {
       localAccountId: number,
       targetSnapshot?: SyncSnapshotBundleWire
     ): Promise<void> => {
-      if (!this.genesisSnapshotService || !session.pushSnapshot || !session.acceptRecoverySnapshot) {
+      const canStreamSnapshotTransport =
+        negotiation.capabilities.streamingSnapshots === true &&
+        Boolean(session.pushSnapshotStreamManifest) &&
+        Boolean(session.pushSnapshotStreamShard) &&
+        Boolean(session.commitSnapshotStream)
+      if (
+        !this.genesisSnapshotService ||
+        !session.acceptRecoverySnapshot ||
+        (!session.pushSnapshot && !canStreamSnapshotTransport)
+      ) {
         throw new Error('REBASE_UNSAFE: LocalRecoverySnapshot transport is not configured')
       }
       const recoveryCut = this.genesisSnapshotService.run(localAccountId, syncSpaceId, undefined, now)
@@ -584,7 +931,7 @@ export class SyncSessionCoordinator {
       )
       const selectedLaneNames = new Set<string>(selectedLanes)
       let recoveryBundleId = recoveryCut.snapshotBundleId
-      let recoveryPreview = this.genesisSnapshotService.exportWire(
+      let recoveryPreview = this.genesisSnapshotService.exportStreamManifest(
         recoveryCut.snapshotBundleId,
         selectedLanes
       )
@@ -595,13 +942,17 @@ export class SyncSessionCoordinator {
             .filter(([lane]) => selectedLaneNames.has(lane))
         ) as SyncCoverage
         if (!coverageDominates(recoveryPreview.coverage, verifiedTargetCoverage)) {
-          recoveryPreview = this.genesisSnapshotService.mergeRecoverySnapshot(
+          const merged = this.genesisSnapshotService.mergeRecoverySnapshot(
             recoveryBundleId,
             targetSnapshot,
             selectedLanes,
             now
           )
-          recoveryBundleId = recoveryPreview.snapshotBundleId
+          recoveryBundleId = merged.snapshotBundleId
+          recoveryPreview = this.genesisSnapshotService.exportStreamManifest(
+            recoveryBundleId,
+            selectedLanes
+          )
         }
         const scopedTarget = Object.fromEntries(
           Object.entries(verifiedTargetCoverage)
@@ -622,8 +973,8 @@ export class SyncSessionCoordinator {
         filterCoverageByPolicy(remoteState.coverage.retained, remoteState.policyByLane),
         recoveryPreview.coverage
       )) {
-        await uploadSnapshotBlobs(recoveryPreview, selectedLanes)
-        await session.pushSnapshot(recoveryPreview)
+        await uploadPersistedSnapshotBlobs(recoveryBundleId, selectedLanes)
+        await pushPersistedSnapshotUsingNegotiatedTransport(recoveryBundleId, selectedLanes)
         return
       }
       if (!negotiation.capabilities.snapshotClasses.includes('BOOTSTRAP_RECOVERY')) {
@@ -641,18 +992,40 @@ export class SyncSessionCoordinator {
         throw new Error('REBASE_UNSAFE: current device is not OWNER for LocalRecoverySnapshot acceptance')
       }
       await exchangeAuth()
-      const recoveryWire = this.genesisSnapshotService.promoteToBootstrapRecovery(
+      const recoveryBundle = this.genesisSnapshotService.promoteToBootstrapRecoveryPersisted(
         recoveryBundleId,
         acceptance.authObjectId,
         now,
         selectedLanes
       )
-      await uploadSnapshotBlobs(recoveryWire, selectedLanes)
-      await session.pushSnapshot(recoveryWire)
-      await session.acceptRecoverySnapshot(recoveryWire.snapshotBundleId, acceptance)
+      await uploadPersistedSnapshotBlobs(recoveryBundle, selectedLanes)
+      const publishedBundleId = await pushPersistedSnapshotUsingNegotiatedTransport(
+        recoveryBundle,
+        selectedLanes
+      )
+      await session.acceptRecoverySnapshot(publishedBundleId, acceptance)
     }
 
     await pushMissing()
+
+    const pendingMissingGenesisBaselines = (): Array<{ lane: string; baselineId: string }> => {
+      const observed = this.runtime.observedGenesisBaselinesByLane(syncSpaceId)
+      const missing = new Map<string, { lane: string; baselineId: string }>()
+      for (const inbox of this.state.listPendingInbox(syncSpaceId, maxOperations)) {
+        let parsed: SyncOperationEnvelope
+        try { parsed = JSON.parse(inbox.operationJson) as SyncOperationEnvelope } catch { continue }
+        let causal: { observedGenesisBaselinesByLane?: Record<string, unknown> }
+        try { causal = JSON.parse(parsed.causalContextJson) as { observedGenesisBaselinesByLane?: Record<string, unknown> } } catch { continue }
+        for (const [lane, values] of Object.entries(causal.observedGenesisBaselinesByLane ?? {})) {
+          if (!Array.isArray(values)) continue
+          for (const value of values) {
+            if (typeof value !== 'string' || !value || (observed[lane] ?? []).includes(value)) continue
+            missing.set(`${lane}\n${value}`, { lane, baselineId: value })
+          }
+        }
+      }
+      return [...missing.values()]
+    }
 
     const drainApplied = (): void => {
       while (true) {
@@ -664,7 +1037,9 @@ export class SyncSessionCoordinator {
       }
     }
     await fetchPendingReferencedBlobs()
-    drainApplied()
+    // A retained tail can causally depend on a Genesis baseline whose Snapshot frontier is 0.
+    // Do not business-apply that tail before the referenced baseline is materialized locally.
+    if (pendingMissingGenesisBaselines().length === 0) drainApplied()
     // 2. 拉取循环（Pull Loop）：支持分批拉取与 Cursor / History Rewind 自愈
     let pullBatchCount = 0
     let rewindCount = 0
@@ -682,10 +1057,11 @@ export class SyncSessionCoordinator {
         maxOperations
       )
 
-      const needsBaseline = ranges.length === 0 && missingSyncRanges(
+      const needsGenesisBaseline = pendingMissingGenesisBaselines().length > 0
+      const needsBaseline = needsGenesisBaseline || (ranges.length === 0 && missingSyncRanges(
         filterCoverageByPolicy(remoteState.coverage.snapshot, remoteState.policyByLane),
         localCoverage, maxOperations
-      ).length > 0
+      ).length > 0)
       if (ranges.length === 0 && !needsBaseline) break
 
       let page
@@ -712,39 +1088,111 @@ export class SyncSessionCoordinator {
             if (options.localAccountId == null) {
               throw new Error('REBASE_UNSAFE: baseline recovery requires a local account')
             }
-            if (!session.getLatestSnapshot) {
-              throw new Error('REBASE_UNSAFE: endpoint cannot provide a baseline Snapshot')
-            }
             const lanes = knownReplicationLanes(negotiation.capabilities.replicationLanes)
               .filter((lane) => laneIsEnabled(remoteState.policyByLane, lane))
-            const snapshot = await session.getLatestSnapshot({ class: 'GC_BASELINE', lanes })
-              ?? await session.getLatestSnapshot({ class: 'WORKING', lanes })
-            if (!snapshot) {
-              // A restored/empty Server can lose both retained history and every Snapshot.
-              // Re-publish the client's durable state through the normal/recovery trust path
-              // instead of requiring the rewound Server to provide data it no longer has.
-              await pushLocalRecoverySnapshot(options.localAccountId)
-            } else {
-              if (!this.snapshotInstaller) {
-                throw new Error('REBASE_UNSAFE: authenticated Snapshot installer is not configured')
-              }
-              const manifestLanes = new Set(snapshot.shards.map((shard) => shard.replicationLaneId))
-              const selectedLanes = new Set(lanes)
-              if (snapshot.syncSpaceId !== syncSpaceId || [...selectedLanes].some((lane) => !manifestLanes.has(lane))) {
-                throw new Error('REBASE_UNSAFE: Snapshot is outside the negotiated space or lane policy')
-              }
-              try {
-                await fetchSnapshotBlobs(snapshot, selectedLanes)
-                const installResult = this.snapshotInstaller.install(options.localAccountId, snapshot, now, selectedLanes)
-                stagedSnapshotBundleId = installResult.snapshotBundleId
-              } catch (installError) {
-                if (installError instanceof SyncLocalRecoverySnapshotRequiredError) {
-                  await pushLocalRecoverySnapshot(options.localAccountId, snapshot)
-                } else {
-                  throw new Error(
-                    'REBASE_UNSAFE: baseline Snapshot installation failed: ' +
-                    (installError instanceof Error ? installError.message : String(installError))
+            const selectedLanes = new Set(lanes)
+            const canStreamSnapshots =
+              negotiation.capabilities.streamingSnapshots === true &&
+              Boolean(session.getLatestSnapshotStreamManifest) &&
+              Boolean(session.fetchSnapshotStreamShard)
+
+            if (canStreamSnapshots && session.getLatestSnapshotStreamManifest) {
+              const manifest =
+                await session.getLatestSnapshotStreamManifest({ class: 'GC_BASELINE', lanes })
+                  ?? await session.getLatestSnapshotStreamManifest({ class: 'WORKING', lanes })
+              if (!manifest) {
+                // A restored/empty Server can lose both retained history and every Snapshot.
+                // Re-publish the client's durable state through the normal/recovery trust path.
+                await pushLocalRecoverySnapshot(options.localAccountId)
+              } else {
+                await reportStage('SYNCING_SNAPSHOT')
+                if (!this.snapshotInstaller) {
+                  throw new Error('REBASE_UNSAFE: authenticated Snapshot installer is not configured')
+                }
+                const manifestLanes = new Set(
+                  manifest.shardDescriptors.map((descriptor) => descriptor.replicationLaneId)
+                )
+                if (
+                  manifest.syncSpaceId !== syncSpaceId ||
+                  [...selectedLanes].some((lane) => !manifestLanes.has(lane))
+                ) {
+                  throw new Error('REBASE_UNSAFE: streamed Snapshot is outside the negotiated space or lane policy')
+                }
+                try {
+                  const shardLoader = await stageRemoteSnapshotStream(manifest, selectedLanes)
+                  const installResult = this.snapshotInstaller.installStream(
+                    options.localAccountId,
+                    manifest,
+                    shardLoader,
+                    now,
+                    selectedLanes
                   )
+                  this.runtime.deleteSnapshotStreamStage(syncSpaceId, manifest.snapshotBundleId)
+                  stagedSnapshotBundleId = installResult.snapshotBundleId
+                  await reportStage('SYNCING_SNAPSHOT')
+                } catch (installError) {
+                  if (installError instanceof SyncLocalRecoverySnapshotRequiredError) {
+                    if (!session.getLatestSnapshot) {
+                      throw new Error(
+                        'REBASE_UNSAFE: recovery merge requires the exact target Snapshot payload'
+                      )
+                    }
+                    const targetSnapshot = await session.getLatestSnapshot({
+                      class: manifest.snapshotClass,
+                      lanes
+                    })
+                    if (
+                      !targetSnapshot ||
+                      targetSnapshot.snapshotBundleId !== manifest.snapshotBundleId ||
+                      targetSnapshot.rootHash !== manifest.rootHash
+                    ) {
+                      throw new Error(
+                        'REBASE_UNSAFE: recovery target changed while streamed baseline was staged'
+                      )
+                    }
+                    await pushLocalRecoverySnapshot(options.localAccountId, targetSnapshot)
+                  } else {
+                    throw new Error(
+                      'REBASE_UNSAFE: streamed baseline Snapshot installation failed: ' +
+                      (installError instanceof Error ? installError.message : String(installError))
+                    )
+                  }
+                }
+              }
+            } else {
+              if (!session.getLatestSnapshot) {
+                throw new Error('REBASE_UNSAFE: endpoint cannot provide a baseline Snapshot')
+              }
+              const snapshot = await session.getLatestSnapshot({ class: 'GC_BASELINE', lanes })
+                ?? await session.getLatestSnapshot({ class: 'WORKING', lanes })
+              if (!snapshot) {
+                // A restored/empty Server can lose both retained history and every Snapshot.
+                // Re-publish the client's durable state through the normal/recovery trust path
+                // instead of requiring the rewound Server to provide data it no longer has.
+                await pushLocalRecoverySnapshot(options.localAccountId)
+              } else {
+                await reportStage('SYNCING_SNAPSHOT')
+                if (!this.snapshotInstaller) {
+                  throw new Error('REBASE_UNSAFE: authenticated Snapshot installer is not configured')
+                }
+                const manifestLanes = new Set(snapshot.shards.map((shard) => shard.replicationLaneId))
+                if (snapshot.syncSpaceId !== syncSpaceId || [...selectedLanes].some((lane) => !manifestLanes.has(lane))) {
+                  throw new Error('REBASE_UNSAFE: Snapshot is outside the negotiated space or lane policy')
+                }
+                try {
+                  await fetchSnapshotBlobs(snapshot, selectedLanes)
+                  const installResult = this.snapshotInstaller.install(options.localAccountId, snapshot, now, selectedLanes)
+                  stagedSnapshotBundleId = installResult.snapshotBundleId
+                  await reportStage('SYNCING_SNAPSHOT')
+                } catch (installError) {
+                  if (installError instanceof SyncLocalRecoverySnapshotRequiredError) {
+                    await pushLocalRecoverySnapshot(options.localAccountId, snapshot)
+                  } else {
+                    throw new Error(
+                      'REBASE_UNSAFE: baseline Snapshot installation failed: ' +
+                      (installError instanceof Error ? installError.message : String(installError))
+                    )
+                  }
                 }
               }
             }
@@ -773,6 +1221,7 @@ export class SyncSessionCoordinator {
         op.sequence >= range.fromSequence && op.sequence <= range.toSequence))) throw new Error('Operation page is outside requested space or ranges')
 
       pulledOperationIds.push(...page.operations.map((op) => op.operationId))
+      await reportStage('SYNCING_OPERATIONS')
       const ingest = this.apply.ingest(page.operations, { resolvePeerKey: options.resolvePeerKey, now })
       if (ingest.rejected.some((item) => !item.rejectionDigest)) throw new Error('Operation page contains unauthenticated or invalid data')
       currentCursor = page.serverCursor ?? null
@@ -793,6 +1242,7 @@ export class SyncSessionCoordinator {
       if (new DesktopAuthLedgerService(this.runtime, this.state, this.apply)
         .issueStabilityCheckpoint(syncSpaceId, this.signer, now)) await exchangeAuth()
       drainApplied()
+      await reportStage('SYNCING_OPERATIONS')
 
       const localState = this.state.getCoverage(syncSpaceId)
       await session.reportAppliedCoverage?.(localState.applied)
@@ -815,6 +1265,7 @@ export class SyncSessionCoordinator {
     }
 
     await retryMissingAppliedBlobs()
+    await reportStage('FINALIZING')
 
     if (
       options.allowStableGc === true &&
@@ -848,35 +1299,35 @@ export class SyncSessionCoordinator {
             .filter((lane) => laneIsEnabled(remoteState.policyByLane, lane))
         )
         const coreLanes = new Set<SyncReplicationLane>(['CORE_META', 'LIBRARY', 'ARTICLE_STATE', 'CONFIG', 'AUTH'])
-        if (session.pushSnapshot && [...selectedLanes].some((lane) => !coreLanes.has(lane))) {
-          const coreBaseline = this.genesisSnapshotService.promoteToGcBaseline(
+        if ([...selectedLanes].some((lane) => !coreLanes.has(lane))) {
+          const coreBaselineBundleId = this.genesisSnapshotService.promoteToGcBaselinePersisted(
             working.snapshotBundleId,
             checkpointId,
             now,
             coreLanes
           )
-          await uploadSnapshotBlobs(coreBaseline, coreLanes)
-          await session.pushSnapshot(coreBaseline)
+          await uploadPersistedSnapshotBlobs(coreBaselineBundleId, coreLanes)
+          await pushPersistedSnapshotUsingNegotiatedTransport(coreBaselineBundleId, coreLanes)
         }
-        let gcBaseline: SyncSnapshotBundleWire | null = null
+        let gcBaselineBundleId: string | null = null
         try {
-          gcBaseline = this.genesisSnapshotService.promoteToGcBaseline(
+          gcBaselineBundleId = this.genesisSnapshotService.promoteToGcBaselinePersisted(
             working.snapshotBundleId,
             checkpointId,
             now,
             selectedLanes
           )
         } catch {
-          gcBaseline = null
+          gcBaselineBundleId = null
         }
-        if (gcBaseline) {
-          if (!session.pushSnapshot) {
-            throw new Error('GC_BASELINE transport is not supported by this Server endpoint')
-          }
+        if (gcBaselineBundleId) {
           // Server persistence is the durability fence; local compaction happens only after it.
-          await uploadSnapshotBlobs(gcBaseline, selectedLanes)
-          await session.pushSnapshot(gcBaseline)
-          this.stableGcCoordinator.compact(gcBaseline.snapshotBundleId, now)
+          await uploadPersistedSnapshotBlobs(gcBaselineBundleId, selectedLanes)
+          const publishedBundleId = await pushPersistedSnapshotUsingNegotiatedTransport(
+            gcBaselineBundleId,
+            selectedLanes
+          )
+          this.stableGcCoordinator.compact(publishedBundleId, now)
           const localReplicaId = this.runtime.findDeviceIdentity()?.deviceId
           if (localReplicaId) {
             this.stableGcCoordinator.sweepUnreferencedBlobs(
@@ -898,7 +1349,9 @@ export class SyncSessionCoordinator {
       rejectedOperationIds,
       diagnostics,
       remotePolicyByLane: remoteState.policyByLane,
-      remoteCapabilities: negotiation.capabilities
+      remoteCapabilities: negotiation.capabilities,
+      blobBytesSent,
+      blobBytesReceived
     }
   }
 }

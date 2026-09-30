@@ -1,8 +1,8 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, powerMonitor, shell, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, powerMonitor, shell, Tray, type IpcMainInvokeEvent } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { IPC_CHANNELS, type AppInfo, type FeedSettingsPatch } from '../shared/contracts'
 import type { SyncEndpointInput, SyncPeerRegistration } from '../shared/sync-control'
 import { resolveBrandName } from '../shared/locale'
@@ -371,6 +371,51 @@ function isTrustedRendererUrl(url: string): boolean {
   })
 }
 
+let isAppQuitting = false
+let appTray: Tray | null = null
+
+function createTray(): void {
+  if (appTray) return
+  const iconPath = join(__dirname, '../../resources/icon.png')
+  if (!existsSync(iconPath)) return
+  try {
+    appTray = new Tray(iconPath)
+    appTray.setToolTip(localizedAppName())
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: '显示主窗口',
+        click: () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.show()
+            mainWindow.focus()
+          } else {
+            createMainWindow()
+          }
+        }
+      },
+      { type: 'separator' },
+      {
+        label: '退出',
+        click: () => {
+          isAppQuitting = true
+          app.quit()
+        }
+      }
+    ])
+    appTray.setContextMenu(contextMenu)
+    appTray.on('double-click', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show()
+        mainWindow.focus()
+      } else {
+        createMainWindow()
+      }
+    })
+  } catch (err) {
+    console.warn('[OrigRead] Failed to initialize system tray:', err)
+  }
+}
+
 function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1440,
@@ -431,6 +476,13 @@ function createMainWindow(): BrowserWindow {
   })
 
   window.once('ready-to-show', () => window.show())
+  // 拦截关闭事件，最小化到托盘常驻后台（U09）
+  window.on('close', (event) => {
+    if (!isAppQuitting) {
+      event.preventDefault()
+      window.hide()
+    }
+  })
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
     originalArticleViewController?.dispose()
@@ -1118,42 +1170,6 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (!periodicSyncScheduler) throw new Error('Periodic sync scheduler is not ready')
     return periodicSyncScheduler.currentState()
-  })
-  ipcMain.handle(IPC_CHANNELS.getSyncStatus, (event) => {
-    assertTrustedSender(event)
-    if (!desktopSyncService) throw new Error('Sync service is not ready')
-    return desktopSyncService.status()
-  })
-  ipcMain.handle(IPC_CHANNELS.activateSyncGenesis, (event) => {
-    assertTrustedSender(event)
-    if (!desktopSyncService) throw new Error('Sync service is not ready')
-    return desktopSyncService.activateGenesis()
-  })
-  ipcMain.handle(IPC_CHANNELS.configureSyncEndpoint, (event, rawInput: unknown) => {
-    assertTrustedSender(event)
-    if (!desktopSyncService) throw new Error('Sync service is not ready')
-    return desktopSyncService.configureEndpoint(validateSyncEndpointInput(rawInput))
-  })
-  ipcMain.handle(IPC_CHANNELS.removeSyncEndpoint, (event, endpointId: unknown) => {
-    assertTrustedSender(event)
-    if (!desktopSyncService) throw new Error('Sync service is not ready')
-    desktopSyncService.removeEndpoint(validateId(endpointId, 'endpointId'))
-  })
-  ipcMain.handle(IPC_CHANNELS.registerSyncPeer, (event, rawInput: unknown) => {
-    assertTrustedSender(event)
-    if (!desktopSyncService) throw new Error('Sync service is not ready')
-    return desktopSyncService.registerPeer(validateSyncPeerRegistration(rawInput))
-  })
-  ipcMain.handle(IPC_CHANNELS.syncNow, async (event, endpointId: unknown) => {
-    assertTrustedSender(event)
-    if (!desktopSyncService) throw new Error('Sync service is not ready')
-    return desktopSyncService.run(validateId(endpointId, 'endpointId'))
-  })
-  ipcMain.handle(IPC_CHANNELS.discoverSyncPeers, async (event, timeoutMs?: unknown) => {
-    assertTrustedSender(event)
-    if (!desktopSyncService) throw new Error('Sync service is not ready')
-    const timeout = timeoutMs === undefined ? 1_500 : validateFiniteNumber(timeoutMs, 'timeoutMs')
-    return desktopSyncService.discoverLan(Math.min(Math.max(timeout, 250), 10_000))
   })
   ipcMain.handle(IPC_CHANNELS.getReaderContent, (event, articleId: unknown, preferFull?: unknown) => {
     assertTrustedSender(event)
@@ -1996,6 +2012,102 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     await shell.openExternal(validateExternalHttpUrl(url))
   })
+  ipcMain.handle(IPC_CHANNELS.getSyncStatus, (event) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    return desktopSyncService.status()
+  })
+  ipcMain.handle(IPC_CHANNELS.getSyncRunHistory, (event, limit: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    const normalizedLimit =
+      limit == null ? 100 : Number.isSafeInteger(limit) ? Math.max(1, Math.min(500, Number(limit))) : 100
+    return desktopSyncService.listRunHistory(normalizedLimit)
+  })
+  ipcMain.handle(IPC_CHANNELS.activateSyncGenesis, async (event) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    return desktopSyncService.activateGenesis()
+  })
+  ipcMain.handle(IPC_CHANNELS.configureSyncEndpoint, (event, input: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    return desktopSyncService.configureEndpoint(validateSyncEndpointInput(input))
+  })
+  ipcMain.handle(IPC_CHANNELS.removeSyncEndpoint, (event, endpointId: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    desktopSyncService.removeEndpoint(validateId(endpointId, 'endpointId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.registerSyncPeer, (event, input: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    return desktopSyncService.registerPeer(validateSyncPeerRegistration(input))
+  })
+  ipcMain.handle(IPC_CHANNELS.syncNow, async (event, endpointId: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    return desktopSyncService.run(validateId(endpointId, 'endpointId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.discoverSyncPeers, async (event, timeoutMs?: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    const timeout = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) ? timeoutMs : 1500
+    return desktopSyncService.discoverLan(timeout)
+  })
+  ipcMain.handle(IPC_CHANNELS.toggleLanSync, async (event, enabled: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    const isEnabled = validateBoolean(enabled, 'enabled')
+    await desktopSyncService.setLanSyncEnabled(isEnabled)
+    return desktopSyncService.status()
+  })
+  ipcMain.handle(IPC_CHANNELS.initiateSyncPairing, async (
+    event,
+    targetHost: unknown,
+    targetPort: unknown,
+    localBindAddress: unknown
+  ) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    const host = validateText(targetHost, 'targetHost', 256)
+    const port = validateFiniteNumber(targetPort, 'targetPort')
+    const bindAddress = localBindAddress == null
+      ? undefined
+      : validateText(localBindAddress, 'localBindAddress', 256)
+    return desktopSyncService.initiatePairing(host, port, bindAddress)
+  })
+  ipcMain.handle(IPC_CHANNELS.confirmSyncPairing, async (event, sessionId: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    return desktopSyncService.confirmPairingSession(validateId(sessionId, 'sessionId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.cancelSyncPairing, async (event, sessionId: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    await desktopSyncService.cancelPairingSession(validateId(sessionId, 'sessionId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.listSyncTrustedDevices, (event) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    return desktopSyncService.listTrustedDevices()
+  })
+  ipcMain.handle(IPC_CHANNELS.revokeSyncTrustedDevice, (event, deviceId: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    return desktopSyncService.revokeTrustedDevice(validateId(deviceId, 'deviceId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.connectManualSyncPeer, async (event, urlOrHost: unknown) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    const target = validateText(urlOrHost, 'urlOrHost', 256)
+    return desktopSyncService.connectManual(target)
+  })
+  ipcMain.handle(IPC_CHANNELS.getSyncDiagnostics, async (event) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    return desktopSyncService.diagnostics()
+  })
 }
 
 function validateId(value: unknown, field: string): string {
@@ -2744,6 +2856,41 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
       }
       const binding = syncRuntimeRepository.findBindingBySpace(syncSpaceId)
       if (!binding || binding.lifecycleState !== 'ACTIVE' || !syncRuntimeRepository.findActiveActor(syncSpaceId)) return
+      const identityReport = syncGenesisService.backfillIdentitiesForSpace(
+        syncSpaceId,
+        binding.localAccountId
+      )
+      if (identityReport.conflicts.length > 0) {
+        throw new Error(`Sync identity reconciliation found ${identityReport.conflicts.length} canonical identity conflict(s)`)
+      }
+      const localLibraryRows = desktopDatabase!.connection.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM groups WHERE account_id=?) +
+          (SELECT COUNT(*) FROM feeds WHERE account_id=?) +
+          (SELECT COUNT(*) FROM articles WHERE account_id=?) AS count
+      `).get(binding.localAccountId, binding.localAccountId, binding.localAccountId) as { count: number }
+      if (Number(localLibraryRows.count) > 0) {
+        const localDeviceId = syncRuntimeRepository.findDeviceIdentity()?.deviceId ?? null
+        if (localDeviceId) {
+          const malformed = desktopDatabase!.connection.prepare(`
+            SELECT MAX(created_at) AS latest_created_at
+            FROM sync_operation_log
+            WHERE sync_space_id=? AND author_device_id=? AND operation_type='UPSERT' AND payload_json='{"fields":{}}'
+          `).get(syncSpaceId, localDeviceId) as { latest_created_at: number | null } | undefined
+          const marker = desktopDatabase!.connection.prepare(`
+            SELECT completed_at
+            FROM sync_space_join_bootstrap
+            WHERE sync_space_id=? AND local_account_id=?
+          `).get(syncSpaceId, binding.localAccountId) as { completed_at: number } | undefined
+          if (
+            malformed?.latest_created_at != null &&
+            (!marker || marker.completed_at <= Number(malformed.latest_created_at))
+          ) {
+            syncRuntimeRepository.clearSpaceJoinBootstrap(binding.localAccountId)
+          }
+        }
+        librarySyncMutations.bootstrapCurrentLibraryState(binding.localAccountId)
+      }
       const orphanFeedIds = new Set(
         syncIdentityRepository
           .listByType(syncSpaceId, 'feed')
@@ -2761,8 +2908,16 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
       )
       cleanupDeletedFeedSidecars(orphanFeedIds, binding.localAccountId)
     },
-    (localAccountId) => accountRepository?.get(localAccountId)?.type === 'local'
+    (localAccountId) => accountRepository?.get(localAccountId)?.type === 'local',
+    syncApplyCoordinator,
+    syncLocalBlobStore,
+    syncSnapshotInstaller
   )
+  desktopSyncService.getPairingCoordinator().onSessionUpdated((session) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(IPC_CHANNELS.syncPairingUpdated, session)
+    }
+  })
   feedDiscoveryCatalog = new FeedDiscoveryCatalog()
   rssHubResolver = new RssHubResolver(
     new RssHubRouteMatcher(loadBundledRssHubRoutes()),
@@ -2884,11 +3039,25 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   )
   registerIpcHandlers()
   createMainWindow()
+  createTray()
+  powerMonitor.on('suspend', () => {
+    void desktopSyncService?.suspendLanForSystem('SYSTEM_SUSPEND').catch((error) => {
+      console.warn('[OrigRead] failed to suspend LAN Sync before system sleep', error)
+    })
+  })
+  powerMonitor.on('resume', () => {
+    void desktopSyncService?.resumeLanAfterSystem().catch((error) => {
+      console.warn('[OrigRead] failed to resume LAN Sync after system wake', error)
+    })
+  })
   if (process.env.ORIGREAD_DISABLE_PERIODIC_SYNC !== '1') periodicSyncScheduler.start()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow()
+    } else if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show()
+      mainWindow.focus()
     }
   })
 }).catch((error: unknown) => {
@@ -2906,6 +3075,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
 
 let applicationShutdownStarted = false
 app.on('before-quit', (event) => {
+  isAppQuitting = true
   if (applicationShutdownStarted) return
   event.preventDefault()
   applicationShutdownStarted = true
@@ -2924,7 +3094,18 @@ app.on('before-quit', (event) => {
     mcpRemoteRepository = null
     periodicSyncScheduler?.stop()
     periodicSyncScheduler = null
+    try {
+      await desktopSyncService?.close()
+    } catch {
+      // 容错处理
+    }
     desktopSyncService = null
+    try {
+      appTray?.destroy()
+    } catch {
+      // 容错处理
+    }
+    appTray = null
     originalArticleViewController?.dispose()
     originalArticleViewController = null
     mainWindow = null
@@ -2962,7 +3143,7 @@ app.on('before-quit', (event) => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  if (isAppQuitting) {
     app.quit()
   }
 })

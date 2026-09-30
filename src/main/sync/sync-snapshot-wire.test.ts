@@ -1,15 +1,44 @@
 import { describe, expect, it } from 'vitest'
-import type { SyncSnapshotBundleWire, SyncSnapshotShardWire } from '../../shared/sync-protocol'
+import type { SyncSnapshotBundleWire, SyncSnapshotShardWire, SyncSnapshotStreamManifestWire } from '../../shared/sync-protocol'
 import { sha256Hex } from './sync-operation-canonicalizer'
 import {
   SNAPSHOT_HASH_SCHEMA_VERSION,
   assertSnapshotIntegrity,
   snapshotRootHash,
   snapshotShardContentHash,
+  snapshotStreamManifestIdentityJson,
   snapshotSigningMaterial
 } from './sync-snapshot-wire'
 
 describe('R10 Snapshot wire v2 fixture', () => {
+  it('treats re-signed stream manifests as the same staged source identity', () => {
+    const manifest: SyncSnapshotStreamManifestWire = {
+      sourceSnapshotBundleId: 'source-1',
+      snapshotBundleId: 'local-stage-1',
+      syncSpaceId: 'space-1',
+      snapshotClass: 'WORKING',
+      genesisBaselineId: 'base-1',
+      rootHash: 'root-1',
+      policyHash: 'policy-1',
+      capturedAt: 123,
+      shardDescriptors: [],
+      coverage: {},
+      hashSchemaVersion: 2,
+      schemaVersion: 1,
+      snapshotEpoch: 1,
+      crossDbCutId: 'cut-1',
+      requiredCoreShardIds: [],
+      coverageCommitment: null,
+      authStabilityCheckpoint: null,
+      authorDeviceId: 'device-1',
+      authorSignature: 'signature-a'
+    }
+    expect(snapshotStreamManifestIdentityJson({ ...manifest, authorSignature: 'signature-b' }))
+      .toBe(snapshotStreamManifestIdentityJson(manifest))
+    expect(snapshotStreamManifestIdentityJson({ ...manifest, rootHash: 'root-2' }))
+      .not.toBe(snapshotStreamManifestIdentityJson(manifest))
+  })
+
   it('matches the cross-platform shard/root/signing fixture', () => {
     const shard: SyncSnapshotShardWire = {
       replicationLaneId: 'ARTICLE_STATE',
