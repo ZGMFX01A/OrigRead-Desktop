@@ -1,5 +1,5 @@
 import type { SourceType } from './library'
-import type { RssHubCandidateState } from './rsshub'
+import type { RssHubCandidateState, RssHubFailureReason } from './rsshub'
 import type { FeedCatalogEntry } from './source-catalog'
 
 export type SourceCandidateKind =
@@ -63,6 +63,9 @@ export interface RssHubRouteStatusSummary {
   available: boolean
   articleCount: number
   message: string | null
+  instanceBaseUrl?: string | null
+  failureReason?: RssHubFailureReason | null
+  statusCode?: number | null
 }
 
 export interface SourceDiscoveryResult {

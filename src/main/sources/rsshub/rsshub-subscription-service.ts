@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { DiscoveredRssFeed } from '../../../shared/rss'
-import type { RssHubProbeResult } from '../../../shared/rsshub'
+import type { RssHubProbeResult, RssHubSubscriptionDescriptor } from '../../../shared/rsshub'
 import { LibraryRepository } from '../../database/library-repository'
 import { toArticleRecord, toFeedRecord } from '../rss/rss-subscription-service'
 import type { ArticleFilterRepository } from '../../filter/article-filter-repository'
@@ -24,16 +24,22 @@ export class RssHubSubscriptionService {
     private readonly articleFilters?: ArticleFilterRepository
   ) {}
 
-  subscribeDirect(sourcePageUrl: string, discovered: DiscoveredRssFeed): RssHubSubscriptionResult {
-    return this.persist(sourcePageUrl, discovered, 'direct-endpoint', 'RSSHub')
+  hasExistingRoute(routePath: string): boolean {
+    return this.repository.findRssHubFeedByRoute(routePath) !== null
   }
 
-  subscribe(sourcePageUrl: string, result: RssHubProbeResult): RssHubSubscriptionResult {
+  subscribe(sourcePageUrl: string, result: RssHubProbeResult, preferredInstance: string | null = null): RssHubSubscriptionResult {
     if (!result.available || !result.feed || !result.match.feedUrl) {
       throw new Error('RSSHub 候选不可用，不能保存订阅')
     }
     return this.persist(
-      sourcePageUrl,
+      {
+        originalInput: sourcePageUrl,
+        routePath: result.routePath ?? null,
+        preferredInstance,
+        lastResolvedInstance: result.instanceBaseUrl ?? null,
+        lastResolvedUrl: result.match.feedUrl
+      },
       { ...result.feed, feedUrl: result.match.feedUrl, sourcePageUrl },
       result.match.route.id,
       result.match.route.name
@@ -41,17 +47,30 @@ export class RssHubSubscriptionService {
   }
 
   private persist(
-    sourcePageUrl: string,
+    descriptor: RssHubSubscriptionDescriptor,
     discovered: DiscoveredRssFeed,
     routeId: string,
     routeName: string
   ): RssHubSubscriptionResult {
+    if (descriptor.routePath) {
+      const existingRoute = this.repository.findRssHubFeedByRoute(descriptor.routePath)
+      if (existingRoute) {
+        return {
+          feedId: existingRoute.id,
+          feedUrl: existingRoute.url,
+          sourcePageUrl: descriptor.originalInput,
+          routeId,
+          routeName,
+          insertedArticles: 0
+        }
+      }
+    }
     const existing = this.repository.findFeedByUrl(discovered.feedUrl)
     if (existing) {
       return {
         feedId: existing.id,
         feedUrl: discovered.feedUrl,
-        sourcePageUrl,
+        sourcePageUrl: descriptor.originalInput,
         routeId,
         routeName,
         insertedArticles: 0
@@ -60,17 +79,17 @@ export class RssHubSubscriptionService {
 
     const now = Date.now()
     const feedId = randomUUID()
-    const normalized = { ...discovered, sourcePageUrl }
+    const normalized = { ...discovered, sourcePageUrl: descriptor.originalInput }
     const accountId = this.repository.getCurrentAccountId()
     const feed = toFeedRecord(feedId, normalized, now, this.repository.getCurrentDefaultGroup().id, accountId)
     const candidateArticles = normalized.items.map((item) => toArticleRecord(feedId, item, now, accountId))
     const articles = this.articleFilters?.filterArticles(feedId, candidateArticles).kept ?? candidateArticles
-    this.repository.upsertRssHubFeedWithArticles(feed, articles, sourcePageUrl)
+    this.repository.upsertRssHubFeedWithArticles(feed, articles, descriptor)
 
     return {
       feedId,
       feedUrl: normalized.feedUrl,
-      sourcePageUrl,
+      sourcePageUrl: descriptor.originalInput,
       routeId,
       routeName,
       insertedArticles: articles.length

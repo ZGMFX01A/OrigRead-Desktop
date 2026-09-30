@@ -1,9 +1,86 @@
 import { DatabaseSync } from 'node:sqlite'
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { applyMigrations, CURRENT_ACCOUNT_SETTING_KEY, CURRENT_SCHEMA_VERSION, DEFAULT_GROUP_ID } from './migrations'
 import { ORIGREAD_DESKTOP_RELEASE_FEED_URL } from '../../shared/origread-release'
 
 describe('database migration v2 -> current schema', () => {
+  it('upgrades released main v13 while preserving RSSHub descriptors, articles and chat history', () => {
+    const db = new DatabaseSync(':memory:')
+    try {
+      db.exec(readFileSync(new URL('./fixtures/main-v13.sql', import.meta.url), 'utf8'))
+      db.exec('PRAGMA foreign_keys=ON')
+      db.prepare(`INSERT INTO feeds(id,account_id,group_id,name,url,source_type,created_at,updated_at)
+        VALUES('rsshub-feed',1,?,'RSSHub','https://hub.example/route','rss',1,1)`).run(DEFAULT_GROUP_ID)
+      db.exec(`
+        INSERT INTO rsshub_source_urls VALUES('rsshub-feed','/github/issue/example/repo','/github/issue/example/repo','https://hub.example','https://hub.example','https://hub.example/route');
+        INSERT INTO articles(id,account_id,feed_id,title,is_unread,is_starred,created_at,updated_at)
+          VALUES('saved-article',1,'rsshub-feed','Saved',0,1,1,1);
+        INSERT INTO llm_conversations(id,title,created_at,updated_at) VALUES('saved-chat','Chat',1,1);
+        INSERT INTO llm_messages(id,conversation_id,role,content,created_at,updated_at)
+          VALUES('saved-message','saved-chat','ASSISTANT','Saved answer',1,1);
+      `)
+      const descriptor = db.prepare('SELECT * FROM rsshub_source_urls').all()
+      const history = db.prepare('SELECT * FROM llm_messages').all()
+      expect(applyMigrations(db)).toBe(38)
+      expect(db.prepare('SELECT * FROM rsshub_source_urls').all()).toEqual(descriptor)
+      expect(db.prepare('SELECT * FROM llm_messages').all()).toEqual(history)
+      expect(db.prepare('SELECT is_unread,is_starred,is_read_later FROM articles').get())
+        .toEqual({ is_unread: 0, is_starred: 1, is_read_later: 0 })
+      expect(db.prepare('SELECT COUNT(*) AS count FROM sync_spaces').get()).toEqual({ count: 0 })
+      expect(db.prepare('SELECT COUNT(*) AS count FROM sync_identity_mapping').get()).toEqual({ count: 0 })
+      expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 38 })
+      expect(applyMigrations(db)).toBe(38)
+      expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+      expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' })
+    } finally { db.close() }
+  })
+
+  it('adds RSSHub descriptors to sync v37 without replacing identity or pending outbox state', () => {
+    const db = new DatabaseSync(':memory:')
+    try {
+      applyMigrations(db)
+      db.exec(`
+        DROP INDEX rsshub_source_urls_route_idx;
+        ALTER TABLE rsshub_source_urls DROP COLUMN route_path;
+        ALTER TABLE rsshub_source_urls DROP COLUMN preferred_instance;
+        ALTER TABLE rsshub_source_urls DROP COLUMN last_resolved_instance;
+        ALTER TABLE rsshub_source_urls DROP COLUMN last_resolved_url;
+        DELETE FROM schema_migrations WHERE version=38;
+        INSERT INTO sync_spaces VALUES('existing-space',1,1);
+        INSERT INTO sync_identity_mapping VALUES('existing-space','feed','feed-1','sync-feed-1','source',0,1,1);
+        INSERT INTO sync_outbox(outbox_id,sync_space_id,actor_incarnation_id,replication_lane_id,sequence,
+          entity_type,entity_sync_id,entity_generation,mutation_type,payload_schema_version,payload_json,
+          causal_context_json,status,created_at,updated_at)
+          VALUES('pending-1','existing-space','actor-1','library',1,'feed','sync-feed-1',0,'UPSERT',1,'{}','{}','PENDING_BUILD',1,1);
+      `)
+      const identities = db.prepare('SELECT * FROM sync_identity_mapping').all()
+      const outbox = db.prepare('SELECT * FROM sync_outbox').all()
+      expect(applyMigrations(db)).toBe(38)
+      expect(db.prepare('SELECT * FROM sync_identity_mapping').all()).toEqual(identities)
+      expect(db.prepare('SELECT * FROM sync_outbox').all()).toEqual(outbox)
+      expect((db.prepare("PRAGMA table_info('rsshub_source_urls')").all() as Array<{ name: string }>).map(row => row.name))
+        .toEqual(expect.arrayContaining(['route_path','preferred_instance','last_resolved_instance','last_resolved_url']))
+      expect(applyMigrations(db)).toBe(38)
+      expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    } finally { db.close() }
+  })
+
+  it('rolls back the main v13 identity repair if the next migration fails and can retry safely', () => {
+    const db = new DatabaseSync(':memory:')
+    try {
+      db.exec(readFileSync(new URL('./fixtures/main-v13.sql', import.meta.url), 'utf8'))
+      db.exec('CREATE TABLE sync_local_space_binding (conflict TEXT)')
+      expect(() => applyMigrations(db)).toThrow()
+      expect(db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get()).toEqual({ version: 13 })
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name IN ('sync_spaces','sync_identity_mapping')").all())
+        .toEqual([])
+      db.exec('DROP TABLE sync_local_space_binding')
+      expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+      expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    } finally { db.close() }
+  })
+
   it('creates the full current schema from a fresh install', () => {
     const db = new DatabaseSync(':memory:')
     db.exec('PRAGMA foreign_keys=ON')
@@ -25,6 +102,10 @@ describe('database migration v2 -> current schema', () => {
     expect(messageColumns).toEqual(expect.arrayContaining([
       'provider_id', 'model', 'web_search_status', 'web_search_query', 'web_search_provider_name',
       'web_search_result_count', 'web_search_error_message'
+    ]))
+    const rssHubColumns = (db.prepare("PRAGMA table_info('rsshub_source_urls')").all() as Array<{ name: string }>).map((column) => column.name)
+    expect(rssHubColumns).toEqual(expect.arrayContaining([
+      'source_url', 'route_path', 'preferred_instance', 'last_resolved_instance', 'last_resolved_url'
     ]))
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
     db.close()
@@ -53,6 +134,12 @@ describe('database migration v2 -> current schema', () => {
     expect(db.prepare('SELECT account_id,is_unread,is_starred,image_url FROM articles WHERE id=?').get('article-1'))
       .toEqual({account_id:1,is_unread:0,is_starred:1,image_url:'https://example.com/1.png'})
     expect(db.prepare('SELECT source_url FROM rsshub_source_urls WHERE feed_id=?').get('feed-1')).toEqual({source_url:'https://example.com/'})
+    expect(db.prepare(`
+      SELECT route_path,preferred_instance,last_resolved_instance,last_resolved_url
+      FROM rsshub_source_urls WHERE feed_id=?
+    `).get('feed-1')).toEqual({
+      route_path:null,preferred_instance:null,last_resolved_instance:null,last_resolved_url:null
+    })
     expect(db.prepare('SELECT value FROM app_settings WHERE key=?').get(CURRENT_ACCOUNT_SETTING_KEY)).toEqual({value:'1'})
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='archived_articles'").get()).toEqual({name:'archived_articles'})
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='rss_http_cache'").get()).toEqual({name:'rss_http_cache'})

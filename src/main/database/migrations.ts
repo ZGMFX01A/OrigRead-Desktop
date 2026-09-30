@@ -6,7 +6,7 @@ import {
   ORIGREAD_DESKTOP_RELEASES_URL
 } from '../../shared/origread-release'
 
-export const CURRENT_SCHEMA_VERSION = 37
+export const CURRENT_SCHEMA_VERSION = 38
 export const DEFAULT_LOCAL_ACCOUNT_ID = 1
 export const CURRENT_ACCOUNT_SETTING_KEY = 'account.current_id'
 
@@ -56,6 +56,28 @@ function ensureWebSearchMessageColumns(database: DatabaseSync): void {
     database.exec(`ALTER TABLE llm_messages ADD COLUMN ${name} ${definition}`)
     existingColumns.add(name)
   }
+}
+
+function ensureRssHubDescriptorColumns(database: DatabaseSync): void {
+  const table = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='rsshub_source_urls'")
+    .get()
+  if (!table) return
+  const existingColumns = new Set(
+    (database.prepare("PRAGMA table_info('rsshub_source_urls')").all() as Array<{ name: string }>).map((column) => column.name)
+  )
+  const columns: Array<[name: string, definition: string]> = [
+    ['route_path', 'TEXT'],
+    ['preferred_instance', 'TEXT'],
+    ['last_resolved_instance', 'TEXT'],
+    ['last_resolved_url', 'TEXT']
+  ]
+  for (const [name, definition] of columns) {
+    if (existingColumns.has(name)) continue
+    database.exec(`ALTER TABLE rsshub_source_urls ADD COLUMN ${name} ${definition}`)
+    existingColumns.add(name)
+  }
+  database.exec('CREATE INDEX IF NOT EXISTS rsshub_source_urls_route_idx ON rsshub_source_urls(route_path)')
 }
 
 const migrations: Migration[] = [
@@ -1256,6 +1278,14 @@ const migrations: Migration[] = [
         ) STRICT;
       `)
     }
+  },
+  {
+    version: 38,
+    up(database) {
+      // Main v13 and sync v13..37 have different RSSHub layouts.
+      // Keep both histories intact and converge them with an additive migration.
+      ensureRssHubDescriptorColumns(database)
+    }
   }
 ]
 
@@ -1277,6 +1307,13 @@ export function applyMigrations(database: DatabaseSync): number {
 
     database.exec('BEGIN IMMEDIATE')
     try {
+      // Released main v13 used this version for RSSHub descriptors, while sync v13
+      // created the identity namespace. Repair that collision atomically with v14.
+      if (currentVersion === 13 && migration.version === 14 && !database
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sync_spaces'")
+        .get()) {
+        migrations.find((item) => item.version === 13)!.up(database)
+      }
       migration.up(database)
       database
         .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
@@ -1295,4 +1332,3 @@ export function applyMigrations(database: DatabaseSync): number {
 
   return currentVersion
 }
-

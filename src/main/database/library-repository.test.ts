@@ -7,6 +7,7 @@ import { DesktopDatabase } from './database'
 import { LibraryRepository } from './library-repository'
 import { CURRENT_SCHEMA_VERSION, DEFAULT_GROUP_ID } from './migrations'
 import { ORIGREAD_DESKTOP_RELEASE_FEED_URL } from '../../shared/origread-release'
+import type { LibrarySyncMutationCapture } from '../sync/library-sync-mutation-capture'
 
 const tempDirectories: string[] = []
 
@@ -17,6 +18,69 @@ afterEach(() => {
 })
 
 describe('LibraryRepository', () => {
+  it('captures RSSHub descriptor provenance and retains local route metadata when sync reapplies the same source', () => {
+    const database = new DesktopDatabase(':memory:')
+    try {
+      const captured: Array<[string | null, string | null]> = []
+      const syncMutations = {
+        captureRssHubSubscriptionSourceMutation<T>(
+          _accountId: number, _feedId: string, readState: () => string | null,
+          _replaceState: (state: string | null) => unknown, mutate: () => T
+        ): T {
+          const before = readState()
+          const result = mutate()
+          captured.push([before, readState()])
+          return result
+        }
+      } as LibrarySyncMutationCapture
+      const repository = new LibraryRepository(database.connection, syncMutations)
+      const feed = createFeed()
+      const descriptor = {
+        originalInput: 'rsshub://github/issue/example/repo',
+        routePath: '/github/issue/example/repo', preferredInstance: 'https://hub.example',
+        lastResolvedInstance: 'https://hub.example', lastResolvedUrl: 'https://hub.example/github/issue/example/repo'
+      }
+      repository.upsertRssHubFeedWithArticles(feed, [], descriptor)
+      expect(captured).toEqual([[null, descriptor.originalInput]])
+      repository.replaceRssHubSourceUrlFromSync(feed.id, descriptor.originalInput)
+      expect(repository.getRssHubDescriptor(feed.id)).toEqual(descriptor)
+      repository.replaceRssHubSourceUrlFromSync(feed.id, 'rsshub://other/route')
+      expect(repository.getRssHubDescriptor(feed.id)).toEqual({
+        originalInput: 'rsshub://other/route', routePath: null, preferredInstance: null,
+        lastResolvedInstance: null, lastResolvedUrl: null
+      })
+    } finally { database.close() }
+  })
+
+  it('restores the full RSSHub descriptor if mutation capture fails', () => {
+    const database = new DesktopDatabase(':memory:')
+    try {
+      const repository = new LibraryRepository(database.connection)
+      const feed = createFeed()
+      repository.upsertFeed(feed)
+      const descriptor = {
+        originalInput: 'rsshub://old/route', routePath: '/old/route', preferredInstance: 'https://old.example',
+        lastResolvedInstance: 'https://old.example', lastResolvedUrl: 'https://old.example/old/route'
+      }
+      repository.setRssHubDescriptor(feed.id, descriptor)
+      const failingRepository = new LibraryRepository(database.connection, {
+        captureRssHubSubscriptionSourceMutation<T>(
+          _accountId: number, _feedId: string, readState: () => string | null,
+          replaceState: (state: string | null) => unknown, mutate: () => T
+        ): T {
+          const before = readState()
+          mutate()
+          replaceState(before)
+          throw new Error('Outbox write failed')
+        }
+      } as LibrarySyncMutationCapture)
+      expect(() => failingRepository.setRssHubDescriptor(feed.id, {
+        ...descriptor, originalInput: 'rsshub://new/route', routePath: '/new/route'
+      })).toThrow('Outbox write failed')
+      expect(repository.getRssHubDescriptor(feed.id)).toEqual(descriptor)
+    } finally { database.close() }
+  })
+
   it('preserves synced read-later state across refresh and allows clearing it', () => {
     const database = new DesktopDatabase(':memory:')
     try {

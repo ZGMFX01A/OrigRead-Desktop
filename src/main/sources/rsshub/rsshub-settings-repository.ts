@@ -10,6 +10,8 @@ const INSTANCE_COOLDOWN_MILLIS = 5 * 60 * 1000
 interface RssHubRuntimeState {
   lastSuccessInstance: string | null
   cooldownUntil: Record<string, number>
+  routeLastSuccess: Record<string, string>
+  routeCooldownUntil: Record<string, number>
 }
 
 export class RssHubSettingsRepository {
@@ -24,7 +26,7 @@ export class RssHubSettingsRepository {
       : defaultRssHubInstances()
     return {
       enabled: typeof candidate.enabled === 'boolean' ? candidate.enabled : true,
-      instances: instances.length > 0 ? instances : defaultRssHubInstances()
+      instances
     }
   }
 
@@ -77,9 +79,32 @@ export class RssHubSettingsRepository {
     const settings = this.current()
     if (!settings.enabled) return []
     const runtime = this.runtime()
-    const ordered = orderRssHubInstances(runtime.lastSuccessInstance, ...settings.instances.filter((instance) => instance.enabled).map((instance) => instance.url))
+    const enabledInstances = settings.instances.filter((instance) => instance.enabled).map((instance) => instance.url)
+    const ordered = orderRssHubInstances(runtime.lastSuccessInstance, ...enabledInstances)
+      .filter((instance) => enabledInstances.includes(instance))
     const ready = ordered.filter((instance) => (runtime.cooldownUntil[instance] ?? 0) <= now)
     const cooling = ordered.filter((instance) => (runtime.cooldownUntil[instance] ?? 0) > now)
+    return [...ready, ...cooling]
+  }
+
+  candidateInstancesForRoute(routeFamily: string, now = Date.now()): string[] {
+    const settings = this.current()
+    if (!settings.enabled) return []
+    const enabledInstances = settings.instances.filter((instance) => instance.enabled).map((instance) => instance.url)
+    const runtime = this.runtime()
+    const routeLastSuccess = runtime.routeLastSuccess[routeFamily] ?? null
+    const ordered = orderRssHubInstances(routeLastSuccess, runtime.lastSuccessInstance, ...enabledInstances)
+      .filter((instance) => enabledInstances.includes(instance))
+    const ready = ordered.filter((instance) => {
+      const globalCooldown = runtime.cooldownUntil[instance] ?? 0
+      const routeCooldown = runtime.routeCooldownUntil[`${instance}|${routeFamily}`] ?? 0
+      return Math.max(globalCooldown, routeCooldown) <= now
+    })
+    const cooling = ordered.filter((instance) => {
+      const globalCooldown = runtime.cooldownUntil[instance] ?? 0
+      const routeCooldown = runtime.routeCooldownUntil[`${instance}|${routeFamily}`] ?? 0
+      return Math.max(globalCooldown, routeCooldown) > now
+    })
     return [...ready, ...cooling]
   }
 
@@ -95,6 +120,21 @@ export class RssHubSettingsRepository {
     const normalized = requireInstanceUrl(instanceBaseUrl)
     const runtime = this.runtime()
     runtime.cooldownUntil[normalized] = now + INSTANCE_COOLDOWN_MILLIS
+    this.writeJson(RUNTIME_KEY, runtime)
+  }
+
+  recordRouteSuccess(instanceBaseUrl: string, routeFamily: string): void {
+    const normalized = requireInstanceUrl(instanceBaseUrl)
+    const runtime = this.runtime()
+    delete runtime.routeCooldownUntil[`${normalized}|${routeFamily}`]
+    runtime.routeLastSuccess[routeFamily] = normalized
+    this.writeJson(RUNTIME_KEY, runtime)
+  }
+
+  recordRouteFailure(instanceBaseUrl: string, routeFamily: string, now = Date.now()): void {
+    const normalized = requireInstanceUrl(instanceBaseUrl)
+    const runtime = this.runtime()
+    runtime.routeCooldownUntil[`${normalized}|${routeFamily}`] = now + INSTANCE_COOLDOWN_MILLIS
     this.writeJson(RUNTIME_KEY, runtime)
   }
 
@@ -123,6 +163,12 @@ export class RssHubSettingsRepository {
       lastSuccessInstance: typeof stored?.lastSuccessInstance === 'string' ? stored.lastSuccessInstance : null,
       cooldownUntil: stored?.cooldownUntil && typeof stored.cooldownUntil === 'object'
         ? { ...stored.cooldownUntil }
+        : {},
+      routeLastSuccess: stored?.routeLastSuccess && typeof stored.routeLastSuccess === 'object'
+        ? { ...stored.routeLastSuccess }
+        : {},
+      routeCooldownUntil: stored?.routeCooldownUntil && typeof stored.routeCooldownUntil === 'object'
+        ? { ...stored.routeCooldownUntil }
         : {}
     }
   }
@@ -166,9 +212,12 @@ export function defaultRssHubSettings(): RssHubSettings {
 
 export function defaultRssHubInstances(): RssHubInstance[] {
   return [
-    instance('official', 'https://rsshub.app', 'US', 'DIYgod'),
-    instance('rssforever', 'https://rsshub.rssforever.com', 'AE', 'Stille'),
+    instance('isrss', 'https://rsshub.isrss.com', 'US', 'isRSS'),
+    instance('cups', 'https://rsshub.cups.moe', 'US', 'FunnyCups'),
     instance('slarker', 'https://hub.slarker.me', 'US', 'Slarker'),
+    instance('rssforever', 'https://rsshub.rssforever.com', 'AE', 'Stille'),
+    instance('virworks', 'https://rsshub-balancer.virworks.moe', 'GLOBAL', 'chesha1'),
+    instance('official', 'https://rsshub.app', 'US', 'DIYgod', false),
     instance('pseudoyu', 'https://rsshub.pseudoyu.com', 'FR', 'pseudoyu'),
     instance('rsstips', 'https://rsshub.rss.tips', 'US', 'AboutRSS'),
     instance('ktachibana', 'https://rsshub.ktachibana.party', 'US', 'KTachibanaM'),
@@ -176,17 +225,14 @@ export function defaultRssHubInstances(): RssHubInstance[] {
     instance('wudifeixue', 'https://rss.wudifeixue.com', 'CA', 'wudifeixue'),
     instance('henry', 'https://rsshub.henry.wang', 'GB', 'HenryQW'),
     instance('umzzz', 'https://rsshub.umzzz.com', 'HK', 'nesay'),
-    instance('isrss', 'https://rsshub.isrss.com', 'US', 'isRSS'),
     instance('emailonce', 'https://rsshub.email-once.com', 'HK', 'EmailOnce'),
     instance('datuan', 'https://rss.datuan.dev', 'VN', 'Tuấn Dev'),
-    instance('cups', 'https://rsshub.cups.moe', 'US', 'FunnyCups'),
-    instance('spriple', 'https://rss.spriple.org', 'CN', 'Spriple'),
-    instance('virworks', 'https://rsshub-balancer.virworks.moe', 'GLOBAL', 'chesha1')
+    instance('spriple', 'https://rss.spriple.org', 'CN', 'Spriple')
   ]
 }
 
-function instance(id: string, url: string, location: string, maintainer: string): RssHubInstance {
-  return { id, url, location, maintainer, enabled: true, builtIn: true }
+function instance(id: string, url: string, location: string, maintainer: string, enabled = true): RssHubInstance {
+  return { id, url, location, maintainer, enabled, builtIn: true }
 }
 
 function normalizeInstances(instances: RssHubInstance[]): RssHubInstance[] {

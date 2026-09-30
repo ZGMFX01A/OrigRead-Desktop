@@ -4,6 +4,7 @@ import type { TranslationDisplayMode, TranslationProviderType, TranslationTarget
 import type { LlmCustomizationSettings } from './llm-customization'
 import type { McpRemoteAuthMode } from './mcp'
 import type { PersistentWebSearchMode, WebSearchProviderKind } from './web-search'
+import type { RssHubSubscriptionDescriptor } from './rsshub'
 
 export interface ConfigurationBackup {
   schemaVersion: 1
@@ -19,6 +20,10 @@ export interface ConfigurationBackup {
   websiteParsePreferences: unknown
   rssHub: RssHubBackup
   rssHubSourceUrls: Record<string, string>
+  /** Canonical field aligned with Android ConfigurationBackup. */
+  rssHubSubscriptions?: Record<string, RssHubSubscriptionDescriptor>
+  /** Optional for backward compatibility with desktop builds created before field naming alignment. */
+  rssHubDescriptors?: Record<string, RssHubSubscriptionDescriptor>
   translation: TranslationBackup
   ai: AiBackup
   llm?: LlmBackup

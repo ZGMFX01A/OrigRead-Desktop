@@ -219,20 +219,30 @@ describe('SourceDiscoveryService parity', () => {
     expect(addWebsite).toHaveBeenCalledWith(dynamicInspection, true)
   })
 
-  it('treats a known RSSHub route as the only exclusive pre-network branch for Local accounts', async () => {
+  it('routes a known RSSHub endpoint through logical route failover for Local accounts', async () => {
     const routeUrl = 'https://hub.example.com/rsshub/telegram/channel/demo'
-    const feed = rssFeed(routeUrl, false)
-    feed.feedUrl = routeUrl
-    const directRss = vi.fn(async () => feed)
+    const routePath = '/telegram/channel/demo'
+    const resolvedUrl = 'https://mirror.example.com/telegram/channel/demo'
+    const feed = rssFeed(resolvedUrl, false)
+    feed.feedUrl = resolvedUrl
+    const directRss = vi.fn()
     const rss = vi.fn()
-    const rssHub = vi.fn()
+    const rssHub = vi.fn(async () => [])
+    const rssHubRoute = vi.fn(async () => [{
+      available: true, state: 'available', feed, message: null,
+      routePath, instanceBaseUrl: 'https://mirror.example.com',
+      match: {
+        route: { id: `direct:${routePath}`, name: 'RSSHub', host: 'rsshub', pathPrefix: routePath, target: routePath },
+        feedUrl: resolvedUrl, parameters: {}, missingParameters: [], resolved: true
+      }
+    }])
     const json = vi.fn()
     const website = vi.fn()
-    const directSubscribe = vi.fn(() => ({ feedId: 'hub-direct' }))
+    const subscribe = vi.fn(() => ({ feedId: 'hub-logical' }))
     const service = createService({
-      directRss, rss, rssHub, json, website, dynamic: vi.fn(),
+      directRss, rss, rssHub, rssHubRoute, json, website, dynamic: vi.fn(),
       knownRssHubInstances: ['https://hub.example.com/rsshub'],
-      rssHubDirectSubscribe: directSubscribe
+      rssHubSubscribe: subscribe
     })
     const progress: string[] = []
 
@@ -243,7 +253,8 @@ describe('SourceDiscoveryService parity', () => {
     expect(discovery.rssHubRoutes).toEqual([
       expect.objectContaining({ name: 'RSSHub', state: 'available', available: true, candidateId: discovery.candidates[0]!.id })
     ])
-    expect(directRss).toHaveBeenCalledWith(routeUrl, routeUrl, expect.anything())
+    expect(rssHubRoute).toHaveBeenCalledWith(routePath, 'https://hub.example.com/rsshub', undefined)
+    expect(directRss).not.toHaveBeenCalled()
     expect(rss).not.toHaveBeenCalled()
     expect(json).not.toHaveBeenCalled()
     expect(rssHub).not.toHaveBeenCalled()
@@ -252,18 +263,62 @@ describe('SourceDiscoveryService parity', () => {
     expect(progress).toContain('rsshub:completed')
     expect(progress.some((entry) => entry.startsWith('rss:'))).toBe(false)
     const subscribed = await service.subscribe(discovery.discoveryId, discovery.candidates[0]!.id)
-    expect(subscribed.feedId).toBe('hub-direct')
-    expect(directSubscribe).toHaveBeenCalledWith(routeUrl, feed)
+    expect(subscribed.feedId).toBe('hub-logical')
+    expect(subscribe).toHaveBeenCalledWith(
+      routeUrl,
+      expect.objectContaining({ routePath, instanceBaseUrl: 'https://mirror.example.com' }),
+      'https://hub.example.com/rsshub'
+    )
+  })
+
+  it('supports rsshub scheme as an exclusive logical route without HTTP normalization', async () => {
+    const input = 'rsshub://bilibili/user/dynamic/1161918898'
+    const routePath = '/bilibili/user/dynamic/1161918898'
+    const resolvedUrl = `https://mirror.example.com${routePath}`
+    const feed = rssFeed(resolvedUrl, false)
+    const rssHubRoute = vi.fn(async () => [{
+      available: true, state: 'available', feed, message: null,
+      routePath, instanceBaseUrl: 'https://mirror.example.com',
+      match: {
+        route: { id: `direct:${routePath}`, name: 'RSSHub', host: 'rsshub', pathPrefix: routePath, target: routePath },
+        feedUrl: resolvedUrl, parameters: {}, missingParameters: [], resolved: true
+      }
+    }])
+    const rss = vi.fn()
+    const json = vi.fn()
+    const website = vi.fn()
+    const service = createService({
+      rss, rssHub: vi.fn(async () => []), rssHubRoute, json, website, dynamic: vi.fn()
+    })
+
+    const discovery = await service.discover(input)
+
+    expect(discovery.sourceUrl).toBe(input)
+    expect(discovery.candidates).toHaveLength(1)
+    expect(discovery.candidates[0]).toMatchObject({ kind: 'RSSHUB', feedLink: resolvedUrl })
+    expect(rssHubRoute).toHaveBeenCalledWith(routePath, null, undefined)
+    expect(rss).not.toHaveBeenCalled()
+    expect(json).not.toHaveBeenCalled()
+    expect(website).not.toHaveBeenCalled()
   })
 
   it('treats a known RSSHub route as plain RSS for remote accounts', async () => {
     const routeUrl = 'https://rsshub.app/telegram/channel/demo'
-    const feed = rssFeed(routeUrl, false)
-    feed.feedUrl = routeUrl
+    const routePath = '/telegram/channel/demo'
+    const resolvedUrl = 'https://mirror.example.com/telegram/channel/demo'
+    const feed = rssFeed(resolvedUrl, false)
+    feed.feedUrl = resolvedUrl
     const remoteSubscribe = vi.fn(async () => 'remote-feed')
+    const rssHubRoute = vi.fn(async () => [{
+      available: true, state: 'available', feed, message: null,
+      routePath, instanceBaseUrl: 'https://mirror.example.com',
+      match: {
+        route: { id: `direct:${routePath}`, name: 'RSSHub', host: 'rsshub', pathPrefix: routePath, target: routePath },
+        feedUrl: resolvedUrl, parameters: {}, missingParameters: [], resolved: true
+      }
+    }])
     const service = createService({
-      directRss: async () => feed,
-      rss: vi.fn(), rssHub: vi.fn(), json: vi.fn(), website: vi.fn(), dynamic: vi.fn(),
+      rss: vi.fn(), rssHub: vi.fn(async () => []), rssHubRoute, json: vi.fn(), website: vi.fn(), dynamic: vi.fn(),
       accountCoordinator: { current: () => ({ type: 'fresh_rss' }), subscribeRss: remoteSubscribe }
     })
 
@@ -272,7 +327,7 @@ describe('SourceDiscoveryService parity', () => {
     expect(discovery.candidates.map((candidate) => candidate.kind)).toEqual(['RSS_DIRECT'])
     const subscribed = await service.subscribe(discovery.discoveryId, discovery.candidates[0]!.id)
     expect(subscribed.feedId).toBe('remote-feed')
-    expect(remoteSubscribe).toHaveBeenCalledWith(feed)
+    expect(remoteSubscribe).toHaveBeenCalledWith(expect.objectContaining({ feedUrl: resolvedUrl }))
   })
 
   it('does not probe Local-only JSON/RSSHub/Website sources for remote accounts', async () => {
@@ -463,17 +518,18 @@ function createService(options: {
   directRss?: (url: string, sourcePageUrl?: string, signal?: AbortSignal) => Promise<DiscoveredRssFeed>
   rss: (url: string, signal?: AbortSignal) => Promise<DiscoveredRssFeed>
   rssHub: (...args: unknown[]) => Promise<any[]>
+  rssHubRoute?: (...args: any[]) => Promise<any[]>
   rssHubLocal?: (...args: unknown[]) => any[]
   json: (...args: unknown[]) => Promise<JsonSourceProbeResult | null>
   website: (...args: unknown[]) => Promise<WebsiteInspectionResult>
   dynamic: (...args: unknown[]) => Promise<WebsiteInspectionResult>
   rssHubSubscribe?: (...args: any[]) => any
-  rssHubDirectSubscribe?: (...args: any[]) => any
   knownRssHubInstances?: string[]
   websiteSubscribe?: (...args: any[]) => Promise<{ feedId: string; insertedArticles: number }>
   accountCoordinator?: { current: () => any; subscribeRss: (...args: any[]) => Promise<string> }
   feedDiscoveryCatalog?: { matchUrl: (...args: any[]) => any }
   existingSource?: (url: string) => boolean
+  existingRssHubRoute?: (routePath: string) => boolean
 }): SourceDiscoveryService {
   return new SourceDiscoveryService(
     {
@@ -485,13 +541,17 @@ function createService(options: {
       hasExistingSource: options.existingSource ?? (() => false)
     } as unknown as RssSubscriptionService,
     {
+      isEnabled: () => true,
       probe: options.rssHub,
+      probeRoute: options.rssHubRoute ?? options.rssHub,
+      probeExplicitRoute: options.rssHubRoute ?? options.rssHub,
+      probeRouteForRecovery: options.rssHubRoute ?? options.rssHub,
       localRouteDiagnostics: options.rssHubLocal ?? (() => []),
       knownInstanceUrls: () => options.knownRssHubInstances ?? []
     } as unknown as RssHubResolver,
     {
       subscribe: options.rssHubSubscribe ?? (() => ({ feedId: 'hub-feed' })),
-      subscribeDirect: options.rssHubDirectSubscribe ?? (() => ({ feedId: 'hub-direct-feed' }))
+      hasExistingRoute: options.existingRssHubRoute ?? (() => false)
     } as unknown as RssHubSubscriptionService,
     { probe: options.json } as unknown as JsonSourceService,
     { add: async () => ({ feedId: 'json-feed', insertedArticles: 0 }) } as unknown as JsonSubscriptionService,

@@ -4,6 +4,35 @@ import { RssHubSettingsRepository } from './rsshub-settings-repository'
 import { formatRssHubLocation } from '../../../shared/rsshub'
 
 describe('RssHubSettingsRepository', () => {
+  it('never resurrects a disabled or deleted last successful instance', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new RssHubSettingsRepository(database.connection)
+    try {
+      repository.restore({ enabled: true, instances: [] })
+      repository.addInstance('https://custom.example.com')
+      const instance = repository.current().instances.find((item) => item.url === 'https://custom.example.com')!
+      repository.recordSuccess(instance.url)
+      repository.setInstanceEnabled(instance.id, false)
+      expect(repository.candidateInstances()).not.toContain(instance.url)
+      repository.deleteInstance(instance.id)
+      expect(repository.candidateInstances()).not.toContain(instance.url)
+    } finally {
+      database.close()
+    }
+  })
+
+  it('keeps an intentionally empty instance list empty after reopening', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new RssHubSettingsRepository(database.connection)
+    try {
+      for (const instance of repository.current().instances) repository.deleteInstance(instance.id)
+      expect(new RssHubSettingsRepository(database.connection).current().instances).toEqual([])
+      expect(repository.candidateInstances()).toEqual([])
+    } finally {
+      database.close()
+    }
+  })
+
   it('persists settings, prioritizes the last successful instance and cools down failures', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new RssHubSettingsRepository(database.connection)
