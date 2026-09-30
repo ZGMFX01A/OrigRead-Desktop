@@ -7,6 +7,51 @@ import type { SyncOperationRecord } from '../../shared/sync-runtime'
 import { SyncRuntimeRepository } from './sync-runtime-repository'
 import { SyncApplyCoordinator, SyncApplyDeferredError } from './sync-apply-coordinator'
 import { operationId } from './sync-operation-canonicalizer'
+import { LibraryRepository } from '../database/library-repository'
+import { configRuleSyncId } from './sync-canonical-identity'
+
+it('clears obsolete RSSHub route and instance metadata on remote apply and rollback', () => {
+  const db = new DatabaseSync(':memory:')
+  applyMigrations(db)
+  try {
+    const account = (db.prepare('SELECT id FROM accounts LIMIT 1').get() as { id: number }).id
+    db.prepare('INSERT INTO sync_local_space_binding(local_account_id,sync_space_id,lifecycle_state,created_at,updated_at) VALUES(?,?,?,?,?)')
+      .run(account, 'space', 'ACTIVE', 1, 1)
+    db.prepare('INSERT INTO groups(id,account_id,name) VALUES(?,?,?)').run('rss-g', account, 'RSSHub')
+    db.prepare('INSERT INTO feeds(id,account_id,group_id,name,url,source_type,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+      .run('rss-f', account, 'rss-g', 'Feed', 'https://rsshub.app/old/route', 'rss', 1, 1)
+    const configId = configRuleSyncId('rsshub_subscription_source', 'remote-feed')
+    const mapping = db.prepare('INSERT INTO sync_identity_mapping(sync_space_id,entity_type,local_id,sync_id,generation,created_at,updated_at) VALUES(?,?,?,?,?,?,?)')
+    mapping.run('space', 'feed', 'rss-f', 'remote-feed', 0, 1, 1)
+    mapping.run('space', 'rsshub_subscription_source', 'remote-feed', configId, 0, 1, 1)
+    const library = new LibraryRepository(db)
+    const descriptor = {
+      originalInput: 'rsshub://old/route', routePath: '/old/route', preferredInstance: 'https://old.example',
+      lastResolvedInstance: 'https://old.example', lastResolvedUrl: 'https://old.example/old/route'
+    }
+    library.setRssHubDescriptor('rss-f', descriptor)
+    const state = new SyncStateRepository(db)
+    const applier = new DesktopSyncBusinessApplier(db, state)
+    const op: SyncOperationRecord = {
+      operationId: operationId('space', 'actor', 'CONFIG', 1), syncSpaceId: 'space', authorDeviceId: 'device', actorIncarnationId: 'actor',
+      replicationLaneId: 'CONFIG', sequence: 1, logicalClock: 1, causalContextJson: '{}', dependencyDotsJson: '[]',
+      entityType: 'rsshub_subscription_source', entitySyncId: configId, entityGeneration: 0, operationType: 'UPSERT',
+      payloadSchemaVersion: 1, payloadJson: JSON.stringify({ source: { feedSyncId: 'remote-feed', feedGeneration: 0, sourceUrl: 'rsshub://new/route' } }),
+      schemaVersion: 1, authGrantId: null, authEpoch: null, createdWallClock: 1, payloadHash: '', signingDigest: '',
+      authorSignature: null, buildStatus: 'SIGNED', createdAt: 1, updatedAt: 1
+    }
+    applier.apply(op)
+    expect(library.getRssHubDescriptor('rss-f')?.routePath).toBe('/new/route')
+    expect(library.getRssHubDescriptor('rss-f')?.lastResolvedUrl).toBeNull()
+    library.setRssHubDescriptor('rss-f', { ...descriptor, originalInput: 'rsshub://new/route', routePath: '/new/route' })
+    applier.apply(op)
+    expect(library.getRssHubDescriptor('rss-f')?.lastResolvedUrl).toBe(descriptor.lastResolvedUrl)
+    applier.rollbackField('space', 'rsshub_subscription_source', configId, 'source', op.operationId)
+    expect(library.getRssHubDescriptor('rss-f')?.originalInput).toBe(descriptor.originalInput)
+    expect(library.getRssHubDescriptor('rss-f')?.routePath).toBe('/old/route')
+    expect(library.getRssHubDescriptor('rss-f')?.lastResolvedUrl).toBeNull()
+  } finally { db.close() }
+})
 
 it('retains concurrent losers so three-peer delivery permutations converge', () => {
   for (const order of [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]) {

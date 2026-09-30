@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { LibraryRepository } from '../database/library-repository'
 import { randomUUID } from 'node:crypto'
 import type { SyncOperationRecord } from '../../shared/sync-runtime'
 import type { SyncBlobManifest, SyncPayloadBlobRef } from '../../shared/sync-protocol'
@@ -1082,11 +1083,7 @@ export class DesktopSyncBusinessApplier {
     if (isAbsent) {
       this.database.prepare('DELETE FROM rsshub_source_urls WHERE feed_id=?').run(localFeedId)
     } else {
-      this.database.prepare(`
-        INSERT INTO rsshub_source_urls(feed_id,source_url)
-        VALUES(?,?)
-        ON CONFLICT(feed_id) DO UPDATE SET source_url=excluded.source_url
-      `).run(localFeedId, sourceUrl)
+      new LibraryRepository(this.database).replaceRssHubSourceUrlFromSync(localFeedId, sourceUrl)
     }
   }
 
@@ -2651,11 +2648,7 @@ export class DesktopSyncBusinessApplier {
       } else {
         const sourceUrl = typeof raw.sourceUrl === 'string' ? raw.sourceUrl.trim() : ''
         if (!sourceUrl) throw new Error('REBASE_UNSAFE: RSSHub source rollback has no sourceUrl')
-        this.database.prepare(`
-          INSERT INTO rsshub_source_urls(feed_id,source_url)
-          VALUES(?,?)
-          ON CONFLICT(feed_id) DO UPDATE SET source_url=excluded.source_url
-        `).run(localFeedId, sourceUrl)
+        new LibraryRepository(this.database).replaceRssHubSourceUrlFromSync(localFeedId, sourceUrl)
       }
     }
   }

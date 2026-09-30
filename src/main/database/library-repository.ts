@@ -11,6 +11,8 @@ import type {
 } from '../../shared/library'
 import { sourceUrlComparisonKey } from '../../shared/source-url-normalizer'
 import type { RssHubSubscriptionDescriptor } from '../../shared/rsshub'
+import { parseExplicitRssHubInput, normalizeRssHubRoutePath } from '../sources/rsshub/rsshub-input'
+import { RssHubSettingsRepository } from '../sources/rsshub/rsshub-settings-repository'
 import { CURRENT_ACCOUNT_SETTING_KEY, DEFAULT_LOCAL_ACCOUNT_ID } from './migrations'
 import type { LibrarySyncMutationCapture } from '../sync/library-sync-mutation-capture'
 
@@ -828,16 +830,30 @@ export class LibraryRepository {
       last_resolved_url: string | null
     } | undefined
     if (!row) return null
-    return {
+    return this.withExplicitRssHubRoute({
       originalInput: row.source_url,
       routePath: row.route_path,
       preferredInstance: row.preferred_instance,
       lastResolvedInstance: row.last_resolved_instance,
       lastResolvedUrl: row.last_resolved_url
-    }
+    })
+  }
+
+  private withExplicitRssHubRoute(descriptor: RssHubSubscriptionDescriptor): RssHubSubscriptionDescriptor {
+    if (descriptor.routePath != null) return descriptor
+    const route = parseExplicitRssHubInput(
+      descriptor.originalInput,
+      new RssHubSettingsRepository(this.database).current().instances.map((instance) => instance.url)
+    )
+    return route ? {
+      ...descriptor, routePath: route.routePath,
+      preferredInstance: descriptor.preferredInstance ?? route.preferredInstance
+    } : descriptor
   }
 
   findRssHubFeedByRoute(routePath: string): FeedRecord | null {
+    const normalized = normalizeRssHubRoutePath(routePath)
+    if (!normalized) return null
     const row = this.database.prepare(`
       SELECT f.id, f.account_id, f.group_id, f.name, f.url, f.source_page_url, f.source_type,
              f.icon, f.is_notification, f.is_full_content, f.is_browser, f.dynamic_rendering,
@@ -846,8 +862,18 @@ export class LibraryRepository {
       JOIN feeds f ON f.id = r.feed_id
       WHERE f.account_id = ? AND r.route_path = ?
       LIMIT 1
-    `).get(this.getCurrentAccountId(), routePath) as FeedRow | undefined
-    return row ? toFeedRecord(row) : null
+    `).get(this.getCurrentAccountId(), normalized) as FeedRow | undefined
+    if (row) return toFeedRecord(row)
+    const legacyRows = this.database.prepare(`
+      SELECT r.feed_id FROM rsshub_source_urls r JOIN feeds f ON f.id = r.feed_id
+      WHERE f.account_id = ? AND r.route_path IS NULL
+    `).all(this.getCurrentAccountId()) as Array<{ feed_id: string }>
+    for (const legacy of legacyRows) {
+      if (this.getRssHubDescriptor(legacy.feed_id)?.routePath === normalized) {
+        return this.getFeedById(legacy.feed_id)
+      }
+    }
+    return null
   }
 
   listRssHubDescriptors(): Record<string, RssHubSubscriptionDescriptor> {
@@ -865,13 +891,13 @@ export class LibraryRepository {
       last_resolved_instance: string | null
       last_resolved_url: string | null
     }>
-    return Object.fromEntries(rows.map((row) => [row.feed_id, {
+    return Object.fromEntries(rows.map((row) => [row.feed_id, this.withExplicitRssHubRoute({
       originalInput: row.source_url,
       routePath: row.route_path,
       preferredInstance: row.preferred_instance,
       lastResolvedInstance: row.last_resolved_instance,
       lastResolvedUrl: row.last_resolved_url
-    }]))
+    })]))
   }
 
   listRssHubSourceUrls(): Record<string, string> {

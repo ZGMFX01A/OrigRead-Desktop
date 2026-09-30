@@ -8,6 +8,7 @@ import { LibraryRepository } from './library-repository'
 import { CURRENT_SCHEMA_VERSION, DEFAULT_GROUP_ID } from './migrations'
 import { ORIGREAD_DESKTOP_RELEASE_FEED_URL } from '../../shared/origread-release'
 import type { LibrarySyncMutationCapture } from '../sync/library-sync-mutation-capture'
+import { RssHubSettingsRepository } from '../sources/rsshub/rsshub-settings-repository'
 
 const tempDirectories: string[] = []
 
@@ -18,6 +19,41 @@ afterEach(() => {
 })
 
 describe('LibraryRepository', () => {
+  it('keeps route identity for source-only rows on a disabled custom instance', () => {
+    const database = new DesktopDatabase(':memory:')
+    try {
+      const repository = new LibraryRepository(database.connection)
+      const settings = new RssHubSettingsRepository(database.connection)
+      const updated = settings.addInstance('https://custom.example/rss')
+      settings.replaceSyncSettings({ ...updated, instances: updated.instances.map((instance) => ({ ...instance, enabled: false })) })
+      const feed = createFeed()
+      repository.upsertFeed(feed)
+      repository.replaceRssHubSourceUrlFromSync(feed.id, 'https://custom.example/rss/zhihu/hot?code=secret')
+      expect(repository.getRssHubDescriptor(feed.id)).toMatchObject({
+        routePath: '/zhihu/hot?code=secret', preferredInstance: 'https://custom.example/rss'
+      })
+      expect(repository.findRssHubFeedByRoute('/zhihu/hot?code=secret')?.id).toBe(feed.id)
+    } finally { database.close() }
+  })
+
+  it.each([
+    ['rsshub://zhihu/hot', '/zhihu/hot', null],
+    ['https://rsshub.app/zhihu/hot?key=secret', '/zhihu/hot?key=secret', 'https://rsshub.app']
+  ])('derives recovery and duplicate identity from received source %s', (source, route, instance) => {
+    const database = new DesktopDatabase(':memory:')
+    try {
+      const repository = new LibraryRepository(database.connection)
+      const feed = createFeed()
+      repository.upsertFeed(feed)
+      repository.replaceRssHubSourceUrlFromSync(feed.id, source)
+      const descriptor = repository.getRssHubDescriptor(feed.id)
+      expect(descriptor?.routePath).toBe(route)
+      expect(descriptor?.preferredInstance).toBe(instance)
+      expect(repository.findRssHubFeedByRoute(route!)?.id).toBe(feed.id)
+      expect(repository.listRssHubDescriptors()[feed.id]).toEqual(descriptor)
+    } finally { database.close() }
+  })
+
   it('captures RSSHub descriptor provenance and retains local route metadata when sync reapplies the same source', () => {
     const database = new DesktopDatabase(':memory:')
     try {
@@ -46,7 +82,7 @@ describe('LibraryRepository', () => {
       expect(repository.getRssHubDescriptor(feed.id)).toEqual(descriptor)
       repository.replaceRssHubSourceUrlFromSync(feed.id, 'rsshub://other/route')
       expect(repository.getRssHubDescriptor(feed.id)).toEqual({
-        originalInput: 'rsshub://other/route', routePath: null, preferredInstance: null,
+        originalInput: 'rsshub://other/route', routePath: '/other/route', preferredInstance: null,
         lastResolvedInstance: null, lastResolvedUrl: null
       })
     } finally { database.close() }

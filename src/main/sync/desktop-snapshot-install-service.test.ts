@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { LibraryRepository } from '../database/library-repository'
 import { describe, expect, it } from 'vitest'
 import { applyMigrations } from '../database/migrations'
 import { MemorySecretStore } from '../security/secret-store'
@@ -117,6 +118,10 @@ describe('DesktopSnapshotInstallService', () => {
       const sourceFilter = new ArticleFilterRepository(join(tempDir, 'filter-rules.json'))
       const sourceKeys = new DesktopSyncDeviceSigningKeyStore(new MemorySecretStore())
       const sourceRssHub = new RssHubSettingsRepository(sourceDb)
+      new LibraryRepository(sourceDb).setRssHubDescriptor('feed-1', {
+        originalInput: 'rsshub://new/route', routePath: '/new/route', preferredInstance: null,
+        lastResolvedInstance: null, lastResolvedUrl: null
+      })
       const genesisService = new DesktopGenesisSnapshotService(
         sourceDb,
         sourceRuntime,
@@ -182,13 +187,18 @@ describe('DesktopSnapshotInstallService', () => {
         targetRssHub
       )
       targetRssHub.setEnabled(false)
-      installService.install(1, bundleWire, 199, new Set(['CORE_META', 'AUTH']))
+      const partialResult = installService.install(1, bundleWire, 199, new Set(['CORE_META', 'AUTH', 'LIBRARY']))
       expect(targetRssHub.current().enabled).toBe(false)
+      const partialFeed = targetDb.prepare("SELECT id FROM feeds WHERE name='TechNews'").get() as { id: string }
+      new LibraryRepository(targetDb).setRssHubDescriptor(partialFeed.id, {
+        originalInput: 'rsshub://old/route', routePath: '/old/route', preferredInstance: 'https://old.example',
+        lastResolvedInstance: 'https://old.example', lastResolvedUrl: 'https://old.example/old/route'
+      })
       const result = installService.install(1, bundleWire, 200)
       expect(targetRssHub.current().enabled).toBe(true)
 
       expect(result.snapshotBundleId).toBe(bundleWire.snapshotBundleId)
-      expect(result.materializedEntities).toBeGreaterThanOrEqual(3)
+      expect(result.materializedEntities + partialResult.materializedEntities).toBeGreaterThanOrEqual(3)
 
         // 3. 验证业务实体在 Target 端完整实例化，且 Local ID 独立分配（R10-02/R10-03 隔离验证）
       const targetGroup = targetDb.prepare("SELECT * FROM groups WHERE name='Tech'").get() as Record<string, unknown>
@@ -201,6 +211,10 @@ describe('DesktopSnapshotInstallService', () => {
       expect(targetFeed.url).toBe('https://example.com/rss')
       expect(targetFeed.id).not.toBe('feed-1')
       expect(targetFeed.group_id).toBe(targetGroup.id)
+
+      const targetLibrary = new LibraryRepository(targetDb)
+      expect(targetLibrary.getRssHubDescriptor(String(targetFeed.id))?.routePath).toBe('/new/route')
+      expect(targetLibrary.getRssHubDescriptor(String(targetFeed.id))?.lastResolvedUrl).toBeNull()
 
       const targetArticle = targetDb.prepare("SELECT * FROM articles WHERE title='Breaking News'").get() as Record<string, unknown>
       expect(targetArticle).toBeTruthy()

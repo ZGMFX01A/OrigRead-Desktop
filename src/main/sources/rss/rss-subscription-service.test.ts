@@ -15,6 +15,27 @@ import type { RssHubResolver } from '../rsshub/rsshub-resolver'
 import { ArticleFilterRepository } from '../../filter/article-filter-repository'
 
 describe('RssSubscriptionService', () => {
+  it('recovers a source received through sync before its first refresh', async () => {
+    const database = new DesktopDatabase(':memory:')
+    try {
+      const repository = new LibraryRepository(database.connection)
+      const oldUrl = 'https://old.example.com/zhihu/hot'
+      const newUrl = 'https://new.example.com/zhihu/hot'
+      const feed = createFeed('received-feed', oldUrl, 'rsshub://zhihu/hot', Date.now())
+      repository.upsertFeed(feed)
+      repository.replaceRssHubSourceUrlFromSync(feed.id, 'rsshub://zhihu/hot')
+      const discovery = { parseDirectConditional: async () => { throw new Error('offline') } } as unknown as RssDiscoveryService
+      const recovered = await new RssDiscoveryService(async (url) => rssPayload(url, RSS_ONE), noIconFinder).parseDirect(newUrl)
+      const probe = vi.fn(async () => [{ available: true, feed: recovered, match: { feedUrl: newUrl }, routePath: '/zhihu/hot', instanceBaseUrl: 'https://new.example.com' }])
+      const resolver = { probeRouteForRecovery: probe, probe: vi.fn(async () => []) } as unknown as RssHubResolver
+      await new RssSubscriptionService(repository, discovery, resolver).refresh(feed.id)
+      expect(probe).toHaveBeenCalledWith('/zhihu/hot', null)
+      expect(resolver.probe).not.toHaveBeenCalled()
+      expect(repository.getFeedById(feed.id)?.url).toBe(newUrl)
+      expect(repository.getRssHubDescriptor(feed.id)?.lastResolvedUrl).toBe(newUrl)
+    } finally { database.close() }
+  })
+
   it('refreshes a valid empty RSSHub feed without switching instances and preserves logical provenance', async () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)

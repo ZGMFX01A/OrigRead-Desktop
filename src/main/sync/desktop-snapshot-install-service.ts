@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readSnapshotInstallReady, recordSnapshotInstallReady } from './sync-snapshot-install-journal'
 import type { DatabaseSync } from 'node:sqlite'
+import { LibraryRepository } from '../database/library-repository'
 import type {
   SyncAuthProtocolObject,
   SyncBlobManifest,
@@ -1493,11 +1494,7 @@ export class DesktopSnapshotInstallService {
         feedGeneration,
         'CONFIG RSSHub subscription source ' + entity.entitySyncId
       )
-      this.database.prepare(`
-        INSERT INTO rsshub_source_urls(feed_id,source_url)
-        VALUES(?,?)
-        ON CONFLICT(feed_id) DO UPDATE SET source_url=excluded.source_url
-      `).run(localFeedId, sourceUrl)
+      new LibraryRepository(this.database).replaceRssHubSourceUrlFromSync(localFeedId, sourceUrl)
     }
     for (const sourceMapping of this.identities.listByType(syncSpaceId, 'rsshub_subscription_source')) {
       if (incomingRssHubFeedSyncIds.has(sourceMapping.localId)) continue
