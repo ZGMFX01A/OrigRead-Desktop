@@ -17,24 +17,39 @@ describe('RssHubSubscriptionService', () => {
       expect(feed?.url).toBe('https://rsshub.example.com/cls/hot')
       expect(feed?.sourcePageUrl).toBe('https://www.cls.cn/')
       expect(repository.getRssHubSourceUrl(saved.feedId)).toBe('https://www.cls.cn/')
+      expect(repository.getRssHubDescriptor(saved.feedId)).toEqual({
+        originalInput: 'https://www.cls.cn/',
+        routePath: '/cls/hot',
+        preferredInstance: null,
+        lastResolvedInstance: 'https://rsshub.example.com',
+        lastResolvedUrl: 'https://rsshub.example.com/cls/hot'
+      })
       expect(repository.listArticles()).toHaveLength(1)
     } finally {
       database.close()
     }
   })
-  it('persists provenance for a directly entered known RSSHub endpoint', () => {
+  it('deduplicates the same logical route across physical instances and preserves the original preference', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)
     const service = new RssHubSubscriptionService(repository)
-    const routeUrl = 'https://rsshub.app/telegram/channel/demo'
-    const discovered = availableResult().feed!
-    discovered.feedUrl = routeUrl
-    discovered.sourcePageUrl = routeUrl
     try {
-      const saved = service.subscribeDirect(routeUrl, discovered)
-      expect(repository.getFeedById(saved.feedId)?.url).toBe(routeUrl)
-      expect(repository.getRssHubSourceUrl(saved.feedId)).toBe(routeUrl)
-      expect(saved).toMatchObject({ routeId: 'direct-endpoint', routeName: 'RSSHub' })
+      const first = service.subscribe('https://rsshub.app/cls/hot', availableResult(), 'https://rsshub.app')
+      const another = availableResult()
+      another.match.feedUrl = 'https://another.example.com/cls/hot'
+      another.feed!.feedUrl = another.match.feedUrl
+      another.instanceBaseUrl = 'https://another.example.com'
+
+      const second = service.subscribe('rsshub://cls/hot', another)
+
+      expect(second.feedId).toBe(first.feedId)
+      expect(repository.getRssHubDescriptor(first.feedId)).toEqual({
+        originalInput: 'https://rsshub.app/cls/hot',
+        routePath: '/cls/hot',
+        preferredInstance: 'https://rsshub.app',
+        lastResolvedInstance: 'https://rsshub.example.com',
+        lastResolvedUrl: 'https://rsshub.example.com/cls/hot'
+      })
     } finally {
       database.close()
     }
@@ -90,6 +105,8 @@ function availableResult(): RssHubProbeResult {
     state: 'available',
     available: true,
     message: null,
+    routePath: '/cls/hot',
+    instanceBaseUrl: 'https://rsshub.example.com',
     match: {
       route: {
         id: 'cls-hot',

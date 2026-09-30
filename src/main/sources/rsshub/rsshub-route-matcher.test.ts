@@ -133,6 +133,12 @@ describe('RssHubRouteMatcher Android parity', () => {
     expect(rssHubParameterMatches('anything', '(?<arbitrary>.*)')).toBe(true)
   })
 
+  it.each(['', '   ', 'https://hub.example.com?key=secret', 'https://hub.example.com#fragment'])(
+    'rejects an invalid instance base instead of constructing a different route: %s', (input) => {
+      expect(normalizeRssHubInstanceUrl(input)).toBeNull()
+    }
+  )
+
   it('keeps Android instance normalization, order and built-in list size', () => {
     expect(orderRssHubInstances(
       'https://backup.example.com/',

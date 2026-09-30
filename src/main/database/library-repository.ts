@@ -10,6 +10,7 @@ import type {
   SourceType
 } from '../../shared/library'
 import { sourceUrlComparisonKey } from '../../shared/source-url-normalizer'
+import type { RssHubSubscriptionDescriptor } from '../../shared/rsshub'
 import { CURRENT_ACCOUNT_SETTING_KEY, DEFAULT_LOCAL_ACCOUNT_ID } from './migrations'
 
 type PreparedStatement = ReturnType<DatabaseSync['prepare']>
@@ -195,12 +196,16 @@ export class LibraryRepository {
     }
   }
 
-  upsertRssHubFeedWithArticles(feed: FeedRecord, articles: ArticleRecord[], sourceUrl: string): void {
+  upsertRssHubFeedWithArticles(
+    feed: FeedRecord,
+    articles: ArticleRecord[],
+    descriptor: RssHubSubscriptionDescriptor
+  ): void {
     this.database.exec('BEGIN IMMEDIATE')
     try {
       this.upsertFeed(feed)
       this.upsertArticlesPrepared(articles)
-      this.setRssHubSourceUrl(feed.id, sourceUrl)
+      this.setRssHubDescriptor(feed.id, descriptor)
       this.database.exec('COMMIT')
     } catch (error) {
       this.database.exec('ROLLBACK')
@@ -252,13 +257,15 @@ export class LibraryRepository {
   upsertFeedWithArticles(
     feed: FeedRecord,
     articles: ArticleRecord[],
-    rssHttpCache?: RssHttpCacheRecord
+    rssHttpCache?: RssHttpCacheRecord,
+    rssHubDescriptor?: RssHubSubscriptionDescriptor
   ): void {
     this.database.exec('BEGIN IMMEDIATE')
     try {
       this.upsertFeed(feed)
       this.upsertArticlesPrepared(articles)
       if (rssHttpCache) this.upsertRssHttpCache(rssHttpCache)
+      if (rssHubDescriptor) this.setRssHubDescriptor(feed.id, rssHubDescriptor)
       this.database.exec('COMMIT')
     } catch (error) {
       this.database.exec('ROLLBACK')
@@ -634,11 +641,93 @@ export class LibraryRepository {
     `).run(feedId, sourceUrl)
   }
 
+  setRssHubDescriptor(feedId: string, descriptor: RssHubSubscriptionDescriptor): void {
+    const originalInput = descriptor.originalInput.trim()
+    if (!feedId || !originalInput) return
+    this.database.prepare(`
+      INSERT INTO rsshub_source_urls (
+        feed_id, source_url, route_path, preferred_instance, last_resolved_instance, last_resolved_url
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(feed_id) DO UPDATE SET
+        source_url = excluded.source_url,
+        route_path = excluded.route_path,
+        preferred_instance = excluded.preferred_instance,
+        last_resolved_instance = excluded.last_resolved_instance,
+        last_resolved_url = excluded.last_resolved_url
+    `).run(
+      feedId,
+      originalInput,
+      descriptor.routePath,
+      descriptor.preferredInstance,
+      descriptor.lastResolvedInstance,
+      descriptor.lastResolvedUrl
+    )
+  }
+
   getRssHubSourceUrl(feedId: string): string | null {
     const row = this.database
       .prepare('SELECT source_url FROM rsshub_source_urls WHERE feed_id = ?')
       .get(feedId) as { source_url: string } | undefined
     return row?.source_url ?? null
+  }
+
+  getRssHubDescriptor(feedId: string): RssHubSubscriptionDescriptor | null {
+    const row = this.database.prepare(`
+      SELECT source_url, route_path, preferred_instance, last_resolved_instance, last_resolved_url
+      FROM rsshub_source_urls
+      WHERE feed_id = ?
+    `).get(feedId) as {
+      source_url: string
+      route_path: string | null
+      preferred_instance: string | null
+      last_resolved_instance: string | null
+      last_resolved_url: string | null
+    } | undefined
+    if (!row) return null
+    return {
+      originalInput: row.source_url,
+      routePath: row.route_path,
+      preferredInstance: row.preferred_instance,
+      lastResolvedInstance: row.last_resolved_instance,
+      lastResolvedUrl: row.last_resolved_url
+    }
+  }
+
+  findRssHubFeedByRoute(routePath: string): FeedRecord | null {
+    const row = this.database.prepare(`
+      SELECT f.id, f.account_id, f.group_id, f.name, f.url, f.source_page_url, f.source_type,
+             f.icon, f.is_notification, f.is_full_content, f.is_browser, f.dynamic_rendering,
+             f.created_at, f.updated_at
+      FROM rsshub_source_urls r
+      JOIN feeds f ON f.id = r.feed_id
+      WHERE f.account_id = ? AND r.route_path = ?
+      LIMIT 1
+    `).get(this.getCurrentAccountId(), routePath) as FeedRow | undefined
+    return row ? toFeedRecord(row) : null
+  }
+
+  listRssHubDescriptors(): Record<string, RssHubSubscriptionDescriptor> {
+    const rows = this.database.prepare(`
+      SELECT r.feed_id, r.source_url, r.route_path, r.preferred_instance,
+             r.last_resolved_instance, r.last_resolved_url
+      FROM rsshub_source_urls r
+      JOIN feeds f ON f.id = r.feed_id
+      WHERE f.account_id = ?
+    `).all(this.getCurrentAccountId()) as unknown as Array<{
+      feed_id: string
+      source_url: string
+      route_path: string | null
+      preferred_instance: string | null
+      last_resolved_instance: string | null
+      last_resolved_url: string | null
+    }>
+    return Object.fromEntries(rows.map((row) => [row.feed_id, {
+      originalInput: row.source_url,
+      routePath: row.route_path,
+      preferredInstance: row.preferred_instance,
+      lastResolvedInstance: row.last_resolved_instance,
+      lastResolvedUrl: row.last_resolved_url
+    }]))
   }
 
   listRssHubSourceUrls(): Record<string, string> {

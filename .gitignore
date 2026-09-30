@@ -18,3 +18,24 @@ Thumbs.db
 docs/DEVELOPMENT_PLAN.md
 release-validation/
 /chatbox-main/
+
+# Temporary databases and journals
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Temporary sync blobs and probe results
+.sync-blobs/
+*probe-results.json
+
+# Build and tool caches
+.vite/
+dist-electron/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+

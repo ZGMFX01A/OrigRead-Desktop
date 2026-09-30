@@ -35,12 +35,52 @@ export type RssHubCandidateState =
   | 'invalid_content'
   | 'unsupported'
 
+export type RssHubFailureReason =
+  | 'blocked'
+  | 'http_error'
+  | 'invalid_content'
+  | 'timeout'
+  | 'network_unavailable'
+  | 'connection_closed'
+  | 'dns_failure'
+  | 'tls_error'
+  | 'html_response'
+  | 'disabled'
+  | 'no_instances'
+  | 'probe_budget_exhausted'
+  | 'unsupported_format'
+  | 'authentication_requires_instance'
+  | 'bound_instance_disabled'
+
 export interface RssHubProbeResult {
   match: RssHubRouteMatch
   state: RssHubCandidateState
   feed: DiscoveredRssFeed | null
   message: string | null
   available: boolean
+  /** Stable logical route independent of whichever public instance answered. */
+  routePath?: string | null
+  /** Physical instance that produced this result. */
+  instanceBaseUrl?: string | null
+  /** HTTP status when the probe reached an instance but received a non-success response. */
+  statusCode?: number | null
+  /** Specific failure reason for user feedback and cooldown decisions. */
+  failureReason?: RssHubFailureReason | null
+}
+
+export interface RssHubExplicitRoute {
+  routePath: string
+  originalInput: string
+  /** Only set when the user explicitly entered a concrete RSSHub instance URL. */
+  preferredInstance: string | null
+}
+
+export interface RssHubSubscriptionDescriptor {
+  originalInput: string
+  routePath: string | null
+  preferredInstance: string | null
+  lastResolvedInstance: string | null
+  lastResolvedUrl: string | null
 }
 
 export interface RssHubInstance {

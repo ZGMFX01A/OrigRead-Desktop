@@ -8,26 +8,10 @@ export function sourceInputHint(url: string): SourceInputHint {
   return 'GENERIC'
 }
 
+import { parseExplicitRssHubInput } from './rsshub/rsshub-input'
+
 export function isKnownRssHubEndpoint(url: string, knownInstances: readonly string[] = []): boolean {
-  try {
-    const trimmed = url.trim().replace(/\/+$/, '')
-    if (!trimmed) return false
-    const bases = [...new Set([
-      'https://rsshub.app',
-      'http://rsshub.app',
-      ...knownInstances.map((item) => item.trim().replace(/\/+$/, '')).filter(Boolean)
-    ])]
-    return bases.some((base) => {
-      if (trimmed.toLowerCase() === base.toLowerCase()) return false
-      if (!trimmed.toLowerCase().startsWith(`${base.toLowerCase()}/`)) return false
-      const routePart = trimmed.slice(base.length).replace(/^\/+/, '')
-      return Boolean(routePart)
-        && routePart.toLowerCase() !== 'healthz'
-        && routePart.toLowerCase() !== 'favicon.ico'
-    })
-  } catch {
-    return false
-  }
+  return parseExplicitRssHubInput(url, knownInstances) !== null
 }
 
 function rssHintScore(value: string): number {

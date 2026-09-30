@@ -3,7 +3,7 @@ const noIconFinder: RssIconFinder = { findBestIcon: async () => null }
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { FeedRecord } from '../../../shared/library'
 import { DesktopDatabase } from '../../database/database'
 import { LibraryRepository } from '../../database/library-repository'
@@ -15,6 +15,51 @@ import type { RssHubResolver } from '../rsshub/rsshub-resolver'
 import { ArticleFilterRepository } from '../../filter/article-filter-repository'
 
 describe('RssSubscriptionService', () => {
+  it('refreshes a valid empty RSSHub feed without switching instances and preserves logical provenance', async () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const physical = 'https://hub.example.com/zhihu/hot'
+    const logical = 'rsshub://zhihu/hot'
+    const feed = createFeed('logical-feed', physical, logical, Date.now())
+    repository.upsertRssHubFeedWithArticles(feed, [], {
+      originalInput: logical, routePath: '/zhihu/hot', preferredInstance: null,
+      lastResolvedInstance: 'https://hub.example.com', lastResolvedUrl: physical
+    })
+    const probe = vi.fn(async () => [])
+    const discovery = new RssDiscoveryService(async (url) => rssPayload(url, '<rss version="2.0"><channel><title>Quiet</title><link>https://example.com</link><description>Feed</description></channel></rss>'), noIconFinder)
+    try {
+      const service = new RssSubscriptionService(repository, discovery, { probeRouteForRecovery: probe } as unknown as RssHubResolver)
+      expect(await service.refresh(feed.id)).toMatchObject({ fetchedArticles: 0, insertedArticles: 0 })
+      expect(probe).not.toHaveBeenCalled()
+      expect(repository.getFeedById(feed.id)).toMatchObject({ url: physical, sourcePageUrl: logical })
+    } finally {
+      database.close()
+    }
+  })
+
+  it('rolls back feed, articles and cache when saving the recovered descriptor fails', async () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const oldUrl = 'https://old.example.com/zhihu/hot'
+    const newUrl = 'https://new.example.com/zhihu/hot'
+    const feed = createFeed('atomic-feed', oldUrl, 'rsshub://zhihu/hot', Date.now())
+    const descriptor = { originalInput: 'rsshub://zhihu/hot', routePath: '/zhihu/hot', preferredInstance: null, lastResolvedInstance: 'https://old.example.com', lastResolvedUrl: oldUrl }
+    repository.upsertRssHubFeedWithArticles(feed, [], descriptor)
+    const discovery = { parseDirectConditional: async () => { throw new Error('offline') } } as unknown as RssDiscoveryService
+    const recovered = await new RssDiscoveryService(async (url) => rssPayload(url, RSS_ONE), noIconFinder).parseDirect(newUrl)
+    const resolver = { probeRouteForRecovery: async () => [{ available: true, feed: recovered, match: { feedUrl: newUrl }, routePath: '/zhihu/hot', instanceBaseUrl: 'https://new.example.com' }] } as unknown as RssHubResolver
+    vi.spyOn(repository, 'setRssHubDescriptor').mockImplementation(() => { throw new Error('descriptor write failed') })
+    try {
+      await expect(new RssSubscriptionService(repository, discovery, resolver).refresh(feed.id)).rejects.toThrow('descriptor write failed')
+      expect(repository.getFeedById(feed.id)?.url).toBe(oldUrl)
+      expect(repository.listArticlesByFeed(feed.id)).toEqual([])
+      expect(repository.getRssHttpCache(feed.id)).toBeNull()
+      expect(repository.getRssHubDescriptor(feed.id)).toEqual(descriptor)
+    } finally {
+      database.close()
+    }
+  })
+
   it('adds a discovered feed and persists its first article', async () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)
@@ -184,7 +229,7 @@ describe('RssSubscriptionService', () => {
     database.close()
   })
 
-  it('recovers a failed RSSHub fixed URL using the original source page and updates only the feed URL', async () => {
+  it('recovers a failed RSSHub instance by logical route and updates resolved descriptor state', async () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)
     const oldUrl = 'https://old-rsshub.example.com/cls/hot'
@@ -192,17 +237,24 @@ describe('RssSubscriptionService', () => {
     const newUrl = 'https://new-rsshub.example.com/cls/hot'
     const now = Date.now()
     const feed = createFeed('feed-rsshub', oldUrl, sourceUrl, now)
-    repository.upsertRssHubFeedWithArticles(feed, [], sourceUrl)
+    repository.upsertRssHubFeedWithArticles(feed, [], {
+      originalInput: 'https://rsshub.app/cls/hot',
+      routePath: '/cls/hot',
+      preferredInstance: 'https://rsshub.app',
+      lastResolvedInstance: 'https://old-rsshub.example.com',
+      lastResolvedUrl: oldUrl
+    })
 
     const discovery = {
       discover: async () => { throw new Error('not used') },
       parseDirectConditional: async () => { throw new Error('old instance offline') }
     } as unknown as RssDiscoveryService
-    const resolver = {
-      probe: async () => [{
+    const probeRoute = vi.fn(async () => [{
         state: 'available',
         available: true,
         message: null,
+        routePath: '/cls/hot',
+        instanceBaseUrl: 'https://new-rsshub.example.com',
         match: {
           route: { id: 'cls-hot', name: '热门文章排行榜', host: 'cls.cn', pathPrefix: '/', target: '/cls/hot' },
           feedUrl: newUrl,
@@ -228,15 +280,22 @@ describe('RssSubscriptionService', () => {
             imageUrl: null
           }]
         }
-      }]
-    } as unknown as RssHubResolver
+      }])
+    const resolver = { probeRoute, probeRouteForRecovery: probeRoute, probe: vi.fn(), isEnabled: () => true } as unknown as RssHubResolver
 
     try {
       const service = new RssSubscriptionService(repository, discovery, resolver)
       const result = await service.refresh(feed.id)
       expect(result.insertedArticles).toBe(1)
       expect(repository.getFeedById(feed.id)?.url).toBe(newUrl)
-      expect(repository.getRssHubSourceUrl(feed.id)).toBe(sourceUrl)
+      expect(probeRoute).toHaveBeenCalledWith('/cls/hot', 'https://old-rsshub.example.com')
+      expect(repository.getRssHubDescriptor(feed.id)).toEqual({
+        originalInput: 'https://rsshub.app/cls/hot',
+        routePath: '/cls/hot',
+        preferredInstance: 'https://rsshub.app',
+        lastResolvedInstance: 'https://new-rsshub.example.com',
+        lastResolvedUrl: newUrl
+      })
     } finally {
       database.close()
     }

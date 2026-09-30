@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { DesktopDatabase } from '../../database/database'
 import type { DiscoveredRssFeed } from '../../../shared/rss'
 import type { RssHubRouteDefinition } from '../../../shared/rsshub'
-import { RssHubResolver } from './rsshub-resolver'
+import { FeedFetchError, RssHubResolver } from './rsshub-resolver'
 import { RssHubRouteMatcher } from './rsshub-route-matcher'
 import { RssHubSettingsRepository } from './rsshub-settings-repository'
 
@@ -16,6 +16,72 @@ const dynamicRoute: RssHubRouteDefinition = {
 }
 
 describe('RssHubResolver Android parity', () => {
+  it('does not record a success if the caller cancels as the feed probe completes', async () => {
+    const database = new DesktopDatabase(':memory:')
+    const settings = new RssHubSettingsRepository(database.connection)
+    const controller = new AbortController()
+    const success = vi.spyOn(settings, 'recordSuccess')
+    try {
+      const resolver = new RssHubResolver(new RssHubRouteMatcher([]), settings, async () => {
+        await Promise.resolve()
+        controller.abort(new Error('cancel route'))
+        return fakeFeed()
+      })
+      await expect(resolver.probeRoute('/zhihu/hot', 'https://one.example.com', controller.signal)).rejects.toThrow('cancel route')
+      expect(success).not.toHaveBeenCalled()
+    } finally {
+      database.close()
+    }
+  })
+
+  it.each([403, 404, 503])('does not cool the entire instance for a typed HTTP %s route failure', async (status) => {
+    const database = new DesktopDatabase(':memory:')
+    const settings = new RssHubSettingsRepository(database.connection)
+    settings.restore({ enabled: true, instances: [{ id: 'one', url: 'https://one.example.com', enabled: true, builtIn: false, location: '', maintainer: '' }] })
+    const recordFailure = vi.spyOn(settings, 'recordFailure')
+    try {
+      const resolver = new RssHubResolver(new RssHubRouteMatcher([]), settings, async () => {
+        throw new FeedFetchError('http_error', status, `HTTP ${status}`)
+      })
+      expect((await resolver.probeRoute('/zhihu/hot'))[0]).toMatchObject({ statusCode: status, failureReason: 'http_error' })
+      expect(recordFailure).not.toHaveBeenCalled()
+    } finally {
+      database.close()
+    }
+  })
+
+  it('parses a direct logical route using only the feed request, without favicon discovery', async () => {
+    const database = new DesktopDatabase(':memory:')
+    const settings = new RssHubSettingsRepository(database.connection)
+    const instance = 'https://hub.example.com'
+    settings.restore({ enabled: true, instances: [{ id: 'one', url: instance, enabled: true, builtIn: false, location: '', maintainer: '' }] })
+    const fetcher = vi.fn(async () => new Response('<rss version="2.0"><channel><title>RSSHub</title><link>https://example.com</link><description>Feed</description></channel></rss>', { headers: { 'content-type': 'application/rss+xml' } }))
+    vi.stubGlobal('fetch', fetcher)
+    try {
+      const resolver = new RssHubResolver(new RssHubRouteMatcher([]), settings)
+      const result = await resolver.probeRoute('/bilibili/user/dynamic/42')
+      expect(result[0]?.available).toBe(true)
+      expect(fetcher.mock.calls.map((call) => (call as unknown[])[0])).toEqual([`${instance}/bilibili/user/dynamic/42`])
+      expect(result[0]?.feed?.sourcePageUrl).toBe(`${instance}/bilibili/user/dynamic/42`)
+    } finally {
+      vi.unstubAllGlobals()
+      database.close()
+    }
+  })
+
+  it('classifies the transport cause of a native fetch failure', async () => {
+    const database = new DesktopDatabase(':memory:')
+    const settings = new RssHubSettingsRepository(database.connection)
+    try {
+      const resolver = new RssHubResolver(new RssHubRouteMatcher([]), settings, async () => {
+        throw new TypeError('fetch failed', { cause: Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }) })
+      })
+      expect((await resolver.probeRoute('/zhihu/hot', 'https://one.example.com'))[0]?.failureReason).toBe('dns_failure')
+    } finally {
+      database.close()
+    }
+  })
+
   it('does not send a request for unresolved routes', async () => {
     const database = new DesktopDatabase(':memory:')
     const settings = new RssHubSettingsRepository(database.connection)
@@ -64,17 +130,17 @@ describe('RssHubResolver Android parity', () => {
       expect(result[0]?.available).toBe(true)
       expect(result[0]?.match.feedUrl).toBe('https://second.example.com/example/user/42')
       expect(result[0]?.match.parameters.id).toBe('42')
-      expect(requested).toEqual([
+      expect(requested).toEqual(expect.arrayContaining([
         'https://first.example.com/example/user/42',
         'https://second.example.com/example/user/42'
-      ])
+      ]))
       expect(settings.candidateInstances()[0]).toBe('https://second.example.com')
     } finally {
       database.close()
     }
   })
 
-  it('probes backup instances only after the previous instance finishes', async () => {
+  it('probes backup instances in parallel and cancels slower peers after success', async () => {
     const database = new DesktopDatabase(':memory:')
     const settings = new RssHubSettingsRepository(database.connection)
     settings.restoreDefault()
@@ -85,15 +151,23 @@ describe('RssHubResolver Android parity', () => {
     settings.addInstance('https://second.example.com')
 
     const events: string[] = []
+    let firstAborted = false
     const resolver = new RssHubResolver(
       new RssHubRouteMatcher([dynamicRoute]),
       settings,
-      async (feedUrl) => {
+      async (feedUrl, _sourceUrl, signal) => {
         if (feedUrl.startsWith('https://first.example.com')) {
           events.push('first:start')
-          await new Promise<void>((resolve) => setTimeout(resolve, 20))
-          events.push('first:end')
-          throw new TypeError('fetch failed')
+          return new Promise<DiscoveredRssFeed>((_resolve, reject) => {
+            if (!signal) return reject(new Error('missing abort signal'))
+            const onAbort = (): void => {
+              firstAborted = true
+              events.push('first:abort')
+              reject(signal.reason)
+            }
+            if (signal.aborted) onAbort()
+            else signal.addEventListener('abort', onAbort, { once: true })
+          })
         }
         events.push('second:start')
         return fakeFeed()
@@ -102,9 +176,78 @@ describe('RssHubResolver Android parity', () => {
 
     try {
       const result = await resolver.probe('https://example.com/user/42')
-      expect(events).toEqual(['first:start', 'first:end', 'second:start'])
+      await Promise.resolve()
+      expect(events.slice(0, 2)).toEqual(['first:start', 'second:start'])
+      expect(firstAborted).toBe(true)
       expect(result[0]?.match.feedUrl).toBe('https://second.example.com/example/user/42')
       expect(settings.candidateInstances()[0]).toBe('https://second.example.com')
+    } finally {
+      database.close()
+    }
+  })
+
+  it('probes a logical route across instances and records the resolved physical instance', async () => {
+    const database = new DesktopDatabase(':memory:')
+    const settings = new RssHubSettingsRepository(database.connection)
+    for (const item of settings.current().instances) settings.setInstanceEnabled(item.id, false)
+    settings.addInstance('https://first.example.com')
+    settings.addInstance('https://second.example.com')
+    const requested: string[] = []
+    const resolver = new RssHubResolver(
+      new RssHubRouteMatcher([]),
+      settings,
+      async (feedUrl) => {
+        requested.push(feedUrl)
+        if (feedUrl.startsWith('https://first.example.com')) throw new TypeError('fetch failed')
+        return { ...fakeFeed(), feedUrl }
+      }
+    )
+
+    try {
+      const routePath = '/bilibili/user/dynamic/1161918898'
+      const result = await resolver.probeRoute(routePath, 'https://first.example.com')
+      const available = result.find((item) => item.available)
+      expect(available).toMatchObject({
+        routePath,
+        instanceBaseUrl: 'https://second.example.com'
+      })
+      expect(available?.match.feedUrl).toBe(`https://second.example.com${routePath}`)
+      expect(requested).toEqual(expect.arrayContaining([
+        `https://first.example.com${routePath}`,
+        `https://second.example.com${routePath}`
+      ]))
+    } finally {
+      database.close()
+    }
+  })
+
+  it('cools an instance on HTTP 429 but not on an ordinary HTTP route failure', async () => {
+    const database = new DesktopDatabase(':memory:')
+    const settings = new RssHubSettingsRepository(database.connection)
+    for (const item of settings.current().instances) settings.setInstanceEnabled(item.id, false)
+    const limited = 'https://limited.example.com'
+    settings.addInstance(limited)
+    const recordFailure = vi.spyOn(settings, 'recordFailure')
+
+    try {
+      const limitedResolver = new RssHubResolver(
+        new RssHubRouteMatcher([]),
+        settings,
+        async () => { throw new Error('HTTP 429') }
+      )
+      const limitedResult = await limitedResolver.probeRoute('/zhihu/hot')
+      expect(limitedResult[0]).toMatchObject({ statusCode: 429, state: 'invalid_content' })
+      expect(recordFailure).toHaveBeenCalledWith(limited)
+
+      recordFailure.mockClear()
+      const routeFailureResolver = new RssHubResolver(
+        new RssHubRouteMatcher([]),
+        settings,
+        async () => { throw new Error('HTTP 503') }
+      )
+      const routeFailureResult = await routeFailureResolver.probeRoute('/zhihu/hot')
+      expect(routeFailureResult[0]).toMatchObject({ statusCode: 503, state: 'invalid_content' })
+      expect(recordFailure).not.toHaveBeenCalled()
     } finally {
       database.close()
     }

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import * as cheerio from 'cheerio'
 import type { ArticleRecord, FeedRecord } from '../../../shared/library'
 import type { DiscoveredRssFeed, RssFeedItem, RssSubscriptionResult } from '../../../shared/rss'
+import type { RssHubSubscriptionDescriptor } from '../../../shared/rsshub'
 import { DEFAULT_GROUP_ID } from '../../database/migrations'
 import { LibraryRepository } from '../../database/library-repository'
 import type { RssHubResolver } from '../rsshub/rsshub-resolver'
@@ -74,36 +75,39 @@ export class RssSubscriptionService {
     const existing = this.repository.getFeedById(feedId)
     if (!existing) throw new Error(`来源不存在：${feedId}`)
     if (existing.sourceType !== 'rss') throw new Error(`来源不是 RSS/Atom：${existing.name}`)
+    const rssHubDescriptor = this.repository.getRssHubDescriptor(feedId)
 
     let discovered: DiscoveredRssFeed
     let responseValidators: { etag: string | null; lastModified: string | null } | null = null
+    let rssHubDescriptorUpdate: RssHubSubscriptionDescriptor | null = null
     try {
       const cache = this.repository.getRssHttpCache(feedId)
       const validCache = cache?.feedUrl === existing.url ? cache : null
       const direct = await this.discovery.parseDirectConditional(
         existing.url,
-        existing.sourcePageUrl ?? existing.url,
+        rssHubDescriptor ? existing.url : existing.sourcePageUrl ?? existing.url,
         {
           etag: validCache?.etag,
           lastModified: validCache?.lastModified
-        }
+        },
+        undefined,
+        { skipIconDiscovery: rssHubDescriptor !== null }
       )
       if (direct.notModified) {
         // 304 是最便宜的成功路径：不解析 XML、不查 archived/articles、不跑过滤器、
         // 不更新 Feed/Article/cache，避免无意义的 SQLite/renderer invalidation。
         return { feedId, fetchedArticles: 0, insertedArticles: 0 }
       }
-      discovered = direct.feed!
+      discovered = rssHubDescriptor
+        ? { ...direct.feed!, sourcePageUrl: rssHubDescriptor.originalInput }
+        : direct.feed!
       responseValidators = { etag: direct.etag, lastModified: direct.lastModified }
-      if (discovered.items.length === 0) {
-        const beforeRecoveryUrl = discovered.feedUrl
-        discovered = await this.recoverRssHubFeed(existing, discovered)
-        if (discovered.feedUrl !== beforeRecoveryUrl) responseValidators = null
-      }
+      // A valid empty feed is a successful refresh, not evidence of instance failure.
     } catch (error) {
       const recovered = await this.tryRecoverRssHubFeed(existing)
       if (!recovered) throw error
-      discovered = recovered
+      discovered = recovered.feed
+      rssHubDescriptorUpdate = recovered.descriptor
       responseValidators = null
     }
     const candidates = discovered.items
@@ -130,7 +134,8 @@ export class RssSubscriptionService {
         etag: responseValidators?.etag ?? null,
         lastModified: responseValidators?.lastModified ?? null,
         updatedAt: now
-      }
+      },
+      rssHubDescriptorUpdate ?? undefined
     )
     return { feedId, fetchedArticles: articles.length, insertedArticles }
   }
@@ -188,20 +193,31 @@ export class RssSubscriptionService {
     return { feedId, fetchedArticles: articles.length, insertedArticles: articles.length }
   }
 
-  private async recoverRssHubFeed(existing: FeedRecord, fallback: DiscoveredRssFeed): Promise<DiscoveredRssFeed> {
-    return (await this.tryRecoverRssHubFeed(existing)) ?? fallback
-  }
-
-  private async tryRecoverRssHubFeed(existing: FeedRecord): Promise<DiscoveredRssFeed | null> {
-    const sourceUrl = this.repository.getRssHubSourceUrl(existing.id)
-    if (!sourceUrl || !this.rssHubResolver) return null
-    const recovered = (await this.rssHubResolver.probe(sourceUrl))
-      .find((result) => result.available && (result.feed?.items.length ?? 0) > 0)
+  private async tryRecoverRssHubFeed(
+    existing: FeedRecord
+  ): Promise<{ feed: DiscoveredRssFeed; descriptor: RssHubSubscriptionDescriptor } | null> {
+    const descriptor = this.repository.getRssHubDescriptor(existing.id)
+    if (!descriptor || !this.rssHubResolver) return null
+    const results = descriptor.routePath
+      ? await this.rssHubResolver.probeRouteForRecovery(
+          descriptor.routePath,
+          descriptor.lastResolvedInstance ?? descriptor.preferredInstance
+        )
+      : await this.rssHubResolver.probe(descriptor.originalInput)
+    const recovered = results.find((result) => result.available)
     if (!recovered?.feed || !recovered.match.feedUrl) return null
     return {
-      ...recovered.feed,
-      feedUrl: recovered.match.feedUrl,
-      sourcePageUrl: sourceUrl
+      feed: {
+        ...recovered.feed,
+        feedUrl: recovered.match.feedUrl,
+        sourcePageUrl: descriptor.originalInput
+      },
+      descriptor: {
+        ...descriptor,
+        routePath: recovered.routePath ?? descriptor.routePath,
+        lastResolvedInstance: recovered.instanceBaseUrl ?? descriptor.lastResolvedInstance,
+        lastResolvedUrl: recovered.match.feedUrl
+      }
     }
   }
 }

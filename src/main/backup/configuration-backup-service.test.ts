@@ -28,6 +28,38 @@ const dirs: string[] = []
 afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })))
 
 describe('ConfigurationBackupService Android v1 compatibility', () => {
+  it('restores legacy mappings even when the new descriptor map is empty or partial', () => {
+    const fixture = createFixture()
+    const backup = androidBackup(fixture)
+    backup.encryptedSecrets = null
+    backup.rssHubSourceUrls = { 'android-existing': 'https://www.cls.cn/', 'android-new': 'https://example.com/new' }
+    backup.rssHubSubscriptions = {}
+    fixture.backup.restoreBackup(JSON.stringify(backup))
+    const existing = fixture.library.findFeedByUrl('https://example.com/feed.xml')!
+    expect(fixture.library.getRssHubSourceUrl(existing.id)).toBe('https://www.cls.cn/')
+    backup.rssHubSubscriptions = { 'android-new': { originalInput: 'rsshub://zhihu/hot', routePath: '/zhihu/hot', preferredInstance: null, lastResolvedInstance: null, lastResolvedUrl: null } }
+    fixture.backup.restoreBackup(JSON.stringify(backup))
+    expect(fixture.library.getRssHubSourceUrl(existing.id)).toBe('https://www.cls.cn/')
+    expect(fixture.library.getRssHubDescriptor(fixture.library.findFeedByUrl('https://new.example/feed.xml')!.id)?.routePath).toBe('/zhihu/hot')
+  })
+
+  it.each([
+    { 'android-new': null },
+    { 'android-new': { originalInput: 42 } },
+    { missing: { originalInput: 'rsshub://zhihu/hot' } },
+    { 'android-new': { originalInput: 'rsshub://zhihu/hot', routePath: '/foo/../secret' } }
+  ])('rejects malformed canonical RSSHub subscriptions before any restore writes: %j', (descriptors) => {
+    const fixture = createFixture()
+    const backup = androidBackup(fixture)
+    backup.encryptedSecrets = null
+    backup.rssHubSubscriptions = descriptors as any
+    const before = fixture.backup.exportBackup('')
+    expect(() => fixture.backup.inspect(JSON.stringify(backup))).toThrow(/RSSHub/)
+    expect(() => fixture.backup.restoreBackup(JSON.stringify(backup))).toThrow(/RSSHub/)
+    const after = fixture.backup.exportBackup('')
+    expect(JSON.parse(after).subscriptions).toEqual(JSON.parse(before).subscriptions)
+  })
+
   it('merges Android subscriptions, preserves articles, remaps source rules, and restores encrypted credentials', () => {
     const fixture = createFixture()
     const now = 1_786_700_000_000

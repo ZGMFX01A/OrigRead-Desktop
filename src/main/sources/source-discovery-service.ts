@@ -19,17 +19,17 @@ import { RssDiscoveryService } from './rss/rss-discovery-service'
 import { RssSubscriptionService } from './rss/rss-subscription-service'
 import { RssHubResolver } from './rsshub/rsshub-resolver'
 import { RssHubSubscriptionService } from './rsshub/rsshub-subscription-service'
+import { parseExplicitRssHubInput } from './rsshub/rsshub-input'
 import { WebsiteSourceService } from './website/website-source-service'
 import { WebsiteSubscriptionService } from './website/website-subscription-service'
 import { rankSourceCandidates, type UnscoredSourceCandidate } from './source-candidate-scorer'
-import { isKnownRssHubEndpoint, sourceInputHint } from './source-input-classifier'
+import { sourceInputHint } from './source-input-classifier'
 import type { FeedDiscoveryCatalog } from '../discovery/feed-discovery-catalog'
 import { emptyFeedCatalogUrlMatch, preferredCatalogProbeUrl, type FeedCatalogUrlMatch } from '../../shared/feed-catalog-index'
 
 type CandidatePayload =
   | { type: 'rss'; discovered: DiscoveredRssFeed }
-  | { type: 'rsshub'; sourceUrl: string; result: RssHubProbeResult }
-  | { type: 'rsshub_direct'; sourceUrl: string; discovered: DiscoveredRssFeed }
+  | { type: 'rsshub'; sourceUrl: string; result: RssHubProbeResult; preferredInstance: string | null }
   | { type: 'json'; probe: JsonSourceProbeResult }
   | { type: 'website'; inspection: WebsiteInspectionResult; dynamic: boolean }
 
@@ -75,15 +75,15 @@ export class SourceDiscoveryService {
     signal?: AbortSignal
   ): Promise<SourceDiscoveryResult> {
     signal?.throwIfAborted()
-    const sourceUrl = normalizeSourceUrl(rawUrl)
-    this.pruneSessions()
-
     const account = this.accountCoordinator?.current()
     const isLocalAccount = !account || account.type === 'local'
     const knownInstances = this.rssHubResolver.knownInstanceUrls()
-    const knownRssHubEndpoint = isKnownRssHubEndpoint(sourceUrl, knownInstances)
+    const explicitRssHubInput = parseExplicitRssHubInput(rawUrl, knownInstances)
+    if (/^rsshub:/i.test(rawUrl.trim()) && !explicitRssHubInput) throw new Error('无效的 RSSHub 路由地址')
+    const sourceUrl = explicitRssHubInput?.originalInput ?? normalizeSourceUrl(rawUrl)
+    this.pruneSessions()
     const inputHint = sourceInputHint(sourceUrl)
-    const catalogMatch = knownRssHubEndpoint ? emptyFeedCatalogUrlMatch() : this.safeCatalogMatch(sourceUrl)
+    const catalogMatch = explicitRssHubInput ? emptyFeedCatalogUrlMatch() : this.safeCatalogMatch(sourceUrl)
 
     const finish = (
       candidates: UnscoredSourceCandidate[],
@@ -107,29 +107,50 @@ export class SourceDiscoveryService {
 
     // Android performs this guard before the first network stage. Persistence still keeps its own
     // duplicate protection; this only avoids redundant discovery work and duplicate UI choices.
-    if (this.rssSubscription.hasExistingSource(sourceUrl)) {
+    if (isLocalAccount && explicitRssHubInput?.routePath && this.rssHubSubscription.hasExistingRoute(explicitRssHubInput.routePath)) {
+      return finish([], [], '来源已存在')
+    }
+    if (!explicitRssHubInput && this.rssSubscription.hasExistingSource(sourceUrl)) {
       return finish([], [], '来源已存在')
     }
 
-    // 与 Android 一致：只有“官方/已配置 RSSHub 实例下的 route URL”是网络前硬分支。
-    // Local 保留 RSSHub provenance；远端账户把它当标准 RSS URL 订阅。
-    if (knownRssHubEndpoint) {
-      const outcome = await runStage('rsshub', reportProgress, () =>
-        withAbortTimeout(
-          (stageSignal) => this.rssDiscovery.parseDirect(sourceUrl, sourceUrl, stageSignal),
-          20_000,
-          'RSSHub 地址探测超时',
+    // 显式 RSSHub 输入（rsshub:// 或已知实例 URL）必须先抽成 logical route，再做实例 failover。
+    if (explicitRssHubInput) {
+      const shouldProbeExplicit = !isLocalAccount && explicitRssHubInput.preferredInstance !== null && !this.rssHubResolver.isEnabled()
+      const outcome = await runStage('rsshub', reportProgress, async () => {
+        if (shouldProbeExplicit) {
+          return [await this.rssHubResolver.probeExplicitRoute(
+            explicitRssHubInput.routePath,
+            explicitRssHubInput.preferredInstance!,
+            signal
+          )]
+        }
+        return this.rssHubResolver.probeRoute(
+          explicitRssHubInput.routePath,
+          explicitRssHubInput.preferredInstance,
           signal
-        ), signal)
-      if (!outcome.value) {
-        return finish([], [], outcome.error ?? '未能连接或解析该 RSSHub 实例地址')
+        )
+      }, signal)
+      const results = outcome.value ?? []
+      const available = results.find((result) => result.available && result.feed && result.match.feedUrl)
+      if (!available?.feed || !available.match.feedUrl) {
+        return finish([], [], outcome.error ?? explicitRssHubFailureNotice(results), results)
       }
-      const candidate = isLocalAccount ? rssHubDirectCandidate(outcome.value) : rssCandidate(outcome.value)
+      const resolvedFeed: DiscoveredRssFeed = {
+        ...available.feed,
+        feedUrl: available.match.feedUrl,
+        sourcePageUrl: isLocalAccount ? sourceUrl : available.match.feedUrl
+      }
+      const candidate = isLocalAccount ? rssHubCandidate({ ...available, feed: resolvedFeed }) : rssCandidate(resolvedFeed)
       const payload: CandidatePayload = isLocalAccount
-        ? { type: 'rsshub_direct', sourceUrl, discovered: outcome.value }
-        : { type: 'rss', discovered: outcome.value }
-      const directRssHubResult = isLocalAccount ? [directRssHubProbeResult(sourceUrl, outcome.value)] : []
-      return finish([candidate], [payload], null, directRssHubResult)
+        ? {
+            type: 'rsshub',
+            sourceUrl,
+            result: { ...available, feed: resolvedFeed },
+            preferredInstance: explicitRssHubInput.preferredInstance
+          }
+        : { type: 'rss', discovered: resolvedFeed }
+      return finish([candidate], [payload], null, isLocalAccount ? results : [])
     }
 
     const candidates: UnscoredSourceCandidate[] = []
@@ -214,7 +235,7 @@ export class SourceDiscoveryService {
     else if (rssHubOutcome.error) lastError = rssHubOutcome.error
     for (const result of rssHubResults.filter((item) => item.available && item.feed && item.match.feedUrl)) {
       candidates.push(rssHubCandidate(result))
-      payloads.push({ type: 'rsshub', sourceUrl, result })
+      payloads.push({ type: 'rsshub', sourceUrl, result, preferredInstance: null })
     }
     // Android 在 RSSHub route 已真实可用后就结束 fallback 链。
     if (candidates.some((candidate) => candidate.kind === 'RSSHUB')) {
@@ -233,7 +254,7 @@ export class SourceDiscoveryService {
         websiteOutcome.value,
         false,
         !this.websiteSource.hasRule(sourceUrl),
-        rssHubFailureNotice(rssHubResults)
+        rssHubFailureSummary(rssHubResults)
       ))
       payloads.push({ type: 'website', inspection: websiteOutcome.value, dynamic: false })
     } else if (websiteOutcome.error) {
@@ -265,7 +286,7 @@ export class SourceDiscoveryService {
     return finish(
       candidates,
       payloads,
-      lastError ?? rssHubFailureNotice(rssHubResults),
+      lastError ?? rssHubFailureSummary(rssHubResults),
       rssHubResults
     )
   }
@@ -301,11 +322,11 @@ export class SourceDiscoveryService {
           break
         case 'rsshub':
           this.requireLocalAccount('RSSHub')
-          feedId = this.rssHubSubscription.subscribe(payload!.sourceUrl, payload!.result).feedId
-          break
-        case 'rsshub_direct':
-          this.requireLocalAccount('RSSHub')
-          feedId = this.rssHubSubscription.subscribeDirect(payload!.sourceUrl, payload!.discovered).feedId
+          feedId = this.rssHubSubscription.subscribe(
+            payload!.sourceUrl,
+            payload!.result,
+            payload!.preferredInstance
+          ).feedId
           break
         case 'json':
           this.requireLocalAccount('JSON/API')
@@ -485,21 +506,94 @@ function normalizeSourceUrl(value: string): string {
 }
 
 
-function rssHubFailureNotice(results: RssHubProbeResult[]): string | null {
-  const result = results.find((item) => ['timeout', 'network_unavailable', 'needs_input', 'unsupported'].includes(item.state))
-  if (!result) return null
-  if (result.state === 'timeout') return 'RSSHub 探测超时'
-  if (result.state === 'network_unavailable') return 'RSSHub 实例暂时不可用'
-  if (result.state === 'unsupported') return 'RSSHub 已关闭或没有启用的实例'
-  return `RSSHub 路由缺少参数：${result.match.missingParameters.join(', ')}`
+export function rssHubFailureText(result: RssHubProbeResult): string {
+  const reason = result.failureReason ?? (
+    result.state === 'timeout'
+      ? 'timeout'
+      : result.state === 'network_unavailable'
+        ? 'network_unavailable'
+        : result.state === 'invalid_content'
+          ? 'invalid_content'
+          : null
+  )
+  switch (reason) {
+    case 'blocked':
+      return 'RSSHub 服务器或上游网站返回了人机验证或反爬拦截页面。请重试或换用其他实例。'
+    case 'http_error':
+      switch (result.statusCode) {
+        case 401:
+          return 'HTTP 401：请求需要身份认证。请检查实例访问权限或路由配置。'
+        case 403:
+          return 'HTTP 403：服务器拒绝了请求。请尝试其他实例或检查访问规则。'
+        case 404:
+          return 'HTTP 404：找不到请求的地址或路由。请检查路由和实例基础地址。'
+        case 429:
+          return 'HTTP 429：服务器限制了请求频率。请稍后重试或换用其他实例。'
+        case null:
+        case undefined:
+          return 'RSSHub 请求在服务器或上游网站执行失败。请查看各服务器的具体原因，或尝试其他实例。'
+        default:
+          return `RSSHub 服务器返回 HTTP ${result.statusCode}。请检查服务器或上游路由，稍后重试。`
+      }
+    case 'timeout':
+      return 'RSSHub 请求超时。请稍后重试或换用其他实例。'
+    case 'network_unavailable':
+      return '无法连接这个 RSSHub 服务器。请检查网络和服务器地址。'
+    case 'connection_closed':
+      return '连接在响应完成前被关闭。请重试，或检查代理和服务器。'
+    case 'dns_failure':
+      return '无法解析 RSSHub 服务器域名。请检查服务器地址和 DNS 设置。'
+    case 'tls_error':
+      return '无法与 RSSHub 建立安全连接。请检查服务器证书或代理设置。'
+    case 'html_response':
+      return '服务器返回了网页，而非 RSS/Atom。请检查实例地址和路由。'
+    case 'invalid_content':
+      return '服务器返回的内容无法解析为有效的 RSS/Atom。'
+    case 'disabled':
+      return 'RSSHub 当前已关闭。请在设置中启用后重试。'
+    case 'no_instances':
+      return '没有启用任何 RSSHub 实例。请在设置中添加或启用实例。'
+    case 'probe_budget_exhausted':
+      return '本次 RSSHub 探测超时，部分实例尚未完成。请重试或调整实例顺序。'
+    case 'unsupported_format':
+      return '此 RSSHub 返回了暂不支持的格式（如 JSON）。请使用 RSS 或 Atom 输出，例如将 format 改为 rss。'
+    case 'authentication_requires_instance':
+      return '此 RSSHub 路由包含访问密钥或访问码。请填写所属实例的完整 HTTP/HTTPS 地址，避免将凭证发送给其他实例。'
+    case 'bound_instance_disabled':
+      return '此带凭证订阅所属的 RSSHub 实例已被禁用或删除。请启用原实例后再进行自动恢复。'
+    default:
+      if (result.state === 'needs_input') {
+        return `RSSHub 匹配项“${result.match.route.name}”还需要更多信息（${result.match.missingParameters.join(', ')}），请填写更具体的页面地址。`
+      }
+      if (result.state === 'unsupported') {
+        return 'RSSHub 当前已关闭。请在设置中启用后重试。'
+      }
+      return '本次未获得可用的 RSSHub 订阅。请查看具体原因后重试。'
+  }
+}
+
+export function rssHubFailureSummary(results: RssHubProbeResult[]): string | null {
+  const failures = results.filter((item) => !item.available)
+  if (failures.length === 0) return null
+  const budget = failures.find((item) => item.failureReason === 'probe_budget_exhausted')
+  if (budget) return rssHubFailureText(budget)
+  const texts = [...new Set(failures.map(rssHubFailureText))]
+  if (texts.length > 1) {
+    return '不同 RSSHub 服务器返回了不同错误。请查看下方各服务器的具体原因后重试。'
+  }
+  return texts[0] ?? null
+}
+
+export function explicitRssHubFailureNotice(results: RssHubProbeResult[]): string {
+  return rssHubFailureSummary(results) ?? '本次未获得可用的 RSSHub 订阅。请查看具体原因后重试。'
 }
 
 function mergeRssHubProbeResults(local: RssHubProbeResult[], probed: RssHubProbeResult[]): RssHubProbeResult[] {
   const merged = new Map<string, RssHubProbeResult>()
   for (const result of local) merged.set(rssHubRouteKey(result), result)
-  // 网络验证结果优先覆盖同一路由的本地占位状态；未返回的本地路由继续保留。
-  for (const result of probed) merged.set(rssHubRouteKey(result), result)
-  return [...merged.values()]
+  // 只替换本地占位诊断。同一路由可以有多个真实诊断，例如 HTTP 503 加验证未完成。
+  for (const result of probed) merged.delete(rssHubRouteKey(result))
+  return [...merged.values(), ...probed]
 }
 
 function rssHubRouteKey(result: RssHubProbeResult): string {
@@ -519,7 +613,10 @@ function toRssHubRouteStatusSummary(result: RssHubProbeResult): RssHubRouteStatu
     state: result.state,
     available: result.available,
     articleCount: result.feed?.items.length ?? 0,
-    message: result.message
+    message: result.message,
+    instanceBaseUrl: result.instanceBaseUrl ?? null,
+    failureReason: result.failureReason ?? null,
+    statusCode: result.statusCode ?? null
   }
 }
 

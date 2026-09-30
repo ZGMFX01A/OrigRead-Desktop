@@ -21,6 +21,10 @@ describe('database migration v2 -> current schema', () => {
       'provider_id', 'model', 'web_search_status', 'web_search_query', 'web_search_provider_name',
       'web_search_result_count', 'web_search_error_message'
     ]))
+    const rssHubColumns = (db.prepare("PRAGMA table_info('rsshub_source_urls')").all() as Array<{ name: string }>).map((column) => column.name)
+    expect(rssHubColumns).toEqual(expect.arrayContaining([
+      'source_url', 'route_path', 'preferred_instance', 'last_resolved_instance', 'last_resolved_url'
+    ]))
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
     db.close()
   })
@@ -48,6 +52,12 @@ describe('database migration v2 -> current schema', () => {
     expect(db.prepare('SELECT account_id,is_unread,is_starred,image_url FROM articles WHERE id=?').get('article-1'))
       .toEqual({account_id:1,is_unread:0,is_starred:1,image_url:'https://example.com/1.png'})
     expect(db.prepare('SELECT source_url FROM rsshub_source_urls WHERE feed_id=?').get('feed-1')).toEqual({source_url:'https://example.com/'})
+    expect(db.prepare(`
+      SELECT route_path,preferred_instance,last_resolved_instance,last_resolved_url
+      FROM rsshub_source_urls WHERE feed_id=?
+    `).get('feed-1')).toEqual({
+      route_path:null,preferred_instance:null,last_resolved_instance:null,last_resolved_url:null
+    })
     expect(db.prepare('SELECT value FROM app_settings WHERE key=?').get(CURRENT_ACCOUNT_SETTING_KEY)).toEqual({value:'1'})
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='archived_articles'").get()).toEqual({name:'archived_articles'})
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='rss_http_cache'").get()).toEqual({name:'rss_http_cache'})
@@ -164,7 +174,7 @@ describe('database migration v2 -> current schema', () => {
 
     expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
     expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all())
-      .toEqual([{version:9},{version:10},{version:11},{version:12}])
+      .toEqual([{version:9},{version:10},{version:11},{version:12},{version:13}])
     const columns = db.prepare("PRAGMA table_info('llm_messages')").all() as Array<{name:string}>
     expect(columns.map((column)=>column.name)).toEqual(expect.arrayContaining([
       'web_search_status','web_search_query','web_search_provider_name','web_search_result_count','web_search_error_message'

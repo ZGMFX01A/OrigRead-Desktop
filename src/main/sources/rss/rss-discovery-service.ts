@@ -32,6 +32,10 @@ export interface RssDirectFetchResult {
 
 export type RssFetcher = (url: string, validators?: RssRequestValidators, signal?: AbortSignal) => Promise<RssFetchPayload>
 
+interface RssParseOptions {
+  skipIconDiscovery?: boolean
+}
+
 const parser = new Parser<Record<string, never>, CustomRssItem>({
   customFields: {
     item: [['content:encoded', 'contentEncoded']]
@@ -88,15 +92,16 @@ export class RssDiscoveryService {
     }
   }
 
-  async parseDirect(feedUrl: string, sourcePageUrl = feedUrl, signal?: AbortSignal): Promise<DiscoveredRssFeed> {
-    return this.parseFeedUrl(normalizeHttpUrl(feedUrl), normalizeHttpUrl(sourcePageUrl), false, signal)
+  async parseDirect(feedUrl: string, sourcePageUrl = feedUrl, signal?: AbortSignal, options: RssParseOptions = {}): Promise<DiscoveredRssFeed> {
+    return this.parseFeedUrl(normalizeHttpUrl(feedUrl), normalizeHttpUrl(sourcePageUrl), false, signal, options)
   }
 
   async parseDirectConditional(
     feedUrl: string,
     sourcePageUrl = feedUrl,
     validators: RssRequestValidators = {},
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options: RssParseOptions = {}
   ): Promise<RssDirectFetchResult> {
     const normalizedFeedUrl = normalizeHttpUrl(feedUrl)
     const normalizedSourcePageUrl = normalizeHttpUrl(sourcePageUrl)
@@ -110,7 +115,7 @@ export class RssDiscoveryService {
       }
     }
     return {
-      feed: await this.parsePayload(payload, normalizedFeedUrl, normalizedSourcePageUrl, false, signal),
+      feed: await this.parsePayload(payload, normalizedFeedUrl, normalizedSourcePageUrl, false, signal, options),
       notModified: false,
       etag: payload.etag ?? null,
       lastModified: payload.lastModified ?? null
@@ -121,10 +126,11 @@ export class RssDiscoveryService {
     feedUrl: string,
     sourcePageUrl: string,
     discoveredFromPage: boolean,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options: RssParseOptions = {}
   ): Promise<DiscoveredRssFeed> {
     const payload = await this.fetcher(feedUrl, undefined, signal)
-    return this.parsePayload(payload, feedUrl, sourcePageUrl, discoveredFromPage, signal)
+    return this.parsePayload(payload, feedUrl, sourcePageUrl, discoveredFromPage, signal, options)
   }
 
   private async parsePayload(
@@ -132,7 +138,8 @@ export class RssDiscoveryService {
     feedUrl: string,
     sourcePageUrl: string,
     discoveredFromPage: boolean,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options: RssParseOptions = {}
   ): Promise<DiscoveredRssFeed> {
     signal?.throwIfAborted()
     const xml = decodePayload(payload)
@@ -144,7 +151,7 @@ export class RssDiscoveryService {
     }
 
     // 图标是可选元数据，不能让一个已经成功解析的 Feed 因 favicon/站点首页慢而迟迟不能添加。
-    const iconUrl = await optionalWithTimeout(
+    const iconUrl = options.skipIconDiscovery ? parsed.image?.url?.trim() || null : await optionalWithTimeout(
       this.iconFinder.findBestIcon(extractIconDomain(sourcePageUrl)),
       3_000
     )

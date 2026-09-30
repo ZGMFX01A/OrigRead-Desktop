@@ -3,6 +3,7 @@ import {
   ArrowRight,
   ArrowUp,
   BookOpenText,
+  CheckCheck,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
@@ -3882,7 +3883,7 @@ export default function App(): React.JSX.Element {
                   />
                 )}
                 <div ref={readerSecondaryActionsRef} id="reader-secondary-actions" className={`reader-secondary-actions ${readerMoreOpen ? 'open' : ''}`} aria-label={t('more')}>
-                  <button type="button" className={`icon-button reader-secondary-action ${selectedArticle?.isUnread ? 'active' : ''}`} disabled={!selectedArticle} title={selectedArticle?.isUnread?t('markRead'):t('markUnread')} aria-label={selectedArticle?.isUnread?t('markRead'):t('markUnread')} onClick={()=>{setReaderMoreOpen(false);selectedArticle&&toggleUnread(selectedArticle)}}><BookOpenText size={16}/><span>{selectedArticle?.isUnread?t('markRead'):t('markUnread')}</span></button>
+                  <button type="button" className={`icon-button reader-secondary-action ${selectedArticle?.isUnread ? 'active' : ''}`} disabled={!selectedArticle} title={selectedArticle?.isUnread?t('markRead'):t('markUnread')} aria-label={selectedArticle?.isUnread?t('markRead'):t('markUnread')} onClick={()=>{setReaderMoreOpen(false);selectedArticle&&toggleUnread(selectedArticle)}}><CheckCheck size={16}/><span>{selectedArticle?.isUnread?t('markRead'):t('markUnread')}</span></button>
                   <button type="button" className="icon-button reader-secondary-action reader-next-article-button" disabled={!nextArticle} title={t('nextArticle')} aria-label={t('nextArticle')} onClick={()=>{setReaderMoreOpen(false);nextArticle&&selectArticle(nextArticle)}}><StepForward size={17}/><span>{t('nextArticle')}</span></button>
                   <button type="button" className={`icon-button reader-secondary-action reader-tts-button ${speech.state.domain==='main'?'active':''}`} disabled={!selectedArticle||!mainSpeechText} title={speech.state.domain==='main'&&speech.state.status==='speaking'?t('pauseReading'):speech.state.domain==='main'&&speech.state.status==='paused'?t('resumeReading'):t('readArticle')} aria-label={t('readArticle')} onClick={()=>{setReaderMoreOpen(false);toggleMainSpeech()}}>
                     {speech.state.domain==='main'&&speech.state.status==='speaking'
@@ -4247,68 +4248,116 @@ export default function App(): React.JSX.Element {
                 </div>
               </div>
             )}
-            {sourceDiscovery && sourceDiscovery.rssHubRoutes.length > 0 && (
-              <div className="source-candidate-section rsshub-route-section">
-                <div className="source-candidate-heading">
-                  <span>{t('rssHubRoutes')}</span>
-                  <span>{t('rssHubMatchedCount', { count: sourceDiscovery.rssHubRoutes.length })}</span>
-                </div>
-                {sourceDiscovery.rssHubRoutes.filter((route) => route.candidateId).length > 1 && (
-                  <p className="source-candidate-hint">{t('rssHubMultiSelectHint')}</p>
-                )}
-                <div className="source-candidate-list" aria-label={t('rssHubRoutes')}>
-                  {sourceDiscovery.rssHubRoutes.map((route) => {
-                    const candidate = route.candidateId
-                      ? sourceDiscovery.candidates.find((item) => item.id === route.candidateId && item.kind === 'RSSHUB')
-                      : undefined
-                    const selected = candidate ? selectedCandidateIds.includes(candidate.id) : false
-                    const content = (
-                      <>
-                        <span className={`candidate-radio multi ${candidate ? '' : 'unavailable'}`} aria-hidden="true"><span /></span>
-                        <span className="candidate-main">
-                          <strong>{route.name}</strong>
-                          <span className="candidate-notice">
-                            {t(`rssHubRouteState.${route.state}`, { count: route.articleCount })}
+            {sourceDiscovery && sourceDiscovery.rssHubRoutes.length > 0 && (() => {
+              const selectableRoutes = sourceDiscovery.rssHubRoutes.filter((route) => {
+                if (!route.candidateId) return false
+                const candidate = sourceDiscovery.candidates.find((item) => item.id === route.candidateId)
+                return candidate?.kind === 'RSSHUB'
+              })
+              const hasConfirmedResult = sourceDiscovery.candidates.some((candidate) => candidate.kind !== 'RSSHUB')
+              const isOnlyProbeResults = selectableRoutes.length === 0
+
+              const formatRouteStatus = (
+                route: (typeof sourceDiscovery.rssHubRoutes)[number],
+                candidate?: (typeof sourceDiscovery.candidates)[number]
+              ): string => {
+                if (route.state === 'available' && candidate) {
+                  return t('rssHubRouteState.available', {
+                    count: route.articleCount ?? candidate.diagnostics.articleCount ?? 0
+                  })
+                }
+                if (route.state === 'available' && !candidate) {
+                  return t('rssHubRouteState.invalid_content')
+                }
+                if (route.failureReason) {
+                  if (route.failureReason === 'http_error' && route.statusCode) {
+                    if (route.statusCode === 401) return t('rssHubFailureReason.http_auth')
+                    if (route.statusCode === 403) return t('rssHubFailureReason.http_denied')
+                    if (route.statusCode === 404) return t('rssHubFailureReason.http_not_found')
+                    if (route.statusCode === 429) return t('rssHubFailureReason.http_rate_limit')
+                    return t('rssHubFailureReason.http_error', { status: route.statusCode })
+                  }
+                  return t(`rssHubFailureReason.${route.failureReason}`)
+                }
+                return t(`rssHubRouteState.${route.state}`, { count: route.articleCount })
+              }
+
+              return (
+                <div className="source-candidate-section rsshub-route-section">
+                  <div className="source-candidate-heading">
+                    <span>{isOnlyProbeResults ? t('rssHubProbeResults') : t('rssHubRoutes')}</span>
+                    <span>
+                      {isOnlyProbeResults
+                        ? t('rssHubMatchedCount', { count: sourceDiscovery.rssHubRoutes.length })
+                        : t('rssHubMatchedCount', { count: selectableRoutes.length })}
+                    </span>
+                  </div>
+                  {isOnlyProbeResults ? (
+                    <p className="source-candidate-hint">
+                      {hasConfirmedResult ? t('rssHubProbeRssAvailableDesc') : t('rssHubProbeResultsDesc')}
+                    </p>
+                  ) : (
+                    selectableRoutes.length > 1 && (
+                      <p className="source-candidate-hint">{t('rssHubMultiSelectHint')}</p>
+                    )
+                  )}
+                  <div className="source-candidate-list" aria-label={t('rssHubRoutes')}>
+                    {sourceDiscovery.rssHubRoutes.map((route) => {
+                      const candidate = route.candidateId
+                        ? sourceDiscovery.candidates.find((item) => item.id === route.candidateId && item.kind === 'RSSHUB')
+                        : undefined
+                      const selected = candidate ? selectedCandidateIds.includes(candidate.id) : false
+                      const content = (
+                        <>
+                          <span className={`candidate-radio multi ${candidate ? '' : 'unavailable'}`} aria-hidden="true"><span /></span>
+                          <span className="candidate-main">
+                            <strong>{route.name}</strong>
+                            <span className="candidate-notice">
+                              {formatRouteStatus(route, candidate)}
+                            </span>
+                            {route.instanceBaseUrl && (
+                              <span className="candidate-url">{route.instanceBaseUrl}</span>
+                            )}
                           </span>
-                        </span>
-                        <span className="candidate-stats">
-                          <span className="candidate-kind kind-rsshub">RSSHub</span>
-                        </span>
-                      </>
-                    )
-                    if (!candidate) {
-                      return (
-                        <div key={`${route.routeId}:${route.feedUrl ?? route.state}`} className="source-candidate rsshub-route-status unavailable">
-                          {content}
-                        </div>
+                          <span className="candidate-stats">
+                            <span className="candidate-kind kind-rsshub">RSSHub</span>
+                          </span>
+                        </>
                       )
-                    }
-                    const chooseCandidate = (): void => {
-                      const selectedCandidates = sourceDiscovery.candidates.filter((item) => selectedCandidateIds.includes(item.id))
-                      const currentRssHubOnly = selectedCandidates.length > 0 && selectedCandidates.every((item) => item.kind === 'RSSHUB')
-                      const base = currentRssHubOnly ? selectedCandidateIds : []
-                      const next = base.includes(candidate.id)
-                        ? (base.length > 1 ? base.filter((id) => id !== candidate.id) : base)
-                        : [...base, candidate.id]
-                      setSelectedCandidateIds(next)
-                      setSelectedCandidateId(next.includes(candidate.id) ? candidate.id : (next[0] ?? null))
-                    }
-                    return (
-                      <button
-                        key={`${route.routeId}:${route.feedUrl ?? route.state}`}
-                        type="button"
-                        role="checkbox"
-                        aria-checked={selected}
-                        className={`source-candidate rsshub-route-status ${selected ? 'selected' : ''}`}
-                        onClick={chooseCandidate}
-                      >
-                        {content}
-                      </button>
-                    )
-                  })}
+                      if (!candidate) {
+                        return (
+                          <div key={`${route.routeId}:${route.feedUrl ?? route.state}`} className="source-candidate rsshub-route-status unavailable">
+                            {content}
+                          </div>
+                        )
+                      }
+                      const chooseCandidate = (): void => {
+                        const selectedCandidates = sourceDiscovery.candidates.filter((item) => selectedCandidateIds.includes(item.id))
+                        const currentRssHubOnly = selectedCandidates.length > 0 && selectedCandidates.every((item) => item.kind === 'RSSHUB')
+                        const base = currentRssHubOnly ? selectedCandidateIds : []
+                        const next = base.includes(candidate.id)
+                          ? (base.length > 1 ? base.filter((id) => id !== candidate.id) : base)
+                          : [...base, candidate.id]
+                        setSelectedCandidateIds(next)
+                        setSelectedCandidateId(next.includes(candidate.id) ? candidate.id : (next[0] ?? null))
+                      }
+                      return (
+                        <button
+                          key={`${route.routeId}:${route.feedUrl ?? route.state}`}
+                          type="button"
+                          role="checkbox"
+                          aria-checked={selected}
+                          className={`source-candidate rsshub-route-status ${selected ? 'selected' : ''}`}
+                          onClick={chooseCandidate}
+                        >
+                          {content}
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
-              </div>
-            )}
+              )
+            })()}
             {sourceDiscovery && sourceDiscovery.candidates.some((candidate) => candidate.kind !== 'RSSHUB') && (
               <div className="source-candidate-section">
                 <div className="source-candidate-heading">
@@ -4439,7 +4488,7 @@ export default function App(): React.JSX.Element {
         if (!article) return null
         return (
           <div className="desktop-context-menu" style={menuStyle} role="menu" onPointerDown={(event)=>event.stopPropagation()}>
-            <button type="button" role="menuitem" onClick={()=>{setContextMenu(null);toggleUnread(article)}}><BookOpenText size={14}/><span>{article.isUnread?t('markRead'):t('markUnread')}</span></button>
+            <button type="button" role="menuitem" onClick={()=>{setContextMenu(null);toggleUnread(article)}}><CheckCheck size={14}/><span>{article.isUnread?t('markRead'):t('markUnread')}</span></button>
             <button type="button" role="menuitem" onClick={()=>{setContextMenu(null);toggleStarred(article)}}><Star size={14} fill={article.isStarred?'currentColor':'none'}/><span>{article.isStarred?t('unstar'):t('starArticle')}</span></button>
           </div>
         )

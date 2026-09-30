@@ -11,6 +11,8 @@ import type { WebsiteRuleRepository } from '../sources/website/website-rule-repo
 import type { TranslationSettingsRepository } from '../translation/translation-settings-repository'
 import type { ConfigurationBackup,ConfigurationBackupSecrets,ConfigurationRestoreResult,TranslationBackup,AiBackup,RssHubBackup,WebSearchBackup,McpBackup } from '../../shared/configuration-backup'
 import { backupTargetToTranslationTarget } from '../../shared/configuration-backup'
+import { normalizeRssHubRoutePath } from '../sources/rsshub/rsshub-input'
+import type { RssHubSubscriptionDescriptor } from '../../shared/rsshub'
 import type { FeedRecord,GroupRecord,SourceType } from '../../shared/library'
 import type { TranslationProviderType } from '../../shared/translation'
 import { TRANSLATION_PROVIDER_TYPES } from '../../shared/translation'
@@ -69,7 +71,7 @@ export class ConfigurationBackupService {
       accountSettings:{syncIntervalMinutes:account?.syncIntervalMinutes??settings.syncIntervalMinutes,syncOnStart:account?.syncOnStart??settings.syncOnStart,syncOnlyOnWiFi:account?.syncOnlyOnWiFi??false,syncOnlyWhenCharging:account?.syncOnlyWhenCharging??false,keepArchivedMillis:account?.keepArchivedMillis??2_592_000_000,syncBlockList:account?.syncBlockList??[]},
       subscriptions:{sourceAccountId:account?.id??1,groups:groups.map((group)=>({id:group.id,name:group.name,isDefault:group.isDefault})),feeds:feeds.map(toBackupFeed)},
       websiteRules:JSON.parse(this.websiteRules.exportRules()),jsonRules:JSON.parse(this.jsonRules.exportRules()),articleFilters:JSON.parse(this.articleFilters.exportRules()),websiteParsePreferences:JSON.parse(this.websitePreferences.exportBackup(new Set(feeds.map((feed)=>feed.id)))),
-      rssHub:this.rssHub.current(),rssHubSourceUrls:this.library.listRssHubSourceUrls(),translation:toTranslationBackup(translation),ai:toAiBackup(ai),
+      rssHub:this.rssHub.current(),rssHubSourceUrls:this.library.listRssHubSourceUrls(),rssHubSubscriptions:this.library.listRssHubDescriptors(),rssHubDescriptors:this.library.listRssHubDescriptors(),translation:toTranslationBackup(translation),ai:toAiBackup(ai),
       ...(this.llmSkills&&this.llmQuickMessages&&this.llmCustomization?{llm:{customization:this.llmCustomization.current(),skills:JSON.parse(this.llmSkills.exportBackupState()),quickMessages:JSON.parse(this.llmQuickMessages.exportBackupState())}}:{}),
       ...(this.webSearch?{webSearch:this.webSearch.exportStoredSettings()}:{}),
       ...(this.mcpRemote&&this.mcpLocal?{mcp:{remote:this.mcpRemote.exportBackupState(),local:this.mcpLocal.exportBackupState()}}:{}),
@@ -118,7 +120,16 @@ export class ConfigurationBackupService {
     const filterRulesRestored=this.articleFilters.restoreBackup(JSON.stringify(backup.articleFilters),feedIdMap)
     this.websitePreferences.restoreBackup(JSON.stringify(backup.websiteParsePreferences),feedIdMap)
     this.rssHub.restore(backup.rssHub)
-    for(const [oldFeedId,url] of Object.entries(backup.rssHubSourceUrls)){const mapped=feedIdMap.get(oldFeedId);if(mapped&&url.trim())this.library.setRssHubSourceUrl(mapped,url)}
+    // Restore legacy provenance first; descriptors enrich only the feeds they cover.
+    for(const [oldFeedId,url] of Object.entries(backup.rssHubSourceUrls ?? {})){
+      const mapped=feedIdMap.get(oldFeedId)
+      if(mapped)this.library.setRssHubSourceUrl(mapped,url)
+    }
+    const descriptors = { ...backup.rssHubDescriptors, ...backup.rssHubSubscriptions }
+    for(const [oldFeedId,descriptor] of Object.entries(descriptors)){
+      const mapped=feedIdMap.get(oldFeedId)
+      if(mapped)this.library.setRssHubDescriptor(mapped,descriptor)
+    }
     this.restoreTranslation(backup.translation,secrets?.translationApiKeys)
     this.restoreAi(backup.ai,secrets?.aiApiKeys)
     if(backup.webSearch&&this.webSearch){
@@ -176,6 +187,14 @@ export class ConfigurationBackupService {
     if(!backup.subscriptions||!Array.isArray(backup.subscriptions.groups)||!Array.isArray(backup.subscriptions.feeds))throw new Error('备份缺少订阅数据')
     const groupIds=new Set<string>();for(const group of backup.subscriptions.groups){if(!group.id?.trim()||!group.name?.trim()||groupIds.has(group.id))throw new Error('备份包含无效或重复分组');groupIds.add(group.id)}
     const feedIds=new Set<string>();for(const feed of backup.subscriptions.feeds){if(!feed.id?.trim()||!feed.name?.trim()||!feed.url?.trim()||feedIds.has(feed.id)||!groupIds.has(feed.groupId))throw new Error(`备份包含无效订阅：${feed.name??''}`);fromAndroidSourceType(feed.sourceType);feedIds.add(feed.id)}
+    backup.rssHubSubscriptions=validateRssHubDescriptors(backup.rssHubSubscriptions,feedIds)
+    backup.rssHubDescriptors=validateRssHubDescriptors(backup.rssHubDescriptors,feedIds)
+    if(backup.rssHubSourceUrls!==undefined){
+      if(!backup.rssHubSourceUrls||typeof backup.rssHubSourceUrls!=='object'||Array.isArray(backup.rssHubSourceUrls))throw new Error('备份中的 RSSHub 来源映射无效')
+      for(const [feedId,url] of Object.entries(backup.rssHubSourceUrls)){
+        if(!feedIds.has(feedId)||typeof url!=='string'||!url.trim())throw new Error('备份中的 RSSHub 来源映射无效')
+      }
+    }
     normalizeDesktopSyncInterval(backup.accountSettings?.syncIntervalMinutes)
     readDesktopPreferences(backup.preferences)
     this.websiteRules.validateBackup(JSON.stringify(backup.websiteRules));this.jsonRules.validateBackup(JSON.stringify(backup.jsonRules));this.articleFilters.validateBackup(JSON.stringify(backup.articleFilters));this.websitePreferences.validateBackup(JSON.stringify(backup.websiteParsePreferences))
@@ -267,6 +286,32 @@ function readDesktopPreferences(value:Record<string,unknown>|null|undefined):Par
   for(const [key,target] of [['origread.desktop.workspaceWidth','workspaceWidth'],['origread.desktop.sourcePaneWidth','sourcePaneWidth'],['origread.desktop.articlePaneWidth','articlePaneWidth'],['origread.desktop.readerFontSize','readerFontSize'],['origread.desktop.readerLineHeight','readerLineHeight'],['origread.desktop.readerContentWidth','readerContentWidth'],['origread.desktop.aiSummaryPanelSize','aiSummaryPanelSize']] as const){const candidate=value[key];if(candidate!==undefined){if(typeof candidate!=='number'||!Number.isFinite(candidate))throw new Error(`备份中的 ${key} 类型无效`);result[target]=candidate}}
   return result as Partial<ReturnType<SettingsRepository['current']>>
 }
+function validateRssHubDescriptors(
+  value: unknown,
+  feedIds: Set<string>
+): Record<string, RssHubSubscriptionDescriptor> | undefined {
+  if(value===undefined)return undefined
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('备份中的 RSSHub 订阅描述无效')
+  return Object.fromEntries(Object.entries(value).map(([feedId,raw])=>{
+    if(!feedIds.has(feedId)||!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('备份中的 RSSHub 订阅描述无效')
+    const descriptor=raw as Partial<RssHubSubscriptionDescriptor>
+    if(typeof descriptor.originalInput!=='string'||!descriptor.originalInput.trim())throw new Error('备份中的 RSSHub 订阅描述无效')
+    for(const field of ['routePath','preferredInstance','lastResolvedInstance','lastResolvedUrl'] as const){
+      const fieldValue=descriptor[field]
+      if(fieldValue!=null&&typeof fieldValue!=='string')throw new Error('备份中的 RSSHub 路由或实例信息无效')
+    }
+    const routePath=descriptor.routePath==null?null:normalizeRssHubRoutePath(descriptor.routePath)
+    if(descriptor.routePath!=null&&!routePath)throw new Error('备份中的 RSSHub 路由无效')
+    return [feedId,{
+      originalInput:descriptor.originalInput.trim(),
+      routePath,
+      preferredInstance:descriptor.preferredInstance??null,
+      lastResolvedInstance:descriptor.lastResolvedInstance??null,
+      lastResolvedUrl:descriptor.lastResolvedUrl??null
+    }]
+  }))
+}
+
 function validateRssHubBackup(value:RssHubBackup):void{
   if(!value||typeof value.enabled!=='boolean'||!Array.isArray(value.instances))throw new Error('备份中的 RSSHub 配置无效')
   const urls=new Set<string>()

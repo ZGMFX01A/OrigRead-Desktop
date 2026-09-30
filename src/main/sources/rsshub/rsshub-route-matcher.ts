@@ -292,7 +292,7 @@ function normalizeHost(host: string): string {
 
 export function normalizeRssHubInstanceUrl(value: string): string | null {
   const trimmed = value.trim().replace(/\/+$/, '')
-  if (!trimmed) return 'https://rsshub.app'
+  if (!trimmed || trimmed.includes('?') || trimmed.includes('#')) return null
   const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
   try {
     const url = new URL(candidate)
