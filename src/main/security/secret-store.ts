@@ -1,4 +1,6 @@
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, readFileSync } from 'node:fs'
+import { writeDurableFile } from './durable-file'
+import { requireSecureStorageBackend } from './secure-storage-backend'
 import { safeStorage } from 'electron'
 
 export interface SecretStore {
@@ -11,15 +13,18 @@ export interface SecretStore {
 }
 
 export class ElectronSecretStore implements SecretStore {
-  constructor(private readonly file: string) {}
+  constructor(private readonly file: string, private readonly strict = false, private readonly requireSlot = false) {}
 
   get(key: string): string {
     const encoded = this.load()[key]
+        if (!encoded && this.requireSlot && existsSync(this.file)) throw new Error('Existing Sync witness file is missing its ciphertext')
     if (!encoded) return ''
-    if (!safeStorage.isEncryptionAvailable()) throw new Error('系统安全存储当前不可用')
+    requireSecureStorageBackend()
     try {
       return safeStorage.decryptString(Buffer.from(encoded, 'base64'))
-    } catch {
+    } catch (error) {
+      // 同步见证不能把解密失败当作空值，否则设备与操作序号会被静默重置。
+      if (this.strict) throw error
       return ''
     }
   }
@@ -30,7 +35,7 @@ export class ElectronSecretStore implements SecretStore {
     if (!normalized) {
       delete data[key]
     } else {
-      if (!safeStorage.isEncryptionAvailable()) throw new Error('系统安全存储当前不可用，无法保存凭据')
+      requireSecureStorageBackend()
       data[key] = safeStorage.encryptString(normalized).toString('base64')
     }
     this.write(data)
@@ -59,14 +64,26 @@ export class ElectronSecretStore implements SecretStore {
     try {
       if (!existsSync(this.file)) return {}
       const value = JSON.parse(readFileSync(this.file, 'utf8')) as unknown
-      return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, string> : {}
-    } catch {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        if (this.strict && (this.requireSlot && Object.keys(value).length === 0 ||
+          Object.values(value).some(encoded => typeof encoded !== 'string' || !encoded.trim()))) {
+          throw new Error('Invalid encrypted Sync witness content')
+        }
+        return value as Record<string, string>
+      }
+      if (this.strict) throw new Error('Invalid encrypted Sync witness file')
+      return {}
+    } catch (error) {
+      // 见证专用读取保留 I/O 和 JSON 错误；其他已有凭据调用保持原行为。
+      if (this.strict) throw error
       return {}
     }
   }
 
   private write(value: Record<string, string>): void {
-    writeFileSync(this.file, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600 })
+    // 只保留已成功读取的上一代密文；恢复必须显式核验，不能自动回退并重置身份。
+    if (this.strict && existsSync(this.file)) writeDurableFile(this.file + '.previous', readFileSync(this.file))
+    writeDurableFile(this.file, JSON.stringify(value, null, 2))
     try { chmodSync(this.file, 0o600) } catch { /* safeStorage ciphertext remains protected if chmod is unsupported */ }
   }
 }

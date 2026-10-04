@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { frozenSnapshotDatabase } from '../sync/sync-frozen-database-context'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 import type { ArticleRecord } from '../../shared/library'
@@ -7,7 +8,11 @@ import type { ArticleFilterRule, ArticleFilterRuleBundle, ArticleFilterRuleType,
 const EMPTY_STATS: ArticleFilterStats = { totalFiltered: 0, lastFilteredAt: null, lastMatchedRule: null }
 
 export class ArticleFilterRepository {
-  constructor(private readonly file: string, private readonly database?: DatabaseSync) {
+  private readonly liveDatabase?: DatabaseSync
+  /** 有数据库的正式配置读取绑定 cut，显式文件工具继续使用自身文件。 */
+  private get database(): DatabaseSync | undefined { return this.liveDatabase ? frozenSnapshotDatabase(this.liveDatabase) : undefined }
+  constructor(private readonly file: string, database?: DatabaseSync) {
+    this.liveDatabase = database
     // Import the legacy file once. The database becomes authoritative so CONFIG and its
     // Outbox can commit together; exports/backups continue to use the same JSON format.
     if (database && !database.prepare('SELECT 1 FROM app_settings WHERE key=?').get('article-filter.rules')) {

@@ -1,3 +1,7 @@
+import { frozenSnapshotDatabase } from './sync-frozen-database-context'
+import { fieldVersionStatements } from './sync-field-version-statements'
+import { contiguousPrefix as advancePrefix } from './sync-coverage-progress'
+import { markInboxAppliedBatch } from './sync-inbox-applied-batch'
 import { closeSync, existsSync, mkdirSync, openSync, readSync, statSync, writeSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
@@ -93,7 +97,21 @@ export interface SyncFieldVersionRecord {
 }
 
 export class SyncStateRepository {
-  constructor(private readonly database: DatabaseSync) {}
+  /** 冻结转换只读取当前 cut 的副本，正常业务使用注入的数据库。 */
+  private readonly liveDatabase: DatabaseSync
+  private readonly fieldStatementCache = new WeakMap<DatabaseSync, ReturnType<typeof fieldVersionStatements>>()
+  private readonly inboxStateStatements = new WeakMap<DatabaseSync, ReturnType<DatabaseSync['prepare']>>()
+  private get database(): DatabaseSync { return frozenSnapshotDatabase(this.liveDatabase) }
+  /** 先选择当前 cut 连接再复用语句，缓存不能绕过固定来源或执行时 fence。 */
+  private get fieldStatements(): ReturnType<typeof fieldVersionStatements> {
+    const database = this.database
+    let statements = this.fieldStatementCache.get(database)
+    if (!statements) { statements = fieldVersionStatements(database); this.fieldStatementCache.set(database, statements) }
+    return statements
+  }
+  constructor(database: DatabaseSync) {
+    this.liveDatabase = database
+}
 
   insertInbox(operation: SyncOperationRecord, operationJson: string, receivedAt = Date.now()): 'INSERTED' | 'DUPLICATE' | 'DOT_COLLISION' {
     const existingById = this.database.prepare(
@@ -132,6 +150,18 @@ export class SyncStateRepository {
     return row ? toInbox(row) : null
   }
 
+  /** 状态过滤只读取轻列；语句按实际活库或固定 cut 连接分别复用，不解码完整 Inbox。 */
+  findInboxState(operationId: string): SyncInboxState | null {
+    const database = this.database
+    let statement = this.inboxStateStatements.get(database)
+    if (!statement) {
+      statement = database.prepare('SELECT state FROM sync_inbox_operation WHERE operation_id=? LIMIT 1')
+      this.inboxStateStatements.set(database, statement)
+    }
+    const row = statement.get(operationId)
+    return row ? String(row.state) as SyncInboxState : null
+  }
+
   listPendingInbox(syncSpaceId: string, limit = 100, pausedLanes: string[] = [], after?: SyncInboxRecord): SyncInboxRecord[] {
     const rows = this.database.prepare(`
       SELECT * FROM sync_inbox_operation
@@ -154,6 +184,13 @@ export class SyncStateRepository {
       WHERE operation_id=? AND state='PENDING'
     `).run(completedAt, operationId)
     this.advanceAppliedCoverage(inbox.syncSpaceId, inbox.replicationLaneId, inbox.actorIncarnationId, completedAt)
+  }
+
+  /** 同库批次完成后按作者/域推进一次真实连续前缀，不按来源条数推算 Applied。 */
+  markAppliedBatch(input: { readonly operationIds: readonly string[]; readonly completedAt: number }): void {
+    for (const scope of markInboxAppliedBatch(this.database, input)) {
+      this.advanceAppliedCoverage(scope.space, scope.lane, scope.actor, input.completedAt)
+    }
   }
 
   markRejected(operationId: string, reason: string, rejectionDigest: string | null, receivedAt = Date.now()): void {
@@ -371,13 +408,13 @@ export class SyncStateRepository {
       .run(syncSpaceId, deviceId)
   }
 
-  recordPersistedAck(ack: { syncSpaceId: string; hash: string; replicaId: string; totalBytes: number; persistedAt: number }): void {
+  recordPersistedAck(ack: { syncSpaceId: string; hash: string; replicaId: string; totalBytes: number; persistedAt: number; storageGeneration?: string | null; custodyState?: string | null }): void {
     this.database.prepare(`
-      INSERT INTO sync_blob_persisted_ack(sync_space_id,hash,replica_id,total_bytes,persisted_at)
-      VALUES(?,?,?,?,?)
+      INSERT INTO sync_blob_persisted_ack(sync_space_id,hash,replica_id,total_bytes,persisted_at,storage_generation,custody_state)
+      VALUES(?,?,?,?,?,?,?)
       ON CONFLICT(sync_space_id,hash,replica_id) DO UPDATE SET
-        total_bytes=excluded.total_bytes,persisted_at=MAX(sync_blob_persisted_ack.persisted_at,excluded.persisted_at)
-    `).run(ack.syncSpaceId, ack.hash, ack.replicaId, ack.totalBytes, ack.persistedAt)
+        total_bytes=excluded.total_bytes,persisted_at=excluded.persisted_at,storage_generation=excluded.storage_generation,custody_state=excluded.custody_state
+    `).run(ack.syncSpaceId, ack.hash, ack.replicaId, ack.totalBytes, ack.persistedAt, ack.storageGeneration ?? null, ack.custodyState ?? null)
   }
 
   upsertEndpoint(value: SyncEndpointConfigRecord): void {
@@ -423,26 +460,13 @@ export class SyncStateRepository {
   }
 
   findFieldVersion(syncSpaceId: string, entityType: string, entitySyncId: string, fieldId: string): SyncFieldVersionRecord | null {
-    const row = this.database.prepare(`
-      SELECT * FROM sync_field_version
-      WHERE sync_space_id=? AND entity_type=? AND entity_sync_id=? AND field_id=? LIMIT 1
-    `).get(syncSpaceId, entityType, entitySyncId, fieldId) as Record<string, unknown> | undefined
+    const row = this.fieldStatements.find.get(syncSpaceId, entityType, entitySyncId, fieldId) as Record<string, unknown> | undefined
     return row ? toFieldVersion(row) : null
   }
 
   upsertFieldVersion(value: SyncFieldVersionRecord): void {
     this.retainFieldCandidate(value)
-    this.database.prepare(`
-      INSERT INTO sync_field_version(
-        sync_space_id,entity_type,entity_sync_id,field_id,entity_generation,version_token,source_operation_id,value_json,
-        causal_context_json,logical_clock,updated_at
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(sync_space_id,entity_type,entity_sync_id,field_id) DO UPDATE SET
-        entity_generation=excluded.entity_generation,version_token=excluded.version_token,
-        source_operation_id=excluded.source_operation_id,value_json=excluded.value_json,
-        causal_context_json=excluded.causal_context_json,logical_clock=excluded.logical_clock,
-        updated_at=excluded.updated_at
-    `).run(
+    this.fieldStatements.upsert.run(
       value.syncSpaceId,
       value.entityType,
       value.entitySyncId,
@@ -458,15 +482,7 @@ export class SyncStateRepository {
   }
 
   retainFieldCandidate(value: SyncFieldVersionRecord): void {
-    this.database.prepare(`INSERT INTO sync_field_candidate
-      (sync_space_id,entity_type,entity_sync_id,field_id,entity_generation,version_token,
-       source_operation_id,value_json,updated_at,causal_context_json,logical_clock)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(sync_space_id,entity_type,entity_sync_id,entity_generation,field_id,version_token)
-      DO UPDATE SET source_operation_id=excluded.source_operation_id,
-        causal_context_json=COALESCE(excluded.causal_context_json,sync_field_candidate.causal_context_json),
-        logical_clock=COALESCE(excluded.logical_clock,sync_field_candidate.logical_clock)`)
-      .run(value.syncSpaceId,value.entityType,value.entitySyncId,value.fieldId,value.entityGeneration,
+    this.fieldStatements.retain.run(value.syncSpaceId,value.entityType,value.entitySyncId,value.fieldId,value.entityGeneration,
         value.versionToken,value.sourceOperationId,value.valueJson,value.updatedAt,
         value.causalContextJson ?? null,value.logicalClock ?? null)
   }
@@ -477,6 +493,16 @@ export class SyncStateRepository {
       WHERE c.sync_space_id=? AND (i.operation_id IS NULL OR i.state='APPLIED')
       ORDER BY c.entity_type,c.entity_sync_id,c.entity_generation,c.field_id,c.version_token`)
       .all(syncSpaceId) as Array<Record<string, unknown>>).map(toFieldVersion)
+  }
+
+  /** 按当前实体代次读取完整候选，分页捕获和安装不能扫描整库候选再筛选。 */
+  *iterateEntityFieldCandidates(input: { syncSpaceId: string; entityType: string; entitySyncId: string; generation: number }): Generator<SyncFieldVersionRecord> {
+    const rows = this.database.prepare(`SELECT c.* FROM sync_field_candidate c
+      LEFT JOIN sync_inbox_operation i ON i.operation_id=c.source_operation_id
+      WHERE c.sync_space_id=? AND c.entity_type=? AND c.entity_sync_id=? AND c.entity_generation=?
+        AND (i.operation_id IS NULL OR i.state='APPLIED') ORDER BY c.field_id,c.version_token`)
+      .iterate(input.syncSpaceId, input.entityType, input.entitySyncId, input.generation)
+    for (const row of rows) yield toFieldVersion(row)
   }
 
   findFieldVersionsBySourceOperation(syncSpaceId: string, sourceOperationId: string): SyncFieldVersionRecord[] {
@@ -627,30 +653,11 @@ export class SyncStateRepository {
     return this.contiguousPrefix(syncSpaceId, lane, actor, "state IN ('APPLIED','REJECTED')")
   }
 
+  /** 原谓词只映射为封闭进度类别；拒绝触发器负责必要回退。 */
   private contiguousPrefix(syncSpaceId: string, lane: string, actor: string, predicate: string): number {
-    const row = this.database.prepare(`
-      SELECT snapshot_prefix,stable_gc_prefix FROM sync_coverage
-      WHERE sync_space_id=? AND replication_lane_id=? AND actor_incarnation_id=? LIMIT 1
-    `).get(syncSpaceId, lane, actor) as Record<string, unknown> | undefined
-    // Snapshot/StableGC is retained state after raw-operation compaction. Never restart a
-    // contiguous coverage calculation at zero just because the compacted inbox rows are gone.
-    const existing = Math.max(
-      Number(row?.snapshot_prefix ?? 0),
-      Number(row?.stable_gc_prefix ?? 0)
-    )
-    const rows = this.database.prepare(`
-      SELECT sequence FROM sync_inbox_operation
-      WHERE sync_space_id=? AND replication_lane_id=? AND actor_incarnation_id=?
-        AND sequence>? AND ${predicate}
-      ORDER BY sequence ASC
-    `).all(syncSpaceId, lane, actor, existing) as unknown as Array<{ sequence: number | bigint }>
-    let prefix = existing
-    for (const candidate of rows) {
-      const sequence = Number(candidate.sequence)
-      if (sequence !== prefix + 1) break
-      prefix = sequence
-    }
-    return prefix
+    const kind = predicate === '1=1' ? 'received' : predicate === "state != 'REJECTED'" ? 'retained'
+      : predicate === "state = 'APPLIED'" ? 'applied' : 'processed'
+    return advancePrefix(this.database, { space: syncSpaceId, lane, actor, kind })
   }
 }
 

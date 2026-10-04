@@ -60,9 +60,9 @@ describe('GenesisIdentityBackfillService', () => {
     expect(first.created).toBeGreaterThan(0)
     expect(first.conflicts).toEqual([])
     const feed = identities.findByLocalId('space-1', 'feed', 'feed-local')!
-    expect(feed.canonicalKey).toBe('feed:v1:5db48e420506f52ed082918bb7489132f060cac350554a79696de83908b28309')
+    expect(feed.canonicalKey).toBe('feed:v2:1c5d359d098a743db837f28ed057c39f034bfb3e9c942c8e0cb09290a048e51a')
     const actualArticle = identities.findByLocalId('space-1', 'article', 'article-local')!
-    expect(actualArticle.canonicalKey).toBe('article:v1:3fe23e061e57a17896fd9bb1e52e1b9845f0c48e38c237b088ad24a5191ca789')
+    expect(actualArticle.canonicalKey).toBe('article:v2:4eea02b7dfc8af526a6227c46677e665af97dca752213a8a6b1f63009ec4ee28')
     const dangling = identities.findByLocalId('space-1', 'article', 'missing-article')!
     expect(dangling.canonicalKey).toBeNull()
     expect(identities.findByLocalId('space-1', 'conversation', '11111111-1111-4111-8111-111111111111')?.syncId)
@@ -87,7 +87,7 @@ describe('GenesisIdentityBackfillService', () => {
 
     db.prepare('UPDATE feeds SET url=? WHERE id=?').run('https://example.com/other-feed', 'feed-local')
     const changed = service.backfill('space-1', 2, 300)
-    expect(changed.conflicts.some((conflict) => conflict.entityType === 'feed' && conflict.localId === 'feed-local')).toBe(true)
+    expect(changed.conflicts).toEqual([])
     expect(identities.findByLocalId('space-1', 'feed', 'feed-local')?.canonicalKey).toBe(feed.canonicalKey)
     expect(identities.findByLocalId('space-1', 'feed', 'feed-local')?.canonicalKey)
       .not.toBe(feedCanonicalKey('rss', 'https://example.com/other-feed'))

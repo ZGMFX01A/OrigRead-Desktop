@@ -41,15 +41,17 @@ export class DesktopSyncRuntimeCoordinator {
         throw new Error(`Local account ${localAccountId} is already bound to another Sync Space`)
       }
       this.identity.insertSpaceIgnore({ syncSpaceId: effectiveSyncSpaceId, createdAt: now, updatedAt: now })
+      // 准备阶段可能执行文件 I/O；既有可写空间不能提前降为不捕获 Outbox 的 PREPARING。
+      const lifecycleState = existing?.lifecycleState ?? 'PREPARING'
       this.runtime.upsertBinding({
         localAccountId,
         syncSpaceId: effectiveSyncSpaceId,
-        lifecycleState: 'PREPARING',
+        lifecycleState,
         genesisSessionId: existing?.genesisSessionId ?? null,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now
       })
-      return this.ensureWritableActor(localAccountId, effectiveSyncSpaceId, 'PREPARING', now)
+      return this.ensureWritableActor(localAccountId, effectiveSyncSpaceId, lifecycleState, now)
     })
   }
 
@@ -174,7 +176,8 @@ export class DesktopSyncRuntimeCoordinator {
     return this.runtime.transaction(() => {
       if (!this.isAccountSyncEligible(localAccountId)) return null
       const binding = this.runtime.findBinding(localAccountId)
-      if (!binding || !['GENESIS_CAPTURING', 'REBASE_PREPARE', 'STAGING', 'ACTIVE'].includes(binding.lifecycleState)) return null
+      if (binding?.lifecycleState === 'REBASE_PREPARE') throw new Error('SYNC_INSTALLING_RETRYABLE: Snapshot installation is unfinished')
+      if (!binding || !['GENESIS_CAPTURING', 'STAGING', 'ACTIVE'].includes(binding.lifecycleState)) return null
       return this.ensureWritableActor(localAccountId, binding.syncSpaceId, binding.lifecycleState, now)
     })
   }

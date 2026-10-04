@@ -1,12 +1,15 @@
 import type { JsonRule, JsonRuleBundle } from '../../../shared/json-source'
 import { JSON_RULE_SCHEMA_VERSION, normalizeJsonRule } from '../../../shared/json-source'
-import { readUtf8FileOrNull, writeUtf8FileAtomic } from '../../utils/atomic-utf8-file'
+import { configDocument, type ConfigDocument } from '../config-document'
 import { validateJsonPath } from './simple-json-path'
 
 const HOST_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/
 
 export class JsonRuleRepository {
-  constructor(private readonly ruleFile: string) {}
+  private readonly document: ConfigDocument
+
+  /** 生产传入 SQLite 文档，文件参数仅用于独立导入/规则工具。 */
+  constructor(input: string | ConfigDocument) { this.document = configDocument(input) }
 
   listRules(): JsonRule[] {
     return this.loadRules().sort((a, b) => a.name.localeCompare(b.name))
@@ -174,13 +177,12 @@ export class JsonRuleRepository {
   }
 
   private loadRules(): JsonRule[] {
-    const content = readUtf8FileOrNull(this.ruleFile)
+    const content = this.document.read()
     return content == null ? [] : this.decodeBundle(content).rules
   }
 
   private writeRules(rules: JsonRule[]): void {
-    writeUtf8FileAtomic(
-      this.ruleFile,
+    this.document.write(
       JSON.stringify({ schemaVersion: JSON_RULE_SCHEMA_VERSION, rules }, null, 2)
     )
   }

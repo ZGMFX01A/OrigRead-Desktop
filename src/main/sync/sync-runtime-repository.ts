@@ -1,3 +1,4 @@
+import { frozenSnapshotDatabase } from './sync-frozen-database-context'
 import type { DatabaseSync } from 'node:sqlite'
 import type {
   SyncActorStatus,
@@ -59,6 +60,9 @@ export interface ActiveAuthGrant {
 }
 
 export class SyncRuntimeRepository {
+  /** 冻结转换只读取当前 cut 的副本，正常业务使用注入的数据库。 */
+  private readonly liveDatabase: DatabaseSync
+  private get database(): DatabaseSync { return frozenSnapshotDatabase(this.liveDatabase) }
   actorBelongsTo(syncSpaceId: string, actorIncarnationId: string, authorDeviceId: string): boolean {
     return Boolean(this.database.prepare(`SELECT 1 FROM sync_actor_author
       WHERE sync_space_id=? AND actor_incarnation_id=? AND author_device_id=?`)
@@ -66,7 +70,9 @@ export class SyncRuntimeRepository {
   }
   private savepointCounter = 0
 
-  constructor(private readonly database: DatabaseSync) {}
+  constructor(database: DatabaseSync) {
+    this.liveDatabase = database
+}
 
   /** Internal Sync Core handle; business repositories must not depend on this. */
   databaseHandle(): DatabaseSync { return this.database }
@@ -372,6 +378,7 @@ export class SyncRuntimeRepository {
     return row ? toGenesisSession(row) : null
   }
 
+  /** 本地捕获与已安装分页基线都必须进入后续操作的因果上下文。 */
   observedGenesisBaselinesByLane(syncSpaceId: string): Record<string, string[]> {
     const observed = new Map<string, Set<string>>()
     const latest = this.findLatestGenesisSession(syncSpaceId)
@@ -393,6 +400,22 @@ export class SyncRuntimeRepository {
       const values = observed.get(lane) ?? new Set<string>()
       for (const baseline of baselines) if (typeof baseline === 'string' && baseline) values.add(baseline)
       if (values.size) observed.set(lane, values)
+    }
+    // 只使用已入业务快照 journal 的记录；已收到但未安装的页面不能变成因果观察。
+    const paged = this.database.prepare(`SELECT r.replication_lane_id,
+      json_extract(r.record_json,'$.value.genesisBaselineId') AS baseline
+      FROM sync_paged_snapshot_record r JOIN sync_snapshot_bundle b ON b.snapshot_bundle_id=r.snapshot_bundle_id
+      WHERE b.sync_space_id=? AND r.kind='GENESIS' AND (
+        EXISTS(SELECT 1 FROM sync_genesis_session g WHERE g.genesis_session_id=b.genesis_session_id
+          AND g.sync_space_id=b.sync_space_id AND g.genesis_baseline_id=b.genesis_baseline_id)
+        OR EXISTS(SELECT 1 FROM sync_recovery_capsule c WHERE c.sync_space_id=b.sync_space_id
+          AND c.target_snapshot_bundle_id=b.snapshot_bundle_id AND c.reason IN ('SNAPSHOT_BASELINE_READY','SNAPSHOT_INSTALL_READY')))
+      ORDER BY r.replication_lane_id,r.record_key`).iterate(syncSpaceId)
+    for (const row of paged) {
+      const lane = String(row.replication_lane_id)
+      const values = observed.get(lane) ?? new Set<string>()
+      values.add(String(row.baseline))
+      observed.set(lane, values)
     }
     return Object.fromEntries(
       [...observed.entries()]
@@ -668,6 +691,7 @@ export class SyncRuntimeRepository {
   }
 
   deleteExpiredSnapshotStreamStages(cutoff: number): number {
+    // 分页清单的续传 journal 随安装/恢复生命周期保留，不沿用旧整 shard 传输的 TTL。
     return this.transaction(() => {
       this.database.prepare(`
         DELETE FROM sync_snapshot_stream_shard
@@ -676,10 +700,11 @@ export class SyncRuntimeRepository {
           WHERE s.sync_space_id = sync_snapshot_stream_shard.sync_space_id
             AND s.snapshot_bundle_id = sync_snapshot_stream_shard.snapshot_bundle_id
             AND s.updated_at < ?
+            AND json_extract(s.manifest_json, '$.formatVersion') IS NOT 3
         )
       `).run(cutoff)
       const result = this.database.prepare(
-        'DELETE FROM sync_snapshot_stream_stage WHERE updated_at < ?'
+        "DELETE FROM sync_snapshot_stream_stage WHERE updated_at < ? AND json_extract(manifest_json, '$.formatVersion') IS NOT 3"
       ).run(cutoff)
       return Number(result.changes)
     })
@@ -770,6 +795,20 @@ export class SyncRuntimeRepository {
     return rows.map(toOperation)
   }
 
+  /** 固定视图捕获按游标读取历史，避免一次装载全部 operation payload。 */
+  *iterateOperationsForSnapshot(syncSpaceId: string): Generator<SyncOperationRecord> {
+    const rows = this.database.prepare(`SELECT * FROM sync_operation_log WHERE sync_space_id=?
+      ORDER BY replication_lane_id,actor_incarnation_id,sequence`).iterate(syncSpaceId)
+    for (const row of rows) yield toOperation(row)
+  }
+
+  /** AUTH 对象逐条导出，整个 ledger 不再作为不可拆的大型快照实体。 */
+  *iterateAuthForSnapshot(syncSpaceId: string): Generator<SyncAuthProtocolObject> {
+    const rows = this.database.prepare(`SELECT auth_object_json FROM sync_auth_ledger WHERE sync_space_id=?
+      ORDER BY auth_epoch,json_extract(auth_object_json,'$.authSequence'),auth_object_id`).iterate(syncSpaceId)
+    for (const row of rows) yield JSON.parse(String(row.auth_object_json)) as SyncAuthProtocolObject
+  }
+
   listRelayRange(
     syncSpaceId: string,
     actorIncarnationId: string,
@@ -814,24 +853,29 @@ export class SyncRuntimeRepository {
    * 按照远端已确认的覆盖度，查询本地尚未推送的已签名操作（支持大日志分批推进读取）。
    */
   listPushableOperations(syncSpaceId: string, remoteReceived: SyncCoverage, limit = 500, include: (operation: SyncOperationRecord) => boolean = () => true): SyncOperationRecord[] {
-    const rows = this.database.prepare(`
-      SELECT * FROM sync_operation_log
-      WHERE sync_space_id=? AND build_status='SIGNED'
-        AND NOT EXISTS (SELECT 1 FROM sync_inbox_operation inbox WHERE inbox.operation_id=sync_operation_log.operation_id AND inbox.state='REJECTED')
-      ORDER BY replication_lane_id, actor_incarnation_id, sequence ASC
-    `).all(syncSpaceId) as unknown as Array<Record<string, unknown>>
-
-    const pushable: SyncOperationRecord[] = []
-    for (const row of rows) {
-      const op = toOperation(row)
-      if (!include(op)) continue
-      const acked = remoteReceived[op.replicationLaneId]?.[op.actorIncarnationId] ?? 0
-      if (op.sequence > acked) {
-        pushable.push(op)
-        if (pushable.length >= limit) break
+    const frontiers = Object.entries(remoteReceived).flatMap(([lane, actors]) => Object.entries(actors).map(([actor, prefix]) => [lane, actor, prefix]))
+    const values = frontiers.length ? frontiers.map(() => '(?,?,?)').join(',') : "(NULL,NULL,0)"
+    const result: SyncOperationRecord[] = []
+    let cursor: [string, string, number] = ['', '', 0]
+    while (result.length < limit) {
+      const rows = this.database.prepare(`WITH remote(lane,actor,prefix) AS (VALUES ${values})
+        SELECT log.* FROM sync_operation_log log LEFT JOIN remote
+          ON remote.lane=log.replication_lane_id AND remote.actor=log.actor_incarnation_id
+        WHERE log.sync_space_id=? AND log.build_status='SIGNED' AND log.sequence>COALESCE(remote.prefix,0)
+          AND (log.replication_lane_id,log.actor_incarnation_id,log.sequence)>(?,?,?)
+          AND NOT EXISTS(SELECT 1 FROM sync_inbox_operation i WHERE i.operation_id=log.operation_id AND i.state='REJECTED')
+          AND NOT EXISTS(SELECT 1 FROM sync_actor_isolation q WHERE q.sync_space_id=log.sync_space_id AND q.actor_incarnation_id=log.actor_incarnation_id)
+        ORDER BY log.replication_lane_id,log.actor_incarnation_id,log.sequence LIMIT ?`)
+        .all(...frontiers.flat(), syncSpaceId, ...cursor, limit) as unknown as Array<Record<string, unknown>>
+      if (!rows.length) break
+      for (const row of rows) {
+        const operation = toOperation(row)
+        cursor = [operation.replicationLaneId, operation.actorIncarnationId, operation.sequence]
+        if (include(operation)) result.push(operation)
+        if (result.length === limit) return result
       }
     }
-    return pushable
+    return result
   }
 
   markOperationSigned(

@@ -4,7 +4,8 @@ import { isValid, parse as parseWithFormat } from 'date-fns'
 import type { WebsiteParsedArticle, WebsiteRule } from '../../../shared/website'
 import { normalizeArticleUrlPattern } from './article-url-pattern-normalizer'
 import { AutomaticArticleDateExtractor } from './automatic-article-date-extractor'
-import { compileAndroidRegex, resolveElementAttribute, selectFirstWithin } from './website-dom'
+import { resolveElementAttribute, selectFirstWithin } from './website-dom'
+import { compileAndroidRegex } from './website-rule-identity'
 
 export class ConfigurableWebsiteParser {
   constructor(private readonly rule: WebsiteRule) {}

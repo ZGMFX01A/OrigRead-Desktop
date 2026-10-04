@@ -1,3 +1,4 @@
+import { actorIsolated, isolateActor } from './sync-actor-integrity'
 import type { SyncOperationRecord } from '../../shared/sync-runtime'
 import type {
   SyncCoverage,
@@ -10,12 +11,14 @@ import { SyncRuntimeRepository } from './sync-runtime-repository'
 import { SyncStateRepository } from './sync-state-repository'
 import {
   operationRecordFromWire,
+  operationEnvelopeFromRecord,
   validateSyncOperationEnvelope,
   verifySyncOperationSignature,
   SyncWireValidationError
 } from './sync-operation-wire'
 import { canonicalJson } from './sync-operation-canonicalizer'
 import { dependenciesSatisfied } from './sync-apply-dependencies'
+import { decodeSnapshotSignature } from './sync-snapshot-signature-proof'
 
 export class SyncApplyDeferredError extends Error {
   constructor(message: string) {
@@ -96,6 +99,15 @@ export class SyncApplyCoordinator {
           operation.replicationLaneId,
           operation.sequence
         )
+        if (existingOperation && existingOperation.syncSpaceId === operation.syncSpaceId &&
+          existingOperation.authorDeviceId === operation.authorDeviceId && existingOperation.signingDigest !== operation.signingDigest &&
+          verifySyncOperationSignature(operationEnvelopeFromRecord(existingOperation), peer.publicKeySpkiBase64)) {
+          isolateActor(this.runtime.databaseHandle(), { first: existingOperation, second: operation, now })
+          throw new SyncApplyRejection('DOT_COLLISION', 'Authenticated actor history conflict; actor is isolated')
+        }
+        if (actorIsolated(this.runtime.databaseHandle(), { space: operation.syncSpaceId, actor: operation.actorIncarnationId })) {
+          throw new SyncApplyRejection('DOT_COLLISION', 'Actor remains isolated after authenticated history conflict')
+        }
         if (existingOperation) {
           this.assertExistingOperationMatches(operation)
           this.runtime.transaction(() => {
@@ -187,6 +199,10 @@ export class SyncApplyCoordinator {
         if (!pending.length) break
         after = pending[pending.length - 1]!
         for (const inbox of pending) {
+          if (actorIsolated(this.runtime.databaseHandle(), { space: syncSpaceId, actor: inbox.actorIncarnationId })) {
+            deferredOperationIds.push(inbox.operationId)
+            continue
+          }
           if (appliedOperationIds.length >= limit) break
           const processedPrefix = this.state.processedPrefix(syncSpaceId, inbox.replicationLaneId, inbox.actorIncarnationId)
           const operation = this.runtime.findOperation(inbox.operationId)
@@ -287,6 +303,44 @@ export class SyncApplyCoordinator {
         now
       )
     }
+  }
+
+  /** 快照中的 effect 沿用原作者验签和当前 AUTH；转发者签名不能替代操作授权。 */
+  verifySnapshotOperation(envelope: SyncOperationEnvelope, publicKeySpkiBase64: string): { operation: SyncOperationRecord; checkpointId: string | null } {
+    const operation = decodeSnapshotSignature({ database: this.runtime.databaseHandle(), envelope, publicKey: publicKeySpkiBase64 })
+    if (actorIsolated(this.runtime.databaseHandle(), { space: operation.syncSpaceId, actor: operation.actorIncarnationId })) {
+      throw new Error('DOT_COLLISION: Snapshot actor remains isolated')
+    }
+    const existing = this.runtime.findOperationByDot(operation.actorIncarnationId, operation.replicationLaneId, operation.sequence)
+    if (existing && existing.syncSpaceId === operation.syncSpaceId && existing.authorDeviceId === operation.authorDeviceId &&
+      existing.signingDigest !== operation.signingDigest && verifySyncOperationSignature(operationEnvelopeFromRecord(existing), publicKeySpkiBase64)) {
+      isolateActor(this.runtime.databaseHandle(), { first: existing, second: operation, now: Date.now() })
+      throw new Error('DOT_COLLISION: authenticated Snapshot actor history conflict')
+    }
+    const rejection = this.authorizationRejection(envelope)
+    if (rejection) throw new Error(rejection + ': Snapshot contains rejected original operation')
+    const other = this.runtime.databaseHandle().prepare('SELECT 1 FROM sync_actor_author WHERE sync_space_id=? AND actor_incarnation_id=? AND author_device_id<>? LIMIT 1')
+      .get(envelope.syncSpaceId, envelope.actorIncarnationId, envelope.authorDeviceId)
+    if (other) throw new Error('AUTH_FAILED: Snapshot actor belongs to another author')
+    const checkpointId = this.stabilityCheckpointFor(envelope)
+    if (!checkpointId && !this.handler.canApplyProvisionally?.(operation)) throw new Error('AUTH_PROVISIONAL: Snapshot effect requires stable authorization')
+    return { operation, checkpointId }
+  }
+
+  /** baseline 已完成物化后恢复真实 Inbox，未来撤销仍能定位这些已导入 effect。 */
+  restoreSnapshotOperation(envelope: SyncOperationEnvelope, options: SyncIngestOptions): void {
+    this.stageSnapshotOperation(envelope, options)
+    this.state.markApplied(envelope.operationId, options.now ?? Date.now())
+  }
+
+  /** 来源恢复不代表整条业务操作已经完成，完成位由全部 effect 及正文验收后更新。 */
+  stageSnapshotOperation(envelope: SyncOperationEnvelope, options: SyncIngestOptions): void {
+    const peer = options.resolvePeerKey(envelope.syncSpaceId, envelope.authorDeviceId)
+    if (!peer) throw new Error('AUTH_FAILED: unknown Snapshot operation author')
+    const proof = this.verifySnapshotOperation(envelope, peer.publicKeySpkiBase64)
+    const report = this.ingest([envelope], options)
+    if (report.rejected.length || this.state.findInbox(envelope.operationId)?.state === 'REJECTED') throw new Error('AUTH_FAILED: Snapshot operation was rejected')
+    if (proof.checkpointId) this.state.markAuthorizationStable(envelope.operationId, proof.checkpointId)
   }
 
   private authorizationRejection(

@@ -32,7 +32,7 @@ function manifest(bytes: Uint8Array, durability: SyncBlobManifest['durability'] 
 }
 
 describe('DesktopSyncBlobTransferCoordinator', () => {
-  it('separates BlobPersistedAck from metadata and unlocks SYNC_DURABLE GC only after another durable replica', async () => {
+  it('separates BlobPersistedAck from metadata and keeps final custody without an explicit handoff', async () => {
     const db = database()
     try {
       const bytes = fixtureBytes()
@@ -55,7 +55,8 @@ describe('DesktopSyncBlobTransferCoordinator', () => {
       expect(state.canAutoGc('space', value.hash, 'local-device')).toBe(false)
 
       state.removeReference('space', 'ARTICLE_STATE', 'article', 'article-1', 0, 'full_content', value.hash)
-      expect(state.canAutoGc('space', value.hash, 'local-device')).toBe(true)
+      // 旧 ACK 没有存储代次及责任接管证明，即使无业务引用也不能释放最后保管责任。
+      expect(state.canAutoGc('space', value.hash, 'local-device')).toBe(false)
     } finally {
       db.close()
     }

@@ -32,7 +32,7 @@ import type {
 import { SYNC_PROTOCOL_VERSION, emptySyncCoverageVector, coveragePrefix, normalizeSyncCoverage, coverageDominates, mergeSyncCoverage } from '../../../shared/sync-protocol'
 import { canonicalJson, sha256Hex } from '../sync-operation-canonicalizer'
 import { validateSyncOperationEnvelope, verifySyncOperationSignature } from '../sync-operation-wire'
-import { validateSyncAuthProtocolObject, verifySyncAuthSignature, verifyOwnerRecoveryProof, ownerRecoverySigningMaterial } from '../sync-auth-wire'
+import { canonicalAuthObjectContent, validateSyncAuthProtocolObject, verifySyncAuthSignature, verifyOwnerRecoveryProof, ownerRecoverySigningMaterial } from '../sync-auth-wire'
 import { assertSnapshotIntegrity, snapshotSigningMaterial } from '../sync-snapshot-wire'
 
 export class SyncServerError extends Error {
@@ -209,7 +209,7 @@ export class SyncServerStore {
     const existingRow = this.database.prepare('SELECT * FROM sync_server_auth_objects WHERE auth_object_id=?').get(object.authObjectId) as Record<string, unknown> | undefined
     if (existingRow) {
       const existing = authObjectFromRow(existingRow)
-      if (canonicalJson(JSON.stringify(existing)) !== canonicalJson(JSON.stringify(object))) throw new SyncServerError(409, 'AUTH_COLLISION', 'AUTH object identity differs from stored history')
+      if (canonicalAuthObjectContent(existing) !== canonicalAuthObjectContent(object)) throw new SyncServerError(409, 'AUTH_COLLISION', 'AUTH object identity differs from stored history')
       return
     }
 

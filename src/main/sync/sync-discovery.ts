@@ -2,6 +2,7 @@ import { createSocket, type Socket } from 'node:dgram'
 import { randomUUID } from 'node:crypto'
 import { hostname, networkInterfaces } from 'node:os'
 import type { SyncDiagnostic, SyncDiscoveredPeer } from '../../shared/sync-protocol'
+import { mdnsResponseAddresses } from './sync-mdns-response-route'
 
 export const SYNC_MDNS_SERVICE = '_origread-sync._tcp.local'
 const MCAST_ADDRESS = '224.0.0.251'
@@ -166,8 +167,7 @@ export class DesktopMdnsAdvertisementProvider {
       await bindAdvertisementSocket(ipv4Socket, '0.0.0.0')
       ipv4Socket.on('message', (message, remote) => {
         if (!isMdnsServiceOrHostQuery(message, targetHost)) return
-        const response = buildMdnsAdvertisement(this.options)
-        ipv4Socket.send(response, 0, response.length, remote.port || MCAST_PORT, remote.address)
+        void this.respond({ socket: ipv4Socket, remote })
       })
       const interfaces = mdnsIpv4Interfaces()
       if (interfaces.length === 0) {
@@ -192,8 +192,7 @@ export class DesktopMdnsAdvertisementProvider {
         await bindAdvertisementSocket(ipv6Socket, '::')
         ipv6Socket.on('message', (message, remote) => {
           if (!isMdnsServiceOrHostQuery(message, targetHost)) return
-          const response = buildMdnsAdvertisement(this.options)
-          ipv6Socket.send(response, 0, response.length, remote.port || MCAST_PORT, remote.address)
+          void this.respond({ socket: ipv6Socket, remote })
         })
         for (const entry of ipv6Interfaces) {
           try { ipv6Socket.addMembership(MCAST_ADDRESS_V6, entry.scopedAddress) } catch { /* next interface */ }
@@ -208,6 +207,19 @@ export class DesktopMdnsAdvertisementProvider {
 
     if (this.sockets.length === 0) {
       throw firstError instanceof Error ? firstError : new Error('No mDNS socket could be opened')
+    }
+  }
+
+  /** 按系统到查询者的真实出站路由生成地址记录；路由错误明确记录，不发布错误地址。 */
+  private async respond(input: { socket: Socket; remote: { address: string; port: number; family: string } }): Promise<void> {
+    try {
+      const addresses = await mdnsResponseAddresses(input.remote)
+      const response = buildMdnsAdvertisement({ ...this.options, ...addresses })
+      input.socket.send(response, 0, response.length, input.remote.port || MCAST_PORT, input.remote.address,
+        (error) => { if (error) console.error('mDNS response send failed', error) })
+    } catch (error) {
+      // 网卡切换或路由失效会使回复失败，保留完整错误供网络诊断。
+      console.error('mDNS response route failed', error)
     }
   }
 

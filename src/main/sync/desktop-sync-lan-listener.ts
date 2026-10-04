@@ -1,7 +1,10 @@
+import { parseSyncJson } from './sync-strict-json'
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { handlePagedSnapshotRoute } from './sync-paged-snapshot-routes'
 import { createServer as createHttpsServer } from 'node:https'
 import { createHash, createPublicKey, randomUUID, verify as cryptoVerify, X509Certificate } from 'node:crypto'
-import { createReadStream, existsSync, statSync, appendFileSync, writeFileSync, rmSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, statSync, appendFileSync, writeFileSync, rmSync, readFileSync, readdirSync } from 'node:fs'
+import { sendBlobFile } from './sync-blob-fetch-response'
 import { join } from 'node:path'
 import { TLSSocket } from 'node:tls'
 import selfsigned from 'selfsigned'
@@ -15,7 +18,10 @@ import type {
   SyncSnapshotStreamManifestWire
 } from '../../shared/sync-protocol'
 import type { SyncReplicationLane } from '../../shared/sync-runtime'
-import { toSyncOperationEnvelope } from '../../shared/sync-protocol'
+import type { SyncBlobUploadReservation } from '../../shared/sync-protocol'
+import { requireBlobReservation, saveBlobReservation } from './sync-blob-upload-reservation'
+import { toSyncOperationEnvelope, SYNC_COMPATIBILITY_VERSION } from '../../shared/sync-protocol'
+import { SYNC_COMPATIBILITY_HEADER, requireSyncCompatibility, requireSyncCompatibilityHeader } from './sync-compatibility'
 import { canonicalSigningMaterial } from './sync-http-auth'
 import { SyncLocalLanePolicy } from './sync-local-lane-policy'
 import { canonicalJson, sha256Hex } from './sync-operation-canonicalizer'
@@ -78,6 +84,8 @@ const HEADER_SIGNATURE = 'x-sync-signature'
 export interface DesktopSyncLanListenerOptions {
   host: string
   port: number
+  /** 接收端事务提交后通知宿主，保持被动同步的界面可见。 */
+  onBusinessDataChanged?: (syncSpaceId: string) => void
 }
 
 class NonceReplayCache {
@@ -111,6 +119,8 @@ export class DesktopSyncLanListener {
   private bootstrapServer: ReturnType<typeof createHttpServer> | null = null
   private tlsServer: ReturnType<typeof createHttpsServer> | null = null
   private readonly nonceCache = new NonceReplayCache()
+  // 活跃 Blob 响应单独登记；监听关闭时即使客户端反压也能主动终止 pipeline。
+  private readonly blobResponses = new Set<ServerResponse>()
   private tlsCertificateDerBase64: string | null = null
   private tlsPrivateKeyPem: string | null = null
   private tlsCertificatePem: string | null = null
@@ -155,6 +165,7 @@ export class DesktopSyncLanListener {
    */
   get capabilities() {
     return {
+      syncCompatibilityVersion: SYNC_COMPATIBILITY_VERSION,
       protocolVersion: 1,
       protocolVersions: [1],
       replicationLanes: ['CORE_META', 'AUTH', 'LIBRARY', 'ARTICLE_STATE', 'CONFIG', 'AI_HISTORY'],
@@ -165,8 +176,11 @@ export class DesktopSyncLanListener {
       maxBlobChunkBytes: 1048576,
       supportsRangeResume: true,
       streamingSnapshots: true,
+      pagedSnapshots: true,
+      snapshotCommitJobsV1: this.snapshotInstaller?.snapshotJobs != null,
       blobRangeRequests: true,
-      authStabilityCheckpoints: true
+      authStabilityCheckpoints: true,
+      blobUploadReservations: true
     }
   }
 
@@ -184,6 +198,9 @@ export class DesktopSyncLanListener {
   }
 
   async close(): Promise<void> {
+    for (const response of this.blobResponses) {
+      response.destroy(new Error('LAN_DISABLED: Listener closed during Blob transfer'))
+    }
     await Promise.all([
       this.closeServer(this.bootstrapServer),
       this.closeServer(this.tlsServer)
@@ -390,6 +407,8 @@ export class DesktopSyncLanListener {
         return this.sendJson(response, 404, { error: 'NOT_FOUND', message: 'Unknown endpoint' })
       }
       const syncSpaceId = segments[2]
+      // 在读取正文和执行业务路由前拒绝不兼容客户端，不能绕过握手直接读写。
+      requireSyncCompatibilityHeader(request.headers[SYNC_COMPATIBILITY_HEADER])
       const bodyBuffer = await readBody(
         request,
         requestBodyLimit(request.method ?? 'GET', url.pathname)
@@ -404,6 +423,7 @@ export class DesktopSyncLanListener {
 
       // Session 协商（修复 B14：返回完整 SyncPeerCapabilities，包含所有必需 core lanes）
       if (segments[3] === 'session' && request.method === 'POST') {
+        requireSyncCompatibility(parseJson(bodyBuffer).syncCompatibilityVersion)
         return this.sendJson(response, 200, {
           syncSpaceId,
           localDeviceId: remoteDeviceId,
@@ -512,6 +532,7 @@ export class DesktopSyncLanListener {
           // remain PENDING and will be retried by the normal session path.
           for (let pass = 0; pass < 20; pass++) {
             const applied = this.apply.applyPending(syncSpaceId, 500, Date.now(), localPolicy)
+            if (applied.appliedOperationIds.length > 0) this.options.onBusinessDataChanged?.(syncSpaceId)
             if (applied.failedOperationIds.length > 0) {
               throw new Error(`Sync business application failed: ${applied.failedOperationIds.join(',')}`)
             }
@@ -525,6 +546,24 @@ export class DesktopSyncLanListener {
             coverage: this.state.getCoverage(syncSpaceId)
           })
         }
+      }
+
+      // 分页路由复用上方已完成的 TLS、请求签名、Space 和 lane 授权。
+      if (segments[3] === 'snapshots' && segments[5] === 'pages') {
+        if (!this.genesis || !this.snapshotInstaller) throw new Error('SNAPSHOT_UNAVAILABLE: paged Snapshot services are not configured')
+        const paged = handlePagedSnapshotRoute({ runtime: this.runtime, state: this.state, genesis: this.genesis,
+          installer: this.snapshotInstaller, localAccountId: this.localAccountId,
+          policy: space => new SyncLocalLanePolicy(this.runtime.databaseHandle()).read(space) },
+          { method: request.method ?? '', segments, url, body: bodyBuffer, syncSpaceId, remoteDeviceId })
+        if (paged) {
+          if (paged.status === 200 && segments[6] === 'commit') this.options.onBusinessDataChanged?.(syncSpaceId)
+          return this.sendJson(response, paged.status, paged.body)
+        }
+      }
+
+      // LAN 兼容号 2 仅支持分页快照；OWNER acceptance 是独立授权接口。
+      if (segments[3] === 'snapshots' && segments[5] !== 'accept') {
+        return this.sendJson(response, 409, { error: 'SNAPSHOT_INCOMPATIBLE', message: 'LAN requires paged Snapshot routes' })
       }
 
       // AUTH Ledger 读写
@@ -1170,6 +1209,21 @@ export class DesktopSyncLanListener {
         if (segments[5] === 'status' && request.method === 'GET') {
           return this.handleBlobStatus(response, syncSpaceId, hash, localDeviceId, remoteDeviceId)
         }
+        if (segments[5] === 'reserve' && request.method === 'POST') {
+          if (!this.localBlobStore) throw new Error('BLOB_STORE_UNAVAILABLE')
+          const value = parseJson(bodyBuffer) as unknown as SyncBlobUploadReservation
+          if (value.manifest?.hash !== hash) throw new Error('INVALID_BLOB_RESERVATION')
+          const now = Date.now()
+          const error = this.enforceStagingBudget(syncSpaceId, hash, remoteDeviceId, value.manifest.totalBytes, now)
+          if (error) return this.sendJson(response, 507, { error: 'BLOB_STAGING_LIMIT', message: error })
+          saveBlobReservation({ root: this.localBlobStore.getRoot(), space: syncSpaceId, peer: remoteDeviceId,
+            value, policy: new SyncLocalLanePolicy(this.runtime.databaseHandle()).read(syncSpaceId) })
+          const stage = join(this.localBlobStore.getRoot(), `${hash}.stage`)
+          if (!existsSync(stage)) writeFileSync(stage, JSON.stringify({
+            peerDeviceId: remoteDeviceId, syncSpaceId, totalBytes: value.manifest.totalBytes, createdAt: now
+          }))
+          return this.sendJson(response, 204, null)
+        }
         if (request.method === 'GET') {
           return this.handleBlobFetch(request, response, syncSpaceId, hash)
         }
@@ -1181,8 +1235,9 @@ export class DesktopSyncLanListener {
       this.sendJson(response, 404, { error: 'NOT_FOUND', message: 'Unknown endpoint' })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      const status = message.includes('AUTH') ? 401 : message.includes('expired') ? 401 : 400
-      this.sendJson(response, status, { error: 'REQUEST_ERROR', message })
+      const incompatible = message.startsWith('SYNC_VERSION_MISMATCH:')
+      const status = incompatible ? 409 : message.includes('AUTH') ? 401 : message.includes('expired') ? 401 : 400
+      this.sendJson(response, status, { error: incompatible ? 'SYNC_VERSION_MISMATCH' : 'REQUEST_ERROR', message })
     }
   }
 
@@ -1287,7 +1342,7 @@ export class DesktopSyncLanListener {
         })
       }
       // 校验文件内容完整性（B35, C15）：如果存在损坏，绝不报告 complete=true
-      if (!this.localBlobStore.verifyFile(hash, blobPath)) {
+      if (!this.localBlobStore.verifyFile(hash, blobPath, true)) {
         return this.sendJson(response, 200, {
           hash,
           totalBytes: stat.size,
@@ -1351,83 +1406,26 @@ export class DesktopSyncLanListener {
     if (!blobPath || !existsSync(blobPath)) {
       return this.sendJson(response, 404, { error: 'NOT_FOUND', message: 'Blob not found' })
     }
-    if (!this.localBlobStore.verifyFile(hash, blobPath)) {
+    if (!this.localBlobStore.verifyFile(hash, blobPath, !request.headers.range || request.headers.range.startsWith('bytes=0-'))) {
       this.localBlobStore.remove(hash)
       return this.sendJson(response, 409, { error: 'BLOB_CORRUPTED', message: 'Local Blob failed SHA-256 verification' })
     }
 
-    const stat = statSync(blobPath)
-    const totalBytes = stat.size
-    if (totalBytes === 0) {
-      if (request.headers.range) {
-        response.writeHead(416, {
-          'content-type': 'application/json',
-          'content-range': 'bytes */0'
-        })
-        response.end(JSON.stringify({ error: 'RANGE_NOT_SATISFIABLE' }))
-        return
-      }
-      response.writeHead(200, {
-        'content-type': 'application/octet-stream',
-        'content-length': 0,
-        'x-sync-offset': 0,
-        'x-sync-total-bytes': 0,
-        'accept-ranges': 'bytes'
-      })
-      response.end()
-      return
-    }
-    const rangeHeader = request.headers.range
-    let offset = 0
-    let length = totalBytes
-    const hasRange = Boolean(rangeHeader)
-
-    if (hasRange && !rangeHeader!.startsWith('bytes=')) {
-      response.writeHead(416, {
-        'content-type': 'application/json',
-        'content-range': `bytes */${totalBytes}`
-      })
-      response.end(JSON.stringify({ error: 'RANGE_NOT_SATISFIABLE' }))
-      return
-    }
-    if (hasRange) {
-      const spec = rangeHeader!.slice(6).trim()
-      const parts = spec.split('-')
-      const start = parts[0] ? Number(parts[0]) : Number.NaN
-      const end = parts[1] ? Number(parts[1]) : totalBytes - 1
-      if (
-        parts.length !== 2 ||
-        !Number.isSafeInteger(start) ||
-        !Number.isSafeInteger(end) ||
-        start < 0 ||
-        start >= totalBytes ||
-        end < start
-      ) {
-        response.writeHead(416, {
-          'content-type': 'application/json',
-          'content-range': `bytes */${totalBytes}`
-        })
-        response.end(JSON.stringify({ error: 'RANGE_NOT_SATISFIABLE' }))
-        return
-      }
-      offset = start
-      length = Math.min(end, totalBytes - 1) - start + 1
-    }
-
-    const effectiveEnd = offset + length - 1
-
-    response.writeHead(hasRange ? 206 : 200, {
-      'content-type': 'application/octet-stream',
-      'content-length': length,
-      'x-sync-offset': offset,
-      'x-sync-total-bytes': totalBytes,
-      'accept-ranges': 'bytes',
-      ...(hasRange ? { 'content-range': `bytes ${offset}-${effectiveEnd}/${totalBytes}` } : {})
+    const deviceId = String(request.headers[HEADER_DEVICE_ID])
+    const peer = this.requireActivePeer(syncSpaceId, deviceId)
+    this.blobResponses.add(response)
+    response.once('close', () => this.blobResponses.delete(response))
+    sendBlobFile({ request, response, blobPath,
+      authorize: () => {
+        if (!this.tlsServer?.listening) throw new Error('LAN_DISABLED: Blob transfer listener is closed')
+        const binding = this.runtime.findBinding(this.localAccountId())
+        if (binding?.syncSpaceId !== syncSpaceId) throw new Error('SPACE_CHANGED: Blob transfer account binding changed')
+        const current = this.requireActivePeer(syncSpaceId, deviceId)
+        if (current.publicKeySpkiBase64 !== peer.publicKeySpkiBase64) throw new Error('AUTH_FAILED: Peer key changed during Blob transfer')
+        this.verifyBlobSpaceAndLane(syncSpaceId, hash, false)
+      },
+      onFailure: error => console.error('LAN Blob transfer stopped:', error.message)
     })
-
-    // 流式读取分段（B25），避免全量读入内存
-    const stream = createReadStream(blobPath, { start: offset, end: effectiveEnd })
-    stream.pipe(response)
   }
 
   /**
@@ -1464,6 +1462,8 @@ export class DesktopSyncLanListener {
     ).get(syncSpaceId, hash)
     if (!references) {
       let stageCreatedAt = now
+      requireBlobReservation({ root: this.localBlobStore.getRoot(), space: syncSpaceId,
+        peer: remoteDeviceId ?? '', hash, totalBytes, policy: new SyncLocalLanePolicy(this.runtime.databaseHandle()).read(syncSpaceId) })
       if (existsSync(stagePath)) {
         let marker: { peerDeviceId?: string; syncSpaceId?: string; totalBytes?: number; createdAt?: number }
         try {
@@ -1522,6 +1522,8 @@ export class DesktopSyncLanListener {
       this.localBlobStore.putVerified(hash, new Uint8Array(bodyBuffer))
       if (existsSync(partPath)) rmSync(partPath, { force: true })
       if (existsSync(metaPath)) rmSync(metaPath, { force: true })
+      this.state.recordPersistedAck({ syncSpaceId, hash, replicaId: localDeviceId, totalBytes: totalBytes, persistedAt: now,
+        storageGeneration: this.localBlobStore.storageGeneration, custodyState: 'HOLDING' })
       return this.sendJson(response, 200, {
         syncSpaceId,
         hash,
@@ -1529,6 +1531,9 @@ export class DesktopSyncLanListener {
         totalBytes,
         complete: true,
         durable: true,
+        protocolVersion: 1,
+        storageGeneration: this.localBlobStore.storageGeneration,
+        custodyState: 'HOLDING',
         persistedAt: now
       })
     }
@@ -1573,6 +1578,8 @@ export class DesktopSyncLanListener {
       }
       const installedBytes = this.localBlobStore.installVerifiedFile(hash, partPath)
       if (existsSync(metaPath)) rmSync(metaPath, { force: true })
+      this.state.recordPersistedAck({ syncSpaceId, hash, replicaId: localDeviceId, totalBytes: installedBytes, persistedAt: now,
+        storageGeneration: this.localBlobStore.storageGeneration, custodyState: 'HOLDING' })
       return this.sendJson(response, 200, {
         syncSpaceId,
         hash,
@@ -1580,6 +1587,9 @@ export class DesktopSyncLanListener {
         totalBytes: installedBytes,
         complete: true,
         durable: true,
+        protocolVersion: 1,
+        storageGeneration: this.localBlobStore.storageGeneration,
+        custodyState: 'HOLDING',
         persistedAt: now
       })
     }
@@ -1626,12 +1636,14 @@ export class DesktopSyncLanListener {
       ).get(marker.syncSpaceId, stagedHash)
       if (referenced) {
         rmSync(markerPath, { force: true })
+        rmSync(join(root, `${stagedHash}.reservation`), { force: true })
         continue
       }
       if ((marker.createdAt ?? 0) <= 0 || now - (marker.createdAt ?? 0) > STAGED_BLOB_TTL_MS) {
         this.localBlobStore.remove(stagedHash)
         rmSync(join(root, `${stagedHash}.part`), { force: true })
         rmSync(join(root, `${stagedHash}.meta`), { force: true })
+        rmSync(join(root, `${stagedHash}.reservation`), { force: true })
         rmSync(markerPath, { force: true })
         continue
       }
@@ -1661,14 +1673,11 @@ export class DesktopSyncLanListener {
     const rows = db.prepare(
       'SELECT replication_lane_id FROM sync_blob_reference WHERE sync_space_id=? AND hash=? ORDER BY replication_lane_id'
     ).all(syncSpaceId, hash) as Array<{ replication_lane_id: string }>
-    if (rows.length > 0 && this.localBlobStore) {
-      rmSync(join(this.localBlobStore.getRoot(), `${hash}.stage`), { force: true })
-    }
-
     if (rows.length === 0) {
-      if (isUpload && remoteDeviceId) {
-        const peer = this.state.findPeer(syncSpaceId, remoteDeviceId)
-        if (peer?.status === 'ACTIVE') return
+      if (isUpload && remoteDeviceId && this.localBlobStore) {
+        requireBlobReservation({ root: this.localBlobStore.getRoot(), space: syncSpaceId,
+          peer: remoteDeviceId, hash, policy: localPolicy })
+        return
       }
       throw new Error(`AUTH_FORBIDDEN: Blob ${hash} does not belong to space ${syncSpaceId}`)
     }
@@ -1684,6 +1693,15 @@ export class DesktopSyncLanListener {
     }
   }
 
+  /** 请求开始和每个传输块都核对当前信任及 signed grant；不重新消费已验证请求的 nonce。 */
+  private requireActivePeer(syncSpaceId: string, deviceId: string) {
+    const peer = this.state.findPeer(syncSpaceId, deviceId)
+    if (!peer || peer.status === 'REVOKED') throw new Error('AUTH_FAILED: Peer device is not trusted or revoked')
+    const history = this.runtime.listAuthObjects(syncSpaceId)
+    if (history.length && !computeActiveGrant(history, deviceId)) throw new Error('AUTH_REVOKED: Device has no active signed authorization')
+    return peer
+  }
+
   private requirePeerAuthorization(
     request: IncomingMessage,
     syncSpaceId: string,
@@ -1694,14 +1712,7 @@ export class DesktopSyncLanListener {
     if (typeof deviceId !== 'string' || !deviceId.trim()) {
       throw new Error('AUTH_FAILED: Missing device id header')
     }
-    const peer = this.state.findPeer(syncSpaceId, deviceId)
-    if (!peer || peer.status === 'REVOKED') {
-      throw new Error('AUTH_FAILED: Peer device is not trusted or revoked')
-    }
-    const authHistory = this.runtime.listAuthObjects(syncSpaceId)
-    if (authHistory.length && !computeActiveGrant(authHistory, deviceId)) {
-      throw new Error('AUTH_REVOKED: Device has no active signed authorization')
-    }
+    const peer = this.requireActivePeer(syncSpaceId, deviceId)
 
     const rawTimestamp = request.headers[HEADER_TIMESTAMP]
     if (typeof rawTimestamp !== 'string' || !rawTimestamp.trim()) {
@@ -1815,7 +1826,7 @@ function requestBodyLimit(method: string, pathname: string): number {
 
 function parseJson(buffer: Buffer): Record<string, unknown> {
   if (buffer.length === 0) return {}
-  return JSON.parse(buffer.toString('utf8')) as Record<string, unknown>
+  return parseSyncJson(buffer.toString('utf8')) as Record<string, unknown>
 }
 
 function parseRanges(raw: string | null): SyncRange[] {

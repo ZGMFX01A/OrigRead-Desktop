@@ -53,11 +53,21 @@ export class DesktopSyncRollbackWitnessStore {
   }
 
   private load(): SyncRollbackWitnessV1 {
-    try {
       const raw = this.secretStore.get(KEY)
+      // 损坏或解密失败不能伪装为首次安装，否则会静默更换已配对设备身份。
+      if (!raw && this.secretStore.contains(KEY)) throw new Error('Sync rollback witness cannot be decrypted')
       if (!raw) return this.empty()
       const parsed = JSON.parse(raw) as Partial<SyncRollbackWitnessV1>
-      if (parsed.schemaVersion !== 1 || parsed.profileBinding !== this.profileBinding) return this.empty()
+      if (parsed.schemaVersion !== 1) throw new Error('Unsupported Sync rollback witness schema')
+      if (typeof parsed.profileBinding !== 'string' ||
+        !(parsed.deviceId === null || (typeof parsed.deviceId === 'string' && parsed.deviceId.trim())) ||
+        !(parsed.deviceWitnessId === null || (typeof parsed.deviceWitnessId === 'string' && parsed.deviceWitnessId.trim())) ||
+        (parsed.deviceId === null) !== (parsed.deviceWitnessId === null) ||
+        !parsed.actorLaneHighWater || typeof parsed.actorLaneHighWater !== 'object' || Array.isArray(parsed.actorLaneHighWater) ||
+        Object.values(parsed.actorLaneHighWater).some(value => !Number.isSafeInteger(value) || value <= 0)) {
+        throw new Error('Invalid Sync rollback witness content')
+      }
+      if (parsed.profileBinding !== this.profileBinding) return this.empty()
       return {
         schemaVersion: 1,
         profileBinding: this.profileBinding,
@@ -67,9 +77,6 @@ export class DesktopSyncRollbackWitnessStore {
           ? parsed.actorLaneHighWater as Record<string, number>
           : {}
       }
-    } catch {
-      return this.empty()
-    }
   }
 
   private write(value: SyncRollbackWitnessV1): void {

@@ -126,6 +126,12 @@ const api: OrigReadDesktopApi = Object.freeze({
     return () => ipcRenderer.removeListener(IPC_CHANNELS.syncRuntimeStateChanged, wrapped)
   },
   getSyncStatus: () => ipcRenderer.invoke(IPC_CHANNELS.getSyncStatus),
+  // 仅暴露业务变化通知，不向页面公开底层 IPC 对象。
+  onSyncLibraryChanged: (listener: () => void) => {
+    const wrapped = (): void => listener()
+    ipcRenderer.on(IPC_CHANNELS.syncLibraryChanged, wrapped)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.syncLibraryChanged, wrapped)
+  },
   getSyncRunHistory: (limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.getSyncRunHistory, limit),
   activateSyncGenesis: () => ipcRenderer.invoke(IPC_CHANNELS.activateSyncGenesis),
   configureSyncEndpoint: (input: SyncEndpointInput) => ipcRenderer.invoke(IPC_CHANNELS.configureSyncEndpoint, input),
@@ -137,6 +143,7 @@ const api: OrigReadDesktopApi = Object.freeze({
   initiateSyncPairing: (targetHost: string, targetPort: number, localBindAddress?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.initiateSyncPairing, targetHost, targetPort, localBindAddress),
   confirmSyncPairing: (sessionId: string) => ipcRenderer.invoke(IPC_CHANNELS.confirmSyncPairing, sessionId),
+  listSyncPairingSessions: () => ipcRenderer.invoke(IPC_CHANNELS.listSyncPairingSessions),
   cancelSyncPairing: (sessionId: string) => ipcRenderer.invoke(IPC_CHANNELS.cancelSyncPairing, sessionId),
   listSyncTrustedDevices: () => ipcRenderer.invoke(IPC_CHANNELS.listSyncTrustedDevices),
   revokeSyncTrustedDevice: (deviceId: string) => ipcRenderer.invoke(IPC_CHANNELS.revokeSyncTrustedDevice, deviceId),

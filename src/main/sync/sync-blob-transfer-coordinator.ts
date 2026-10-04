@@ -1,3 +1,5 @@
+import { BlobDownload } from './sync-blob-download'
+import { SyncKeyedWork } from './sync-keyed-work'
 import { createHash } from 'node:crypto'
 import { closeSync, openSync, readSync, rmSync, statSync, writeSync } from 'node:fs'
 import type {
@@ -12,6 +14,7 @@ import { DesktopSyncBlobStateService } from './sync-blob-state'
 const MAX_IN_MEMORY_BLOB_BYTES = 16 * 1024 * 1024
 
 export class DesktopSyncBlobTransferCoordinator {
+  private readonly downloads = new SyncKeyedWork()
   constructor(private readonly blobState: DesktopSyncBlobStateService) {}
 
   async upload(
@@ -267,77 +270,31 @@ export class DesktopSyncBlobTransferCoordinator {
     now = Date.now(),
     onChunkReceived: (bytes: number) => Promise<void> | void = () => {}
   ): Promise<void> {
+    return this.downloads.run(`${syncSpaceId}:${manifest.hash}`, async () => {
     if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0) throw new Error('Blob chunk size must be positive')
     this.blobState.registerManifest(manifest, 'BLOB_MISSING', now)
-    if (!this.blobState.transferAllowed(syncSpaceId, manifest.hash, policyByLane)) {
-      throw new Error('Blob transfer is blocked by replication lane policy')
-    }
+    if (!this.blobState.transferAllowed(syncSpaceId, manifest.hash, policyByLane)) throw new Error('Blob transfer is blocked by replication lane policy')
     this.blobState.markFetching(manifest.hash, now)
-    if (manifest.totalBytes === 0) {
-      try {
-        if (sha256Hex(new Uint8Array(0)) !== manifest.hash) throw new Error('Fetched empty Blob hash mismatch')
-        const emptyFd = openSync(stagedPath, 'w+')
-        closeSync(emptyFd)
-        await persistVerified(stagedPath)
-        this.blobState.markReadyVerified(manifest.hash, 0, now)
-        return
-      } catch (error) {
-        rmSync(stagedPath, { force: true })
-        this.blobState.markFailed(manifest.hash, error instanceof Error ? error.message : String(error), now)
-        throw error
-      }
-    }
-    const hash = createHash('sha256')
-    let offset = 0
-    const fd = openSync(stagedPath, 'w+')
+    let download: BlobDownload | undefined
     try {
-      while (true) {
-        const chunk = await session.fetchBlob(manifest.hash, { offset, length: chunkBytes })
-        if (chunk.hash !== manifest.hash) throw new Error('Fetched Blob hash identity mismatch')
-        if (chunk.offset !== offset) throw new Error('Fetched Blob offset is not contiguous')
-        if (chunk.totalBytes !== manifest.totalBytes) throw new Error('Fetched Blob size does not match manifest')
-        if (chunk.bytes.byteLength === 0 && !chunk.isFinal) throw new Error('Blob fetch made no progress')
-        if (chunk.bytes.byteLength > 0) {
-          const bytes = Buffer.from(chunk.bytes)
-          const written = writeSync(fd, bytes, 0, bytes.byteLength, offset)
-          if (written !== bytes.byteLength) throw new Error('Fetched Blob file write was incomplete')
-          hash.update(bytes)
-        }
-        await onChunkReceived(chunk.bytes.byteLength)
-        offset += chunk.bytes.byteLength
-        if (offset > manifest.totalBytes) throw new Error('Fetched Blob exceeds manifest size')
-        if (chunk.isFinal) {
-          if (offset !== manifest.totalBytes) throw new Error('Final Blob chunk is incomplete')
-          break
-        }
-      }
+      download = new BlobDownload({ staging: stagedPath, space: syncSpaceId, manifest })
+      await receiveDownload({ download, manifest, session, chunkBytes, onChunkReceived })
+      download.verify()
     } catch (error) {
-      closeSync(fd)
-      rmSync(stagedPath, { force: true })
+      // 网络中断/取消保留持久前缀，损坏输入由下载任务显式清除并报告。
       this.blobState.markFailed(manifest.hash, error instanceof Error ? error.message : String(error), now)
       throw error
-    }
-    closeSync(fd)
-    if (statSync(stagedPath).size !== manifest.totalBytes) {
-      rmSync(stagedPath, { force: true })
-      const error = new Error('Fetched Blob file size mismatch')
-      this.blobState.markFailed(manifest.hash, error.message, now)
-      throw error
-    }
-    if (hash.digest('hex') !== manifest.hash) {
-      rmSync(stagedPath, { force: true })
-      const error = new Error('Fetched Blob content hash mismatch')
-      this.blobState.markFailed(manifest.hash, error.message, now)
-      throw error
-    }
+    } finally { download?.close() }
     try {
-      await persistVerified(stagedPath)
+      await persistVerified(download.path)
       this.blobState.markReadyVerified(manifest.hash, manifest.totalBytes, now)
+      download.complete()
     } catch (error) {
-      rmSync(stagedPath, { force: true })
+      // 安装/metadata 提交失败保留恢复任务；不能以成功回执解除源端责任。
       this.blobState.markFailed(manifest.hash, error instanceof Error ? error.message : String(error), now)
       throw error
     }
+    })
   }
 }
 
@@ -374,4 +331,20 @@ function sha256FileHex(path: string, limit = statSync(path).size): string {
     closeSync(fd)
   }
   return hash.digest('hex')
+}
+
+/** 先恢复真实前缀，再只请求缺失尾部；每个分块身份和长度必须符合固定 manifest。 */
+async function receiveDownload(input: { download: BlobDownload; manifest: SyncBlobManifest; session: SyncEndpointSession;
+  chunkBytes: number; onChunkReceived: (bytes: number) => Promise<void> | void }): Promise<void> {
+  while (input.download.offset < input.manifest.totalBytes) {
+    const offset = input.download.offset
+    const chunk = await input.session.fetchBlob(input.manifest.hash, { offset, length: input.chunkBytes })
+    if (chunk.hash !== input.manifest.hash || chunk.offset !== offset || chunk.totalBytes !== input.manifest.totalBytes) {
+      throw new Error('Fetched Blob chunk identity differs from download manifest')
+    }
+    if (!chunk.bytes.byteLength && !chunk.isFinal) throw new Error('Blob fetch made no progress')
+    input.download.append(chunk.bytes)
+    await input.onChunkReceived(chunk.bytes.byteLength)
+    if (chunk.isFinal && input.download.offset !== input.manifest.totalBytes) throw new Error('Final Blob chunk is incomplete')
+  }
 }

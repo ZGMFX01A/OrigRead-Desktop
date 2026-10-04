@@ -32,6 +32,7 @@ export interface SyncDesktopStatus {
   isLanEnabled?: boolean
   lanPort?: number | null
   lanSuspendedReason?: string | null
+  snapshotInstalling?: boolean
 }
 
 export interface SyncRunHistorySummary {

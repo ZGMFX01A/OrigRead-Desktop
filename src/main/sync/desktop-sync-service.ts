@@ -17,7 +17,8 @@ import { authObjectId, authSigningDigest, authSigningMaterial } from './sync-aut
 import { SyncHttpEndpointSession } from './sync-http-session'
 import { DesktopMdnsDiscoveryProvider, DesktopMdnsAdvertisementProvider } from './sync-discovery'
 import { SyncStateRepository, type SyncEndpointConfigRecord, type SyncTrustedDeviceRecord } from './sync-state-repository'
-import { SyncRuntimeRepository } from './sync-runtime-repository'
+import { SyncRuntimeRepository, computeActiveGrant } from './sync-runtime-repository'
+import { SyncEndpointUrl } from './sync-endpoint-url'
 import { SyncSessionCoordinator } from './sync-session-coordinator'
 import { SyncIdentityRepository } from './sync-identity-repository'
 import { DesktopSyncDeviceSigningKeyStore } from './sync-device-signing-key-store'
@@ -30,8 +31,14 @@ import type { SyncApplyCoordinator } from './sync-apply-coordinator'
 import type { DesktopSyncLocalBlobStore } from './sync-local-blob-store'
 import type { DesktopSnapshotInstallService } from './desktop-snapshot-install-service'
 import { DesktopSyncRunHistory, type SyncRunHistoryRecord } from './sync-run-history'
+import { SyncLanReconnectScheduler } from './sync-lan-reconnect'
+import { readLanRequested, writeLanRequested } from './sync-lan-preferences'
 
 const TOKEN_PREFIX = 'origread.sync.endpoint.token.'
+/** 正常积压使用短间隔继续，失败仍交给原有错误/重连退避。 */
+const CONTINUATION_MS = 1_000
+/** 独立于 LAN 开关及网络连接检查本地维护机会，实际工作每日一次。 */
+const MAINTENANCE_POLL_MS = 60_000
 
 export class DesktopSyncService {
   private lanListenerInstance: DesktopSyncLanListener | null = null
@@ -40,12 +47,36 @@ export class DesktopSyncService {
   private readonly authLedgerInstance: DesktopAuthLedgerService
   private activeLanPort: number | null = null
   private activeLanTlsPort: number | null = null
+  private activeDiscoveryId: string | null = null
   private advertisementStatus: { ok: boolean; error: string | null } = { ok: false, error: null }
   private desiredLanEnabled = false
   private lanSuspendedReason: string | null = null
   private lanLifecycleTimer: ReturnType<typeof setInterval> | null = null
   private lanLifecycleBusy = false
+  private lanLifecycleTask: Promise<unknown> = Promise.resolve()
   private lastLanInterfaceSignature: string | null = null
+  private readonly activeSessions = new Map<string, Set<SyncHttpEndpointSession>>()
+  private readonly continuations = new Map<string, ReturnType<typeof setTimeout>>()
+  private businessDataChangedListener?: (localAccountId: number) => void
+  private maintenanceTimer: ReturnType<typeof setInterval> | null = null
+  private readonly reconnect = new SyncLanReconnectScheduler({
+    discover: async (signal) => { await this.discoverLan(1_500, signal) },
+    sync: async (signal) => {
+      const binding = this.runtime.findBinding(this.localAccountId())
+      if (!binding) return
+      const failures: unknown[] = []
+      for (const endpoint of this.state.listEndpoints(binding.syncSpaceId)) {
+        signal.throwIfAborted()
+        if (!endpoint.enabled || !endpoint.endpointId.startsWith('lan:')) continue
+        try { await this.run(endpoint.endpointId, signal) } catch (error) {
+          // 一台离线设备不阻止其他在线设备收敛；仍向调度器暴露本轮失败以进入退避。
+          failures.push(error)
+        }
+      }
+      if (failures.length) throw new AggregateError(failures, 'LAN peer synchronization failed')
+    },
+    onError: (error) => console.error('LAN rediscovery/sync failed:', error)
+  })
 
   constructor(
     private readonly runtime: SyncRuntimeRepository,
@@ -62,7 +93,15 @@ export class DesktopSyncService {
     private readonly localBlobStore?: DesktopSyncLocalBlobStore,
     private readonly snapshotInstaller?: DesktopSnapshotInstallService
   ) {
+    this.desiredLanEnabled = readLanRequested(this.runtime.databaseHandle())
     this.authLedgerInstance = new DesktopAuthLedgerService(this.runtime, this.state, this.apply)
+    this.maintenanceTimer = setInterval(() => {
+      try {
+        const binding = this.runtime.findBinding(this.localAccountId())
+        if (binding) this.sessions.maintainLocal(binding.syncSpaceId)
+      } catch (error) { console.error('Local Sync maintenance failed:', error) }
+    }, MAINTENANCE_POLL_MS)
+    this.maintenanceTimer.unref?.()
     this.pairingCoordinatorInstance = new DesktopPairingCoordinator(
       this.runtime,
       this.state,
@@ -87,6 +126,7 @@ export class DesktopSyncService {
       localAccountId,
       syncSpaceId: binding?.syncSpaceId ?? null,
       lifecycleState: binding?.lifecycleState ?? null,
+      snapshotInstalling: binding ? this.snapshotInstaller?.snapshotJobs?.isInstalling(binding.syncSpaceId) ?? false : false,
       deviceId: device?.deviceId ?? null,
       coverage: binding ? this.state.getCoverage(binding.syncSpaceId) : null,
       endpoints: binding ? this.state.listEndpoints(binding.syncSpaceId).map(toEndpoint) : [],
@@ -98,13 +138,13 @@ export class DesktopSyncService {
     }
   }
 
-  activateGenesis(): DesktopGenesisCutoverResult {
-    return this.genesis.run(this.requirePhaseAAccount())
+  activateGenesis(): Promise<DesktopGenesisCutoverResult> {
+    return this.genesis.runPagedAsync({ localAccountId: this.requirePhaseAAccount() })
   }
 
   configureEndpoint(input: SyncEndpointInput): SyncEndpointConfig {
     this.requirePhaseAAccount()
-    const parsed = new URL(input.url)
+    const parsed = new SyncEndpointUrl(input.url)
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('Sync endpoint URL must use http or https')
     if ((input.kind === 'LAN' || input.kind === 'MANUAL') && parsed.protocol === 'http:') {
       upgradeLegacyLanEndpointUrl(parsed)
@@ -130,6 +170,7 @@ export class DesktopSyncService {
   }
 
   removeEndpoint(endpointId: string): void {
+    for (const session of this.activeSessions.get(endpointId) ?? []) void session.close()
     this.state.deleteCursor(endpointId)
     this.state.deleteEndpoint(endpointId)
     this.secrets.delete(`${TOKEN_PREFIX}${endpointId}`)
@@ -146,12 +187,13 @@ export class DesktopSyncService {
     return { fingerprint: fingerprint(normalized) }
   }
 
-  async run(endpointId: string): Promise<SyncDesktopRunResult> {
+  async run(endpointId: string, signal?: AbortSignal): Promise<SyncDesktopRunResult> {
+    signal?.throwIfAborted()
     const localAccountId = this.requirePhaseAAccount()
     let endpoint = this.state.findEndpoint(endpointId)
     if (!endpoint || !endpoint.enabled) throw new Error(`Sync endpoint ${endpointId} is not enabled`)
     if ((endpoint.kind === 'LAN' || endpoint.kind === 'MANUAL' || endpoint.endpointId.startsWith('lan:')) && endpoint.url.startsWith('http://')) {
-      const secureUrl = new URL(endpoint.url)
+      const secureUrl = new SyncEndpointUrl(endpoint.url)
       upgradeLegacyLanEndpointUrl(secureUrl)
       endpoint = { ...endpoint, url: secureUrl.toString(), updatedAt: Date.now() }
       this.state.upsertEndpoint(endpoint)
@@ -175,9 +217,17 @@ export class DesktopSyncService {
     try {
       this.beforeRun(binding.syncSpaceId)
       let peerPublicKeySpkiBase64: string | undefined
+      if ((endpoint.kind === 'LAN' || endpoint.kind === 'MANUAL') && !endpoint.endpointId.startsWith('lan:')) {
+        throw new Error('AUTH_FAILED: LAN endpoint must identify a paired device')
+      }
       if (endpoint.endpointId.startsWith('lan:')) {
         const peerDeviceId = endpoint.endpointId.slice(4)
         const peer = this.state.findPeer(endpoint.syncSpaceId, peerDeviceId)
+        const trust = this.state.findTrustedDevice(endpoint.syncSpaceId, peerDeviceId)
+        if (!peer || peer.status !== 'ACTIVE' || trust?.trustState !== 'TRUSTED' ||
+          !computeActiveGrant(this.runtime.listAuthObjects(endpoint.syncSpaceId), peerDeviceId)) {
+          throw new Error('AUTH_REVOKED: LAN peer has no active trust and member authorization')
+        }
         peerPublicKeySpkiBase64 = peer?.publicKeySpkiBase64
       }
       session = new SyncHttpEndpointSession({
@@ -187,12 +237,24 @@ export class DesktopSyncService {
         accessToken: this.secrets.get(`${TOKEN_PREFIX}${endpoint.endpointId}`),
         signer: (material) => this.keys.signBase64(device.deviceId, material),
         peerPublicKeySpkiBase64,
-        localBindAddress: endpoint.localBindAddress ?? undefined
+        localBindAddress: endpoint.localBindAddress ?? undefined,
+        signal,
+        authorizeRequest: endpoint.endpointId.startsWith('lan:') ? () => {
+          const peerId = endpoint!.endpointId.slice(4)
+          if (this.state.findPeer(binding.syncSpaceId, peerId)?.status !== 'ACTIVE' ||
+            this.state.findTrustedDevice(binding.syncSpaceId, peerId)?.trustState !== 'TRUSTED' ||
+            !computeActiveGrant(this.runtime.listAuthObjects(binding.syncSpaceId), peerId)) {
+            throw new Error('AUTH_REVOKED: LAN transport peer has been revoked')
+          }
+        } : undefined
       })
+      const active = this.activeSessions.get(endpointId) ?? new Set<SyncHttpEndpointSession>()
+      active.add(session)
+      this.activeSessions.set(endpointId, active)
       const result = await this.sessions.run(binding.syncSpaceId, session, {
         endpointId,
         localAccountId,
-        allowStableGc: endpoint.kind === 'SERVER',
+        automaticMaintenance: true,
         onProgress: (progress) => {
           runHistory = history.progress(runHistory, progress)
         },
@@ -210,16 +272,37 @@ export class DesktopSyncService {
         blobBytesSent: result.blobBytesSent,
         blobBytesReceived: result.blobBytesReceived
       })
-      runHistory = history.succeed(runHistory)
-      this.state.upsertEndpoint({ ...endpoint, lastError: null, updatedAt: Date.now() })
+      runHistory = history.succeed(runHistory, result.status === 'MORE_WORK' ? 'MORE_WORK' : result.maintenanceStatus === 'AUTH_STABILITY_PENDING' ? 'AUTH_STABILITY_PENDING' : 'COMPLETED')
+      const current = this.state.findEndpoint(endpointId)
+      if (current) this.state.upsertEndpoint({ ...current, lastError: null, updatedAt: Date.now() })
+      if (result.status === 'MORE_WORK' && !this.continuations.has(endpointId)) {
+        const timer = setTimeout(() => {
+          this.continuations.delete(endpointId)
+          if (signal?.aborted || !this.state.findEndpoint(endpointId)?.enabled) return
+          void this.run(endpointId, signal).catch(error => console.error('Sync continuation failed:', error))
+        }, CONTINUATION_MS)
+        timer.unref?.()
+        this.continuations.set(endpointId, timer)
+      }
       return { endpointId, ...result }
     } catch (error) {
       runHistory = history.fail(runHistory, error)
-      this.state.upsertEndpoint({ ...endpoint, lastError: error instanceof Error ? error.message.slice(0, 1_000) : String(error).slice(0, 1_000), updatedAt: Date.now() })
+      // 撤销/删除可能发生在运行期间，不能用旧记录恢复端点或重新启用它。
+      const current = this.state.findEndpoint(endpointId)
+      if (current) this.state.upsertEndpoint({ ...current, lastError: error instanceof Error ? error.message.slice(0, 1_000) : String(error).slice(0, 1_000), updatedAt: Date.now() })
       throw error
     } finally {
       await session?.close()
+      if (session) this.activeSessions.get(endpointId)?.delete(session)
+      if (this.activeSessions.get(endpointId)?.size === 0) this.activeSessions.delete(endpointId)
+      // 后续网络步骤失败也可能已有业务事务提交，界面仍需读取真实已应用状态。
+      this.businessDataChangedListener?.(localAccountId)
     }
+  }
+
+  /** 接入宿主界面通知；同步服务只报告发生变化的账户，不依赖 Electron。 */
+  setBusinessDataChangedListener(listener: (localAccountId: number) => void): void {
+    this.businessDataChangedListener = listener
   }
 
   listRunHistory(limit = 100): SyncRunHistoryRecord[] {
@@ -228,9 +311,12 @@ export class DesktopSyncService {
     return new DesktopSyncRunHistory(this.runtime.databaseHandle()).list(binding.syncSpaceId, limit)
   }
 
-  async discoverLan(timeoutMs = 1_500): Promise<SyncDiscoverySnapshot> {
+  async discoverLan(timeoutMs = 1_500, signal?: AbortSignal): Promise<SyncDiscoverySnapshot> {
     const provider = new DesktopMdnsDiscoveryProvider()
-    const snapshot = await provider.discover(timeoutMs)
+    const discovered = await provider.discover(timeoutMs)
+    // 匿名发现标识只用于过滤本机广播，不替代后续对端签名认证。
+    const snapshot = { ...discovered, peers: discovered.peers.filter((peer) => peer.deviceId !== this.activeDiscoveryId) }
+    signal?.throwIfAborted()
 
     // 遵循 C02 修复：使用长期公钥签名挑战认证对端真实身份，杜绝未认证 healthz 伪造劫持已信任设备地址
     const localAccountId = this.localAccountId()
@@ -238,8 +324,9 @@ export class DesktopSyncService {
     if (binding && snapshot.peers.length > 0) {
       const trusted = this.state.listTrustedDevices(binding.syncSpaceId)
       let firstPeerError: string | null = null
-      await Promise.all(
-        snapshot.peers.map(async (peer) => {
+      // 逐个认证候选，周期发现不能按不可信广播数量扩张连接并发。
+      for (const peer of snapshot.peers) {
+          signal?.throwIfAborted()
           let tlsPeer: SyncLanPeerTlsClient | null = null
           try {
             if (peer.protocol !== 'https') {
@@ -266,13 +353,14 @@ export class DesktopSyncService {
             await health.body?.cancel()
 
             if (matched) {
+              signal?.throwIfAborted()
               const endpointId = `lan:${matched.deviceId}`
               const existing = this.state.findEndpoint(endpointId)
               if (
                 !existing ||
                 existing.url !== syncUrl ||
                 existing.localBindAddress !== (peer.localBindAddress ?? null) ||
-                !existing.enabled
+                existing.syncSpaceId !== matched.syncSpaceId
               ) {
                 this.state.upsertEndpoint({
                   endpointId,
@@ -280,7 +368,7 @@ export class DesktopSyncService {
                   kind: 'LAN',
                   url: syncUrl,
                   displayName: peer.displayName,
-                  enabled: true,
+                  enabled: existing?.enabled ?? true,
                   localBindAddress: peer.localBindAddress ?? null,
                   lastError: null,
                   createdAt: existing?.createdAt ?? Date.now(),
@@ -293,8 +381,7 @@ export class DesktopSyncService {
           } finally {
             tlsPeer?.close()
           }
-        })
-      )
+      }
       if (firstPeerError && !snapshot.diagnostic) {
         snapshot.diagnostic = { code: 'TLS_PEER_UNAVAILABLE', message: firstPeerError, retryable: true, at: Date.now() }
       }
@@ -311,11 +398,18 @@ export class DesktopSyncService {
   }
 
   async setLanSyncEnabled(enabled: boolean): Promise<{ enabled: boolean; port: number | null }> {
+    return this.serializeLanLifecycle(() => this.updateLanSyncEnabled(enabled))
+  }
+
+  /** 用户开关与启动恢复按到达顺序执行，避免旧监听在关闭操作后才发布。 */
+  private async updateLanSyncEnabled(enabled: boolean): Promise<{ enabled: boolean; port: number | null }> {
+    writeLanRequested(this.runtime.databaseHandle(), enabled)
     this.desiredLanEnabled = enabled
     if (!enabled) {
       this.stopLanLifecycleMonitor()
       this.lanSuspendedReason = null
-      await this.stopLanRuntime()
+      try { await this.pauseLanSnapshots() }
+      finally { await this.stopLanRuntime() }
       return { enabled: false, port: null }
     }
     const result = await this.startLanRuntime()
@@ -324,16 +418,44 @@ export class DesktopSyncService {
   }
 
   async suspendLanForSystem(reason = 'SYSTEM_SUSPEND'): Promise<void> {
-    if (!this.desiredLanEnabled) return
-    this.lanSuspendedReason = reason
-    await this.stopLanRuntime()
+    return this.serializeLanLifecycle(async () => {
+      if (!this.desiredLanEnabled) return
+      this.lanSuspendedReason = reason
+      await this.stopLanRuntime()
+    })
+  }
+
+  /** 显式用户关闭通知拥有者和已受理远端作业；系统挂起只关闭连接。 */
+  private async pauseLanSnapshots(): Promise<void> {
+    const binding = this.runtime.findBinding(this.localAccountId())
+    if (!binding) return
+    const endpoints = this.state.listEndpoints(binding.syncSpaceId).filter(endpoint => endpoint.kind === 'LAN')
+    this.genesis.snapshotOwners?.requestCancel(binding.syncSpaceId)
+    this.snapshotInstaller?.snapshotJobs?.cancelForSpace(binding.syncSpaceId)
+    for (const space of new Set(endpoints.map(endpoint => endpoint.syncSpaceId))) {
+      this.genesis.snapshotOwners?.requestCancel(space)
+      this.snapshotInstaller?.snapshotJobs?.cancelForSpace(space)
+    }
+    const results = await Promise.allSettled(endpoints.flatMap(endpoint =>
+      [...(this.activeSessions.get(endpoint.endpointId) ?? [])].map(session => session.requestSnapshotPause())))
+    const errors = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected').map(result => result.reason)
+    if (errors.length) throw new AggregateError(errors, 'Remote snapshot cancellation was not acknowledged')
   }
 
   async resumeLanAfterSystem(): Promise<void> {
-    if (!this.desiredLanEnabled) return
-    this.lanSuspendedReason = null
-    await this.startLanRuntime()
-    this.startLanLifecycleMonitor()
+    return this.serializeLanLifecycle(async () => {
+      if (!this.desiredLanEnabled) return
+      this.lanSuspendedReason = null
+      await this.startLanRuntime()
+      this.startLanLifecycleMonitor()
+    })
+  }
+
+  /** 队列只负责排序；上一项失败后仍可关闭，原任务的拒绝继续交给调用者处理。 */
+  private serializeLanLifecycle<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.lanLifecycleTask.then(operation, operation)
+    this.lanLifecycleTask = result
+    return result
   }
 
   private async startLanRuntime(): Promise<{ enabled: boolean; port: number | null }> {
@@ -359,7 +481,10 @@ export class DesktopSyncService {
       this.apply ?? ({} as any),
       this.pairingCoordinatorInstance,
       this.localBlobStore,
-      { port: 0, host: '0.0.0.0' },
+      { port: 0, host: '::', onBusinessDataChanged: (space) => {
+        const binding = this.runtime.findBindingBySpace(space)
+        if (binding) this.businessDataChangedListener?.(binding.localAccountId)
+      } },
       this.genesis,
       this.snapshotInstaller,
       this.localAccountId
@@ -370,6 +495,7 @@ export class DesktopSyncService {
     this.activeLanTlsPort = listener.tlsPort
 
     const discoveryId = `desk-${randomUUID().replace(/-/g, '').slice(0, 12)}`
+    this.activeDiscoveryId = discoveryId
     const advertisement = new DesktopMdnsAdvertisementProvider({
       port,
       deviceId: discoveryId,
@@ -388,27 +514,38 @@ export class DesktopSyncService {
     this.advertisementInstance = advertisement
     this.lastLanInterfaceSignature = selection.signature
     this.lanSuspendedReason = null
+    this.reconnect.start()
     return { enabled: true, port }
   }
 
   private async stopLanRuntime(): Promise<void> {
+    this.reconnect.stop()
+    // 停止不仅取消下一轮，还关闭手动/自动 LAN 出站会话及正在读取的正文。
+    for (const [endpointId, sessions] of this.activeSessions) {
+      if (endpointId.startsWith('lan:')) for (const session of sessions) await session.close()
+    }
     if (this.advertisementInstance) {
-      await this.advertisementInstance.close().catch(() => {})
+      await this.advertisementInstance.close()
       this.advertisementInstance = null
     }
     if (this.lanListenerInstance) {
-      await this.lanListenerInstance.close().catch(() => {})
+      // 关闭失败必须返回调用方，不能清空实例并把仍在监听的服务显示成已关闭。
+      await this.lanListenerInstance.close()
       this.lanListenerInstance = null
     }
     this.activeLanPort = null
     this.activeLanTlsPort = null
+    this.activeDiscoveryId = null
     this.advertisementStatus = { ok: false, error: null }
   }
 
   private startLanLifecycleMonitor(): void {
     if (this.lanLifecycleTimer) return
     this.lanLifecycleTimer = setInterval(() => {
-      void this.reconcileLanInterfaces()
+      void this.reconcileLanInterfaces().catch((error) => {
+        // 网卡重建失败保留用户意图，并完整暴露原因以便下一轮排查。
+        console.error('LAN interface reconciliation failed:', error)
+      })
     }, 3_000)
     this.lanLifecycleTimer.unref?.()
   }
@@ -423,19 +560,25 @@ export class DesktopSyncService {
     if (!this.desiredLanEnabled || this.lanLifecycleBusy || this.lanSuspendedReason === 'SYSTEM_SUSPEND') return
     this.lanLifecycleBusy = true
     try {
-      const selection = desktopLanInterfaceSelection()
-      if (!selection.hasUsableLanAddress) {
-        this.lanSuspendedReason = 'NO_LAN_INTERFACE'
-        await this.stopLanRuntime()
-        return
-      }
-      if (!this.lanListenerInstance || this.lastLanInterfaceSignature !== selection.signature) {
-        await this.stopLanRuntime()
-        this.lanSuspendedReason = null
-        await this.startLanRuntime()
-      }
+      await this.serializeLanLifecycle(() => this.refreshLanInterfaces())
     } finally {
       this.lanLifecycleBusy = false
+    }
+  }
+
+  /** 进入队列后再检查最新开关和系统状态，过期的网卡检查不重新打开监听。 */
+  private async refreshLanInterfaces(): Promise<void> {
+    if (!this.desiredLanEnabled || this.lanSuspendedReason === 'SYSTEM_SUSPEND') return
+    const selection = desktopLanInterfaceSelection()
+    if (!selection.hasUsableLanAddress) {
+      this.lanSuspendedReason = 'NO_LAN_INTERFACE'
+      await this.stopLanRuntime()
+      return
+    }
+    if (!this.lanListenerInstance || this.lastLanInterfaceSignature !== selection.signature) {
+      await this.stopLanRuntime()
+      this.lanSuspendedReason = null
+      await this.startLanRuntime()
     }
   }
 
@@ -541,6 +684,11 @@ export class DesktopSyncService {
       authEpoch: head.authEpoch,
       updatedAt: Date.now()
     })
+    // 本端负责停止向被撤销设备发送业务数据，不能依赖远端主动遵守撤销。
+    const endpointId = `lan:${deviceId}`
+    const endpoint = this.state.findEndpoint(endpointId)
+    if (endpoint) this.state.upsertEndpoint({ ...endpoint, enabled: false, updatedAt: Date.now() })
+    for (const session of this.activeSessions.get(endpointId) ?? []) void session.close()
   }
 
   /**
@@ -573,14 +721,14 @@ export class DesktopSyncService {
         }
       }
     }
-    const parsed = new URL(normalized)
+    const parsed = new SyncEndpointUrl(normalized)
     if (parsed.protocol === 'http:') parsed.protocol = 'https:'
     if (parsed.protocol !== 'https:') throw new Error('Manual LAN peer must use HTTPS')
     const binding = this.runtime.findBinding(this.localAccountId())
     if (!binding) throw new Error('Active Sync Space binding is required')
     const trusted = this.state.listTrustedDevices(binding.syncSpaceId)
 
-    const targetHost = parsed.hostname.replace(/^\[/, '').replace(/\]$/, '')
+    const targetHost = parsed.socketHostname
     const targetPort = parsed.port ? parseInt(parsed.port, 10) : 8787
     if (!Number.isSafeInteger(targetPort) || targetPort < 1 || targetPort > 65_534) {
       throw new Error('LAN bootstrap port must be between 1 and 65534')
@@ -687,9 +835,15 @@ export class DesktopSyncService {
   }
 
   async close(): Promise<void> {
-    this.desiredLanEnabled = false
-    this.stopLanLifecycleMonitor()
-    await this.stopLanRuntime()
+    if (this.maintenanceTimer) clearInterval(this.maintenanceTimer)
+    this.maintenanceTimer = null
+    for (const timer of this.continuations.values()) clearTimeout(timer)
+    this.continuations.clear()
+    return this.serializeLanLifecycle(async () => {
+      this.desiredLanEnabled = false
+      this.stopLanLifecycleMonitor()
+      await this.stopLanRuntime()
+    })
   }
 
   private requirePhaseAAccount(): number {

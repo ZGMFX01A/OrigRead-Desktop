@@ -51,15 +51,17 @@ describe('SourceCandidateScorer parity', () => {
     expect(ranked.map((item) => item.kind)).toEqual(['RSS_DIRECT', 'JSON', 'WEBSITE'])
   })
 
-  it('deduplicates equivalent URL variants without dropping business query parameters', () => {
+  it('deduplicates safe host/fragment variants while preserving trailing slash and query', () => {
     const ranked = rankSourceCandidates([
       probe('RSS_DIRECT', 'rss', 'https://Example.com/feed/?utm_source=x&a=1#frag', entries),
+      probe('RSS_DISCOVERED', 'rss', 'https://example.com/feed/?utm_source=x&a=1#other', entries),
       probe('RSS_DISCOVERED', 'rss', 'https://example.com/feed?a=1', entries),
       probe('RSS_DISCOVERED', 'rss', 'https://example.com/feed?a=2', entries)
     ])
 
     expect(ranked.map((item) => item.feedLink)).toEqual([
       'https://Example.com/feed/?utm_source=x&a=1#frag',
+      'https://example.com/feed?a=1',
       'https://example.com/feed?a=2'
     ])
   })

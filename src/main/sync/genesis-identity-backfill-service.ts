@@ -1,3 +1,4 @@
+import { frozenSnapshotDatabase } from './sync-frozen-database-context'
 import type { DatabaseSync } from 'node:sqlite'
 import type { ArticleFilterRepository } from '../filter/article-filter-repository'
 import type { JsonRuleRepository } from '../sources/json/json-rule-repository'
@@ -8,9 +9,9 @@ import type { SourceType } from '../../shared/library'
 import type { SyncEntityType, SyncIdentityMappingRecord } from '../../shared/sync-identity'
 import {
   adoptUuidOrNull,
-  articleCanonicalKey,
+  articleCandidateKey,
   configRuleSyncId,
-  feedCanonicalKey,
+  feedCandidateKey,
   newSyncId,
   relationLocalId,
   relationSyncId
@@ -60,16 +61,21 @@ interface AnnotationRefRow { annotation_id: string; citation_ref_id: string }
  * sync-enable cutover until Transactional Outbox / GENESIS_CAPTURING exists.
  */
 export class GenesisIdentityBackfillService {
+  /** 冻结转换只读取当前 cut 的副本，正常业务使用注入的数据库。 */
+  private readonly liveDatabase: DatabaseSync
+  private get database(): DatabaseSync { return frozenSnapshotDatabase(this.liveDatabase) }
   private readonly identities: SyncIdentityRepository
 
   constructor(
-    private readonly database: DatabaseSync,
+    database: DatabaseSync,
     private readonly articleFilters: ArticleFilterRepository,
     private readonly websiteRules?: WebsiteRuleRepository,
     private readonly jsonRules?: JsonRuleRepository,
     private readonly rssHubSettings?: RssHubSettingsRepository,
     private readonly websiteParsePreferences?: WebsiteParsePreferenceRepository
   ) {
+    this.liveDatabase = database
+
     this.identities = new SyncIdentityRepository(database)
   }
 
@@ -116,7 +122,9 @@ export class GenesisIdentityBackfillService {
       results.push(this.backfillType(syncSpaceId, 'group', groups.map((row) => ({ localId: row.id })), now))
       results.push(this.backfillType(syncSpaceId, 'feed', feeds.map((row) => ({
         localId: row.id,
-        canonicalKey: feedCanonicalKey(row.source_type, row.url)
+        // URL 是可编辑属性；已有身份的候选输入只从持久映射读取。
+        canonicalKey: this.identities.findByLocalId(syncSpaceId, 'feed', row.id)?.canonicalKey
+          ?? feedCandidateKey(row.source_type, row.url)
       })), now))
 
       const effectiveFeedKeys = new Map(
@@ -127,7 +135,8 @@ export class GenesisIdentityBackfillService {
       )
       const articleSeeds: IdentitySeed[] = articles.map((row) => ({
         localId: row.id,
-        canonicalKey: articleCanonicalKey(effectiveFeedKeys.get(row.feed_id), row.url)
+        canonicalKey: this.identities.findByLocalId(syncSpaceId, 'article', row.id)?.canonicalKey
+          ?? articleCandidateKey(effectiveFeedKeys.get(row.feed_id), row.url)
       }))
       const persistedArticleIds = new Set(articles.map((row) => row.id))
       for (const articleId of referencedArticleIds) {

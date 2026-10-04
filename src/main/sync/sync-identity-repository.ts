@@ -1,3 +1,4 @@
+import { frozenSnapshotDatabase } from './sync-frozen-database-context'
 import type { DatabaseSync } from 'node:sqlite'
 import type { SyncEntityType, SyncIdentityMappingRecord, SyncSpaceRecord } from '../../shared/sync-identity'
 
@@ -25,7 +26,12 @@ interface SyncIdentityMappingRow {
  * responsibilities added in later R10 steps.
  */
 export class SyncIdentityRepository {
-  constructor(private readonly database: DatabaseSync) {}
+  /** 冻结转换只读取当前 cut 的副本，正常业务使用注入的数据库。 */
+  private readonly liveDatabase: DatabaseSync
+  private get database(): DatabaseSync { return frozenSnapshotDatabase(this.liveDatabase) }
+  constructor(database: DatabaseSync) {
+    this.liveDatabase = database
+}
 
   insertSpace(space: SyncSpaceRecord): void {
     this.database.prepare(`

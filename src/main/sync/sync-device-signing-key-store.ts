@@ -9,6 +9,7 @@ import {
 } from 'node:crypto'
 import type { SecretStore } from '../security/secret-store'
 
+/** 各设备 P-256 私钥槽；旧名称保留以读取已配对身份。 */
 const KEY_PREFIX = 'origread.sync.device.p256.v1.'
 
 /**
@@ -20,7 +21,11 @@ const KEY_PREFIX = 'origread.sync.device.p256.v1.'
 export class DesktopSyncDeviceSigningKeyStore {
   static readonly KEY_ALGORITHM_ID = 'ECDSA_P256_SHA256_V1'
 
-  constructor(private readonly secrets: SecretStore) {}
+  constructor(
+    private readonly secrets: SecretStore,
+    private readonly expectedPublicKey: (deviceId: string) => string | null = () => null,
+    private readonly rememberPublicKey: (deviceId: string, publicKey: string) => void = () => {}
+  ) {}
 
   publicKeySpkiBase64(deviceId: string): string {
     const privateKey = createPrivateKey(this.ensurePrivateKeyPem(deviceId))
@@ -95,16 +100,26 @@ export class DesktopSyncDeviceSigningKeyStore {
     const existing = this.secrets.get(key)
     if (existing) {
       // Parse eagerly so corrupted safeStorage content cannot silently become a different key.
-      createPrivateKey(existing)
+      const privateKey = createPrivateKey(existing)
+      const expected = this.expectedPublicKey(normalized)
+      const publicKey = createPublicKey(privateKey).export({ type: 'spki', format: 'der' }).toString('base64')
+      if (expected && publicKey !== expected) throw new Error('SYNC_IDENTITY_UNREADABLE: private key does not match paired identity')
+      // 已有持久见证仍每次比对，但签名/状态请求不能重复写业务库争用安装锁。
+      // 首次缺少见证时沿用原初始化写入；身份损坏或不匹配仍直接失败。
+      if (!expected) this.rememberPublicKey(normalized, publicKey)
       return existing
     }
 
+    if (this.secrets.contains(key) || this.expectedPublicKey(normalized)) {
+      throw new Error('SYNC_IDENTITY_UNREADABLE: existing device signing key is missing or unreadable')
+    }
     const { privateKey } = generateKeyPairSync('ec', {
       namedCurve: 'prime256v1',
       publicKeyEncoding: { type: 'spki', format: 'der' },
       privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
     })
     this.secrets.put(key, privateKey)
+    this.rememberPublicKey(normalized, createPublicKey(createPrivateKey(privateKey)).export({ type: 'spki', format: 'der' }).toString('base64'))
     return privateKey
   }
 }

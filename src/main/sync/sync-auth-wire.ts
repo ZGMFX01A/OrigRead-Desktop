@@ -36,6 +36,18 @@ export function authSigningDigest(object: SyncAuthProtocolObject): string {
   return sha256Hex(authSigningMaterial(object))
 }
 
+/** 幂等比较采用正式签名语义；Android 显式 null 与 Desktop 省略可选字段表示同一对象。 */
+export function canonicalAuthObjectContent(object: SyncAuthProtocolObject): string {
+  validateSyncAuthProtocolObject(object)
+  return canonicalJson(JSON.stringify({
+    protocolVersion: object.protocolVersion,
+    signingMaterial: authSigningMaterial(object),
+    payloadJson: object.payloadJson,
+    signingDigest: object.signingDigest,
+    authorSignature: object.authorSignature
+  }))
+}
+
 export function authObjectId(
   syncSpaceId: string,
   authEpoch: number,

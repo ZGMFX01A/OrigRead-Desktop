@@ -147,7 +147,7 @@ describe('LibraryRepository', () => {
     database.close()
   })
 
-  it('finds equivalent source URL variants using Android comparison semantics', () => {
+  it('only matches safe source URL variants and preserves path/query distinctions', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)
     const feed = {
@@ -156,7 +156,9 @@ describe('LibraryRepository', () => {
     }
     repository.upsertFeed(feed)
 
-    expect(repository.findFeedByUrl('https://example.com/feed?a=1')).toMatchObject({ id: feed.id })
+    expect(repository.findFeedByUrl('https://example.com/feed/?utm_source=campaign&a=1#other')).toMatchObject({ id: feed.id })
+    expect(repository.findFeedByUrl('https://example.com/feed?a=1')).toBeNull()
+    expect(repository.findFeedByUrl('https://example.com/feed/?a=1')).toBeNull()
     expect(repository.findFeedByUrl('https://example.com/feed/?a=2')).toBeNull()
     database.close()
   })

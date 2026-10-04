@@ -1,3 +1,4 @@
+import { frozenSnapshotDatabase } from './sync-frozen-database-context'
 import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import type { SyncEntityType, SyncIdentityMappingRecord } from '../../shared/sync-identity'
@@ -29,19 +30,31 @@ interface AliasEdgeRow {
 
 /** R10 source-of-truth for generation-scoped, undirected Alias equivalence. */
 export class DesktopSyncAliasResolver {
+  private readonly liveDatabase: DatabaseSync
+  /** 固定 cut 的别名图与历史来自同一 SQL 副本。 */
+  private get database(): DatabaseSync { return frozenSnapshotDatabase(this.liveDatabase) }
   private readonly identities: SyncIdentityRepository
   private readonly blobs: DesktopSyncBlobStateService
 
   constructor(
-    private readonly database: DatabaseSync,
+    database: DatabaseSync,
     private readonly state = new SyncStateRepository(database),
     private readonly onFeedDeleted: (localFeedId: string) => void = () => {}
   ) {
+    this.liveDatabase = database
+
     this.identities = new SyncIdentityRepository(database)
     this.blobs = new DesktopSyncBlobStateService(database)
   }
 
   applyEdge(syncSpaceId: string, payload: SyncAliasEdgePayloadV1, sourceOperationId: string | null = null, now = Date.now()): void {
+    this.recordSnapshotEdge({ syncSpaceId, payload, sourceOperationId, now })
+    this.reconcileDeleteWins(syncSpaceId, payload.targetEntityType, payload.leftSyncId, payload.leftGeneration, now)
+  }
+
+  /** 快照建图不提前删除父实体，业务删除等待所有子实体的逆序清理。 */
+  recordSnapshotEdge(input: { syncSpaceId: string; payload: SyncAliasEdgePayloadV1; sourceOperationId: string | null; now: number; deferProjection?: boolean }): void {
+    const { syncSpaceId, payload, sourceOperationId, now } = input
     this.validate(payload)
     const [left, right] = normalizedEndpoints(payload)
     this.database.prepare(`
@@ -49,8 +62,7 @@ export class DesktopSyncAliasResolver {
         sync_space_id,entity_type,left_sync_id,left_generation,right_sync_id,right_generation,source_operation_id,created_at
       ) VALUES(?,?,?,?,?,?,?,?)
     `).run(syncSpaceId, payload.targetEntityType, left.syncId, left.generation, right.syncId, right.generation, sourceOperationId, now)
-    this.rebuild(syncSpaceId, payload.targetEntityType, now)
-    this.reconcileDeleteWins(syncSpaceId, payload.targetEntityType, left.syncId, left.generation, now)
+    if (!input.deferProjection) this.rebuild(syncSpaceId, payload.targetEntityType, now)
   }
 
   rebuild(syncSpaceId: string, entityType: SyncEntityType, now = Date.now()): void {
@@ -102,28 +114,11 @@ export class DesktopSyncAliasResolver {
   }
 
   componentMembers(syncSpaceId: string, entityType: SyncEntityType, syncId: string, generation: number): Set<string> {
-    const rows = this.database.prepare(`
-      SELECT left_sync_id,left_generation,right_sync_id,right_generation
-      FROM sync_alias_edge
-      WHERE sync_space_id=? AND entity_type=? AND left_generation=? AND right_generation=?
-    `).all(syncSpaceId, entityType, generation, generation) as unknown as AliasEdgeRow[]
-    const graph = new Map<string, Set<string>>()
-    for (const edge of rows) {
-      getSet(graph, edge.left_sync_id).add(edge.right_sync_id)
-      getSet(graph, edge.right_sync_id).add(edge.left_sync_id)
-    }
-    const result = new Set([syncId])
-    const queue = [syncId]
-    while (queue.length) {
-      const current = queue.shift()!
-      for (const next of [...(graph.get(current) ?? [])].sort()) {
-        if (!result.has(next)) {
-          result.add(next)
-          queue.push(next)
-        }
-      }
-    }
-    return result
+    const rows = this.database.prepare(`SELECT alias_sync_id FROM sync_entity_alias
+      WHERE sync_space_id=? AND entity_type=? AND generation=? AND canonical_sync_id=(
+        SELECT canonical_sync_id FROM sync_entity_alias WHERE sync_space_id=? AND entity_type=? AND generation=? AND alias_sync_id=?)`)
+      .all(syncSpaceId, entityType, generation, syncSpaceId, entityType, generation, syncId)
+    return new Set(rows.length ? rows.map(row => String(row.alias_sync_id)) : [syncId])
   }
 
   resolveMapping(

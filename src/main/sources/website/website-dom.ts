@@ -91,15 +91,3 @@ export function javaStringHash(value: string): number {
 export function unsignedHex(value: number): string {
   return (value >>> 0).toString(16)
 }
-
-export function compileAndroidRegex(pattern: string): RegExp {
-  let source = pattern
-  let flags = ''
-  const inline = source.match(/^\(\?([ims]+)\)/)
-  if (inline) {
-    flags = inline[1]!.replace('s', 's')
-    source = source.slice(inline[0].length)
-  }
-  return new RegExp(source, flags)
-}
-

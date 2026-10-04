@@ -2,6 +2,7 @@ import type { SyncAuthProtocolObject, SyncCoverage } from '../../shared/sync-pro
 import { canonicalJson } from './sync-operation-canonicalizer'
 import {
   validateSyncAuthProtocolObject,
+  canonicalAuthObjectContent,
   verifyOwnerRecoveryProof,
   verifyOwnerTransferAcceptance,
   verifySyncAuthSignature
@@ -68,7 +69,7 @@ export class DesktopAuthLedgerService {
         if (object.syncSpaceId !== space) throw new Error('AUTH_SPACE_MISMATCH')
         const existing = history.find((entry) => entry.authObjectId === object.authObjectId)
         if (existing) {
-          if (canonicalJson(JSON.stringify(existing)) !== canonicalJson(JSON.stringify(object))) throw new Error('AUTH_COLLISION')
+          if (canonicalAuthObjectContent(existing) !== canonicalAuthObjectContent(object)) throw new Error('AUTH_COLLISION')
           continue
         }
         const head = history.at(-1)

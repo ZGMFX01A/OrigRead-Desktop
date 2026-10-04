@@ -357,7 +357,7 @@ export class LibraryRepository {
         sort_order = excluded.sort_order,
         is_default = excluded.is_default
     `).run(group.id, group.accountId ?? this.getCurrentAccountId(), group.name, group.sortOrder, toSqlBoolean(group.isDefault)) }
-    if (this.syncMutations?.captureLibraryMutation) this.syncMutations.captureLibraryMutation(group.accountId ?? this.getCurrentAccountId(), mutate)
+    if (this.syncMutations?.captureLibraryMutation) this.syncMutations.captureLibraryMutation(group.accountId ?? this.getCurrentAccountId(), mutate, { groupIds: [group.id] })
     else mutate()
   }
 
@@ -378,7 +378,7 @@ export class LibraryRepository {
     }
     const captureLibraryDelete = (): void => {
       if (this.syncMutations?.captureLibraryMutation) {
-        this.syncMutations.captureLibraryMutation(accountId, deleteFeedRow)
+        this.syncMutations.captureLibraryMutation(accountId, deleteFeedRow, { feedIds: [feedId], cascade: true })
       } else {
         deleteFeedRow()
       }
@@ -447,7 +447,7 @@ export class LibraryRepository {
       feed.createdAt,
       feed.updatedAt
     ) }
-    if (this.syncMutations?.captureLibraryMutation) this.syncMutations.captureLibraryMutation(feed.accountId ?? this.getCurrentAccountId(), mutate)
+    if (this.syncMutations?.captureLibraryMutation) this.syncMutations.captureLibraryMutation(feed.accountId ?? this.getCurrentAccountId(), mutate, { feedIds: [feed.id] })
     else mutate()
   }
 
@@ -455,7 +455,7 @@ export class LibraryRepository {
     const accountId = article.accountId ?? this.getCurrentAccountId()
     const mutate = (): void => this.runArticleUpsert(this.prepareArticleUpsert(), article)
     if (this.syncMutations?.captureLibraryMutation) {
-      this.syncMutations.captureLibraryMutation(accountId, mutate)
+      this.syncMutations.captureLibraryMutation(accountId, mutate, { articleIds: [article.id], feedIds: [article.feedId] })
     } else {
       mutate()
     }
@@ -515,7 +515,7 @@ export class LibraryRepository {
       for (const article of articles) this.runArticleUpsert(statement, article)
     }
     if (this.syncMutations?.captureLibraryMutation) {
-      this.syncMutations.captureLibraryMutation(accountId, mutate)
+      this.syncMutations.captureLibraryMutation(accountId, mutate, { articleIds: articles.map(article => article.id), feedIds: articles.map(article => article.feedId) })
     } else {
       mutate()
     }
@@ -996,7 +996,7 @@ export class LibraryRepository {
     this.database.prepare('DELETE FROM feeds WHERE account_id=? AND id=?').run(accountId,feedId)
     return true
     }
-    return this.syncMutations?.captureLibraryMutation ? this.syncMutations.captureLibraryMutation(accountId, mutate) : mutate()
+    return this.syncMutations?.captureLibraryMutation ? this.syncMutations.captureLibraryMutation(accountId, mutate, { feedIds: [feedId], cascade: true }) : mutate()
   }
 
   deleteGroupForAccountIfNoStarred(accountId:number,groupId:string):boolean {
@@ -1008,7 +1008,7 @@ export class LibraryRepository {
     this.database.prepare('DELETE FROM groups WHERE account_id=? AND id=?').run(accountId,groupId)
     return true
     }
-    return this.syncMutations?.captureLibraryMutation ? this.syncMutations.captureLibraryMutation(accountId, mutate) : mutate()
+    return this.syncMutations?.captureLibraryMutation ? this.syncMutations.captureLibraryMutation(accountId, mutate, { groupIds: [groupId], cascade: true }) : mutate()
   }
 
   private updateArticleBooleanBatch(

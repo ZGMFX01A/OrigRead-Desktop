@@ -144,6 +144,8 @@ export interface OrigReadDesktopApi extends LlmChatDataApi {
   refreshAllSources(): Promise<SourceSyncBatchResult>
   getSyncRuntimeState(): Promise<SyncRuntimeState>
   onSyncRuntimeStateChanged(listener: (state: SyncRuntimeState) => void): () => void
+  /** 局域网业务投影发生变化后，刷新当前账户的阅读界面。 */
+  onSyncLibraryChanged(listener: () => void): () => void
   getSyncStatus(): Promise<SyncDesktopStatus>
   getSyncRunHistory(limit?: number): Promise<SyncRunHistorySummary[]>
   activateSyncGenesis(): Promise<{ syncSpaceId: string; genesisSessionId: string; genesisBaselineId: string; crossDbCutId: string; snapshotBundleId: string; capturedAt: number; tailOperationsBuilt: number }>
@@ -155,6 +157,7 @@ export interface OrigReadDesktopApi extends LlmChatDataApi {
   toggleLanSync(enabled: boolean): Promise<{ enabled: boolean; port: number | null }>
   initiateSyncPairing(targetHost: string, targetPort: number, localBindAddress?: string): Promise<any>
   confirmSyncPairing(sessionId: string): Promise<any>
+  listSyncPairingSessions(): Promise<any[]>
   cancelSyncPairing(sessionId: string): Promise<void>
   listSyncTrustedDevices(): Promise<SyncTrustedDeviceSummary[]>
   revokeSyncTrustedDevice(deviceId: string): Promise<void>
@@ -328,6 +331,8 @@ export const IPC_CHANNELS = {
   refreshAllSources: 'source:refresh-all',
   getSyncRuntimeState: 'sync:get-runtime-state',
   syncRuntimeStateChanged: 'sync:runtime-state-changed',
+  /** LAN 的业务刷新独立于 RSS 定时刷新状态。 */
+  syncLibraryChanged: 'sync:library-changed',
   getSyncStatus: 'sync:get-status',
   getSyncRunHistory: 'sync:get-run-history',
   activateSyncGenesis: 'sync:activate-genesis',
@@ -345,6 +350,7 @@ export const IPC_CHANNELS = {
   connectManualSyncPeer: 'sync:manual-peer:connect',
   getSyncDiagnostics: 'sync:diagnostics:get',
   syncPairingUpdated: 'sync:pairing:updated',
+  listSyncPairingSessions: 'sync:pairing:list',
   getReaderContent: 'reader:get-content',
   fetchFullContent: 'reader:fetch-full-content',
   getAiSettings: 'ai:settings:get',

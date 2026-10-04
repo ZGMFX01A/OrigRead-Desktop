@@ -22,15 +22,15 @@ describe('database migration v2 -> current schema', () => {
       `)
       const descriptor = db.prepare('SELECT * FROM rsshub_source_urls').all()
       const history = db.prepare('SELECT * FROM llm_messages').all()
-      expect(applyMigrations(db)).toBe(38)
+      expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
       expect(db.prepare('SELECT * FROM rsshub_source_urls').all()).toEqual(descriptor)
       expect(db.prepare('SELECT * FROM llm_messages').all()).toEqual(history)
       expect(db.prepare('SELECT is_unread,is_starred,is_read_later FROM articles').get())
         .toEqual({ is_unread: 0, is_starred: 1, is_read_later: 0 })
       expect(db.prepare('SELECT COUNT(*) AS count FROM sync_spaces').get()).toEqual({ count: 0 })
       expect(db.prepare('SELECT COUNT(*) AS count FROM sync_identity_mapping').get()).toEqual({ count: 0 })
-      expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 38 })
-      expect(applyMigrations(db)).toBe(38)
+      expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: CURRENT_SCHEMA_VERSION })
+      expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
       expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
       expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' })
     } finally { db.close() }
@@ -46,7 +46,7 @@ describe('database migration v2 -> current schema', () => {
         ALTER TABLE rsshub_source_urls DROP COLUMN preferred_instance;
         ALTER TABLE rsshub_source_urls DROP COLUMN last_resolved_instance;
         ALTER TABLE rsshub_source_urls DROP COLUMN last_resolved_url;
-        DELETE FROM schema_migrations WHERE version=38;
+        DELETE FROM schema_migrations WHERE version>=38;
         INSERT INTO sync_spaces VALUES('existing-space',1,1);
         INSERT INTO sync_identity_mapping VALUES('existing-space','feed','feed-1','sync-feed-1','source',0,1,1);
         INSERT INTO sync_outbox(outbox_id,sync_space_id,actor_incarnation_id,replication_lane_id,sequence,
@@ -56,12 +56,12 @@ describe('database migration v2 -> current schema', () => {
       `)
       const identities = db.prepare('SELECT * FROM sync_identity_mapping').all()
       const outbox = db.prepare('SELECT * FROM sync_outbox').all()
-      expect(applyMigrations(db)).toBe(38)
+      expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
       expect(db.prepare('SELECT * FROM sync_identity_mapping').all()).toEqual(identities)
       expect(db.prepare('SELECT * FROM sync_outbox').all()).toEqual(outbox)
       expect((db.prepare("PRAGMA table_info('rsshub_source_urls')").all() as Array<{ name: string }>).map(row => row.name))
         .toEqual(expect.arrayContaining(['route_path','preferred_instance','last_resolved_instance','last_resolved_url']))
-      expect(applyMigrations(db)).toBe(38)
+      expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
       expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
     } finally { db.close() }
   })

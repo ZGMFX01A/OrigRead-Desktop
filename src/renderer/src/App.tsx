@@ -37,6 +37,7 @@ import {
   Volume2,
   X
 } from 'lucide-react'
+import { SnapshotInstallVisibility } from './components/SnapshotInstallVisibility'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AppInfo } from '../../shared/contracts'
@@ -657,6 +658,11 @@ export default function App(): React.JSX.Element {
   }, [articles, scopeArticles, selectedArticleId])
 
   useEffect(() => {
+    // LAN 可由远端主动推送，不能依赖 RSS 定时任务完成事件刷新业务列表。
+    const unsubscribeLibrary = window.origread.onSyncLibraryChanged(() => {
+      void reloadLibrary()
+      void reloadCurrentScope()
+    })
     const unsubscribeSync = window.origread.onSyncRuntimeStateChanged((state) => {
       setSyncRuntimeState(state)
       if (state.lastFinishedAt && state.lastFinishedAt !== lastObservedSyncFinish.current) {
@@ -735,6 +741,7 @@ export default function App(): React.JSX.Element {
       setSourceDiscoveryStages((current) => ({ ...current, [progress.stage]: progress.state }))
     })
     return () => {
+      unsubscribeLibrary()
       unsubscribeSync()
       unsubscribeOriginal()
       unsubscribeAiProgress()
@@ -3608,6 +3615,7 @@ export default function App(): React.JSX.Element {
   }
 
   return (
+    <SnapshotInstallVisibility onVisible={() => { void reloadLibrary(); void reloadCurrentScope() }}>
     <main
       className={`app-shell ${twoPaneLayout ? 'two-pane-layout' : 'three-pane-layout'} ${focusReading ? 'focus-reading' : ''} ${!twoPaneLayout && adaptiveSourceHidden ? 'adaptive-source-hidden' : ''} ${!twoPaneLayout && compactLayout ? 'compact-layout' : ''} ${effectiveWorkspaceCollapsed ? 'workspace-pane-collapsed' : ''} ${effectiveSourcePaneCollapsed ? 'source-pane-collapsed' : ''} ${effectiveArticlePaneCollapsed ? 'article-pane-collapsed' : ''}`}
       style={readerStyle}
@@ -4567,6 +4575,7 @@ export default function App(): React.JSX.Element {
         </div>
       )}
     </main>
+    </SnapshotInstallVisibility>
   )
 }
 

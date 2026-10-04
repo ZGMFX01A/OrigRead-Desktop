@@ -1519,8 +1519,10 @@ button { color: inherit; }
 .ai-provider-form-field > span { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .ai-provider-form-field > span strong { color: #3e4048; font-size: 10.8px; font-weight: 680; }
 .ai-provider-form-field > span small { color: #92949d; font-size: 9.5px; line-height: 1.45; }
-.ai-provider-form-field > input,.ai-provider-form-field select { width: 100%; height: 34px; border: 1px solid #dddde4; border-radius: 8px; outline: 0; padding: 0 9px; background: #f9f9fb; color: #50525a; font-size: 11px; }
-.ai-provider-form-field > input:focus,.ai-provider-form-field select:focus { border-color: #afa8eb; box-shadow: 0 0 0 3px #6859d914; background: #fff; }
+.ai-provider-form-field > input,.ai-provider-name-input,.ai-provider-form-field select { width: 100%; height: 34px; border: 1px solid #dddde4; border-radius: 8px; outline: 0; padding: 0 9px; background: #f9f9fb; color: #50525a; font-size: 11px; }
+.ai-provider-form-field > input:focus,.ai-provider-name-input:focus,.ai-provider-form-field select:focus { border-color: #afa8eb; box-shadow: 0 0 0 3px #6859d914; background: #fff; }
+.ai-provider-name-input { flex: 1; min-width: 0; }
+.ai-provider-name-input + .mini-action { flex-shrink: 0; white-space: nowrap; }
 .ai-provider-form-field .secret-key-editor { width: 100%; }
 .ai-provider-form-field .secret-key-input { width: 100%; height: 34px; border: 1px solid #dddde4; border-radius: 8px; outline: 0; padding: 0 36px 0 9px; background: #f9f9fb; color: #50525a; font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
 .ai-provider-model-row { width: 100%; }
@@ -3138,9 +3140,11 @@ mark.reader-search-match.current { background: #ffc96b; outline: 2px solid #d9a2
 [data-theme='dark'] .ai-provider-list-item.selected { background: #302d4b; }
 [data-theme='dark'] .ai-provider-default-badge { background: #25272d; color: #b9b1ff; }
 [data-theme='dark'] .ai-provider-detail-name { color: #eceef4; }
+[data-theme='dark'] .ai-provider-name-input,
 [data-theme='dark'] .ai-provider-form-field > input,
 [data-theme='dark'] .ai-provider-form-field select,
 [data-theme='dark'] .ai-provider-form-field .secret-key-input { border-color: #3c3f48; background: #262830; color: #e2e4ea; }
+[data-theme='dark'] .ai-provider-name-input:focus,
 [data-theme='dark'] .ai-provider-form-field > input:focus,
 [data-theme='dark'] .ai-provider-form-field select:focus,
 [data-theme='dark'] .ai-provider-form-field .secret-key-input:focus { border-color: #7169b7; background: #2b2d35; box-shadow: 0 0 0 3px rgba(141,131,239,.12); }

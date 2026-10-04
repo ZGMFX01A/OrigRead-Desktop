@@ -1,4 +1,20 @@
 import { randomUUID } from 'node:crypto'
+import { snapshotTracePhase } from './sync-snapshot-trace'
+import type { SyncSnapshotJobs } from './sync-snapshot-jobs'
+import { applySnapshotRecords, snapshotInstallOnce } from './sync-snapshot-install-batches'
+import { completeSnapshotSources } from './sync-snapshot-source-completion'
+import type { SyncPagedSnapshotManifest } from '../../shared/sync-paged-snapshot'
+import type { SyncPagedSnapshotStore } from './sync-paged-snapshot-store'
+import { verifyPagedSnapshotManifest } from './sync-paged-snapshot-wire'
+import { requirePagedEntityGraph } from './sync-paged-entity-graph'
+import { pagedAliasProjection } from './sync-paged-alias-projection'
+import { projectPagedFeedConfig } from './sync-paged-feed-config'
+import { resolveIndexedPagedField } from './sync-paged-field-resolver'
+import { SNAPSHOT_PUBLICATION_ATTEMPTS, snapshotRevisionConflict, snapshotNeedsStableInput } from './sync-snapshot-revalidation'
+import { snapshotSelection } from './sync-snapshot-selection'
+import { executePagedInstall } from './sync-paged-install-execution'
+import { verifyPagedOperationEvidence, restoreFieldOperationEvidence, stagePagedSources, snapshotFieldSourceId } from './sync-paged-operation-evidence'
+import type { SyncApplyCoordinator } from './sync-apply-coordinator'
 import { readSnapshotInstallReady, recordSnapshotInstallReady } from './sync-snapshot-install-journal'
 import type { DatabaseSync } from 'node:sqlite'
 import { LibraryRepository } from '../database/library-repository'
@@ -37,14 +53,15 @@ import {
   verifySnapshotSignature,
   verifySnapshotStreamSignature
 } from './sync-snapshot-wire'
-import { canonicalJson } from './sync-operation-canonicalizer'
+import { canonicalJson, sha256Hex } from './sync-operation-canonicalizer'
+import { canonicalAuthObjectContent } from './sync-auth-wire'
 import { DesktopSyncAliasResolver, type SyncAliasEdgePayloadV1 } from './sync-alias-protocol'
 import { DesktopSyncBlobStateService, type SyncBlobReferenceRecord } from './sync-blob-state'
 import { DesktopAiHistoryApplier } from './desktop-ai-history-applier'
 import { DesktopSyncBusinessApplier } from './desktop-sync-business-applier'
 import { dependenciesSatisfied } from './sync-apply-dependencies'
 import { SYNC_ARTICLE_FULL_CONTENT_REFERENCE_KIND } from './sync-blob-payload'
-import { articleCanonicalKey, configRuleSyncId, feedCanonicalKey } from './sync-canonical-identity'
+import { articleCandidateKey, configRuleSyncId, feedCandidateKey } from './sync-canonical-identity'
 
 export class SnapshotCorruptedError extends Error {
   readonly code = 'SNAPSHOT_CORRUPTED' as const
@@ -93,7 +110,10 @@ export interface SnapshotInstallResult {
 interface SnapshotShardSource {
   readonly lanes: readonly string[]
   load(lane: string): SyncSnapshotShardWire
+  readonly paged?: { manifest: SyncPagedSnapshotManifest; store: SyncPagedSnapshotStore }
 }
+
+interface SnapshotEntity { entityType: string; entitySyncId: string; generation: number; fields: Record<string, unknown> }
 
 class InMemorySnapshotShardSource implements SnapshotShardSource {
   readonly lanes: readonly string[]
@@ -160,6 +180,11 @@ const ENTITY_TYPE_ORDER: Record<string, number> = {
  * 并在原子事务中安装至本地元数据并实例化至业务表。
  */
 export class DesktopSnapshotInstallService {
+  /** 生产安装由独立 Worker 执行；旧同步 API 保留给显式非网络工具调用。 */
+  snapshotJobs?: SyncSnapshotJobs
+  /** 正式 Worker 注入持久围栏；同步内存工具没有对外可见的业务账户。 */
+  snapshotFence?: { begin(): void; complete(): void }
+  private readonly pagedProofs = new Map<string, string>()
   private readonly identities: SyncIdentityRepository
   private readonly aliases: DesktopSyncAliasResolver
   private readonly blobs: DesktopSyncBlobStateService
@@ -174,7 +199,8 @@ export class DesktopSnapshotInstallService {
     private readonly websiteRules?: WebsiteRuleRepository,
     private readonly jsonRules?: JsonRuleRepository,
     private readonly rssHubSettings?: RssHubSettingsRepository,
-    private readonly websiteParsePreferences?: WebsiteParsePreferenceRepository
+    private readonly websiteParsePreferences?: WebsiteParsePreferenceRepository,
+    private readonly operationEvidence?: { apply: SyncApplyCoordinator }
   ) {
     this.identities = new SyncIdentityRepository(database)
     this.aliases = new DesktopSyncAliasResolver(
@@ -327,6 +353,270 @@ export class DesktopSnapshotInstallService {
     )
   }
 
+  /** 生产调用共用持久空间拥有权，请求取消不能假装 SQLite 执行器已经退出。 */
+  installPagedAsync(input: { localAccountId: number; manifest: SyncPagedSnapshotManifest; store: SyncPagedSnapshotStore;
+    now?: number; selectedLanes?: ReadonlySet<string> }): Promise<SnapshotInstallResult> {
+    if (!this.snapshotJobs) throw new Error('SNAPSHOT_WORKER_REQUIRED: production Snapshot executor is not configured')
+    if (input.selectedLanes && (input.selectedLanes.size !== input.manifest.lanes.length ||
+      input.manifest.lanes.some(lane => !input.selectedLanes!.has(lane.replicationLaneId)))) {
+      throw new Error('SNAPSHOT_JOB_CONFLICT: worker requires exact immutable scope')
+    }
+    return this.snapshotJobs.install({ space: input.manifest.syncSpaceId, peer: `local:${input.localAccountId}`,
+      account: input.localAccountId, manifest: input.manifest, now: input.now ?? Date.now() })
+  }
+
+  /** 全部字节页与跨页索引校验成功后，分页快照进入既有 rebase / tail / 激活 journal。 */
+  installPaged(input: { localAccountId: number; manifest: SyncPagedSnapshotManifest; store: SyncPagedSnapshotStore;
+    now?: number; selectedLanes?: ReadonlySet<string> }): SnapshotInstallResult {
+    const { manifest, store } = input
+    this.verifyPaged({ manifest, store })
+    const source: SnapshotShardSource = { lanes: manifest.lanes.map(lane => lane.replicationLaneId), paged: { manifest, store },
+      load() { throw new Error('SNAPSHOT_INCOMPATIBLE: paged Snapshot cannot be loaded as an aggregate lane') } }
+    const selected = input.selectedLanes ?? new Set(source.lanes)
+    if (!selected.has('AUTH') || !selected.has('CORE_META') || [...selected].some(lane => !source.lanes.includes(lane))) {
+      throw new SyncRebaseUnsafeError('REBASE_UNSAFE: paged Snapshot requires its signed core scope')
+    }
+    if (selected.has('ARTICLE_STATE') && !selected.has('LIBRARY')) throw new SnapshotDependencyMissingError('ARTICLE_STATE requires LIBRARY')
+    const scoped = { ...manifest, lanes: manifest.lanes.filter(lane => selected.has(lane.replicationLaneId)),
+      coverage: Object.fromEntries(Object.entries(manifest.coverage).filter(([lane]) => selected.has(lane))) }
+    const now = input.now ?? Date.now()
+    if (selected.has('AI_HISTORY')) {
+      if (!this.aiHistory) throw new Error('SNAPSHOT_BODY_OWNER_UNSUPPORTED: AI_HISTORY projection missing')
+      this.aiHistory.reserveSnapshotBodies({ manifest: scoped, store })
+    }
+    const result = executePagedInstall({ database: this.database, runtime: this.runtime, state: this.state,
+      budget: store.lifecycle.budget,
+      beginFence: () => this.snapshotFence?.begin(),
+      requireRecovery() { throw new SyncLocalRecoverySnapshotRequiredError('LOCAL_RECOVERY_REQUIRED: Snapshot is behind locally compacted stable history') },
+      apply: operation => {
+        if (!this.businessApplier) throw new SyncRebaseUnsafeError('REBASE_UNSAFE: business projection is unavailable for retained tail')
+        this.businessApplier.apply(operation)
+      },
+      materialize: () => this.materializePagedBaseline({ localAccountId: input.localAccountId, paged: source.paged!, selected, now }),
+      prepare: () => this.verifyPaged({ manifest, store }),
+      requirePrepared: () => this.requirePagedPrepared({ manifest, store }),
+      completeSources: () => completeSnapshotSources(this.database, this.state, { manifest: scoped, store, now,
+        requirePrepared: () => this.requirePagedPrepared({ manifest, store }) }),
+      requireBodies: () => {
+        if (!selected.has('AI_HISTORY')) return
+        if (!this.aiHistory) throw new Error('SNAPSHOT_BODY_OWNER_UNSUPPORTED: AI_HISTORY projection missing')
+        this.aiHistory.requireSnapshotBodies(manifest.syncSpaceId, manifest.snapshotBundleId)
+      }
+    }, { localAccountId: input.localAccountId, manifest: scoped, now })
+    this.snapshotFence?.complete()
+    return result
+  }
+
+  /** Recovery 仅能重签已经过普通安装边界验证的完整记录，校验本身不改变业务表。 */
+  verifyPaged(input: { manifest: SyncPagedSnapshotManifest; store: SyncPagedSnapshotStore }): void {
+    if (this.database.isTransaction) throw new Error('Snapshot full verification cannot inherit business transaction')
+    for (let attempt = 0; attempt < SNAPSHOT_PUBLICATION_ATTEMPTS; attempt++) {
+      try { this.preparePagedProof(input); return }
+      catch (error) {
+        // 只对修订竞争重准备，签名、权限或 SQL 错误原样传播。
+        if (!snapshotRevisionConflict(error)) throw error
+      }
+    }
+    snapshotNeedsStableInput()
+  }
+
+  /** 作者和全部来源证明必须落在同一次权威修订中，不能缓存旧授权。 */
+  private preparePagedProof(input: { manifest: SyncPagedSnapshotManifest; store: SyncPagedSnapshotStore }): void {
+    const { manifest, store } = input
+    this.verifyPagedAuthor(manifest)
+    const staged = store.find(manifest.snapshotBundleId)
+    if (staged?.state !== 'VERIFIED' || staged.manifestJson !== canonicalJson(JSON.stringify(manifest))) {
+      throw new SnapshotCorruptedError('Paged Snapshot has no matching verified durable pages')
+    }
+    const bundle: SyncSnapshotBundleWire = { ...manifest, shards: [], authorSignature: manifest.authorSignature }
+    this.validateStabilityProof(bundle)
+    // 授权或 actor 隔离变化都会失效；只有页/索引与当前权威证明同时不变才复用。
+    const proof = this.pagedProof(input)
+    if (store.reusable(manifest) && this.pagedProofs.get(manifest.snapshotBundleId) === proof) return
+    this.pagedProofs.delete(manifest.snapshotBundleId)
+    store.verifyAndPublish(manifest, Date.now())
+    const prepared = this.pagedProof(input)
+    this.verifyPagedAuthor(manifest)
+    this.validateStabilityProof(bundle)
+    snapshotTracePhase('validate.entity-graph', () => requirePagedEntityGraph(input.store, input.manifest.snapshotBundleId))
+    snapshotTracePhase('validate.auth', () => this.validatePagedAuth({ manifest, store }))
+    snapshotTracePhase('validate.sources', () => verifyPagedOperationEvidence(this.requireOperationEvidence(), { manifest, store }))
+    if (this.pagedProof(input) !== prepared) throw new Error('REVALIDATION_REQUIRED: Snapshot authority or index changed during evidence preparation')
+    this.pagedProofs.set(manifest.snapshotBundleId, prepared)
+  }
+
+  /** 权威修订与派生索引修订均由 SQL 触发器维护，最终发布读取固定大小的标量。 */
+  private pagedProof(input: { manifest: SyncPagedSnapshotManifest; store: SyncPagedSnapshotStore }): string {
+    const revision = this.database.prepare('SELECT revision FROM sync_snapshot_authority_revision WHERE space=?').get(input.manifest.syncSpaceId)
+    return `${input.manifest.rootHash}:${Number(revision?.revision ?? 0)}:${input.store.derivedRevision(input.manifest.snapshotBundleId)}`
+  }
+
+  /** 最终事务只能比较已有证明；失效向外暴露，不在事务内扫描图、授权或字段。 */
+  private requirePagedPrepared(input: { manifest: SyncPagedSnapshotManifest; store: SyncPagedSnapshotStore }): void {
+    if (!input.store.reusable(input.manifest) || this.pagedProofs.get(input.manifest.snapshotBundleId) !== this.pagedProof(input)) {
+      throw new Error('REVALIDATION_REQUIRED: Snapshot changed before publication')
+    }
+  }
+
+  /** 合并发布使用相同的原子修订证明，调用方必须先在事务外完整验证。 */
+  requirePagedPublicationProof(input: { manifest: SyncPagedSnapshotManifest; store: SyncPagedSnapshotStore }): void {
+    this.requirePagedPrepared(input)
+  }
+
+  /** 正式分页路径显式注入 R10 Apply，不创建另一套授权或回滚实现。 */
+  private requireOperationEvidence() {
+    if (!this.operationEvidence) throw new Error('REBASE_UNSAFE: paged operation evidence service is unavailable')
+    return { database: this.database, runtime: this.runtime, state: this.state, apply: this.operationEvidence.apply }
+  }
+
+  /** 网络收页之前只验证作者和签名承诺，接收页面不会授予新权限。 */
+  verifyPagedAuthor(manifest: SyncPagedSnapshotManifest): void {
+    const author = this.state.findPeer(manifest.syncSpaceId, manifest.authorDeviceId)
+    if (!author || author.status !== 'ACTIVE' || !this.runtime.findActiveGrant(manifest.syncSpaceId, manifest.authorDeviceId)) {
+      throw new SyncRebaseUnsafeError('REBASE_UNSAFE: paged Snapshot author has no active grant')
+    }
+    verifyPagedSnapshotManifest(manifest, author.publicKeySpkiBase64)
+  }
+
+  /** 完整 baseline 按依赖创建、反向删除再归并别名，之后才更新产品 CONFIG 缓存。 */
+  private materializePagedBaseline(input: { localAccountId: number; paged: NonNullable<SnapshotShardSource['paged']>;
+    selected: ReadonlySet<string>; now: number }): number {
+    stagePagedSources(this.requireOperationEvidence(), { ...input.paged, now: input.now })
+    const lanes = input.paged.manifest.lanes.map(lane => lane.replicationLaneId).filter(lane => input.selected.has(lane))
+      .sort((left, right) => (LANE_ORDER[left] ?? 99) - (LANE_ORDER[right] ?? 99))
+    let count = 0
+    const aliasTypes = new Set<SyncEntityType>()
+    for (const record of input.paged.store.records({ snapshotBundleId: input.paged.manifest.snapshotBundleId, lane: 'CORE_META', kind: 'ALIAS_EDGE' })) {
+      this.aliases.recordSnapshotEdge({ syncSpaceId: input.paged.manifest.syncSpaceId, payload: record.value as unknown as SyncAliasEdgePayloadV1, sourceOperationId: null, now: input.now, deferProjection: true })
+      aliasTypes.add(record.value.targetEntityType as SyncEntityType)
+    }
+    for (const type of aliasTypes) this.aliases.rebuild(input.paged.manifest.syncSpaceId, type, input.now)
+    for (const lane of lanes) count += this.materializePagedLane({ ...input, lane })
+    for (const lane of [...lanes].sort((left, right) => (TOMBSTONE_LANE_ORDER[left] ?? 99) - (TOMBSTONE_LANE_ORDER[right] ?? 99))) {
+      this.restorePagedTombstones({ ...input, lane })
+    }
+    for (const lane of lanes) for (const record of input.paged.store.records({ snapshotBundleId: input.paged.manifest.snapshotBundleId, lane, kind: 'ALIAS_EDGE' })) {
+      this.aliases.reconcileDeleteWins(input.paged.manifest.syncSpaceId, record.value.targetEntityType as SyncEntityType,
+        String(record.value.leftSyncId), Number(record.value.leftGeneration), input.now)
+    }
+    if (input.selected.has('CONFIG')) this.applySourceConfig({ source: { lanes, paged: input.paged,
+      load() { throw new Error('SNAPSHOT_INCOMPATIBLE: aggregate Snapshot is unavailable') } },
+      syncSpaceId: input.paged.manifest.syncSpaceId, now: input.now })
+    return count
+  }
+
+  /** 快照 AUTH 只描述已验签本地账本，不授予任何新的权限。 */
+  private validatePagedAuth(input: { manifest: SyncPagedSnapshotManifest; store: SyncPagedSnapshotStore }): void {
+    let rootFound = false
+    for (const record of input.store.records({ snapshotBundleId: input.manifest.snapshotBundleId, lane: 'AUTH', kind: 'AUTH_OBJECT' })) {
+      const value = record.value
+      const local = this.database.prepare('SELECT auth_object_json FROM sync_auth_ledger WHERE sync_space_id=? AND auth_object_id=?')
+        .get(input.manifest.syncSpaceId, String(value.authObjectId))
+      // 复用 AUTH 签名语义，避免跨端省略可选字段与显式 null 导致假冲突。
+      if (!local || canonicalAuthObjectContent(JSON.parse(String(local.auth_object_json))) !==
+        canonicalAuthObjectContent(value as unknown as SyncAuthProtocolObject)) {
+        throw new SyncRebaseUnsafeError('REBASE_UNSAFE: paged Snapshot AUTH object is absent from verified local ledger')
+      }
+      rootFound ||= value.objectType === 'SPACE_ROOT'
+    }
+    if (!rootFound) throw new SnapshotCorruptedError('Paged Snapshot AUTH has no SPACE_ROOT')
+  }
+
+  /** 引用清理仅在 lane 开始执行一次，后续跨页引用不能被下一页清掉。 */
+  private materializePagedLane(input: { localAccountId: number; paged: NonNullable<SnapshotShardSource['paged']>; lane: string; now: number }): number {
+    const { store, manifest } = input.paged
+    const filter = { snapshotBundleId: manifest.snapshotBundleId, lane: input.lane, stableKeyOrder: true }
+    snapshotInstallOnce(this.database, { manifest, name: `blob-clear:${input.lane}`, budget: store.lifecycle.budget },
+      () => this.blobs.clearMaterializedLaneReferences(manifest.syncSpaceId, input.lane))
+    applySnapshotRecords(this.database, { manifest, name: `blob-manifests:${input.lane}`, budget: store.lifecycle.budget }, {
+      records: store.records({ ...filter, kind: 'BLOB_MANIFEST' }),
+      write: record => this.blobs.registerManifest(record.value as unknown as SyncBlobManifest, 'BLOB_MISSING', input.now) })
+    applySnapshotRecords(this.database, { manifest, name: `blob-references:${input.lane}`, budget: store.lifecycle.budget }, {
+      records: store.records({ ...filter, kind: 'BLOB_REFERENCE' }), write: record => {
+      const ref = record.value as unknown as SyncBlobReferenceRecord
+      this.blobs.addReference(manifest.syncSpaceId, ref.replicationLaneId, ref.ownerEntityType, ref.ownerEntitySyncId,
+        ref.ownerEntityGeneration, ref.referenceKind, ref.hash, input.now)
+    } })
+    let total = 0
+    for (const type of ['sync_core', ...Object.keys(ENTITY_TYPE_ORDER)]) {
+      if (['filter_rule','website_rule','json_rule','rsshub_settings','website_parse_preference','rsshub_subscription_source'].includes(type)) continue
+      applySnapshotRecords(this.database, { manifest, name: `entity:${input.lane}:${type}`, budget: store.lifecycle.budget }, {
+        records: store.records({ ...filter, kind: 'ENTITY', entityType: type }), write: record => {
+        try {
+          const members = this.aliases.componentMembers(manifest.syncSpaceId, type as SyncEntityType,
+            String(record.value.entitySyncId), Number(record.value.generation))
+          const value = pagedAliasProjection({ store, bundleId: manifest.snapshotBundleId, lane: input.lane, entity: record, members })
+          this.materializeEntity(input.localAccountId, manifest.syncSpaceId, value as unknown as SnapshotEntity, input.now)
+        } catch (error) {
+          // 当前记录身份随原始错误暴露，跨库失败不能只留下无法定位的数据库约束错误。
+          throw new Error('Paged entity ' + type + '/' + record.value.entitySyncId + ': ' +
+            (error instanceof Error ? error.message : String(error)), { cause: error })
+        }
+        total++
+      } })
+    }
+    this.restorePagedFields({ paged: input.paged, lane: input.lane, now: input.now })
+    return total
+  }
+
+  /** 全部候选先落库，再按完整索引计算 winner，禁止让页面传输顺序决定字段值。 */
+  private restorePagedFields(input: { paged: NonNullable<SnapshotShardSource['paged']>; lane: string; now: number }): void {
+    const { store, manifest } = input.paged
+    const filter = { snapshotBundleId: manifest.snapshotBundleId, lane: input.lane, kind: 'FIELD_VERSION' as const, stableKeyOrder: true }
+    applySnapshotRecords(this.database, { manifest, name: `fields:${input.lane}`, budget: store.lifecycle.budget }, {
+      records: store.compactRecords(filter), write: record => this.state.retainFieldCandidate({ ...record.value,
+      syncSpaceId: manifest.syncSpaceId,
+      sourceOperationId: snapshotFieldSourceId(this.database, { space: manifest.syncSpaceId, record }),
+      updatedAt: input.now } as unknown as SyncFieldVersionRecord) })
+    for (const field of store.fieldIds(filter)) {
+      const candidates = () => store.derived.fields({ ...filter, ...field })
+      const winner = resolveIndexedPagedField({ candidates, fieldId: field.fieldId, readWinner: item => store.fieldRecord(item) })
+      this.state.upsertFieldVersion({ ...winner.value, syncSpaceId: manifest.syncSpaceId,
+        sourceOperationId: snapshotFieldSourceId(this.database, { space: manifest.syncSpaceId, record: winner }),
+        updatedAt: input.now } as unknown as SyncFieldVersionRecord)
+    }
+  }
+
+  /** 删除投影逐条按反向依赖顺序恢复，实体内容不会汇总为整库删除数组。 */
+  private restorePagedTombstones(input: { localAccountId: number; paged: NonNullable<SnapshotShardSource['paged']>; lane: string; now: number }): void {
+    const { store, manifest } = input.paged
+    const types = ['alias_edge','citation_annotation_ref','conversation_article','citation_annotation','citation_ref','evidence_block',
+      'context_ref','tool_call','message','conversation','article','feed','group',...Object.keys(ENTITY_TYPE_ORDER).filter(type => !['article','feed','group'].includes(type))]
+    for (const type of [...new Set(types)]) {
+      for (const record of store.records({ snapshotBundleId: manifest.snapshotBundleId, lane: input.lane, kind: 'TOMBSTONE', entityType: type })) {
+        this.restoreTombstones(input.localAccountId, manifest.syncSpaceId, manifest.snapshotBundleId, JSON.stringify({ deleted: [record.value] }), input.now)
+      }
+    }
+  }
+
+  /** CONFIG 按有序实体游标读取；仓库替换只在完整 baseline 验证之后执行。 */
+  private applySourceConfig(input: { source: SnapshotShardSource; syncSpaceId: string; now: number }): void {
+    if (input.source.paged) {
+      const { store, manifest } = input.source.paged
+      const aliases = this.aliases
+      const live = (value: Record<string, unknown>): boolean => {
+        const deleted = this.database.prepare('SELECT generation FROM sync_entity_tombstone WHERE sync_space_id=? AND entity_type=? AND entity_sync_id=?')
+          .get(input.syncSpaceId, String(value.entityType), String(value.entitySyncId))
+        return !deleted || Number(deleted.generation) < Number(value.generation)
+      }
+      const entities = function* () {
+        for (const record of store.records({ snapshotBundleId: manifest.snapshotBundleId, lane: 'CONFIG', kind: 'ENTITY' })) {
+          if (!live(record.value)) continue
+          const members = aliases.componentMembers(manifest.syncSpaceId, record.value.entityType as SyncEntityType,
+            String(record.value.entitySyncId), Number(record.value.generation))
+          const resolved = { ...record, value: pagedAliasProjection({ store, bundleId: manifest.snapshotBundleId,
+            lane: 'CONFIG', entity: record, members }) }
+          yield projectPagedFeedConfig({ store, bundleId: manifest.snapshotBundleId, entity: resolved,
+            live,
+            members: parent => aliases.componentMembers(manifest.syncSpaceId, 'feed', parent.id, parent.generation) }) as unknown as SnapshotEntity
+        }
+      }
+      this.applyExternalConfigEntities({ syncSpaceId: input.syncSpaceId, entities, now: input.now })
+      return
+    }
+    this.applyExternalConfigState(input.syncSpaceId, input.source.load('CONFIG').entityStateJson, input.now)
+  }
+
   private installVerifiedFromSource(
     localAccountId: number,
     bundle: SyncSnapshotBundleWire,
@@ -374,7 +664,8 @@ export class DesktopSnapshotInstallService {
 
     const existingStagedBundle = this.runtime.findSnapshotBundle(bundle.snapshotBundleId)
     const ready = readSnapshotInstallReady(this.database, bundle.syncSpaceId)
-    if (binding.lifecycleState === 'STAGING' && ready?.snapshotBundleId === bundle.snapshotBundleId &&
+    // 同一已安装清单的重试也覆盖 Tail 激活之后，避免续传确认把 ACTIVE 账户再次降回 STAGING。
+    if (['STAGING', 'ACTIVE'].includes(binding.lifecycleState) && ready?.snapshotBundleId === bundle.snapshotBundleId &&
       ready.rootHash === bundle.rootHash && existingStagedBundle?.rootHash === bundle.rootHash &&
       [...presentLanes].every(lane => ready.installedLanes.includes(lane))) {
       return { snapshotBundleId: bundle.snapshotBundleId, syncSpaceId: bundle.syncSpaceId,
@@ -395,17 +686,12 @@ export class DesktopSnapshotInstallService {
         }).filter((operation) => presentLanes.has(operation.replicationLaneId) &&
           [undefined, 'APPLIED'].includes(this.state.findInbox(operation.operationId)?.state))
         this.runtime.transaction(() => {
-          const configShard = presentLanes.has('CONFIG') ? source.load('CONFIG') : null
-          if (configShard) this.applyExternalConfigState(bundle.syncSpaceId, configShard.entityStateJson, now)
+          if (presentLanes.has('CONFIG')) this.applySourceConfig({ source, syncSpaceId: bundle.syncSpaceId, now })
           this.replayRetainedTail(selectedBundle, tail, previous.applied, presentLanes, now)
           this.restoreRecoverableCoverage(bundle.syncSpaceId, previous, presentLanes, now)
         })
       } else {
-        const configShard = presentLanes.has('CONFIG') ? source.load('CONFIG') : null
-        if (configShard) {
-          this.runtime.transaction(() =>
-            this.applyExternalConfigState(bundle.syncSpaceId, configShard.entityStateJson, now))
-        }
+        if (presentLanes.has('CONFIG')) this.runtime.transaction(() => this.applySourceConfig({ source, syncSpaceId: bundle.syncSpaceId, now }))
       }
       this.runtime.transaction(() => {
         recordSnapshotInstallReady(this.database, bundle.syncSpaceId, {
@@ -477,7 +763,7 @@ export class DesktopSnapshotInstallService {
 
         // Persist the complete signed manifest. Projection and coverage changes below
         // are restricted to the currently selected replication lanes.
-        for (const lane of sortedManifestLanes) {
+        for (const lane of source.paged ? [] : sortedManifestLanes) {
           const shard = source.load(lane)
           this.runtime.upsertSnapshotShard({
             snapshotBundleId: bundle.snapshotBundleId,
@@ -498,6 +784,11 @@ export class DesktopSnapshotInstallService {
 
         // 3. 按因果依赖顺序安装各 Shard 并恢复元数据与实例化业务实体
         for (const lane of sortedLanes) {
+          if (source.paged) {
+            materializedEntities += this.materializePagedLane({ localAccountId, paged: source.paged, lane, now })
+            rebasedLanes.push(lane)
+            continue
+          }
           const shard = source.load(lane)
           rebasedLanes.push(shard.replicationLaneId)
 
@@ -540,6 +831,10 @@ export class DesktopSnapshotInstallService {
             (TOMBSTONE_LANE_ORDER[b] ?? 99)
         )
         for (const lane of tombstoneLanes) {
+          if (source.paged) {
+            this.restorePagedTombstones({ localAccountId, paged: source.paged, lane, now })
+            continue
+          }
           const shard = source.load(lane)
           this.restoreTombstones(
             localAccountId,
@@ -553,8 +848,7 @@ export class DesktopSnapshotInstallService {
         // 4. 覆盖度重基线（Rebase Coverage）（R10-09, R10-10）
         this.state.rebaseSnapshotCoverage(bundle.syncSpaceId, selectedCoverage, now)
 
-        const configShard = presentLanes.has('CONFIG') ? source.load('CONFIG') : null
-        if (configShard) this.applyExternalConfigState(bundle.syncSpaceId, configShard.entityStateJson, now)
+        if (presentLanes.has('CONFIG')) this.applySourceConfig({ source, syncSpaceId: bundle.syncSpaceId, now })
         this.replayRetainedTail(selectedBundle, replayTail, coverageBeforeRebase.applied, presentLanes, now)
         this.restoreRecoverableCoverage(bundle.syncSpaceId, coverageBeforeRebase, presentLanes, now)
 
@@ -1135,7 +1429,9 @@ export class DesktopSnapshotInstallService {
     feedGeneration: number | null,
     label: string
   ): string {
-    const mapping = this.identities.findBySyncId(syncSpaceId, 'feed', feedSyncId)
+    // 同代次别名共享真实业务行，CONFIG 必须与 Reader 使用同一父身份解析。
+    const direct = this.identities.findBySyncId(syncSpaceId, 'feed', feedSyncId)
+    const mapping = feedGeneration == null ? direct : this.aliases.resolveMapping(syncSpaceId, 'feed', feedSyncId, feedGeneration)
     if (!mapping) {
       throw new SnapshotDependencyMissingError(label + ' is waiting for feed ' + feedSyncId)
     }
@@ -1165,7 +1461,14 @@ export class DesktopSnapshotInstallService {
   }
 
   private applyExternalConfigState(syncSpaceId: string, entityStateJson: string, now: number): void {
-    const allEntities = this.parseEntities(entityStateJson, 'CONFIG')
+    const entities = this.parseEntities(entityStateJson, 'CONFIG').sort((a, b) => a.entitySyncId < b.entitySyncId ? -1 : a.entitySyncId > b.entitySyncId ? 1 : 0)
+    this.applyExternalConfigEntities({ syncSpaceId, entities: () => entities, now })
+  }
+
+  /** CONFIG 完整性校验与逐类仓库替换共用游标，避免解析或复制整个 lane。 */
+  private applyExternalConfigEntities(input: { syncSpaceId: string; entities(): Iterable<{ entityType: string; entitySyncId: string; generation?: number; fields: Record<string, unknown> }>; now: number }): void {
+    const { syncSpaceId, now } = input
+    const allEntities = snapshotSelection(input.entities)
     const supportedConfigTypes = new Set([
       'filter_rule',
       'website_rule',
@@ -1208,7 +1511,6 @@ export class DesktopSnapshotInstallService {
     })
     const entities = liveConfigEntities
       .filter((entity) => entity.entityType === 'filter_rule')
-      .sort((a, b) => a.entitySyncId.localeCompare(b.entitySyncId))
     if (!this.articleFilters) {
       if (entities.length) throw new SyncRebaseUnsafeError('REBASE_UNSAFE: CONFIG projection is unavailable')
     } else {
@@ -1322,7 +1624,6 @@ export class DesktopSnapshotInstallService {
 
     const websiteEntities = liveConfigEntities
       .filter((entity) => entity.entityType === 'website_rule')
-      .sort((a, b) => a.entitySyncId.localeCompare(b.entitySyncId))
     if (websiteEntities.length && !this.websiteRules) {
       throw new SyncRebaseUnsafeError('REBASE_UNSAFE: Website CONFIG projection is unavailable')
     }
@@ -1344,7 +1645,6 @@ export class DesktopSnapshotInstallService {
 
     const jsonEntities = liveConfigEntities
       .filter((entity) => entity.entityType === 'json_rule')
-      .sort((a, b) => a.entitySyncId.localeCompare(b.entitySyncId))
     if (jsonEntities.length && !this.jsonRules) {
       throw new SyncRebaseUnsafeError('REBASE_UNSAFE: JSON CONFIG projection is unavailable')
     }
@@ -1373,7 +1673,7 @@ export class DesktopSnapshotInstallService {
     if (!this.rssHubSettings) {
       throw new SyncRebaseUnsafeError('REBASE_UNSAFE: RSSHub CONFIG projection is unavailable')
     }
-    const rssHubEntity = rssHubEntities[0]!
+    const rssHubEntity = rssHubEntities.at(0)!
     const raw = rssHubEntity.fields.settings
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
       throw new SnapshotCorruptedError('CONFIG RSSHub settings has no valid settings field')
@@ -1388,7 +1688,6 @@ export class DesktopSnapshotInstallService {
 
     const preferenceEntities = liveConfigEntities
       .filter((entity) => entity.entityType === 'website_parse_preference')
-      .sort((a, b) => a.entitySyncId.localeCompare(b.entitySyncId))
     if (preferenceEntities.length && !this.websiteParsePreferences) {
       throw new SyncRebaseUnsafeError(
         'REBASE_UNSAFE: Website parse preference CONFIG projection is unavailable'
@@ -1396,6 +1695,7 @@ export class DesktopSnapshotInstallService {
     }
     if (this.websiteParsePreferences) {
       const incomingFeedSyncIds = new Set<string>()
+      const incomingLocalFeedIds = new Set<string>()
       for (const entity of preferenceEntities) {
         const raw = entity.fields.preference
         if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -1443,21 +1743,22 @@ export class DesktopSnapshotInstallService {
               ? preference.preferredRuleName
               : null
         }
-        this.websiteParsePreferences.applyUserSyncState(localFeedId, state)
+        incomingLocalFeedIds.add(localFeedId)
+        this.websiteParsePreferences.applyUserSyncState(localFeedId, preference.__syncAbsent === true ? null : state)
       }
       for (const preferenceMapping of this.identities.listByType(syncSpaceId, 'website_parse_preference')) {
         if (incomingFeedSyncIds.has(preferenceMapping.localId)) continue
-        const feedMapping = this.identities.findBySyncId(syncSpaceId, 'feed', preferenceMapping.localId)
-        if (feedMapping) {
-          this.websiteParsePreferences.applyUserSyncState(feedMapping.localId, null)
+        const localFeedId = this.findConfigCleanupFeed(syncSpaceId, preferenceMapping.localId)
+        if (localFeedId && !incomingLocalFeedIds.has(localFeedId)) {
+          this.websiteParsePreferences.applyUserSyncState(localFeedId, null)
         }
       }
     }
 
     const rssHubSourceEntities = liveConfigEntities
       .filter((entity) => entity.entityType === 'rsshub_subscription_source')
-      .sort((a, b) => a.entitySyncId.localeCompare(b.entitySyncId))
     const incomingRssHubFeedSyncIds = new Set<string>()
+    const incomingRssHubLocalFeedIds = new Set<string>()
     for (const entity of rssHubSourceEntities) {
       const raw = entity.fields.source
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -1471,7 +1772,7 @@ export class DesktopSnapshotInstallService {
         ? null
         : Number(source.feedGeneration)
       const sourceUrl = typeof source.sourceUrl === 'string' ? source.sourceUrl.trim() : ''
-      if (!feedSyncId || !sourceUrl) {
+      if (!feedSyncId || (source.__syncAbsent !== true && !sourceUrl)) {
         throw new SnapshotCorruptedError(
           'CONFIG RSSHub subscription source requires feedSyncId and sourceUrl'
         )
@@ -1494,15 +1795,31 @@ export class DesktopSnapshotInstallService {
         feedGeneration,
         'CONFIG RSSHub subscription source ' + entity.entitySyncId
       )
-      new LibraryRepository(this.database).replaceRssHubSourceUrlFromSync(localFeedId, sourceUrl)
+      incomingRssHubLocalFeedIds.add(localFeedId)
+      if (source.__syncAbsent === true) this.database.prepare('DELETE FROM rsshub_source_urls WHERE feed_id=?').run(localFeedId)
+      else new LibraryRepository(this.database).replaceRssHubSourceUrlFromSync(localFeedId, sourceUrl)
     }
     for (const sourceMapping of this.identities.listByType(syncSpaceId, 'rsshub_subscription_source')) {
       if (incomingRssHubFeedSyncIds.has(sourceMapping.localId)) continue
-      const feedMapping = this.identities.findBySyncId(syncSpaceId, 'feed', sourceMapping.localId)
-      if (feedMapping) {
-        this.database.prepare('DELETE FROM rsshub_source_urls WHERE feed_id=?').run(feedMapping.localId)
+      const localFeedId = this.findConfigCleanupFeed(syncSpaceId, sourceMapping.localId)
+      if (localFeedId && !incomingRssHubLocalFeedIds.has(localFeedId)) {
+        this.database.prepare('DELETE FROM rsshub_source_urls WHERE feed_id=?').run(localFeedId)
       }
     }
+  }
+
+  /** 清理使用同代次别名的真实父行，不能删除另一逻辑身份刚写入的配置。 */
+  private findConfigCleanupFeed(syncSpaceId: string, feedSyncId: string): string | null {
+    const direct = this.identities.findBySyncId(syncSpaceId, 'feed', feedSyncId)
+    if (direct) return direct.localId
+    const row = this.database.prepare(`SELECT m.local_id FROM sync_entity_alias a
+      JOIN sync_entity_alias b ON b.sync_space_id=a.sync_space_id AND b.entity_type=a.entity_type
+        AND b.generation=a.generation AND b.canonical_sync_id=a.canonical_sync_id
+      JOIN sync_identity_mapping m ON m.sync_space_id=b.sync_space_id AND m.entity_type=b.entity_type
+        AND m.sync_id=b.alias_sync_id AND m.generation=b.generation
+      WHERE a.sync_space_id=? AND a.entity_type='feed' AND a.alias_sync_id=? ORDER BY m.generation DESC LIMIT 1`)
+      .get(syncSpaceId, feedSyncId) as { local_id: string } | undefined
+    return row?.local_id ?? null
   }
 
   private parseEntities(json: string, lane?: string): Array<{
@@ -1802,7 +2119,7 @@ export class DesktopSnapshotInstallService {
     )
     for (const snapshot of snapshotObjects) {
       const local = localById.get(snapshot.authObjectId)
-      if (!local || canonicalJson(JSON.stringify(local)) !== canonicalJson(JSON.stringify(snapshot))) {
+      if (!local || canonicalAuthObjectContent(local) !== canonicalAuthObjectContent(snapshot)) {
         throw new SyncRebaseUnsafeError(
           'REBASE_UNSAFE: Snapshot AUTH history is not present in the verified local ledger'
         )
@@ -2020,8 +2337,6 @@ export class DesktopSnapshotInstallService {
     if (entityType === 'group') {
       let mapping = this.identities.findBySyncId(syncSpaceId, 'group', entitySyncId)
       const name = String(fields.name ?? 'Group')
-      const sortOrder = Number(fields.sortOrder ?? 0)
-      const isDefault = fields.isDefault ? 1 : 0
 
       if (mapping && generation < mapping.generation) {
         throw new SyncLocalRecoverySnapshotRequiredError(
@@ -2033,15 +2348,16 @@ export class DesktopSnapshotInstallService {
         this.identities.updateMappings([mapping])
       }
       if (mapping) {
-        this.database.prepare('UPDATE groups SET name=?,sort_order=?,is_default=? WHERE id=? AND account_id=?')
-          .run(name, sortOrder, isDefault, mapping.localId, localAccountId)
+        // Group 协议只同步名称；默认组及排序属于本机账户，缺失字段不能将它们清零。
+        this.database.prepare('UPDATE groups SET name=? WHERE id=? AND account_id=?')
+          .run(name, mapping.localId, localAccountId)
       } else {
         // 全新本地主键生成，隔离 Source 端的 localId，杜绝覆写冲突（R10-02, R10-03）
         const localId = randomUUID()
         this.database.prepare(`
-          INSERT INTO groups(id,account_id,name,sort_order,is_default)
-          VALUES(?,?,?,?,?)
-        `).run(localId, localAccountId, name, sortOrder, isDefault)
+          INSERT INTO groups(id,account_id,name)
+          VALUES(?,?,?)
+        `).run(localId, localAccountId, name)
 
         this.identities.insertMapping({
           syncSpaceId,
@@ -2055,7 +2371,7 @@ export class DesktopSnapshotInstallService {
         })
       }
     } else if (entityType === 'feed') {
-      let mapping = this.identities.findBySyncId(syncSpaceId, 'feed', entitySyncId)
+      let mapping = this.aliases.resolveMapping(syncSpaceId, 'feed', entitySyncId, generation)
       const groupSyncId = fields.groupSyncId ? String(fields.groupSyncId) : (fields.groupId ? String(fields.groupId) : null)
       const groupGeneration = fields.groupGeneration == null ? null : Number(fields.groupGeneration)
       if (!groupSyncId?.trim()) {
@@ -2099,8 +2415,8 @@ export class DesktopSnapshotInstallService {
           'Feed ' + entitySyncId + ' has unsupported sourceType ' + fields.sourceType
         )
       }
-      const canonicalFeedKey = feedCanonicalKey(
-        sourceType as Parameters<typeof feedCanonicalKey>[0],
+      const canonicalFeedKey = feedCandidateKey(
+        sourceType as Parameters<typeof feedCandidateKey>[0],
         url
       )
       const icon = fields.icon ? String(fields.icon) : null
@@ -2112,8 +2428,11 @@ export class DesktopSnapshotInstallService {
       const updatedAt = Number(fields.updatedAt ?? now)
 
       if (!mapping && url) {
-        const existing = this.database.prepare('SELECT id FROM feeds WHERE account_id=? AND url=? LIMIT 1')
-          .get(localAccountId, url) as { id: string } | undefined
+        // 仅接管尚无同步身份的真实本地行；同 URL 的独立已配对身份必须保留各自映射。
+        const existing = this.database.prepare(`SELECT f.id FROM feeds f WHERE f.account_id=? AND f.url=?
+          AND NOT EXISTS(SELECT 1 FROM sync_identity_mapping m WHERE m.sync_space_id=?
+            AND m.entity_type='feed' AND m.local_id=f.id) LIMIT 1`)
+          .get(localAccountId, url, syncSpaceId) as { id: string } | undefined
         if (existing) {
           mapping = {
             syncSpaceId,
@@ -2168,7 +2487,7 @@ export class DesktopSnapshotInstallService {
         })
       }
     } else if (entityType === 'article') {
-      let mapping = this.identities.findBySyncId(syncSpaceId, 'article', entitySyncId)
+      let mapping = this.aliases.resolveMapping(syncSpaceId, 'article', entitySyncId, generation)
       if (mapping && generation < mapping.generation) {
         throw new SyncLocalRecoverySnapshotRequiredError(
           `LOCAL_RECOVERY_REQUIRED: Snapshot article ${entitySyncId} generation ${generation} is behind local generation ${mapping.generation}`
@@ -2183,7 +2502,7 @@ export class DesktopSnapshotInstallService {
       if (!feedSyncId) {
         throw new SnapshotDependencyMissingError(`Article ${entitySyncId} missing feedSyncId`)
       }
-      const feedMapping = this.identities.findBySyncId(syncSpaceId, 'feed', feedSyncId)
+      const feedMapping = this.aliases.resolveMapping(syncSpaceId, 'feed', feedSyncId, feedGeneration ?? 0)
       if (!feedMapping) {
         // 严格阻断依赖缺失静默跳过（R10-05）
         throw new SnapshotDependencyMissingError(`Missing feed dependency ${feedSyncId} for article ${entitySyncId}`)
@@ -2209,9 +2528,9 @@ export class DesktopSnapshotInstallService {
       if (!feedRow) {
         throw new SnapshotDependencyMissingError(`Missing local feed ${feedLocalId} for article ${entitySyncId}`)
       }
-      const canonicalArticleKey = articleCanonicalKey(
-        feedCanonicalKey(
-          feedRow.source_type as Parameters<typeof feedCanonicalKey>[0],
+      const canonicalArticleKey = articleCandidateKey(
+        feedCandidateKey(
+          feedRow.source_type as Parameters<typeof feedCandidateKey>[0],
           feedRow.url
         ),
         fields.url ? String(fields.url) : null

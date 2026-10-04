@@ -96,6 +96,8 @@ export interface PublicPairingStatusDto {
   isPeerConfirmed: boolean
   targetHost?: string | null
   targetPort?: number | null
+  failureMessage?: string
+  cancellationOrigin?: 'LOCAL' | 'PEER'
 
   // 跨端双向兼容别名
   remoteDeviceId?: string

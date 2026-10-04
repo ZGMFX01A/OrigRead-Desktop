@@ -1,4 +1,8 @@
 import { readSnapshotInstallReady } from './sync-snapshot-install-journal'
+import { requireExportableConfig } from './sync-config-export'
+import { claimSyncMaintenance } from './sync-maintenance-schedule'
+import type { SyncPagedSnapshotManifest } from '../../shared/sync-paged-snapshot'
+import type { SyncPagedSessionSnapshots, PagedSessionSnapshotDependencies, SnapshotBlobIndex } from './sync-paged-session-snapshots'
 import type {
   SyncBlobManifest,
   SyncCoverage,
@@ -20,7 +24,8 @@ import {
 } from '../../shared/sync-protocol'
 import { DesktopOperationBuilder } from './sync-operation-builder'
 import { DesktopSyncOperationSigner } from './sync-operation-signer'
-import { SyncRuntimeRepository } from './sync-runtime-repository'
+import { SyncRuntimeRepository, computeActiveGrant } from './sync-runtime-repository'
+import { requireSyncCompatibility } from './sync-compatibility'
 import { SyncStateRepository } from './sync-state-repository'
 import { SyncApplyCoordinator, type SyncIngestOptions } from './sync-apply-coordinator'
 import {
@@ -63,6 +68,7 @@ export interface SyncSessionRunOptions extends Omit<SyncIngestOptions, 'now'> {
   endpointId?: string
   localAccountId?: number
   allowStableGc?: boolean
+  automaticMaintenance?: boolean
   maxOperations?: number
   maxBatches?: number
   now?: number
@@ -70,6 +76,8 @@ export interface SyncSessionRunOptions extends Omit<SyncIngestOptions, 'now'> {
 }
 
 export interface SyncSessionRunResult {
+  status?: 'COMPLETE' | 'MORE_WORK'
+  maintenanceStatus?: 'UP_TO_DATE' | 'AUTH_STABILITY_PENDING'
   pushedOperationIds: string[]
   pulledOperationIds: string[]
   appliedOperationIds: string[]
@@ -84,7 +92,7 @@ export interface SyncSessionRunResult {
 
 /** Anti-entropy coordinator shared by LAN and Server sessions. */
 export class SyncSessionCoordinator {
-  private activeRun: Promise<void> = Promise.resolve()
+  private readonly peerRuns = new Map<string | SyncEndpointSession, Promise<void>>()
   constructor(
     private readonly runtime: SyncRuntimeRepository,
     private readonly state: SyncStateRepository,
@@ -97,16 +105,66 @@ export class SyncSessionCoordinator {
     private readonly businessApplier?: DesktopSyncBusinessApplier,
     private readonly genesisSnapshotService?: DesktopGenesisSnapshotService,
     private readonly stableGcCoordinator?: DesktopSyncStableGcCoordinator,
-    private readonly reconcileExternalConfig?: (syncSpaceId: string) => void
+    private readonly reconcileExternalConfig?: (syncSpaceId: string) => void,
+    private readonly createPagedSnapshots?: (deps: Omit<PagedSessionSnapshotDependencies, 'transfer'>) => SyncPagedSessionSnapshots
   ) {}
 
   run(syncSpaceId: string, session: SyncEndpointSession, options: SyncSessionRunOptions): Promise<SyncSessionRunResult> {
-    const result = this.activeRun.then(() => this.runInternal(syncSpaceId, session, options))
-    this.activeRun = result.then(() => undefined, () => undefined)
+    const key = options.endpointId ? `${syncSpaceId}:${options.endpointId}` : session
+    const result = (this.peerRuns.get(key) ?? Promise.resolve()).then(() => this.runInternal(syncSpaceId, session, options))
+    // 只串行同一 Peer 的协商；SQLite 写事务始终在主线程同步执行。
+    const tail = result.then(() => undefined, () => undefined)
+    this.peerRuns.set(key, tail)
+    void tail.then(() => { if (this.peerRuns.get(key) === tail) this.peerRuns.delete(key) })
     return result
   }
 
+  /** 无需连接 Peer 的低频维护；只消费已经发布且对应当前 checkpoint 的稳定基线。 */
+  maintainLocal(syncSpaceId: string, now = Date.now()): void {
+    const binding = this.runtime.findBindingBySpace(syncSpaceId)
+    if (!binding || binding.lifecycleState !== 'ACTIVE' || !this.genesisSnapshotService) return
+    if (!claimSyncMaintenance(this.runtime.databaseHandle(), { space: `local:${syncSpaceId}`, now })) return
+    const roots = new Set(this.runtime.databaseHandle().prepare('SELECT target_snapshot_bundle_id FROM sync_recovery_capsule').all().map(row => String(row.target_snapshot_bundle_id)))
+    const baseline = this.runtime.findLatestExportableSnapshotBundle(syncSpaceId, 'GC_BASELINE')
+    if (baseline) roots.add(baseline.snapshotBundleId)
+    this.genesisSnapshotService.pagedSnapshotStore.lifecycle.collect({ now, protected: roots })
+    const checkpoint = [...this.runtime.listAuthObjects(syncSpaceId)].reverse().find(row => row.objectType === 'AUTH_STABILITY_CHECKPOINT')
+    if (!baseline || baseline.authStabilityCheckpointId !== checkpoint?.authObjectId) return
+    if (!this.stableGcCoordinator || !this.snapshotInstaller) throw new Error('LOCAL_MAINTENANCE_UNAVAILABLE: stable baseline needs configured verifier and compactor')
+    const store = this.genesisSnapshotService.pagedSnapshotStore
+    const manifest = store.find(baseline.snapshotBundleId)
+    if (manifest) this.snapshotInstaller.verifyPaged({ manifest: JSON.parse(manifest.manifestJson), store })
+    this.stableGcCoordinator.compact(baseline.snapshotBundleId, now)
+  }
+
+  /** LAN 传输设备必须同时具有本地信任和当前 AUTH 授权，历史公钥不能代替授权。 */
+  /** 持久 STARTED/BASELINE_READY 是恢复 authority，普通会话不能换掉未完成清单。 */
+  private resumePagedInstall(syncSpaceId: string, accountId: number | undefined, now: number): void {
+    const row = this.runtime.databaseHandle().prepare(`SELECT target_snapshot_bundle_id FROM sync_recovery_capsule
+      WHERE sync_space_id=? AND capsule_id LIKE 'paged-install:%'
+      AND reason IN ('SNAPSHOT_INSTALL_STARTED','SNAPSHOT_BASELINE_READY') ORDER BY created_at DESC LIMIT 1`).get(syncSpaceId)
+    if (!row) return
+    if (!this.genesisSnapshotService || !this.snapshotInstaller) throw new Error('REBASE_UNSAFE: unfinished paged installer is unavailable')
+    const localAccountId = accountId ?? this.runtime.findBindingBySpace(syncSpaceId)?.localAccountId
+    if (localAccountId == null) throw new Error('REBASE_UNSAFE: unfinished paged install has no account')
+    const store = this.genesisSnapshotService.pagedSnapshotStore
+    const saved = store.find(String(row.target_snapshot_bundle_id))
+    if (!saved || saved.state !== 'VERIFIED') throw new Error('REBASE_UNSAFE: unfinished paged Snapshot missing')
+    this.snapshotInstaller.installPaged({ localAccountId, manifest: JSON.parse(saved.manifestJson), store, now })
+  }
+
+  private requireActiveTransportPeer(space: string, deviceId: string): void {
+    const peer = this.state.findPeer(space, deviceId)
+    if (!peer || peer.status !== 'ACTIVE' ||
+      this.state.findTrustedDevice(space, deviceId)?.trustState !== 'TRUSTED' ||
+      !computeActiveGrant(this.runtime.listAuthObjects(space), deviceId)) {
+      throw new Error('AUTH_REVOKED: LAN transport peer is not an authorized member')
+    }
+  }
+
   private async runInternal(syncSpaceId: string, session: SyncEndpointSession, options: SyncSessionRunOptions): Promise<SyncSessionRunResult> {
+    let snapshotConsumption: SyncPagedSessionSnapshots | null = null
+    try {
     const now = options.now ?? Date.now()
     const report = async (progress: SyncSessionProgress): Promise<void> => {
       try {
@@ -124,6 +182,9 @@ export class SyncSessionCoordinator {
     }
     let maxOperations = options.maxOperations ?? 500
     const maxBatches = options.maxBatches ?? 20
+    let moreWork = false
+    const lazyUploads = new Map<string, SyncOperationEnvelope>()
+    const lazyDownloads = new Map<string, SyncOperationEnvelope>()
     if (!Number.isSafeInteger(maxOperations) || maxOperations <= 0 || !Number.isSafeInteger(maxBatches) || maxBatches <= 0) throw new Error('Invalid sync batch limit')
 
     await report({ stage: 'NEGOTIATING' })
@@ -139,11 +200,19 @@ export class SyncSessionCoordinator {
     if (!negotiation.remoteDeviceId || negotiation.remoteDeviceId === localDevice.deviceId) {
       throw new Error('Sync session negotiated an invalid remote device identity')
     }
+    const pagedLan = negotiation.capabilities.syncCompatibilityVersion != null
+    if (pagedLan) {
+      requireSyncCompatibility(negotiation.capabilities.syncCompatibilityVersion)
+      if (negotiation.capabilities.pagedSnapshots !== true) throw new Error('SNAPSHOT_INCOMPATIBLE: LAN requires paged Snapshot support')
+      this.requireActiveTransportPeer(syncSpaceId, negotiation.remoteDeviceId)
+    }
     if (options.endpointId?.startsWith('lan:')) {
+      requireSyncCompatibility(negotiation.capabilities.syncCompatibilityVersion)
       const expectedRemoteDeviceId = options.endpointId.slice('lan:'.length)
       if (negotiation.remoteDeviceId !== expectedRemoteDeviceId) {
         throw new Error('LAN endpoint identity does not match the negotiated remote device')
       }
+      this.requireActiveTransportPeer(syncSpaceId, negotiation.remoteDeviceId)
     }
 
     if (!negotiation.capabilities.protocolVersions.includes(1)) throw new Error('Unsupported sync protocol')
@@ -163,16 +232,20 @@ export class SyncSessionCoordinator {
       if (session.getAuthLedger && session.pushAuthObjects) {
         const auth = new DesktopAuthLedgerService(this.runtime, this.state, this.apply)
         auth.append(syncSpaceId, (await session.getAuthLedger()).objects, now)
+        if (options.endpointId?.startsWith('lan:')) this.requireActiveTransportPeer(syncSpaceId, negotiation.remoteDeviceId)
         const local = this.runtime.listAuthObjects(syncSpaceId)
         if (!local.length) throw new Error('AUTH_FAILED: confirmed Space root and device grant are required')
         auth.append(syncSpaceId, (await session.pushAuthObjects(local)).objects, now)
+        if (options.endpointId?.startsWith('lan:')) this.requireActiveTransportPeer(syncSpaceId, negotiation.remoteDeviceId)
       }
     }
     await exchangeAuth()
+    // 恢复原不可变 baseline 后才允许普通 apply，防止覆盖尚未完成的跨库安装。
+    if (pagedLan) this.resumePagedInstall(syncSpaceId, options.localAccountId, now)
 
     const preflightAppliedOperationIds: string[] = []
     const preflightDeferredOperationIds: string[] = []
-    while (true) {
+    for (let batch = 0; batch < maxBatches; batch++) {
       const applied = this.apply.applyPending(syncSpaceId, maxOperations, now, localPolicy)
       preflightAppliedOperationIds.push(...applied.appliedOperationIds)
       preflightDeferredOperationIds.push(...applied.deferredOperationIds)
@@ -225,7 +298,7 @@ export class SyncSessionCoordinator {
     })
     await reportStage('PREPARING')
 
-    const uploadReferencedBlobs = async (operations: readonly SyncOperationEnvelope[]): Promise<void> => {
+    const uploadReferencedBlobsNow = async (operations: readonly SyncOperationEnvelope[]): Promise<void> => {
       const transferred = new Set<string>()
       for (const operation of operations) {
         if (!laneIsEnabled(remoteState.policyByLane, operation.replicationLaneId)) continue
@@ -238,6 +311,14 @@ export class SyncSessionCoordinator {
           const path = verifiedBlobPath(reference.manifest.hash)
           if (!path) {
             throw new Error('Local operation references an unavailable Blob')
+          }
+          if (negotiation.capabilities.blobUploadReservations) {
+            if (!session.reserveBlobUpload) throw new Error('Blob reservation transport is not configured')
+            await session.reserveBlobUpload({ manifest: reference.manifest, references: [{
+              replicationLaneId: operation.replicationLaneId, ownerEntityType: operation.entityType,
+              ownerEntitySyncId: operation.entitySyncId, ownerEntityGeneration: operation.entityGeneration,
+              referenceKind: reference.referenceKind, hash: reference.manifest.hash
+            }] })
           }
           await this.blobTransfer.uploadFile(
             syncSpaceId,
@@ -254,7 +335,7 @@ export class SyncSessionCoordinator {
       }
     }
 
-    const fetchReferencedBlobs = async (operations: readonly SyncOperationEnvelope[]): Promise<void> => {
+    const fetchReferencedBlobsNow = async (operations: readonly SyncOperationEnvelope[]): Promise<void> => {
       const transferred = new Set<string>()
       for (const operation of operations) {
         if (!laneIsEnabled(remoteState.policyByLane, operation.replicationLaneId)) continue
@@ -330,6 +411,26 @@ export class SyncSessionCoordinator {
       }
     }
 
+    // 能独立应用的附件延后；必须参与业务校验的 Blob 仍在 Apply 前取得。
+    const uploadReferencedBlobs = async (operations: readonly SyncOperationEnvelope[]): Promise<void> => {
+      const required: SyncOperationEnvelope[] = []
+      for (const operation of operations) {
+        const refs = syncPayloadBlobRefs(operation.payloadJson)
+        if (refs.length && refs.every(ref => this.businessApplier?.canApplyWithoutBlob(operation.entityType, ref.referenceKind))) lazyUploads.set(operation.operationId, operation)
+        else required.push(operation)
+      }
+      await uploadReferencedBlobsNow(required)
+    }
+    const fetchReferencedBlobs = async (operations: readonly SyncOperationEnvelope[]): Promise<void> => {
+      const required: SyncOperationEnvelope[] = []
+      for (const operation of operations) {
+        const refs = syncPayloadBlobRefs(operation.payloadJson)
+        if (refs.length && refs.every(ref => this.businessApplier?.canApplyWithoutBlob(operation.entityType, ref.referenceKind))) lazyDownloads.set(operation.operationId, operation)
+        else required.push(operation)
+      }
+      await fetchReferencedBlobsNow(required)
+    }
+
     const fetchPendingReferencedBlobs = async (): Promise<void> => {
       const pending = this.state.listPendingInbox(syncSpaceId, maxOperations,
         Object.keys(remoteState.policyByLane).filter((lane) => !laneIsEnabled(remoteState.policyByLane, lane)))
@@ -348,7 +449,7 @@ export class SyncSessionCoordinator {
     }
 
     const fetchSnapshotBlobs = async (
-      snapshot: SyncSnapshotBundleWire,
+      snapshot: { shards: Iterable<SnapshotBlobIndex> },
       selectedLanes: ReadonlySet<string>
     ): Promise<void> => {
       const transferred = new Set<string>()
@@ -598,7 +699,7 @@ export class SyncSessionCoordinator {
     }
 
     const uploadSnapshotBlobs = async (
-      snapshot: SyncSnapshotBundleWire,
+      snapshot: { shards: Iterable<SnapshotBlobIndex> },
       selectedLanes: ReadonlySet<string>
     ): Promise<void> => {
       const transferred = new Set<string>()
@@ -646,6 +747,11 @@ export class SyncSessionCoordinator {
           const owners = references.filter((reference) => reference.hash === manifest.hash)
           if (!owners.length) continue
 
+          if (negotiation.capabilities.blobUploadReservations) {
+            if (!session.reserveBlobUpload) throw new Error('Blob reservation transport is not configured')
+            await session.reserveBlobUpload({ manifest, references: owners })
+          }
+
           const remoteStatus = negotiation.capabilities.blobTransfer && session.getBlobStatus
             ? await session.getBlobStatus(manifest.hash)
             : null
@@ -687,10 +793,29 @@ export class SyncSessionCoordinator {
       }
     }
 
+    const pagedLanes = new Set(knownReplicationLanes(negotiation.capabilities.replicationLanes)
+      .filter(lane => laneIsEnabled(remoteState.policyByLane, lane)))
+    if (pagedLan && (!this.genesisSnapshotService || !this.snapshotInstaller || !this.createPagedSnapshots)) {
+      throw new Error('SNAPSHOT_INCOMPATIBLE: formal paged LAN dependencies are unavailable')
+    }
+    const pagedSnapshots = pagedLan ? this.createPagedSnapshots!({ genesis: this.genesisSnapshotService!,
+      installer: this.snapshotInstaller!, session, now,
+      authorize: () => {
+        this.requireActiveTransportPeer(syncSpaceId, negotiation.remoteDeviceId)
+        const current = new SyncLocalLanePolicy(this.runtime.databaseHandle()).read(syncSpaceId)
+        if ([...pagedLanes].some(lane => !laneIsEnabled(current, lane) || !laneIsEnabled(remoteState.policyByLane, lane))) {
+          throw new Error('LANE_POLICY_BLOCKED: selected paged scope changed during transfer')
+        }
+      },
+      fetchBlobs: index => fetchSnapshotBlobs({ shards: [index] }, pagedLanes),
+      uploadBlobs: index => uploadSnapshotBlobs({ shards: [index] }, pagedLanes) }) : null
+    snapshotConsumption = pagedSnapshots
+
     const uploadPersistedSnapshotBlobs = async (
       snapshotBundleId: string,
       selectedLanes: ReadonlySet<SyncReplicationLane>
     ): Promise<void> => {
+      if (pagedSnapshots) return
       if (!this.genesisSnapshotService) throw new Error('Snapshot exporter is not configured')
       const manifest = this.genesisSnapshotService.exportStreamManifest(snapshotBundleId, selectedLanes)
       for (const descriptor of manifest.shardDescriptors) {
@@ -737,6 +862,7 @@ export class SyncSessionCoordinator {
       snapshotBundleId: string,
       selectedLanes: ReadonlySet<SyncReplicationLane>
     ): Promise<string> => {
+      if (pagedSnapshots) return pagedSnapshots.push(snapshotBundleId, selectedLanes)
       if (!this.genesisSnapshotService) throw new Error('Snapshot exporter is not configured')
       if (
         negotiation.capabilities.streamingSnapshots === true &&
@@ -859,6 +985,7 @@ export class SyncSessionCoordinator {
           await reportStage('SYNCING_BLOBS')
         } catch {
           // Metadata stays materialized; a later endpoint/session can recover the attachment.
+          diagnostics.push({ code: 'BLOB_TRANSFER_PENDING', message: 'Optional Blob remains pending; inspect its persisted transfer error', retryable: true, at: now })
         }
       }
     }
@@ -878,18 +1005,28 @@ export class SyncSessionCoordinator {
         const pendingBuild = this.runtime.listPendingOutbox(syncSpaceId, 1).length
         const pendingSign = this.runtime.listOperationsByStatus(syncSpaceId, 'AWAITING_SIGNATURE', 1).length
         if (!pendingBuild && !pendingSign) break
-        if (prepared >= maxBatches) throw new Error('Sync preparation batch budget exhausted; retry to continue')
+        if (prepared >= maxBatches) { moreWork = true; break }
         this.operationBuilder.buildPending(syncSpaceId, maxOperations, now)
         this.signer.signPending(syncSpaceId, maxOperations, now)
       }
       if (new DesktopAuthLedgerService(this.runtime, this.state, this.apply)
         .issueStabilityCheckpoint(syncSpaceId, this.signer, now)) await exchangeAuth()
+      // 固定已签名的 actor 上界；本轮之后的新写入留给下一次会话。
+      const pushTarget: SyncCoverage = {}
+      for (const row of this.runtime.databaseHandle().prepare(`SELECT replication_lane_id,actor_incarnation_id,MAX(sequence) AS sequence
+        FROM sync_operation_log WHERE sync_space_id=? AND build_status='SIGNED' GROUP BY replication_lane_id,actor_incarnation_id`).all(syncSpaceId)) {
+        const lane = String(row.replication_lane_id)
+        pushTarget[lane] ??= {}
+        pushTarget[lane]![String(row.actor_incarnation_id)] = Number(row.sequence)
+      }
       for (let batch = 0; ; batch++) {
         const records = this.runtime.listPushableOperations(syncSpaceId, received, maxOperations,
-          (operation) => laneIsEnabled(remoteState.policyByLane, operation.replicationLaneId) && !acknowledged.has(operation.operationId))
+          (operation) => laneIsEnabled(remoteState.policyByLane, operation.replicationLaneId) && !acknowledged.has(operation.operationId) &&
+            operation.sequence <= (pushTarget[operation.replicationLaneId]?.[operation.actorIncarnationId] ?? 0))
         if (!records.length) return
-        if (batch >= maxBatches) throw new Error('Sync push batch budget exhausted; retry to continue')
+        if (batch >= maxBatches) { moreWork = true; return }
         const envelopes = records.map((operation) => toSyncOperationEnvelope(operation))
+        envelopes.forEach(operation => requireExportableConfig(operation.entityType, JSON.parse(operation.payloadJson)))
         await uploadReferencedBlobs(envelopes)
         await reportStage('SYNCING_OPERATIONS')
         const result = await session.pushOperations(envelopes)
@@ -910,8 +1047,26 @@ export class SyncSessionCoordinator {
 
     const pushLocalRecoverySnapshot = async (
       localAccountId: number,
-      targetSnapshot?: SyncSnapshotBundleWire
+      targetSnapshot?: SyncSnapshotBundleWire | SyncPagedSnapshotManifest
     ): Promise<void> => {
+      if (pagedSnapshots) {
+        if (targetSnapshot && !('formatVersion' in targetSnapshot)) throw new Error('SNAPSHOT_INCOMPATIBLE: LAN recovery requires paged target')
+        await pagedSnapshots.recover({ localAccountId, syncSpaceId, lanes: pagedLanes, target: targetSnapshot,
+          pushOperations: pushMissing,
+          retained: async () => {
+            remoteState = await readRemoteState()
+            return filterCoverageByPolicy(remoteState.coverage.retained, remoteState.policyByLane)
+          },
+          accept: async (bundleId, coverage) => {
+            const acceptance = new DesktopAuthLedgerService(this.runtime, this.state, this.apply)
+              .issueStabilityCheckpoint(syncSpaceId, this.signer, now, bundleId, coverage)
+            if (!acceptance) throw new Error('REBASE_UNSAFE: current device is not OWNER for recovery acceptance')
+            await exchangeAuth()
+            return acceptance
+          } })
+        return
+      }
+      if (targetSnapshot && 'formatVersion' in targetSnapshot) throw new Error('SNAPSHOT_INCOMPATIBLE: non-LAN recovery requires legacy target')
       const canStreamSnapshotTransport =
         negotiation.capabilities.streamingSnapshots === true &&
         Boolean(session.pushSnapshotStreamManifest) &&
@@ -1028,7 +1183,7 @@ export class SyncSessionCoordinator {
     }
 
     const drainApplied = (): void => {
-      while (true) {
+      for (let batch = 0; batch < maxBatches; batch++) {
         const applied = this.apply.applyPending(syncSpaceId, maxOperations, now, remoteState.policyByLane)
         appliedOperationIds.push(...applied.appliedOperationIds)
         deferredOperationIds.push(...applied.deferredOperationIds)
@@ -1048,11 +1203,24 @@ export class SyncSessionCoordinator {
       ? readSnapshotInstallReady(this.runtime.databaseHandle(), syncSpaceId)?.snapshotBundleId ?? null : null
     let currentCursor: SyncCursor | null = options.endpointId ? this.state.readCursor(options.endpointId, syncSpaceId) : null
 
+    // 零前缀 Genesis 也含有真实已有库，首次会话必须检查 Genesis 观察并合并双方固定视图。
+    if (pagedSnapshots && options.localAccountId != null) {
+      const initial = await pagedSnapshots.latest(pagedLanes)
+      if (initial && pagedSnapshots.hasUnobservedGenesis(initial, this.runtime.observedGenesisBaselinesByLane(syncSpaceId))) {
+        await reportStage('SYNCING_SNAPSHOT')
+        const merged = await pagedSnapshots.mergeLocal({ localAccountId: options.localAccountId, syncSpaceId, lanes: pagedLanes, target: initial })
+        stagedSnapshotBundleId = await pagedSnapshots.install(options.localAccountId, merged)
+        await pagedSnapshots.push(merged.snapshotBundleId, pagedLanes)
+        remoteState = await readRemoteState()
+      }
+    }
+
+    const pullTargetCoverage = remoteState.coverage.retained
     while (pullBatchCount < maxBatches) {
       pullBatchCount++
       const localCoverage = getLocalCoverage()
       const ranges = missingSyncRanges(
-        filterCoverageByPolicy(remoteState.coverage.retained, remoteState.policyByLane),
+        filterCoverageByPolicy(pullTargetCoverage, remoteState.policyByLane),
         localCoverage,
         maxOperations
       )
@@ -1096,7 +1264,16 @@ export class SyncSessionCoordinator {
               Boolean(session.getLatestSnapshotStreamManifest) &&
               Boolean(session.fetchSnapshotStreamShard)
 
-            if (canStreamSnapshots && session.getLatestSnapshotStreamManifest) {
+            if (pagedSnapshots) {
+              const target = await pagedSnapshots.latest(selectedLanes)
+              if (!target) await pushLocalRecoverySnapshot(options.localAccountId)
+              else {
+                await reportStage('SYNCING_SNAPSHOT')
+                const merged = await pagedSnapshots.mergeLocal({ localAccountId: options.localAccountId, syncSpaceId, lanes: selectedLanes, target })
+                stagedSnapshotBundleId = await pagedSnapshots.install(options.localAccountId, merged)
+                await pagedSnapshots.push(merged.snapshotBundleId, selectedLanes)
+              }
+            } else if (canStreamSnapshots && session.getLatestSnapshotStreamManifest) {
               const manifest =
                 await session.getLatestSnapshotStreamManifest({ class: 'GC_BASELINE', lanes })
                   ?? await session.getLatestSnapshotStreamManifest({ class: 'WORKING', lanes })
@@ -1251,9 +1428,9 @@ export class SyncSessionCoordinator {
       if (JSON.stringify(getLocalCoverage()) === JSON.stringify(localCoverage)) throw new Error('Sync pull made no coverage progress')
     }
 
-    if (missingSyncRanges(filterCoverageByPolicy(remoteState.coverage.retained, remoteState.policyByLane), getLocalCoverage(), 1).length) throw new Error('Sync pull batch budget exhausted; retry to continue')
+    if (missingSyncRanges(filterCoverageByPolicy(remoteState.coverage.retained, remoteState.policyByLane), getLocalCoverage(), 1).length) moreWork = true
     drainApplied()
-    if (stagedSnapshotBundleId) {
+    if (stagedSnapshotBundleId && !moreWork) {
       const pausedLanes = Object.keys(remoteState.policyByLane).filter((lane) => !laneIsEnabled(remoteState.policyByLane, lane))
       if (this.state.listPendingInbox(syncSpaceId, 1, pausedLanes).length) {
         throw new Error('REBASE_UNSAFE: Snapshot Tail still contains deferred operations')
@@ -1264,11 +1441,27 @@ export class SyncSessionCoordinator {
       this.snapshotInstaller.activateAfterTail(options.localAccountId, stagedSnapshotBundleId, now, pausedLanes)
     }
 
+    await uploadReferencedBlobsNow([...lazyUploads.values()])
+    await pagedSnapshots?.flushLazyBlobs()
+    await fetchReferencedBlobsNow([...lazyDownloads.values()])
+    drainApplied()
     await retryMissingAppliedBlobs()
     await reportStage('FINALIZING')
 
+    const maintenanceDue = !moreWork && options.automaticMaintenance === true && claimSyncMaintenance(this.runtime.databaseHandle(), { space: syncSpaceId, now })
+    const owner = this.runtime.findDeviceIdentity()?.deviceId
+    const canCreateBaseline = owner != null && this.runtime.findActiveGrant(syncSpaceId, owner)?.isOwner === true
+    let maintenanceStatus: 'UP_TO_DATE' | 'AUTH_STABILITY_PENDING' = 'UP_TO_DATE'
+    if (maintenanceDue && this.genesisSnapshotService) {
+      const protectedRoots = new Set(this.runtime.databaseHandle().prepare('SELECT target_snapshot_bundle_id FROM sync_recovery_capsule').all().map(row => String(row.target_snapshot_bundle_id)))
+      const activeSession = options.localAccountId == null ? null : this.runtime.findBinding(options.localAccountId)?.genesisSessionId
+      const session = activeSession ? this.runtime.findGenesisSession(activeSession) : null
+      if (session) protectedRoots.add(`snapshot:${session.genesisBaselineId}`)
+      this.genesisSnapshotService.pagedSnapshotStore.lifecycle.collect({ now, protected: protectedRoots })
+      if (!canCreateBaseline) maintenanceStatus = 'AUTH_STABILITY_PENDING'
+    }
     if (
-      options.allowStableGc === true &&
+      (options.allowStableGc === true || maintenanceDue && canCreateBaseline) &&
       options.localAccountId != null &&
       this.genesisSnapshotService &&
       this.stableGcCoordinator &&
@@ -1278,7 +1471,7 @@ export class SyncSessionCoordinator {
           laneIsEnabled(remoteState.policyByLane, lane)
       )
     ) {
-      const working = this.genesisSnapshotService.run(
+      const working = pagedSnapshots ? await this.genesisSnapshotService.runPagedAsync({ localAccountId: options.localAccountId, syncSpaceId, now }) : this.genesisSnapshotService.run(
         options.localAccountId,
         syncSpaceId,
         undefined,
@@ -1300,7 +1493,8 @@ export class SyncSessionCoordinator {
         )
         const coreLanes = new Set<SyncReplicationLane>(['CORE_META', 'LIBRARY', 'ARTICLE_STATE', 'CONFIG', 'AUTH'])
         if ([...selectedLanes].some((lane) => !coreLanes.has(lane))) {
-          const coreBaselineBundleId = this.genesisSnapshotService.promoteToGcBaselinePersisted(
+          const coreBaselineBundleId = pagedSnapshots ? this.genesisSnapshotService.promotePaged({ snapshotBundleId: working.snapshotBundleId,
+            selectedLanes: coreLanes, snapshotClass: 'GC_BASELINE', checkpointId, now }) : this.genesisSnapshotService.promoteToGcBaselinePersisted(
             working.snapshotBundleId,
             checkpointId,
             now,
@@ -1310,7 +1504,10 @@ export class SyncSessionCoordinator {
           await pushPersistedSnapshotUsingNegotiatedTransport(coreBaselineBundleId, coreLanes)
         }
         let gcBaselineBundleId: string | null = null
-        try {
+        if (pagedSnapshots) {
+          gcBaselineBundleId = this.genesisSnapshotService.promotePaged({ snapshotBundleId: working.snapshotBundleId,
+            selectedLanes, snapshotClass: 'GC_BASELINE', checkpointId, now })
+        } else try {
           gcBaselineBundleId = this.genesisSnapshotService.promoteToGcBaselinePersisted(
             working.snapshotBundleId,
             checkpointId,
@@ -1321,7 +1518,7 @@ export class SyncSessionCoordinator {
           gcBaselineBundleId = null
         }
         if (gcBaselineBundleId) {
-          // Server persistence is the durability fence; local compaction happens only after it.
+          // 已认证 Peer 的真实提交是传输持久化边界，完成后才压缩本地稳定历史。
           await uploadPersistedSnapshotBlobs(gcBaselineBundleId, selectedLanes)
           const publishedBundleId = await pushPersistedSnapshotUsingNegotiatedTransport(
             gcBaselineBundleId,
@@ -1342,6 +1539,8 @@ export class SyncSessionCoordinator {
     }
 
     return {
+      status: moreWork ? 'MORE_WORK' : 'COMPLETE',
+      maintenanceStatus,
       pushedOperationIds,
       pulledOperationIds,
       appliedOperationIds,
@@ -1352,6 +1551,9 @@ export class SyncSessionCoordinator {
       remoteCapabilities: negotiation.capabilities,
       blobBytesSent,
       blobBytesReceived
+    }
+    } finally {
+      snapshotConsumption?.close()
     }
   }
 }

@@ -3,6 +3,7 @@ import { canonicalJson, operationId, operationSigningDigest, sha256Hex } from '.
 import { syncPayloadBlobRefs } from './sync-blob-payload'
 import { DesktopSyncBlobStateService } from './sync-blob-state'
 import { SyncRuntimeRepository, type SyncActorRecord } from './sync-runtime-repository'
+import { requireExportableConfig } from './sync-config-export'
 
 export class SyncDotCollisionError extends Error {}
 export class SyncAuthNotGrantedError extends Error {
@@ -53,6 +54,7 @@ export class DesktopOperationBuilder {
   }
 
   buildOperation(outbox: SyncOutboxRecord, actor: SyncActorRecord, now: number): SyncOperationRecord {
+    requireExportableConfig(outbox.entityType, JSON.parse(outbox.payloadJson))
     const authObjects = this.runtime.listAuthObjects(outbox.syncSpaceId)
     const grant = this.runtime.findActiveGrant(outbox.syncSpaceId, actor.deviceId)
     // Production fails closed; an explicit false is reserved for isolated protocol fixtures.

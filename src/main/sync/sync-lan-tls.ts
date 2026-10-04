@@ -2,6 +2,7 @@ import { createPublicKey, randomBytes, verify as verifySignature, X509Certificat
 import { request as httpRequest } from 'node:http'
 import { Agent as HttpsAgent, request as httpsRequest } from 'node:https'
 import { Readable } from 'node:stream'
+import { SyncEndpointUrl } from './sync-endpoint-url'
 
 const CHALLENGE_NONCE = /^[A-Za-z0-9._~-]{16,128}$/
 const MAX_BOOTSTRAP_RESPONSE_BYTES = 64 * 1024
@@ -71,7 +72,7 @@ export class SyncLanPeerTlsClient {
     timeoutMs = 5_000,
     localAddress?: string
   ): Promise<SyncLanPeerTlsClient> {
-    const secureBase = new URL(secureBaseUrl)
+    const secureBase = new SyncEndpointUrl(secureBaseUrl)
     if (secureBase.protocol !== 'https:') throw new Error('LAN peer endpoint must use HTTPS')
     const securePort = Number(secureBase.port || 443)
     const bootstrapPort = securePort - 1
@@ -83,7 +84,7 @@ export class SyncLanPeerTlsClient {
     secureBase.hash = ''
 
     const nonce = randomNonce()
-    const bootstrapUrl = new URL('/v1/auth/challenge', secureBase)
+    const bootstrapUrl = new SyncEndpointUrl('/v1/auth/challenge', secureBase.toString().replace(/\/$/, ''))
     bootstrapUrl.protocol = 'http:'
     bootstrapUrl.port = String(bootstrapPort)
     const bootstrap = await requestBootstrapIdentity(
@@ -165,8 +166,9 @@ export class SyncLanPeerTlsClient {
   }
 
   fetch(pathOrUrl: string, init: RequestInit = {}): Promise<Response> {
-    const url = new URL(pathOrUrl, this.baseUrl)
-    if (url.protocol !== 'https:' || url.origin !== new URL(this.baseUrl).origin) {
+    const url = new SyncEndpointUrl(pathOrUrl, this.baseUrl)
+    const base = new SyncEndpointUrl(this.baseUrl)
+    if (url.protocol !== 'https:' || url.origin !== base.origin || url.zone !== base.zone) {
       throw new Error('LAN TLS transport cannot be redirected to a different endpoint')
     }
     return requestPinnedHttps(url, init, this.agent, this.localAddress)
@@ -178,7 +180,7 @@ export class SyncLanPeerTlsClient {
 }
 
 /** HTTPS fetch-compatible adapter that keeps response bodies streamed for blob/range transfers. */
-function requestPinnedHttps(url: URL, init: RequestInit, agent: HttpsAgent, localAddress?: string): Promise<Response> {
+function requestPinnedHttps(url: SyncEndpointUrl, init: RequestInit, agent: HttpsAgent, localAddress?: string): Promise<Response> {
   if (init.redirect && init.redirect !== 'error') {
     throw new Error('LAN TLS transport does not follow redirects')
   }
@@ -187,9 +189,12 @@ function requestPinnedHttps(url: URL, init: RequestInit, agent: HttpsAgent, loca
   }
 
   return new Promise((resolve, reject) => {
+    let responseBody: import('node:http').IncomingMessage | null = null
     const method = (init.method ?? 'GET').toUpperCase()
     const headers = new Headers(init.headers)
-    const request = httpsRequest(url, { method, headers: Object.fromEntries(headers.entries()), agent, localAddress }, (incoming) => {
+    const request = httpsRequest({ hostname: url.socketHostname, port: url.port || 443, path: url.pathname + url.search,
+      method, headers: Object.fromEntries(headers.entries()), agent, localAddress }, (incoming) => {
+      responseBody = incoming
       const responseHeaders = new Headers()
       for (let index = 0; index < incoming.rawHeaders.length; index += 2) {
         const name = incoming.rawHeaders[index]
@@ -210,7 +215,9 @@ function requestPinnedHttps(url: URL, init: RequestInit, agent: HttpsAgent, loca
 
     const signal = init.signal
     const onAbort = (): void => {
-      request.destroy(new Error('LAN HTTPS request was aborted'))
+      const error = new Error('LAN HTTPS request was aborted')
+      responseBody?.destroy(error)
+      request.destroy(error)
     }
     if (signal?.aborted) {
       onAbort()
@@ -218,7 +225,10 @@ function requestPinnedHttps(url: URL, init: RequestInit, agent: HttpsAgent, loca
     }
     signal?.addEventListener('abort', onAbort, { once: true })
     request.once('error', reject)
-    request.once('close', () => signal?.removeEventListener('abort', onAbort))
+    request.once('close', () => {
+      if (!responseBody) signal?.removeEventListener('abort', onAbort)
+    })
+    request.once('response', (incoming) => incoming.once('close', () => signal?.removeEventListener('abort', onAbort)))
 
     const body = init.body
     if (body == null) {
@@ -236,13 +246,16 @@ function requestPinnedHttps(url: URL, init: RequestInit, agent: HttpsAgent, loca
 }
 
 function requestBootstrapIdentity(
-  url: URL,
+  url: SyncEndpointUrl,
   body: string,
   timeoutMs: number,
   localAddress?: string
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const request = httpRequest(url, {
+    const request = httpRequest({
+      hostname: url.socketHostname,
+      port: url.port || 80,
+      path: url.pathname + url.search,
       method: 'POST',
       localAddress,
       headers: {

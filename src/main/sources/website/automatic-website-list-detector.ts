@@ -8,6 +8,7 @@ import { AutomaticArticleDateExtractor } from './automatic-article-date-extracto
 import { scoreAutomaticWebsiteRegion } from './automatic-website-region-scorer'
 import { ConfigurableWebsiteParser } from './configurable-website-parser'
 import { rankingScore, scoreWebsiteCandidate } from './website-candidate-scorer'
+import { AUTOMATIC_WEBSITE_RULE_ID_PREFIX } from './website-rule-identity'
 import {
   ancestorElements,
   classNames,
@@ -21,7 +22,7 @@ import {
   unsignedHex
 } from './website-dom'
 
-export const AUTOMATIC_WEBSITE_RULE_ID_PREFIX = 'auto-dom:'
+export { AUTOMATIC_WEBSITE_RULE_ID_PREFIX } from './website-rule-identity'
 export const AUTOMATIC_WEBSITE_RULE_VERSION = 7
 
 const MIN_REPEATED_ITEMS = 3

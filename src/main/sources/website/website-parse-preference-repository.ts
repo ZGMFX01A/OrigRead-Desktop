@@ -1,6 +1,6 @@
 import type { WebsiteParseCandidate, WebsiteRule } from '../../../shared/website'
-import { readUtf8FileOrNull, writeUtf8FileAtomic } from '../../utils/atomic-utf8-file'
-import { AUTOMATIC_WEBSITE_RULE_ID_PREFIX } from './automatic-website-list-detector'
+import { configDocument, type ConfigDocument } from '../config-document'
+import { AUTOMATIC_WEBSITE_RULE_ID_PREFIX } from './website-rule-identity'
 import { FULL_SCAN_REUSE_INTERVAL } from './automatic-rule-stability-scorer'
 
 export interface AutomaticRuleHistoryEntry {
@@ -41,7 +41,10 @@ const MAX_HISTORY_COUNTER = 10_000
 const MAX_CONSECUTIVE_MISSES = 20
 
 export class WebsiteParsePreferenceRepository {
-  constructor(private readonly preferenceFile: string) {}
+  private readonly document: ConfigDocument
+
+  /** 生产传入 SQLite 文档，文件参数仅用于独立导入/规则工具。 */
+  constructor(input: string | ConfigDocument) { this.document = configDocument(input) }
 
   get(feedId: string): WebsiteParsePreference | null {
     return this.load().find((item) => item.feedId === feedId) ?? null
@@ -190,7 +193,7 @@ export class WebsiteParsePreferenceRepository {
   }
 
   private load(): WebsiteParsePreference[] {
-    const content = readUtf8FileOrNull(this.preferenceFile)
+    const content = this.document.read()
     return content == null ? [] : this.decode(content).items
   }
 
@@ -201,8 +204,7 @@ export class WebsiteParsePreferenceRepository {
   }
 
   private write(items: WebsiteParsePreference[]): void {
-    writeUtf8FileAtomic(
-      this.preferenceFile,
+    this.document.write(
       JSON.stringify({ items: items.sort((a, b) => a.feedId.localeCompare(b.feedId)) }, null, 2)
     )
   }

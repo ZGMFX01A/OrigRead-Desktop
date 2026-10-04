@@ -43,7 +43,10 @@ export function SyncSettingsPanel({ onStatusChange }: SyncSettingsPanelProps): R
     void refreshAll()
 
     // 监听局域网配对事件
+    let receivedPairingEvent = false
+    let disposed = false
     const unsubscribePairing = window.origread.onSyncPairingUpdated((session: any) => {
+      receivedPairingEvent = true
       setActiveSession(session)
       if (session.status === 'CANCELLED' && session.cancellationOrigin === 'PEER') {
         setNotice({ type: 'info', message: session.failureMessage ?? '对端已取消配对' })
@@ -55,7 +58,18 @@ export function SyncSettingsPanel({ onStatusChange }: SyncSettingsPanelProps): R
       }
     })
 
+    // 先订阅，再读取当前请求；新事件优先，防止迟到的状态查询覆盖用户确认结果。
+    void window.origread.listSyncPairingSessions().then((sessions) => {
+      if (disposed || receivedPairingEvent) return
+      setActiveSession(sessions.filter((session) => session && session.expiresAt > Date.now() &&
+        (session.status === 'WAITING_CONFIRMATION' || session.status === 'WAITING_PEER')).at(-1) ?? null)
+    }).catch((error) => {
+      // 状态读取失败向用户暴露，不能假装没有收到配对请求。
+      if (!disposed) setNotice({ type: 'error', message: error.message })
+    })
+
     return () => {
+      disposed = true
       unsubscribePairing()
     }
   }, [])
@@ -469,7 +483,7 @@ export function SyncSettingsPanel({ onStatusChange }: SyncSettingsPanelProps): R
                   <span style={{ color: 'var(--color-text-secondary, #888)' }}>{new Date(run.startedAt).toLocaleString()}</span>
                 </div>
                 <div style={{ marginTop: '4px', color: 'var(--color-text-secondary, #666)' }}>
-                  阶段 {run.stage} · 重试 {run.retryAttempt}
+                  阶段 {run.stage === 'MORE_WORK' ? '本轮已完成，仍有内容待同步' : run.stage === 'AUTH_STABILITY_PENDING' ? '等待 OWNER 确认稳定历史' : run.stage} · 重试 {run.retryAttempt}
                 </div>
                 <div style={{ marginTop: '2px' }}>
                   操作 ↑{run.pushedOperations} ↓{run.pulledOperations} · 应用 {run.appliedOperations} · 拒绝 {run.rejectedOperations}

@@ -9,6 +9,9 @@ export function canonicalJson(value: string): string {
   return stableStringify(JSON.parse(value) as unknown)
 }
 
+/** 已解码的 JSON 值直接规范编码，避免再建立一份 stringify/parse 的大对象副本。 */
+export function canonicalJsonValue(value: unknown): string { return stableStringify(value) }
+
 export function operationSigningDigest(operation: SyncOperationRecord): string {
   return sha256Hex(operationSigningMaterial(operation))
 }

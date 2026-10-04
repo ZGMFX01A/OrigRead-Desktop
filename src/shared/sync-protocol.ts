@@ -1,8 +1,11 @@
 import type { SyncOperationRecord, SyncReplicationLane, SyncSnapshotClass } from './sync-runtime'
+import type { SyncPagedSnapshotManifest, SyncSnapshotBytePage, SyncSnapshotPageStatus } from './sync-paged-snapshot'
 
 /** Wire contract shared by LAN peers, the Durable Sync Peer and both client platforms. */
 export const SYNC_PROTOCOL_VERSION = 1 as const
 export const SYNC_PROTOCOL_ID = 'origread-sync-v1'
+/** LAN 兼容号独立于应用展示版本及历史日志版本，不兼容的双端协议变更共同递增。 */
+export const SYNC_COMPATIBILITY_VERSION = 3 as const
 
 export type SyncProtocolVersion = typeof SYNC_PROTOCOL_VERSION
 
@@ -58,6 +61,7 @@ export interface SyncOperationEnvelope {
 }
 
 export interface SyncPeerCapabilities {
+  syncCompatibilityVersion?: number
   protocolVersions: number[]
   replicationLanes: string[]
   snapshotClasses: SyncSnapshotClass[]
@@ -66,8 +70,12 @@ export interface SyncPeerCapabilities {
   maxBlobChunkBytes: number
   supportsRangeResume: boolean
   streamingSnapshots?: boolean
+  pagedSnapshots?: boolean
+  /** 202 受理、固定代次轮询及真实执行器退出的提交契约。 */
+  snapshotCommitJobsV1?: boolean
   blobRangeRequests?: boolean
   authStabilityCheckpoints?: boolean
+  blobUploadReservations?: boolean
 }
 
 export interface SyncDiscoveredPeer {
@@ -239,6 +247,14 @@ export interface SyncBlobStatus {
   persistedAt?: number | null
 }
 
+export interface SyncBlobUploadReservation {
+  manifest: SyncBlobManifest
+  references: Array<{
+    replicationLaneId: string; ownerEntityType: string; ownerEntitySyncId: string
+    ownerEntityGeneration: number; referenceKind: string; hash: string
+  }>
+}
+
 export interface SyncBlobManifest {
   hash: string
   totalBytes: number
@@ -270,6 +286,9 @@ export interface SyncBlobPersistedAck {
   replicaId: string
   totalBytes: number
   persistedAt: number
+  /** 回执仅描述当前存储代次持有，不自动授权源端释放保管责任。 */
+  storageGeneration?: string | null
+  custodyState?: 'HOLDING' | null
 }
 
 export interface SyncCursor {
@@ -290,8 +309,10 @@ export type SyncDiagnosticCode =
   | 'INVALID_OPERATION'
   | 'AUTH_REVOKED'
   | 'SNAPSHOT_INCOMPATIBLE'
+  | 'SYNC_VERSION_MISMATCH'
   | 'BASELINE_REQUIRED'
   | 'BLOB_MISSING'
+  | 'BLOB_TRANSFER_PENDING'
 
 export interface SyncDiagnostic {
   code: SyncDiagnosticCode
@@ -315,8 +336,15 @@ export interface SyncEndpointSession {
   pushSnapshotStreamManifest?(manifest: SyncSnapshotStreamManifestWire): Promise<void>
   pushSnapshotStreamShard?(snapshotBundleId: string, shard: SyncSnapshotShardWire): Promise<void>
   commitSnapshotStream?(snapshotBundleId: string): Promise<void>
+  getLatestPagedSnapshot?(requirement?: { class?: SyncSnapshotClass; lanes?: string[] }): Promise<SyncPagedSnapshotManifest | null>
+  fetchSnapshotPage?(input: { snapshotBundleId: string; lane: string; pageIndex: number }): Promise<SyncSnapshotBytePage>
+  pushPagedSnapshotManifest?(manifest: SyncPagedSnapshotManifest): Promise<void>
+  pushSnapshotPage?(input: { snapshotBundleId: string; page: SyncSnapshotBytePage }): Promise<void>
+  commitPagedSnapshot?(snapshotBundleId: string): Promise<void>
+  getSnapshotPageStatus?(snapshotBundleId: string): Promise<SyncSnapshotPageStatus>
   acceptRecoverySnapshot?(snapshotBundleId: string, acceptance: SyncAuthProtocolObject): Promise<void>
   getBlobStatus?(hash: string): Promise<SyncBlobStatus | null>
+  reserveBlobUpload?(reservation: SyncBlobUploadReservation): Promise<void>
   fetchBlob(hash: string, range?: { offset: number; length?: number }): Promise<SyncBlobChunk>
   pushBlob?(chunk: SyncBlobChunk): Promise<SyncBlobPersistedAck | null>
   acknowledgeReceived(received: SyncCoverage, rejectedDigests?: string[]): Promise<void>

@@ -66,8 +66,8 @@ export class DesktopSyncRunHistory {
     return updated
   }
 
-  succeed(record: SyncRunHistoryRecord): SyncRunHistoryRecord {
-    const updated = { ...record, stage: 'COMPLETED', status: 'SUCCEEDED' as const, finishedAt: Date.now(), errorCode: null, errorMessage: null }
+  succeed(record: SyncRunHistoryRecord, stage = 'COMPLETED'): SyncRunHistoryRecord {
+    const updated = { ...record, stage, status: 'SUCCEEDED' as const, finishedAt: Date.now(), errorCode: null, errorMessage: null }
     this.upsert(updated)
     this.prune(500)
     return updated

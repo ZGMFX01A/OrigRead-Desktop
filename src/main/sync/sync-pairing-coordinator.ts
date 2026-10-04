@@ -142,6 +142,8 @@ export class DesktopPairingCoordinator {
       isPeerConfirmed: session.remoteConfirmed,
       targetHost: session.remoteEndpoint?.host ?? null,
       targetPort: session.remoteEndpoint?.port ?? null,
+      failureMessage: session.failureMessage,
+      cancellationOrigin: session.cancellationOrigin,
 
       // 兼容别名
       remoteDeviceId: session.remoteDeviceId,
@@ -377,7 +379,7 @@ export class DesktopPairingCoordinator {
         return { sessionId: session.sessionId, status: 'CONFIRMED', signature, timestamp: responseTimestamp }
       } catch (error) {
         const latest = this.sessions.get(session.sessionId)
-        if (latest && latest.status !== 'REJECTED' && latest.status !== 'EXPIRED' && latest.status !== 'CANCELLED' && latest.expiresAt > Date.now()) {
+        if (latest && latest.status !== 'CONFIRMED' && latest.status !== 'REJECTED' && latest.status !== 'EXPIRED' && latest.status !== 'CANCELLED' && latest.expiresAt > Date.now()) {
           latest.remoteConfirmed = true
           latest.status = 'WAITING_PEER'
           latest.failureMessage = error instanceof Error ? error.message : String(error)
@@ -665,6 +667,8 @@ export class DesktopPairingCoordinator {
         )
       } catch (error) {
         const current = this.sessions.get(session.sessionId)
+        // 对端回调可能已经完成提交，迟到的出站失败不能污染已确认的终态。
+        if (current?.status === 'CONFIRMED') return current
         if (current && current.status !== 'CANCELLED' && current.status !== 'REJECTED' && current.status !== 'EXPIRED') {
           current.failureMessage = error instanceof Error ? error.message : String(error)
           this.notify(current)
@@ -676,6 +680,7 @@ export class DesktopPairingCoordinator {
         let message = `Pairing confirmation failed: HTTP ${result.status}`
         try { message = (JSON.parse(responseBody) as { message?: string }).message ?? message } catch { /* retain HTTP error */ }
         const current = this.sessions.get(session.sessionId)
+        if (current?.status === 'CONFIRMED') return current
         if (current && current.status !== 'CANCELLED' && current.status !== 'REJECTED' && current.status !== 'EXPIRED') {
           current.status = 'WAITING_PEER'
           current.failureMessage = message
@@ -693,6 +698,7 @@ export class DesktopPairingCoordinator {
           latest = await this.commitConfirmedSession(session.sessionId)
         } catch (error) {
           const current = this.sessions.get(session.sessionId)
+          if (current?.status === 'CONFIRMED') return current
           if (current && current.status !== 'CANCELLED' && current.status !== 'REJECTED' && current.status !== 'EXPIRED') {
             current.remoteConfirmed = true
             current.status = 'WAITING_PEER'

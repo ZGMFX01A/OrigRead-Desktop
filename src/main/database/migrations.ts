@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { migrateSnapshotPolicyScope } from './snapshot-policy-scope-migration'
 import {
   ORIGREAD_DESKTOP_RELEASE_FEED_ICON,
   ORIGREAD_DESKTOP_RELEASE_FEED_NAME,
@@ -6,7 +7,14 @@ import {
   ORIGREAD_DESKTOP_RELEASES_URL
 } from '../../shared/origread-release'
 
-export const CURRENT_SCHEMA_VERSION = 38
+import { migrateSyncIntegrity } from './sync-integrity-migration'
+import { migrateSnapshotContentIdentity } from './snapshot-content-identity-migration'
+import { migrateSyncDefaultGroup } from './sync-default-group-migration'
+import { migrateSnapshotAuthority } from './snapshot-authority-schema'
+import { PAGED_SNAPSHOT_STORE_SCHEMA } from './paged-snapshot-schema'
+
+/** v44 先补齐旧库的来源池，再增加字段/关系轻索引与来源证明。 */
+export const CURRENT_SCHEMA_VERSION = 44
 export const DEFAULT_LOCAL_ACCOUNT_ID = 1
 export const CURRENT_ACCOUNT_SETTING_KEY = 'account.current_id'
 
@@ -1286,7 +1294,16 @@ const migrations: Migration[] = [
       // Keep both histories intact and converge them with an additive migration.
       ensureRssHubDescriptorColumns(database)
     }
-  }
+  },
+  {
+    version: 39,
+    up: migrateSnapshotPolicyScope
+  },
+  { version: 40, up: migrateSyncIntegrity },
+  { version: 41, up: migrateSnapshotContentIdentity },
+  { version: 42, up: database => migrateSyncDefaultGroup(database, defaultGroupId) },
+  { version: 43, up: migrateSnapshotAuthority },
+  { version: 44, up: database => database.exec(PAGED_SNAPSHOT_STORE_SCHEMA) }
 ]
 
 export function applyMigrations(database: DatabaseSync): number {

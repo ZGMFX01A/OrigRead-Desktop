@@ -1,3 +1,4 @@
+import { frozenSnapshotDatabase } from '../../sync/sync-frozen-database-context'
 import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { canonicalRssHubLocation, type RssHubInstance, type RssHubSettings } from '../../../shared/rsshub'
@@ -15,7 +16,12 @@ interface RssHubRuntimeState {
 }
 
 export class RssHubSettingsRepository {
-  constructor(private readonly database: DatabaseSync) {}
+  /** 冻结转换只读取当前 cut 的副本，正常业务使用注入的数据库。 */
+  private readonly liveDatabase: DatabaseSync
+  private get database(): DatabaseSync { return frozenSnapshotDatabase(this.liveDatabase) }
+  constructor(database: DatabaseSync) {
+    this.liveDatabase = database
+}
 
   current(): RssHubSettings {
     const stored = this.readJson(SETTINGS_KEY)

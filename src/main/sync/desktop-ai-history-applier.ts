@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import { SyncSnapshotBodies } from './sync-snapshot-bodies'
+import type { SyncPagedSnapshotStore } from './sync-paged-snapshot-store'
+import type { SyncPagedSnapshotManifest } from '../../shared/sync-paged-snapshot'
 import type { DatabaseSync } from 'node:sqlite'
 import type { SyncEntityType, SyncIdentityMappingRecord } from '../../shared/sync-identity'
 import type { SyncOperationRecord } from '../../shared/sync-runtime'
@@ -30,6 +33,7 @@ const AI_ENTITY_TYPES = new Set<SyncEntityType>([
 export class DesktopAiHistoryApplier {
   private readonly identities: SyncIdentityRepository
   private readonly blobs: DesktopSyncBlobStateService
+  private readonly snapshotBodies: SyncSnapshotBodies
 
   constructor(
     private readonly database: DatabaseSync,
@@ -38,7 +42,14 @@ export class DesktopAiHistoryApplier {
   ) {
     this.identities = new SyncIdentityRepository(database)
     this.blobs = new DesktopSyncBlobStateService(database)
+    this.snapshotBodies = new SyncSnapshotBodies(database, localBlobs)
   }
+
+  /** metadata-first 安装只有真实正文验收通过才允许进入 READY。 */
+  requireSnapshotBodies(space: string, bundle: string): void { this.snapshotBodies.requireComplete(space, bundle) }
+
+  /** baseline 写入前预约真实正文缺口。 */
+  reserveSnapshotBodies(input: { manifest: SyncPagedSnapshotManifest; store: SyncPagedSnapshotStore }): void { this.snapshotBodies.reserve(input) }
 
   owns(entityType: string): boolean {
     return AI_ENTITY_TYPES.has(entityType as SyncEntityType)
@@ -59,33 +70,9 @@ export class DesktopAiHistoryApplier {
   ): void {
     this.localBlobs?.putVerified(hash, bytes)
     if (!isMetadataFirstAttachment(entityType, referenceKind)) return
-    if (!this.blobs.isCurrentReference(syncSpaceId, entityType, entitySyncId, entityGeneration, referenceKind, hash)) return
-    const mapping = this.identities.findBySyncId(syncSpaceId, entityType as SyncEntityType, entitySyncId)
-    if (!mapping || mapping.generation !== entityGeneration) return
-    const textValue = Buffer.from(bytes).toString('utf8')
-    switch (entityType) {
-      case 'context_ref':
-        if (referenceKind === 'context_snapshot') {
-          this.database.prepare('UPDATE llm_context_refs SET content_snapshot=? WHERE id=?')
-            .run(textValue, mapping.localId)
-        } else if (referenceKind === 'context_prompt_snapshot') {
-          this.database.prepare('UPDATE llm_context_refs SET prompt_content_snapshot=? WHERE id=?')
-            .run(textValue, mapping.localId)
-        }
-        break
-      case 'evidence_block':
-        if (referenceKind === 'evidence_text') {
-          this.database.prepare('UPDATE llm_evidence_blocks SET text_snapshot=? WHERE id=?')
-            .run(textValue, mapping.localId)
-        }
-        break
-      case 'citation_ref':
-        if (referenceKind === 'citation_quote') {
-          this.database.prepare('UPDATE llm_citation_refs SET quote_snapshot=? WHERE id=?')
-            .run(textValue, mapping.localId)
-        }
-        break
-    }
+    // 到达回调不直接更新正文：当前 winner、政策和代次必须在落库事务重新核对。
+    this.snapshotBodies.arrived({ space: syncSpaceId, type: entityType, id: entitySyncId,
+      generation: entityGeneration, kind: referenceKind, hash })
   }
 
   materializeSnapshotEntity(
@@ -506,7 +493,9 @@ export class DesktopAiHistoryApplier {
     const payload = JSON.parse(operation.payloadJson) as Record<string, unknown>
     const refs = syncPayloadBlobRefs(operation.payloadJson)
     for (const ref of refs) {
-      const bytes = this.localBlobs?.readVerified(ref.manifest.hash) ?? null
+      // 快照及尾部由独立义务阶段读文件，业务写事务仅保存 metadata 与引用。
+      const deferred = operation.operationId.startsWith('snapshot-materialize:') && isMetadataFirstAttachment(operation.entityType, ref.referenceKind)
+      const bytes = deferred ? null : this.localBlobs?.readVerified(ref.manifest.hash) ?? null
       this.blobs.registerManifest(ref.manifest, bytes ? 'READY' : 'BLOB_MISSING')
       this.blobs.replaceOwnerReference(
         operation.syncSpaceId,

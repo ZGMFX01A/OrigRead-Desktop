@@ -1,11 +1,13 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { LibraryRepository } from '../database/library-repository'
 import { randomUUID } from 'node:crypto'
+import { restoreGroupMappingGeneration } from './sync-default-group-recovery'
 import type { SyncOperationRecord } from '../../shared/sync-runtime'
 import type { SyncBlobManifest, SyncPayloadBlobRef } from '../../shared/sync-protocol'
 import { SyncIdentityRepository } from './sync-identity-repository'
 import { SyncStateRepository, type SyncFieldVersionRecord } from './sync-state-repository'
 import { parseOperationVersionToken, SyncVersionResolver, SyncVersionToken, type SyncFieldCandidate } from './sync-version-token'
+import { projectCurrentFeedConfig } from './sync-paged-feed-config'
 import { operationId, sha256Hex } from './sync-operation-canonicalizer'
 import { ArticleFilterRepository } from '../filter/article-filter-repository'
 import type { JsonRule } from '../../shared/json-source'
@@ -19,7 +21,7 @@ import {
 } from '../sources/website/website-parse-preference-repository'
 import { WebsiteRuleRepository } from '../sources/website/website-rule-repository'
 import { SyncApplyDeferredError } from './sync-apply-coordinator'
-import { articleCanonicalKey, configRuleSyncId, feedCanonicalKey } from './sync-canonical-identity'
+import { articleCandidateKey, configRuleSyncId, feedCandidateKey } from './sync-canonical-identity'
 import { DesktopSyncAliasResolver, type SyncAliasEdgePayloadV1 } from './sync-alias-protocol'
 import { DesktopAiHistoryApplier } from './desktop-ai-history-applier'
 import { DesktopSyncLocalEvictionService } from './sync-alias-protocol'
@@ -76,7 +78,9 @@ export class DesktopSyncBusinessApplier {
     feedGeneration: number | null,
     label: string
   ): string | null {
-    const feedMapping = this.identities.findBySyncId(syncSpaceId, 'feed', feedSyncId)
+    // 精确父代次先解析别名；不存在时保留本身份代次，用于等待未来或拒绝过期引用。
+    const direct = this.identities.findBySyncId(syncSpaceId, 'feed', feedSyncId)
+    const feedMapping = (feedGeneration == null ? null : this.aliases.resolveMapping(syncSpaceId, 'feed', feedSyncId, feedGeneration)) ?? direct
     if (!feedMapping) throw new SyncApplyDeferredError(label + ' is waiting for feed ' + feedSyncId)
 
     if (feedGeneration != null) {
@@ -932,13 +936,15 @@ export class DesktopSyncBusinessApplier {
       }
     }
 
-    if (raw.__syncAbsent === true) {
+    const projected = feedGeneration == null ? raw : projectCurrentFeedConfig({ database: this.database, state: this.state, space: operation.syncSpaceId,
+      type: entityType, parent: raw, members: this.aliases.componentMembers(operation.syncSpaceId, 'feed', feedSyncId, feedGeneration) })
+    if (projected.__syncAbsent === true) {
       this.websiteParsePreferences.applyUserSyncState(localFeedId, null)
     } else {
       const preference: WebsiteParsePreferenceUserSyncState = {
-        dynamicRenderingEnabled: raw.dynamicRenderingEnabled === true,
-        preferredRuleId: typeof raw.preferredRuleId === 'string' ? raw.preferredRuleId : null,
-        preferredRuleName: typeof raw.preferredRuleName === 'string' ? raw.preferredRuleName : null
+        dynamicRenderingEnabled: projected.dynamicRenderingEnabled === true,
+        preferredRuleId: typeof projected.preferredRuleId === 'string' ? projected.preferredRuleId : null,
+        preferredRuleName: typeof projected.preferredRuleName === 'string' ? projected.preferredRuleName : null
       }
       this.websiteParsePreferences.applyUserSyncState(localFeedId, preference)
     }
@@ -1080,10 +1086,14 @@ export class DesktopSyncBusinessApplier {
         this.identities.updateMappings([mapping])
       }
     }
-    if (isAbsent) {
+    const projected = feedGeneration == null ? raw : projectCurrentFeedConfig({ database: this.database, state: this.state, space: operation.syncSpaceId,
+      type: entityType, parent: raw, members: this.aliases.componentMembers(operation.syncSpaceId, 'feed', feedSyncId, feedGeneration) })
+    if (projected.__syncAbsent === true) {
       this.database.prepare('DELETE FROM rsshub_source_urls WHERE feed_id=?').run(localFeedId)
     } else {
-      new LibraryRepository(this.database).replaceRssHubSourceUrlFromSync(localFeedId, sourceUrl)
+      const projectedUrl = typeof projected.sourceUrl === 'string' ? projected.sourceUrl.trim() : ''
+      if (!projectedUrl) throw new SyncApplyDeferredError('Winning RSSHub source has no sourceUrl')
+      new LibraryRepository(this.database).replaceRssHubSourceUrlFromSync(localFeedId, projectedUrl)
     }
   }
 
@@ -1091,6 +1101,9 @@ export class DesktopSyncBusinessApplier {
     const binding = this.database.prepare('SELECT local_account_id FROM sync_local_space_binding WHERE sync_space_id=?')
       .get(operation.syncSpaceId) as { local_account_id: number } | undefined
     if (!binding) throw new SyncApplyDeferredError('Missing local Space binding')
+    const identity = this.identities.findBySyncId(operation.syncSpaceId, 'group', operation.entitySyncId)
+    // 旧代次更新不会重新覆盖已经复活的新代次；旧删除仍保留删除证据。
+    if (identity && identity.generation > operation.entityGeneration && operation.operationType !== 'GLOBAL_DELETE') return
 
     const tombstone = this.database.prepare('SELECT generation FROM sync_entity_tombstone WHERE sync_space_id=? AND entity_type=? AND entity_sync_id=?')
       .get(operation.syncSpaceId, 'group', operation.entitySyncId) as { generation: number } | undefined
@@ -1130,7 +1143,7 @@ export class DesktopSyncBusinessApplier {
 
     const mapping = this.aliases.resolveMapping(
       operation.syncSpaceId, 'group', operation.entitySyncId, operation.entityGeneration
-    )
+    ) ?? restoreGroupMappingGeneration(this.database, this.identities, { operation, accountId: binding.local_account_id })
     const group = mapping ? this.database.prepare('SELECT id,account_id FROM groups WHERE id=?').get(mapping.localId) as
       { id: string; account_id: number } | undefined : undefined
     if (group && group.account_id !== binding.local_account_id) throw new Error('Group belongs to another account')
@@ -1311,7 +1324,7 @@ export class DesktopSyncBusinessApplier {
           entityType: 'feed',
           localId,
           syncId: operation.entitySyncId,
-          canonicalKey: feedCanonicalKey(sourceType as 'rss' | 'website' | 'json', feedUrl),
+          canonicalKey: feedCandidateKey(sourceType as 'rss' | 'website' | 'json', feedUrl),
           generation: operation.entityGeneration,
           createdAt: now,
           updatedAt: now
@@ -1449,7 +1462,7 @@ export class DesktopSyncBusinessApplier {
           entityType: 'article',
           localId,
           syncId: operation.entitySyncId,
-          canonicalKey: articleCanonicalKey(feedMapping.canonicalKey, url),
+          canonicalKey: articleCandidateKey(feedMapping.canonicalKey, url),
           generation: operation.entityGeneration,
           createdAt: now,
           updatedAt: now
@@ -2237,6 +2250,16 @@ export class DesktopSyncBusinessApplier {
       }
     }
 
+    // 快照导入的 Genesis 与已 GC 稳定候选没有原日志，撤销仍须让完整保留历史参与裁决。
+    for (const retained of this.state.iterateEntityFieldCandidates({ syncSpaceId, entityType, entitySyncId, generation: current.entityGeneration })) {
+      if (retained.fieldId !== field || retained.sourceOperationId === revokedOperationId || candidates.some(candidate => candidate.versionToken === retained.versionToken)) continue
+      candidates.push({ versionToken: retained.versionToken, valueJson: retained.valueJson,
+        source: SyncVersionToken.source(retained.versionToken), logicalClock: retained.logicalClock ?? undefined,
+        causalContext: retained.causalContextJson ? decodeCausalCoverage(retained.causalContextJson) : undefined,
+        observedGenesisBaselinesByLane: retained.causalContextJson ? decodeObservedGenesis(retained.causalContextJson) : undefined })
+      if (retained.sourceOperationId) sourceOperationIds.set(retained.versionToken, retained.sourceOperationId)
+      sourceMetadata.set(retained.versionToken, { causalContextJson: retained.causalContextJson ?? null, logicalClock: retained.logicalClock ?? null })
+    }
     const policy = field === 'isUnread' ? 'READ_WINS' : field === 'isStarred' ? 'STARRED_WINS' : 'DETERMINISTIC'
 
     if (candidates.length > 0) {
@@ -2399,7 +2422,7 @@ export class DesktopSyncBusinessApplier {
       ).get(mapping.localId, binding.local_account_id) as { feed_id: string; url: string } | undefined
       if (article) {
         const feedMapping = this.identities.findByLocalId(syncSpaceId, 'feed', article.feed_id)
-        const canonicalKey = articleCanonicalKey(feedMapping?.canonicalKey, article.url)
+        const canonicalKey = articleCandidateKey(feedMapping?.canonicalKey, article.url)
         if (mapping.canonicalKey !== canonicalKey) {
           this.identities.updateMappings([{ ...mapping, canonicalKey, updatedAt: now }])
         }
@@ -2486,8 +2509,8 @@ export class DesktopSyncBusinessApplier {
         'SELECT source_type,url FROM feeds WHERE id=? AND account_id=? LIMIT 1'
       ).get(mapping.localId, binding.local_account_id) as { source_type: string; url: string } | undefined
       if (feed) {
-        const canonicalKey = feedCanonicalKey(
-          feed.source_type as Parameters<typeof feedCanonicalKey>[0],
+        const canonicalKey = feedCandidateKey(
+          feed.source_type as Parameters<typeof feedCandidateKey>[0],
           feed.url
         )
         if (mapping.canonicalKey !== canonicalKey) {

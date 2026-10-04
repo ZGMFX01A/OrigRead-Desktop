@@ -1,4 +1,22 @@
+import { frozenSnapshotDatabase } from './sync-frozen-database-context'
+import { withFrozenSnapshotDatabase } from './sync-frozen-database-context'
+import { SyncRawSnapshotFreeze } from './sync-raw-snapshot-freeze'
+import { captureOriginalOperation } from './sync-paged-operation-evidence'
+import type { SyncSnapshotSpaceOwner } from './sync-snapshot-space-owner'
 import { randomUUID, createHash } from 'node:crypto'
+import { snapshotTracePhase } from './sync-snapshot-trace'
+import { requireExportableConfig } from './sync-config-export'
+import { prepareGenesisArticleBlobs } from './sync-genesis-blob-preparation'
+import { buildFrozenSnapshotPages } from './sync-frozen-snapshot-pages'
+import { SyncKeyedWork } from './sync-keyed-work'
+import { statSync } from 'node:fs'
+import type { SyncPagedSnapshotCapture } from './sync-paged-snapshot-capture'
+import type { SyncPagedSnapshotStore } from './sync-paged-snapshot-store'
+import { PAGED_SNAPSHOT_FORMAT, type SyncPagedSnapshotManifest, type SyncSnapshotLanePages } from '../../shared/sync-paged-snapshot'
+import { pagedSnapshotRoot, pagedSnapshotSigningMaterial, reusePublishedPagedManifest } from './sync-paged-snapshot-wire'
+import { pagedPromotionId, promotePagedSnapshot } from './sync-paged-snapshot-promotion'
+import { mergePagedRecovery } from './sync-paged-recovery-merge'
+import type { SyncSnapshotPageWriter } from './sync-snapshot-page-writer'
 import type { DatabaseSync } from 'node:sqlite'
 import type {
   SyncGenesisSessionRecord,
@@ -28,6 +46,8 @@ import { canonicalJson } from './sync-operation-canonicalizer'
 import { DesktopSyncRuntimeCoordinator, type DesktopGenesisCut } from './sync-runtime-coordinator'
 import { SyncRuntimeRepository } from './sync-runtime-repository'
 import { SyncStateRepository } from './sync-state-repository'
+import { requireGenesisCutFrontiers } from './sync-genesis-cut-frontiers'
+import { captureGenesisFieldVersion, type GenesisFieldCaptureInput, type GenesisFieldVersionSnapshot } from './sync-genesis-field-capture'
 import {
   happensBefore,
   parseOperationVersionToken,
@@ -72,6 +92,7 @@ import {
   snapshotSigningMaterial
 } from './sync-snapshot-wire'
 
+/** Phase A 的完整领域集合，冻结 cut 与页清单必须使用相同覆盖范围。 */
 const PHASE_A_LANES: SyncReplicationLane[] = ['CORE_META', 'LIBRARY', 'ARTICLE_STATE', 'CONFIG', 'AI_HISTORY', 'AUTH']
 
 type Row = Record<string, unknown>
@@ -81,17 +102,6 @@ interface GenesisEntity {
   entitySyncId: string
   generation: number
   fields: Record<string, unknown>
-}
-
-interface GenesisFieldVersionSnapshot {
-  entityType: string
-  entitySyncId: string
-  entityGeneration: number
-  fieldId: string
-  valueJson: string
-  versionToken: string
-  causalContextJson: string | null
-  logicalClock: number | null
 }
 
 interface SnapshotTombstoneRow {
@@ -134,6 +144,29 @@ function snapshotEntityTypesForLane(lane: SyncReplicationLane): readonly SyncEnt
   }
 }
 
+/** 分页捕获器由组合层创建，共享主库和签名依赖，不在业务服务内硬编码实现。 */
+export interface PagedGenesisDependencies {
+  mergeRecovery?(input: { local: SyncPagedSnapshotManifest; target: SyncPagedSnapshotManifest; now: number },
+    sign: (device: string, material: string) => string): Promise<SyncPagedSnapshotManifest>
+  convertCapture?(input: { cut: DesktopGenesisCut; bundleId: string; account: number; now: number }): Promise<void>
+  store: SyncPagedSnapshotStore
+  /** 原始本机操作先完成签名，再取得源 SQL 切点。 */
+  prepareCapture?(space: string): void
+  createWriter?(bundleId: string): SyncSnapshotPageWriter
+  createCapture(input: { cut: DesktopGenesisCut; snapshotBundleId: string; deferPages?: boolean }): {
+    capture: SyncPagedSnapshotCapture
+    finish(frontiers: Readonly<Record<string, string>>): SyncSnapshotLanePages[]
+  }
+}
+
+interface GenesisRunOptions {
+  localAccountId: number
+  syncSpaceId?: string
+  genesisSessionId?: string
+  now: number
+  paged: boolean
+}
+
 export interface DesktopGenesisCutoverResult {
   syncSpaceId: string
   genesisSessionId: string
@@ -151,14 +184,24 @@ export interface DesktopGenesisCutoverResult {
  * represented by lane shards, while all post-cut mutations remain ordinary outbox tail entries.
  */
 export class DesktopGenesisSnapshotService {
+  snapshotOwners?: SyncSnapshotSpaceOwner
+  private readonly lifecycleCoordinator: DesktopSyncRuntimeCoordinator | undefined
+  private get coordinator(): DesktopSyncRuntimeCoordinator {
+    if (!this.lifecycleCoordinator) throw new Error('Genesis lifecycle coordinator is unavailable in fixed-source conversion')
+    return this.lifecycleCoordinator
+  }
+  /** 冻结转换只读取当前 cut 的副本，正常业务使用注入的数据库。 */
+  private readonly liveDatabase: DatabaseSync
+  private get database(): DatabaseSync { return frozenSnapshotDatabase(this.liveDatabase) }
+  private readonly generation = new SyncKeyedWork()
   private readonly identities: SyncIdentityRepository
   private readonly blobState: DesktopSyncBlobStateService
   private readonly identityBackfill: GenesisIdentityBackfillService
 
   constructor(
-    private readonly database: DatabaseSync,
+    database: DatabaseSync,
     private readonly runtime: SyncRuntimeRepository,
-    private readonly coordinator: DesktopSyncRuntimeCoordinator,
+    coordinator: DesktopSyncRuntimeCoordinator | undefined,
     private readonly articleFilters: ArticleFilterRepository,
     identityBackfill?: GenesisIdentityBackfillService,
     private readonly operationBuilder: DesktopOperationBuilder = new DesktopOperationBuilder(runtime),
@@ -167,12 +210,16 @@ export class DesktopGenesisSnapshotService {
     private readonly websiteRules?: WebsiteRuleRepository,
     private readonly jsonRules?: JsonRuleRepository,
     private readonly rssHubSettings?: RssHubSettingsRepository,
-    private readonly websiteParsePreferences?: WebsiteParsePreferenceRepository
+    private readonly websiteParsePreferences?: WebsiteParsePreferenceRepository,
+    private readonly pagedGenesis?: PagedGenesisDependencies
   ) {
+    this.liveDatabase = database
+    this.lifecycleCoordinator = coordinator
+
     this.identities = new SyncIdentityRepository(database)
     this.blobState = new DesktopSyncBlobStateService(database)
     this.identityBackfill = identityBackfill ?? new GenesisIdentityBackfillService(
-      database,
+      this.database,
       articleFilters,
       websiteRules,
       jsonRules,
@@ -186,88 +233,312 @@ export class DesktopGenesisSnapshotService {
     return this.identityBackfill.backfill(syncSpaceId, localAccountId, now)
   }
 
+  /** 旧非 LAN 协议继续使用既有 shard 契约。 */
   run(localAccountId: number, syncSpaceId?: string, genesisSessionId?: string, now = Date.now()): DesktopGenesisCutoverResult {
+    return this.runGenesis({ localAccountId, syncSpaceId, genesisSessionId, now, paged: false })
+  }
+
+  /** LAN 固定视图从业务游标直接产出字节页，不先构造完整 lane。 */
+  runPaged(input: { localAccountId: number; syncSpaceId?: string; genesisSessionId?: string; now?: number }): DesktopGenesisCutoverResult {
+    if (!this.pagedGenesis) throw new Error('Paged Genesis capture is not configured')
+    return this.runGenesis({ ...input, now: input.now ?? Date.now(), paged: true })
+  }
+
+  /** 生产分页导出先冻结业务记录，再由独立 Worker 分页；锁外不再访问活业务表。 */
+  runPagedAsync(input: { localAccountId: number; syncSpaceId?: string; genesisSessionId?: string; now?: number }): Promise<DesktopGenesisCutoverResult> {
+    if (!this.snapshotOwners) throw new Error('SNAPSHOT_OWNER_REQUIRED: capture ownership is not configured')
+    const prepared = this.coordinator.prepareSpace(input.localAccountId, input.syncSpaceId, input.now ?? Date.now())
+    const session = input.genesisSessionId ?? this.runtime.findBinding(input.localAccountId)?.genesisSessionId ?? randomUUID()
+    return this.snapshotOwners.runAsync({ space: prepared.syncSpaceId, identity: `capture:${session}`, phase: 'CAPTURE' },
+      () => snapshotTracePhase('capture.total', () => this.generation.run(String(input.localAccountId),
+        () => this.generateFrozenPaged({ ...input, genesisSessionId: session }))))
+  }
+
+  /** 同账户生成串行，固定索引一旦提交便由 Worker 独立处理。 */
+  private async generateFrozenPaged(input: { localAccountId: number; syncSpaceId?: string; genesisSessionId?: string; now?: number }): Promise<DesktopGenesisCutoverResult> {
+    const now = input.now ?? Date.now()
+    try {
+      const { cut, bundleId, freeze } = await this.prepareFrozenCut({ ...input, now })
+      if (!['FROZEN', 'VERIFIED'].includes(this.pagedSnapshotStore.find(bundleId)?.state ?? '')) {
+        if (!this.pagedGenesis?.convertCapture) throw new Error('SNAPSHOT_WORKER_REQUIRED: fixed-source conversion is not configured')
+        await this.pagedGenesis.convertCapture({ cut, bundleId, account: input.localAccountId, now })
+      }
+      if (this.pagedSnapshotStore.find(bundleId)?.state !== 'VERIFIED') {
+        const publication = await buildFrozenSnapshotPages({ database: this.database, bundle: bundleId, now,
+          blobRoot: this.localBlobStore?.getRoot(),
+          createManifest: lanes => this.signPagedManifest({ cut, bundleId, lanes }),
+          frontiers: Object.fromEntries(PHASE_A_LANES.map(lane => [lane, encodeGenesisFrontiers({ [lane]: cut.laneFrontiers[lane] ?? {} })])) })
+        this.pagedSnapshotStore.acceptPublication(publication)
+      }
+      this.publishFrozenGenesis({ localAccountId: input.localAccountId, cut, bundleId, now })
+      freeze.retire(cut.crossDbCutId)
+      this.pagedSnapshotStore.lifecycle.budget.sourceRetired(bundleId)
+      const tailOperationsBuilt = this.activateGenesisTail({ localAccountId: input.localAccountId, cut, now })
+      this.pagedSnapshotStore.lifecycle.completed(bundleId)
+      return { syncSpaceId: cut.syncSpaceId, genesisSessionId: cut.genesisSessionId, genesisBaselineId: cut.genesisBaselineId,
+        crossDbCutId: cut.crossDbCutId, capturedAt: cut.capturedAt, snapshotBundleId: bundleId, tailOperationsBuilt }
+    } catch (error) {
+      // 私有 FROZEN 数据保留供重试，失败不会成为可发送的已发布对象。
+      this.recordGenesisFailure({ localAccountId: input.localAccountId, now, error })
+      throw error
+    }
+  }
+
+  /** 先建立真实 Outbox 会话并准备 Blob，公共屏障只冻结源 SQL；既有固定 cut 可重用。 */
+  private async prepareFrozenCut(input: { localAccountId: number; syncSpaceId?: string; genesisSessionId?: string; now: number }) {
+    const prepared = this.coordinator.prepareSpace(input.localAccountId, input.syncSpaceId, input.now)
+    this.ensureLocalSpaceRoot(prepared.syncSpaceId, input.now)
+    const session = input.genesisSessionId ?? this.runtime.findBinding(input.localAccountId)?.genesisSessionId ?? randomUUID()
+    this.coordinator.beginGenesisCapture(input.localAccountId, session, input.now)
+    const identities = this.identityBackfill.backfill(prepared.syncSpaceId, input.localAccountId, input.now)
+    if (identities.conflicts.length) throw new Error('Genesis identity conflicts require resolution')
+    await prepareGenesisArticleBlobs({ database: this.database, state: this.blobState, blobs: this.localBlobStore,
+      accountId: input.localAccountId, space: prepared.syncSpaceId, now: input.now })
+    this.pagedGenesis?.prepareCapture?.(prepared.syncSpaceId)
+    let cut = this.coordinator.captureGenesisCut(input.localAccountId, input.now)
+    const bundleId = `snapshot:${cut.genesisBaselineId}`
+    this.pagedSnapshotStore.lifecycle.budget.capture(bundleId)
+    const freeze = new SyncRawSnapshotFreeze(this.database)
+    snapshotTracePhase('capture.raw', () => this.coordinator.withGenesisBarrier(input.localAccountId, () => {
+      const existing = this.pagedSnapshotStore.find(bundleId)
+      if (existing?.state === 'FROZEN') { cut = { ...cut, laneFrontiers: JSON.parse(existing.manifestJson) }; return }
+      if (existing?.state === 'VERIFIED') { cut = { ...cut, laneFrontiers: JSON.parse(existing.manifestJson).coverage }; return }
+      freeze.capture(cut.crossDbCutId)
+    }))
+    return { cut, bundleId, freeze }
+  }
+
+  /** 原始来源已经提交并退出屏障，转换仅访问 cut 副本，派生索引仍写真实 Page DB。 */
+  private convertFrozenSource(input: { freeze: SyncRawSnapshotFreeze; cut: DesktopGenesisCut; bundleId: string; account: number; now: number }): void {
+    const budget = this.pagedSnapshotStore.lifecycle.budget
+    budget.sourceProgress(input.bundleId, { frozen: true })
+    const source = input.freeze.open(input.cut.crossDbCutId, {
+      beforeBatch: () => budget.requireRemaining(input.bundleId),
+      committed: copiedBytes => budget.sourceProgress(input.bundleId, { source: 'desktop', copiedBytes })
+    })
+    try {
+      budget.sourceProgress(input.bundleId, { ready: true })
+      withFrozenSnapshotDatabase({ live: this.liveDatabase, source }, () => {
+        const store = this.pagedSnapshotStore
+        store.beginCapture({ snapshotBundleId: input.bundleId, syncSpaceId: input.cut.syncSpaceId, now: input.now })
+        const sink = this.pagedGenesis!.createCapture({ cut: input.cut, snapshotBundleId: input.bundleId, deferPages: true })
+        sink.capture.retainHistory()
+        this.buildLanePayloads(input.account, input.cut, sink.capture)
+        sink.capture.flush()
+        snapshotTracePhase('capture.sources', () => store.associateCapturedSources({ bundle: input.bundleId, space: input.cut.syncSpaceId,
+          original: token => captureOriginalOperation({ runtime: this.runtime, space: input.cut.syncSpaceId, token }) }))
+        store.freezeCapture(input.bundleId, JSON.stringify(input.cut.laneFrontiers))
+      })
+    } finally {
+      // 关闭私有来源连接后才能发布 cut；活库及原始 typed staging 不受转换异常影响。
+      source.close()
+    }
+  }
+
+  /** Worker 的唯一捕获入口只转换已完成的固定 cut，不接触私钥或活账户生命周期。 */
+  convertFrozenCapture(input: { cut: DesktopGenesisCut; bundleId: string; account: number; now: number }): void {
+    this.convertFrozenSource({ ...input, freeze: new SyncRawSnapshotFreeze(this.liveDatabase) })
+  }
+
+  /** Worker 成功后提交同一 cut 的 inclusion/journal，期间新写入留在普通 Tail。 */
+  private publishFrozenGenesis(input: { localAccountId: number; cut: DesktopGenesisCut; bundleId: string; now: number }): void {
+    const manifest = JSON.parse(this.pagedSnapshotStore.find(input.bundleId)!.manifestJson) as SyncPagedSnapshotManifest
+    this.runtime.transaction(() => {
+      const session = this.runtime.findGenesisSession(input.cut.genesisSessionId)!
+      this.runtime.upsertSnapshotBundle({ snapshotBundleId: input.bundleId, syncSpaceId: input.cut.syncSpaceId,
+        genesisSessionId: session.genesisSessionId, genesisBaselineId: input.cut.genesisBaselineId, snapshotClass: 'WORKING',
+        rootHash: manifest.rootHash, policyHash: manifest.policyHash, capturedAt: input.cut.capturedAt, createdAt: input.now })
+      this.markCutOutboxIncluded(input.cut, input.now)
+      this.runtime.upsertGenesisSession({ ...session, stage: 'SNAPSHOT_BUILT', capturedAt: input.cut.capturedAt, updatedAt: input.now })
+    })
+  }
+
+  /** 捕获、持久发布与 tail 激活沿用同一 Genesis 生命周期。 */
+  private runGenesis(input: GenesisRunOptions): DesktopGenesisCutoverResult {
+    const { localAccountId, now } = input
     const existingBinding = this.runtime.findBinding(localAccountId)
-    const sessionId = genesisSessionId ?? existingBinding?.genesisSessionId ?? randomUUID()
-    const prepared = this.coordinator.prepareSpace(localAccountId, syncSpaceId, now)
+    const sessionId = input.genesisSessionId ?? existingBinding?.genesisSessionId ?? randomUUID()
+    const prepared = this.coordinator.prepareSpace(localAccountId, input.syncSpaceId, now)
     this.ensureLocalSpaceRoot(prepared.syncSpaceId, now)
     this.coordinator.beginGenesisCapture(localAccountId, sessionId, now)
     try {
-    const cut = this.coordinator.captureGenesisCut(localAccountId, now)
-
-    let bundleId: string
-    let sessionWasAlreadyActive = false
-    this.coordinator.withGenesisBarrier(localAccountId, (session) => {
-      if (session.stage === 'ACTIVE') {
-        sessionWasAlreadyActive = true
-        bundleId = this.findBundleForSession(session.genesisSessionId) ?? ''
-        if (!bundleId) throw new Error(`Genesis snapshot is missing for session ${session.genesisSessionId}`)
-        this.runtime.transaction(() => {
-          const binding = this.runtime.findBinding(localAccountId)
-          if (binding) this.runtime.upsertBinding({ ...binding, lifecycleState: 'ACTIVE', genesisSessionId: null, updatedAt: now })
-        })
-      } else if (session.stage === 'CUT_CAPTURED') {
-        const report = this.identityBackfill.backfill(cut.syncSpaceId, localAccountId, now)
-        if (report.conflicts.length > 0) {
-          throw new Error(`Genesis canonical identity conflicts: ${report.conflicts.length}`)
-        }
-        bundleId = this.persistSnapshot(localAccountId, cut, session, now)
-        return
-      }
-      const latest = this.runtime.findLatestGenesisSession(cut.syncSpaceId)
-      const existingBundle = latest ? this.findBundleForSession(latest.genesisSessionId) : null
-      if (!existingBundle) throw new Error(`Genesis snapshot is missing for session ${session.genesisSessionId}`)
-      bundleId = existingBundle
-    })
-
-    const tailStartedAt = now
-    if (!sessionWasAlreadyActive) this.runtime.transaction(() => {
-      const session = this.runtime.findGenesisSession(cut.genesisSessionId)
-      if (!session) throw new Error(`Genesis session ${cut.genesisSessionId} is missing`)
-      if (session.stage !== 'TAIL_REPLAY' && session.stage !== 'ACTIVE') {
-        this.runtime.upsertGenesisSession({ ...session, stage: 'TAIL_REPLAY', updatedAt: tailStartedAt })
-      }
-    })
-
-    let tailOperationsBuilt = 0
-    while (!sessionWasAlreadyActive) {
-      const built = this.operationBuilder.buildPending(cut.syncSpaceId, 100, now)
-      tailOperationsBuilt += built
-      if (built === 0) break
-    }
-    if (!sessionWasAlreadyActive && this.runtime.listPendingOutbox(cut.syncSpaceId, 1).length > 0) {
-      throw new Error('Genesis tail replay left pending outbox rows')
-    }
-
-    if (!sessionWasAlreadyActive) {
-      this.coordinator.completeGenesisActivation(localAccountId, cut.genesisSessionId, now)
-    }
-
-    return {
-      syncSpaceId: prepared.syncSpaceId,
-      genesisSessionId: cut.genesisSessionId,
-      genesisBaselineId: cut.genesisBaselineId,
-      crossDbCutId: cut.crossDbCutId,
-      snapshotBundleId: bundleId!,
-      capturedAt: cut.capturedAt,
-      tailOperationsBuilt
-    }
+      const cut = this.coordinator.captureGenesisCut(localAccountId, now)
+      const captured = this.captureUnderBarrier({ input, cut })
+      const tailOperationsBuilt = captured.active ? 0 : this.activateGenesisTail({ localAccountId, cut, now })
+      return { syncSpaceId: prepared.syncSpaceId, genesisSessionId: cut.genesisSessionId,
+        genesisBaselineId: cut.genesisBaselineId, crossDbCutId: cut.crossDbCutId,
+        snapshotBundleId: captured.bundleId, capturedAt: cut.capturedAt, tailOperationsBuilt }
     } catch (error) {
-      this.runtime.transaction(() => {
-        const binding = this.runtime.findBinding(localAccountId)
-        const failedSessionId = binding?.genesisSessionId
-        const session = failedSessionId ? this.runtime.findGenesisSession(failedSessionId) : null
-        if (session) {
-          this.runtime.upsertGenesisSession({
-            ...session,
-            stage: 'FAILED',
-            errorMessage: error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000),
-            updatedAt: now
-          })
-        }
-      })
+      // 捕获或 tail 失败需持久保留失败阶段，禁止把不完整基线公开为 ACTIVE。
+      this.recordGenesisFailure({ localAccountId, now, error })
       throw error
     }
+  }
+
+  /** barrier 中的 SQLite 事务保证业务读取、记录索引与清单发布属于同一固定视图。 */
+  private captureUnderBarrier(options: { input: GenesisRunOptions; cut: DesktopGenesisCut }): { bundleId: string; active: boolean } {
+    const { input, cut } = options
+    return this.coordinator.withGenesisBarrier(input.localAccountId, session => this.runtime.transaction(() => {
+      if (session.stage === 'CUT_CAPTURED') {
+        const report = this.identityBackfill.backfill(cut.syncSpaceId, input.localAccountId, input.now)
+        if (report.conflicts.length) throw new Error(`Genesis canonical identity conflicts: ${report.conflicts.length}`)
+        const bundleId = input.paged
+          ? this.persistPagedSnapshot({ localAccountId: input.localAccountId, cut, session, now: input.now })
+          : this.persistSnapshot(input.localAccountId, cut, session, input.now)
+        return { bundleId, active: false }
+      }
+      const bundleId = this.findBundleForSession(session.genesisSessionId)
+      if (!bundleId) throw new Error(`Genesis snapshot is missing for session ${session.genesisSessionId}`)
+      if (input.paged && this.pagedGenesis?.store.find(bundleId)?.state !== 'VERIFIED') {
+        throw new Error('SNAPSHOT_INCOMPATIBLE: existing Genesis session has no verified paged Snapshot')
+      }
+      const active = session.stage === 'ACTIVE'
+      const binding = this.runtime.findBinding(input.localAccountId)
+      if (active && binding) this.runtime.upsertBinding({ ...binding, lifecycleState: 'ACTIVE', genesisSessionId: null, updatedAt: input.now })
+      return { bundleId, active }
+    }))
+  }
+
+  /** 只有 cut 之后的 outbox 进入增量 tail，页面发布前的固定视图不重复发送。 */
+  private activateGenesisTail(input: { localAccountId: number; cut: DesktopGenesisCut; now: number }): number {
+    const session = this.runtime.findGenesisSession(input.cut.genesisSessionId)
+    if (!session) throw new Error('Genesis session is missing before tail replay')
+    this.runtime.transaction(() => this.runtime.upsertGenesisSession({ ...session, stage: 'TAIL_REPLAY', updatedAt: input.now }))
+    let total = 0
+    const batchSize = 100 // 每次签名的 outbox 批量，避免 tail 积压一次加载。
+    for (let built = this.operationBuilder.buildPending(input.cut.syncSpaceId, batchSize, input.now); built > 0;
+      built = this.operationBuilder.buildPending(input.cut.syncSpaceId, batchSize, input.now)) total += built
+    if (this.runtime.listPendingOutbox(input.cut.syncSpaceId, 1).length) throw new Error('Genesis tail replay left pending outbox rows')
+    this.coordinator.completeGenesisActivation(input.localAccountId, input.cut.genesisSessionId, input.now)
+    return total
+  }
+
+  /** 失败原因与可恢复 session 同步落库，调用方收到原始错误。 */
+  private recordGenesisFailure(input: { localAccountId: number; now: number; error: unknown }): void {
+    const errorLimit = 2_000 // 持久诊断字段长度沿用现有 Genesis 日志约束。
+    this.runtime.transaction(() => {
+      const sessionId = this.runtime.findBinding(input.localAccountId)?.genesisSessionId
+      const session = sessionId ? this.runtime.findGenesisSession(sessionId) : null
+      if (session) this.runtime.upsertGenesisSession({ ...session, stage: 'FAILED',
+        errorMessage: String(input.error instanceof Error ? input.error.message : input.error).slice(0, errorLimit), updatedAt: input.now })
+    })
+  }
+
+  /** 私有页面与业务索引完成后，在同一个主库事务中发布 bundle 和 cut journal。 */
+  private persistPagedSnapshot(input: { localAccountId: number; cut: DesktopGenesisCut; session: SyncGenesisSessionRecord; now: number }): string {
+    if (!this.pagedGenesis || !this.signingKeys) throw new Error('Paged Snapshot dependencies are unavailable')
+    const { cut, session, now } = input
+    const bundleId = `snapshot:${cut.genesisBaselineId}`
+    this.pagedGenesis.store.beginCapture({ snapshotBundleId: bundleId, syncSpaceId: cut.syncSpaceId, now })
+    const sink = this.pagedGenesis.createCapture({ cut, snapshotBundleId: bundleId })
+    sink.capture.retainHistory()
+    this.buildLanePayloads(input.localAccountId, cut, sink.capture)
+    const lanes = sink.finish(Object.fromEntries(PHASE_A_LANES.map(lane => [lane, encodeGenesisFrontiers({ [lane]: cut.laneFrontiers[lane] ?? {} })])))
+    const manifest = this.signPagedManifest({ cut, bundleId, lanes })
+    this.pagedGenesis.store.publish(manifest, now)
+    this.runtime.upsertSnapshotBundle({ snapshotBundleId: bundleId, syncSpaceId: cut.syncSpaceId,
+      genesisSessionId: session.genesisSessionId, genesisBaselineId: cut.genesisBaselineId, snapshotClass: 'WORKING',
+      rootHash: manifest.rootHash, policyHash: manifest.policyHash, capturedAt: cut.capturedAt, createdAt: now })
+    this.markCutOutboxIncluded(cut, now)
+    this.runtime.upsertGenesisSession({ ...session, stage: 'SNAPSHOT_BUILT', capturedAt: cut.capturedAt, updatedAt: now })
+    return bundleId
+  }
+
+  /** 页摘要、lane frontier 和业务策略共同签名，页面顺序不能被网络重排改变。 */
+  private signPagedManifest(input: { cut: DesktopGenesisCut; bundleId: string; lanes: SyncSnapshotLanePages[] }): SyncPagedSnapshotManifest {
+    const authorDeviceId = this.runtime.findDeviceIdentity()?.deviceId
+    if (!authorDeviceId || !this.signingKeys) throw new Error('Snapshot signing identity is unavailable')
+    const unsigned: SyncPagedSnapshotManifest = { formatVersion: PAGED_SNAPSHOT_FORMAT, snapshotBundleId: input.bundleId,
+      sourceSnapshotBundleId: input.bundleId, syncSpaceId: input.cut.syncSpaceId, snapshotClass: 'WORKING', genesisBaselineId: input.cut.genesisBaselineId,
+      crossDbCutId: input.cut.crossDbCutId, policyHash: sha256Hex(canonicalJson(JSON.stringify({ defaultPolicy: 'DETERMINISTIC',
+        fieldPolicies: { isStarred: 'STARRED_WINS', isUnread: 'READ_WINS' }, lanes: PHASE_A_LANES }))),
+      capturedAt: input.cut.capturedAt, lanes: input.lanes, coverage: input.cut.laneFrontiers,
+      requiredCoreShardIds: ['AUTH', 'CORE_META'], authStabilityCheckpoint: null, coverageCommitment: null,
+      authorDeviceId, rootHash: '', authorSignature: '' }
+    const rooted = { ...unsigned, rootHash: pagedSnapshotRoot(unsigned) }
+    return { ...rooted, authorSignature: this.signingKeys.signBase64(authorDeviceId, pagedSnapshotSigningMaterial(rooted)) }
+  }
+
+  /** 已持久化字节页按 lane 策略收窄；每个对外清单仍有自己的完整签名和安装身份。 */
+  exportPagedManifest(input: { snapshotBundleId: string; selectedLanes?: ReadonlySet<string> }): SyncPagedSnapshotManifest {
+    if (!this.pagedGenesis || !this.signingKeys) throw new Error('Paged Snapshot exporter is not configured')
+    const stored = this.pagedGenesis.store.find(input.snapshotBundleId)
+    if (stored?.state !== 'VERIFIED') throw new Error('SNAPSHOT_INCOMPATIBLE: source has no verified paged Snapshot')
+    const manifest = JSON.parse(stored.manifestJson) as SyncPagedSnapshotManifest
+    const selected = input.selectedLanes ?? new Set(manifest.lanes.map(lane => lane.replicationLaneId))
+    if (selected.size === manifest.lanes.length && manifest.lanes.every(lane => selected.has(lane.replicationLaneId))) return manifest
+    if (!selected.has('AUTH') || !selected.has('CORE_META') || [...selected].some(lane => !manifest.lanes.some(item => item.replicationLaneId === lane))) {
+      throw new Error('SNAPSHOT_INCOMPATIBLE: invalid paged Snapshot lane scope')
+    }
+    // Recovery acceptance 绑定最终 ID，收窄必须在 OWNER 接受之前完成。
+    if (manifest.snapshotClass === 'BOOTSTRAP_RECOVERY') throw new Error('REBASE_UNSAFE: recovery scope must be determined before OWNER acceptance')
+    const policyHash = sha256Hex(canonicalJson(JSON.stringify({ basePolicyHash: manifest.policyHash, lanes: [...selected].sort() })))
+    const bundleId = manifest.snapshotBundleId + ':scope:' + policyHash.slice(0, 16)
+    const unsigned = { ...manifest, snapshotBundleId: bundleId, policyHash,
+      lanes: manifest.lanes.filter(lane => selected.has(lane.replicationLaneId)),
+      coverage: Object.fromEntries(Object.entries(manifest.coverage).filter(([lane]) => selected.has(lane))), rootHash: '', authorSignature: '' }
+    const rooted = { ...unsigned, rootHash: pagedSnapshotRoot(unsigned) }
+    const existing = this.pagedGenesis.store.find(bundleId)
+    const published = reusePublishedPagedManifest({ rooted, existingJson: existing?.state === 'VERIFIED' ? existing.manifestJson : undefined })
+    if (published) return published
+    const scoped = { ...rooted, authorSignature: this.signingKeys.signBase64(manifest.authorDeviceId, pagedSnapshotSigningMaterial(rooted)) }
+    this.runtime.transaction(() => {
+      this.pagedGenesis!.store.copyScope({ sourceBundleId: manifest.snapshotBundleId, manifest: scoped, now: Date.now() })
+    })
+    return scoped
+  }
+
+  /** 页面读取仍检查完整发布状态，未完成 capture 不可被 listener 公开。 */
+  exportPagedPage(input: { snapshotBundleId: string; lane: string; pageIndex: number }): { replicationLaneId: string; pageIndex: number; bytesBase64: string } {
+    const manifest = this.exportPagedManifest({ snapshotBundleId: input.snapshotBundleId })
+    const descriptor = manifest.lanes.find(lane => lane.replicationLaneId === input.lane)
+    if (!descriptor || !Number.isSafeInteger(input.pageIndex) || input.pageIndex < 0 || input.pageIndex >= descriptor.pageHashes.length) {
+      throw new Error('SNAPSHOT_CORRUPTED: requested page is outside the published manifest')
+    }
+    return { replicationLaneId: input.lane, pageIndex: input.pageIndex,
+      bytesBase64: this.pagedGenesis!.store.readPage(input.snapshotBundleId, input.lane, input.pageIndex).toString('base64') }
+  }
+
+  /** 接收/安装使用同一个持久化页面区，必须由组合层配置真实依赖。 */
+  get pagedSnapshotStore(): SyncPagedSnapshotStore {
+    if (!this.pagedGenesis) throw new Error('Paged Snapshot store is not configured')
+    return this.pagedGenesis.store
+  }
+
+  /** OWNER 在接受恢复快照之前使用最终身份，应用版本号不参与身份或覆盖度。 */
+  pagedVariantId(input: { snapshotBundleId: string; selectedLanes?: ReadonlySet<string>; snapshotClass: 'GC_BASELINE' | 'BOOTSTRAP_RECOVERY' }): string {
+    return pagedPromotionId(this.exportPagedManifest(input), input.snapshotClass)
+  }
+
+  /** LAN 分页晋升始终保存新的不可变清单，原 WORKING 字节与根哈希保持可验证。 */
+  promotePaged(input: { snapshotBundleId: string; selectedLanes?: ReadonlySet<string>; snapshotClass: 'GC_BASELINE' | 'BOOTSTRAP_RECOVERY';
+    checkpointId: string; now: number }): string {
+    if (!this.signingKeys) throw new Error('Paged Snapshot signing keys are unavailable')
+    return promotePagedSnapshot({ runtime: this.runtime, store: this.pagedSnapshotStore,
+      sign: (deviceId, material) => this.signingKeys!.signBase64(deviceId, material) },
+      { source: this.exportPagedManifest(input), snapshotClass: input.snapshotClass, checkpointId: input.checkpointId, now: input.now }).snapshotBundleId
+  }
+
+  /** 由协调器提供正式安装校验器，恢复签名前必须重新验证两个输入的授权与完整索引。 */
+  mergePagedRecovery(input: { localBundleId: string; target: SyncPagedSnapshotManifest; selectedLanes: ReadonlySet<string>;
+    now: number; validate(manifest: SyncPagedSnapshotManifest): void }): SyncPagedSnapshotManifest {
+    if (!this.pagedGenesis?.createWriter || !this.signingKeys) throw new Error('Paged recovery dependencies are unavailable')
+    if (!this.snapshotOwners) throw new Error('SNAPSHOT_OWNER_REQUIRED: merge ownership is not configured')
+    const createWriter = this.pagedGenesis.createWriter
+    const local = this.exportPagedManifest({ snapshotBundleId: input.localBundleId, selectedLanes: input.selectedLanes })
+    return this.snapshotOwners.run({ space: local.syncSpaceId, identity: `merge:${local.rootHash}:${input.target.rootHash}`, phase: 'MERGE' }, () =>
+      mergePagedRecovery({ runtime: this.runtime, store: this.pagedGenesis!.store, validate: input.validate,
+      createWriter, sign: (deviceId, material) => this.signingKeys!.signBase64(deviceId, material) },
+      { local, target: input.target, now: input.now }))
+  }
+
+  /** 正式恢复计算在 Worker 内执行，网络与独立控制库不再等待主线程全量合并。 */
+  async mergePagedRecoveryAsync(input: { localBundleId: string; target: SyncPagedSnapshotManifest; selectedLanes: ReadonlySet<string>; now: number }): Promise<SyncPagedSnapshotManifest> {
+    if (!this.pagedGenesis?.mergeRecovery || !this.signingKeys || !this.snapshotOwners) throw new Error('SNAPSHOT_WORKER_REQUIRED: recovery merge executor is not configured')
+    const local = this.exportPagedManifest({ snapshotBundleId: input.localBundleId, selectedLanes: input.selectedLanes })
+    return this.snapshotOwners.runAsync({ space: local.syncSpaceId, identity: `merge:${local.rootHash}:${input.target.rootHash}`, phase: 'MERGE' }, () =>
+      this.pagedGenesis!.mergeRecovery!({ local, target: input.target, now: input.now },
+        (device, material) => this.signingKeys!.signBase64(device, material)))
   }
 
   exportWire(
@@ -950,107 +1221,37 @@ export class DesktopGenesisSnapshotService {
     return bundleId
   }
 
-  private buildLanePayloads(localAccountId: number, cut: DesktopGenesisCut): Record<SyncReplicationLane, LanePayload> {
+  private buildLanePayloads(localAccountId: number, cut: DesktopGenesisCut, capture?: SyncPagedSnapshotCapture): Record<SyncReplicationLane, LanePayload> {
     const state = new SyncStateRepository(this.database)
-    for (const operation of this.runtime.listAllOperationsForRecovery(cut.syncSpaceId)) {
-      const inbox = state.findInbox(operation.operationId)
-      if (inbox?.state !== 'APPLIED') continue
-      const frontier = cut.laneFrontiers[operation.replicationLaneId]?.[operation.actorIncarnationId] ?? 0
-      if (operation.sequence > frontier) {
-        throw new Error(
-          'REBASE_UNSAFE: Snapshot materialized state contains applied Operation ' +
-          operation.replicationLaneId + '/' + operation.actorIncarnationId + '/' + operation.sequence +
-          ' beyond declared cut frontier ' + frontier
-        )
-      }
-    }
+    requireGenesisCutFrontiers({ database: this.database, cut })
     const payloads = Object.fromEntries(
       SYNC_REPLICATION_LANES.map((lane) => [lane, { entities: [], fieldVersions: [] }])
     ) as unknown as Record<SyncReplicationLane, LanePayload>
 
-    const snapshotFieldVersion = (
-      lane: SyncReplicationLane,
-      entityType: string,
-      entitySyncId: string,
-      entityGeneration: number,
-      fieldId: string,
-      value: unknown
-    ): GenesisFieldVersionSnapshot => {
-      const valueJson = canonicalJson(JSON.stringify(value))
-      const current = state.findFieldVersion(cut.syncSpaceId, entityType, entitySyncId, fieldId)
-      let causalContextJson = current?.causalContextJson ?? null
-      let logicalClock = current?.logicalClock ?? null
-
-      if (current && (!causalContextJson || logicalClock == null) && current.sourceOperationId) {
-        const retained = this.database.prepare(
-          'SELECT causal_context_json,logical_clock FROM sync_operation_log WHERE operation_id=? LIMIT 1'
-        ).get(current.sourceOperationId) as { causal_context_json: string; logical_clock: number } | undefined
-        causalContextJson = retained?.causal_context_json ?? causalContextJson
-        logicalClock = retained?.logical_clock ?? logicalClock
-      }
-      if (current && (!causalContextJson || logicalClock == null)) {
-        const dot = parseOperationVersionToken(current.versionToken)
-        if (dot) {
-          const pending = this.database.prepare(`
-            SELECT causal_context_json,sequence AS logical_clock
-            FROM sync_outbox
-            WHERE sync_space_id=? AND actor_incarnation_id=? AND replication_lane_id=? AND sequence=?
-            LIMIT 1
-          `).get(
-            cut.syncSpaceId,
-            dot.actorIncarnationId,
-            dot.replicationLaneId,
-            dot.sequence
-          ) as { causal_context_json: string; logical_clock: number } | undefined
-          causalContextJson = pending?.causal_context_json ?? causalContextJson
-          logicalClock = pending?.logical_clock ?? logicalClock
-        }
-      }
-
-      let source: 'GENESIS' | 'OPERATION' | null = null
-      if (current) {
-        try { source = SyncVersionToken.source(current.versionToken) } catch { source = null }
-      }
-      const reusable = current &&
-        current.entityGeneration === entityGeneration &&
-        canonicalJson(current.valueJson) === valueJson &&
-        (source === 'GENESIS' || (source === 'OPERATION' && causalContextJson != null && logicalClock != null))
-
-      return {
-        entityType,
-        entitySyncId,
-        entityGeneration,
-        fieldId,
-        valueJson,
-        versionToken: reusable
-          ? current.versionToken
-          : SyncVersionToken.genesis(cut.genesisBaselineId, lane, entitySyncId, fieldId),
-        causalContextJson: reusable ? causalContextJson : null,
-        logicalClock: reusable ? logicalClock : null
-      }
-    }
+    // 所有字段复用同一固定来源，编码和因果补读不进入输出写事务。
+    const snapshotFieldVersion = (input: GenesisFieldCaptureInput): GenesisFieldVersionSnapshot =>
+      captureGenesisFieldVersion({ database: this.database, state, cut }, input)
 
     const add = (lane: SyncReplicationLane, entityType: string, localId: string, fields: Record<string, unknown>): void => {
+      requireExportableConfig(entityType, fields)
       const mapping = this.identities.findByLocalId(cut.syncSpaceId, entityType as Parameters<SyncIdentityRepository['findByLocalId']>[1], localId)
       if (!mapping) throw new Error(`Missing Genesis mapping for ${entityType}/${localId}`)
-      const entity: GenesisEntity = {
-        entityType,
-        entitySyncId: mapping.syncId,
-        generation: mapping.generation,
-        fields
-      }
-      payloads[lane]!.entities.push(entity)
-      for (const [fieldId, value] of Object.entries(fields)) {
-        payloads[lane]!.fieldVersions.push(
-          snapshotFieldVersion(
-            lane,
-            entityType,
-            mapping.syncId,
-            mapping.generation,
-            fieldId,
-            value
-          )
-        )
+      const variants = capture?.entityVariants({ entityType, entitySyncId: mapping.syncId, generation: mapping.generation, fields })
+        ?? [{ entitySyncId: mapping.syncId, generation: mapping.generation, fields }]
+      for (const variant of variants) {
+        const { entitySyncId, generation, fields: memberFields } = variant
+        const entity: GenesisEntity = { entityType, entitySyncId, generation, fields: memberFields }
+        if (capture) capture.append({ lane, kind: 'ENTITY', value: { ...entity } })
+        else payloads[lane]!.entities.push(entity)
+        for (const [fieldId, value] of Object.entries(memberFields)) {
+          // 正文由 Blob 引用传输，别名身份保留各自的真实候选及固定视图证据。
+          if (capture && entityType === 'article' && fieldId === 'fullContentHash' && value == null) continue
+          const version = snapshotFieldVersion({ lane, entityType, entitySyncId, entityGeneration: generation,
+            fieldId: capture && entityType === 'article' && fieldId === 'fullContentHash' ? SYNC_ARTICLE_FULL_CONTENT_FIELD : fieldId, value })
+          if (capture) capture.appendVersion({ lane, value: { ...version } })
+          else payloads[lane]!.fieldVersions.push(version)
+        }
+        capture?.appendCandidates({ lane, entityType, entitySyncId, generation })
       }
     }
     const addAi = (entityType: string, localId: string, payloadJson: string): void => {
@@ -1066,12 +1267,12 @@ export class DesktopGenesisSnapshotService {
         throw new Error('AI_HISTORY Genesis requires the local Blob store')
       }
       for (const ref of blobRefs) {
-        const bytes = this.localBlobStore!.readVerified(ref.manifest.hash)
-        if (!bytes || bytes.byteLength !== ref.manifest.totalBytes) {
+        const path = capture?.deferBlobIO ? null : this.localBlobStore!.getBlobPath(ref.manifest.hash)
+        if (!capture?.deferBlobIO && (!path || !this.localBlobStore!.verifyFile(ref.manifest.hash, path) || statSync(path).size !== ref.manifest.totalBytes)) {
           throw new Error(`Genesis AI_HISTORY Blob is missing or invalid: ${ref.manifest.hash}`)
         }
         this.blobState.registerManifest(ref.manifest, 'READY', cut.capturedAt)
-        this.blobState.markReadyVerified(ref.manifest.hash, bytes.byteLength, cut.capturedAt)
+        this.blobState.markReadyVerified(ref.manifest.hash, ref.manifest.totalBytes, cut.capturedAt)
         this.blobState.replaceOwnerReference(
           cut.syncSpaceId,
           'AI_HISTORY',
@@ -1088,7 +1289,7 @@ export class DesktopGenesisSnapshotService {
 
     const groups = this.database.prepare(`
       SELECT id,name FROM groups WHERE account_id=? ORDER BY id
-    `).all(localAccountId) as unknown as Row[]
+    `).iterate(localAccountId) as Iterable<Row>
     for (const row of groups) add('LIBRARY', 'group', String(row.id), {
       name: String(row.name)
     })
@@ -1096,7 +1297,7 @@ export class DesktopGenesisSnapshotService {
     const feeds = this.database.prepare(`
       SELECT id,group_id,name,url,source_type,icon,is_notification,is_full_content,is_browser
       FROM feeds WHERE account_id=? ORDER BY id
-    `).all(localAccountId) as unknown as Row[]
+    `).iterate(localAccountId) as Iterable<Row>
     for (const row of feeds) {
       const groupMapping = this.identities.findByLocalId(cut.syncSpaceId, 'group', String(row.group_id))
       const groupSyncId = groupMapping?.syncId ?? null
@@ -1108,11 +1309,13 @@ export class DesktopGenesisSnapshotService {
       })
     }
 
+    // 延迟输出已由正文准备阶段登记 Blob，固定转换不再读取不会消费的全文列。
+    const articleContentColumn = capture?.deferBlobIO ? 'NULL AS full_content_html' : 'full_content_html'
     const articles = this.database.prepare(`
-      SELECT id,feed_id,title,url,author,published_at,description,content_html,full_content_html,image_url,
+      SELECT id,feed_id,title,url,author,published_at,description,content_html,${articleContentColumn},image_url,
              is_unread,is_starred,is_read_later,created_at,updated_at
       FROM articles WHERE account_id=? ORDER BY id
-    `).all(localAccountId) as unknown as Row[]
+    `).iterate(localAccountId) as Iterable<Row>
     for (const row of articles) {
       const localArticleId = String(row.id)
       const articleMapping = this.identities.findByLocalId(cut.syncSpaceId, 'article', localArticleId)
@@ -1133,7 +1336,7 @@ export class DesktopGenesisSnapshotService {
         SYNC_ARTICLE_FULL_CONTENT_REFERENCE_KIND
       ) as { hash: string } | undefined)?.hash ?? null
 
-      if (inlineFullContent?.trim()) {
+      if (!capture?.deferBlobIO && inlineFullContent?.trim()) {
         const blobStore = this.requireBlobStore()
         const reference = articleFullContentBlobRef(inlineFullContent)
         blobStore.putUtf8Text(reference, inlineFullContent)
@@ -1161,6 +1364,7 @@ export class DesktopGenesisSnapshotService {
         imageUrl: row.image_url == null ? null : String(row.image_url), isUnread: Number(row.is_unread) === 1,
         isStarred: Number(row.is_starred) === 1, isReadLater: Number(row.is_read_later) === 1
       })
+      if (!capture) {
       payloads.ARTICLE_STATE!.fieldVersions = payloads.ARTICLE_STATE!.fieldVersions.filter((version) =>
         !(version.entityType === 'article' &&
           version.entitySyncId === articleMapping.syncId &&
@@ -1168,15 +1372,10 @@ export class DesktopGenesisSnapshotService {
       )
       if (fullContentHash) {
         payloads.ARTICLE_STATE!.fieldVersions.push(
-          snapshotFieldVersion(
-            'ARTICLE_STATE',
-            'article',
-            articleMapping.syncId,
-            articleMapping.generation,
-            SYNC_ARTICLE_FULL_CONTENT_FIELD,
-            fullContentHash
-          )
+          snapshotFieldVersion({ lane: 'ARTICLE_STATE', entityType: 'article', entitySyncId: articleMapping.syncId,
+            entityGeneration: articleMapping.generation, fieldId: SYNC_ARTICLE_FULL_CONTENT_FIELD, value: fullContentHash })
         )
+      }
       }
     }
 
@@ -1208,7 +1407,7 @@ export class DesktopGenesisSnapshotService {
       add('CONFIG', 'rsshub_settings', 'rsshub-settings', { settings: this.rssHubSettings.current() })
     }
     if (this.websiteParsePreferences) {
-      const feedIds = new Set(feeds.map((row) => String(row.id)))
+      const feedIds = new Set([...this.database.prepare('SELECT id FROM feeds WHERE account_id=?').iterate(localAccountId)].map(row => String(row.id)))
       for (const [localFeedId, preference] of this.websiteParsePreferences.listUserSyncStates(feedIds)) {
         const feedMapping = this.identities.findByLocalId(cut.syncSpaceId, 'feed', localFeedId)
         if (!feedMapping) {
@@ -1246,7 +1445,11 @@ export class DesktopGenesisSnapshotService {
       })
     }
 
+    capture?.appendAbsentFeedConfigs(localAccountId, input => add('CONFIG', input.type, input.localId, input.fields))
     const llm = new LlmChatRepository(this.database)
+    if (capture) {
+      for (const seed of llm.iterateGenesisPayloads(this.requireBlobStore())) addAi(seed.entityType, seed.localId, seed.payloadJson)
+    } else {
     for (const conversation of llm.listConversations()) {
       addAi('conversation', conversation.id, conversationSyncPayload(conversation))
       for (const relation of llm.getConversationArticles(conversation.id)) {
@@ -1297,6 +1500,7 @@ export class DesktopGenesisSnapshotService {
       }
       void stableMessageIds
     }
+    }
     payloads.AI_HISTORY!.entities.sort((a, b) =>
       a.entityType.localeCompare(b.entityType) || a.entitySyncId.localeCompare(b.entitySyncId)
     )
@@ -1312,11 +1516,18 @@ export class DesktopGenesisSnapshotService {
     }
     const coreMappingId = `${cut.syncSpaceId}:core`
     const coreEntity = { entityType: 'sync_core', entitySyncId: coreMappingId, generation: 0, fields: coreFields }
-    payloads.CORE_META!.entities.push(coreEntity)
+    if (capture) capture.append({ lane: 'CORE_META', kind: 'ENTITY', value: coreEntity })
+    else payloads.CORE_META!.entities.push(coreEntity)
     for (const [fieldId, value] of Object.entries(coreFields)) {
-      payloads.CORE_META!.fieldVersions.push(
-        snapshotFieldVersion('CORE_META', 'sync_core', coreMappingId, 0, fieldId, value)
-      )
+      const version = snapshotFieldVersion({ lane: 'CORE_META', entityType: 'sync_core', entitySyncId: coreMappingId,
+        entityGeneration: 0, fieldId, value })
+      if (capture) capture.appendVersion({ lane: 'CORE_META', value: { ...version } })
+      else payloads.CORE_META!.fieldVersions.push(version)
+    }
+    if (capture) {
+      capture.appendAuth()
+      for (const lane of PHASE_A_LANES) capture.appendLaneMetadata({ lane, entityTypes: snapshotEntityTypesForLane(lane) })
+      return payloads
     }
     const authObjects = this.runtime.listAuthObjects(cut.syncSpaceId)
     if (!authObjects.some((object) => object.objectType === 'SPACE_ROOT')) {
@@ -1329,9 +1540,9 @@ export class DesktopGenesisSnapshotService {
       fields: { objects: authObjects }
     })
     // Capture every historical field candidate, including concurrent losers, before log GC.
-    for (const operation of this.runtime.listAllOperationsForRecovery(cut.syncSpaceId)) {
-      const inbox = state.findInbox(operation.operationId)
-      if (operation.buildStatus === 'REJECTED' || (inbox && inbox.state !== 'APPLIED')) continue
+    for (const operation of this.runtime.iterateOperationsForSnapshot(cut.syncSpaceId)) {
+      const inboxState = state.findInboxState(operation.operationId)
+      if (operation.buildStatus === 'REJECTED' || (inboxState != null && inboxState !== 'APPLIED')) continue
       const payload = JSON.parse(operation.payloadJson) as Record<string, unknown>
       const fields = operation.operationType === 'FIELD_SET' ? { [String(payload.field)]: payload.value }
         : ['UPSERT', 'RELATION_SET'].includes(operation.operationType) ? (payload.fields ?? payload) as Record<string, unknown> : {}

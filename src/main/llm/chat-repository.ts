@@ -1,3 +1,4 @@
+import { frozenSnapshotDatabase } from '../sync/sync-frozen-database-context'
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import {
@@ -30,6 +31,7 @@ import {
   toolCallSyncPayload
 } from '../sync/llm-sync-payloads'
 import { DesktopSyncLocalBlobStore } from '../sync/sync-local-blob-store'
+import { iterateLlmSnapshotSeeds, type LlmSnapshotSeed } from '../sync/llm-snapshot-source'
 
 type DbRowValue = string | number | bigint | null | undefined
 type Row = Record<string, DbRowValue>
@@ -59,11 +61,16 @@ export interface AppendLlmMessageInput {
 
 /** Main-only persistence layer. Renderer never receives the raw DatabaseSync handle. */
 export class LlmChatRepository {
+  /** 冻结转换只读取当前 cut 的副本，正常业务使用注入的数据库。 */
+  private readonly liveDatabase: DatabaseSync
+  private get database(): DatabaseSync { return frozenSnapshotDatabase(this.liveDatabase) }
   constructor(
-    private readonly database: DatabaseSync,
+    database: DatabaseSync,
     private readonly syncMutations?: LlmSyncMutationCapture,
     private readonly syncBlobStore?: DesktopSyncLocalBlobStore
-  ) {}
+  ) {
+    this.liveDatabase = database
+}
 
   createConversation(input: CreateLlmConversationInput = {}): LlmConversationRecord {
     const now = input.now ?? Date.now()
@@ -96,6 +103,29 @@ export class LlmChatRepository {
   getConversation(id: string): LlmConversationRecord | null {
     const row = this.database.prepare('SELECT * FROM llm_conversations WHERE id=? LIMIT 1').get(id.trim()) as Row | undefined
     return row ? conversationFromRow(row) : null
+  }
+
+  /** Genesis 固定视图按行读取终态 AI 图，payload 转换沿用正式增量契约。 */
+  *iterateGenesisPayloads(blobStore: DesktopSyncLocalBlobStore): Generator<LlmSnapshotSeed> {
+    const simple = <T extends { id: string }>(read: (row: Row) => T, payload: (record: T) => string) =>
+      (row: Record<string, unknown>) => { const record = read(row as Row); return { localId: record.id, payloadJson: payload(record) } }
+    yield* iterateLlmSnapshotSeeds({ database: this.database, converters: {
+      conversation: simple(conversationFromRow, conversationSyncPayload),
+      message: simple(messageFromRow, messageSyncPayload),
+      tool_call: simple(toolCallFromRow, record => toolCallSyncPayload(record, blobStore)),
+      context_ref: simple(contextRefFromRow, record => contextRefSyncPayload(record, blobStore)),
+      evidence_block: simple(evidenceBlockFromRow, record => evidenceBlockSyncPayload(record, blobStore)),
+      citation_ref: simple(citationRefFromRow, record => citationRefSyncPayload(record, blobStore)),
+      citation_annotation: simple(citationAnnotationFromRow, citationAnnotationSyncPayload),
+      conversation_article: row => {
+        const record = conversationArticleFromRow(row as Row)
+        return { localId: relationLocalId('conversation_article', record.conversationId, record.articleId), payloadJson: conversationArticleSyncPayload(record, blobStore) }
+      },
+      citation_annotation_ref: row => {
+        const record = citationAnnotationRefFromRow(row as Row)
+        return { localId: relationLocalId('citation_annotation_ref', record.annotationId, record.citationRefId), payloadJson: citationAnnotationRefSyncPayload(record) }
+      }
+    } })
   }
 
   listConversations(articleId?: string | null): LlmConversationRecord[] {

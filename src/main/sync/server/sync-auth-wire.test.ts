@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { applyMigrations } from '../../database/migrations'
 import { SyncRuntimeRepository } from '../sync-runtime-repository'
 import { SyncApplyCoordinator } from '../sync-apply-coordinator'
-import { operationRecordFromWire } from '../sync-operation-wire'
+import { operationRecordFromWire, operationEnvelopeFromRecord } from '../sync-operation-wire'
 import { SyncStateRepository } from '../sync-state-repository'
 import { DesktopAuthLedgerService } from '../sync-auth-ledger'
 import { canonicalJson, operationId, operationSigningDigest, operationSigningMaterial, sha256Hex } from '../sync-operation-canonicalizer'
@@ -336,9 +336,9 @@ function makeOperation(
   }
   const withDigest = { ...unsigned, signingDigest: operationSigningDigest(unsigned) }
   return {
-    protocolVersion: 1,
-    ...withDigest,
-    authorSignature: keys.signBase64(input.deviceId, operationSigningMaterial(withDigest)),
+    // 正式 wire 不携带本地数据库时间与构建状态，严格字段校验不能靠夹带元数据绕过。
+    ...operationEnvelopeFromRecord({ ...withDigest, buildStatus: 'SIGNED',
+      authorSignature: keys.signBase64(input.deviceId, operationSigningMaterial(withDigest)) }),
     authorPublicKeySpkiBase64: keys.publicKeySpkiBase64(input.deviceId),
-  } as SyncOperationEnvelope
+  }
 }

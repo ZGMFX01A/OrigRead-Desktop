@@ -15,6 +15,9 @@ export function recordSnapshotInstallReady(database: DatabaseSync, space: string
       recovery_state_json=excluded.recovery_state_json,created_at=excluded.created_at`)
     .run(`snapshot-install:${space}`, space, ready.snapshotBundleId,
       JSON.stringify({ rootHash: ready.rootHash, installedLanes: [...ready.installedLanes].sort() }), now)
+  // 原 baseline 完成位保留覆盖度，但不再被会话当成未完成安装恢复。
+  database.prepare("UPDATE sync_recovery_capsule SET reason='SNAPSHOT_INSTALL_READY' WHERE capsule_id=?")
+    .run(`paged-install:${space}:${ready.snapshotBundleId}`)
 }
 
 export function readSnapshotInstallReady(database: DatabaseSync, space: string): SnapshotInstallReady | null {

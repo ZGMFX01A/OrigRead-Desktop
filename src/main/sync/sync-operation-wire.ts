@@ -1,3 +1,5 @@
+/** compatibility=3 的封闭外层字段集合；新签名扩展需要显式版本协商。 */
+const OPERATION_ENVELOPE_FIELDS = new Set(["protocolVersion", "operationId", "syncSpaceId", "authorDeviceId", "actorIncarnationId", "replicationLaneId", "sequence", "logicalClock", "causalContextJson", "dependencyDotsJson", "entityType", "entitySyncId", "entityGeneration", "operationType", "payloadSchemaVersion", "payloadJson", "schemaVersion", "authGrantId", "authEpoch", "createdWallClock", "payloadHash", "signingDigest", "authorSignature", "authorPublicKeySpkiBase64"])
 import { createPublicKey, verify as cryptoVerify } from 'node:crypto'
 import type { SyncOperationRecord, SyncReplicationLane } from '../../shared/sync-runtime'
 import type { SyncOperationEnvelope } from '../../shared/sync-protocol'
@@ -39,8 +41,16 @@ export function operationRecordFromWire(envelope: SyncOperationEnvelope, receive
   }
 }
 
+/** 仅供已匹配完整签名证明的读取器转换 DTO；不能用于未经验证的网络输入。 */
+export function operationRecordFromVerifiedWire(envelope: SyncOperationEnvelope): SyncOperationRecord {
+  return operationRecordFromWireUnchecked(envelope)
+}
+
 export function validateSyncOperationEnvelope(envelope: SyncOperationEnvelope): void {
   if (!envelope || typeof envelope !== 'object') throw new SyncWireValidationError('Operation envelope must be an object')
+  if (Object.keys(envelope).some(key => !OPERATION_ENVELOPE_FIELDS.has(key))) {
+    throw new SyncWireValidationError('Unsupported operation envelope extension')
+  }
   if (envelope.protocolVersion !== SYNC_PROTOCOL_VERSION) throw new SyncWireValidationError('Unsupported Sync protocol version')
   for (const [name, value] of [
     ['operationId', envelope.operationId],
@@ -141,4 +151,11 @@ function assertPositiveSafeInteger(value: unknown, name: string): asserts value 
 
 function assertNonNegativeSafeInteger(value: unknown, name: string): asserts value is number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new SyncWireValidationError(`${name} must be a non-negative safe integer`)
+}
+
+/** 中继只重建当前封闭协议字段，不引入数据库状态或更改作者签名。 */
+export function operationEnvelopeFromRecord(operation: SyncOperationRecord): SyncOperationEnvelope {
+  const fields = [...OPERATION_ENVELOPE_FIELDS].filter(key => key !== 'protocolVersion' && key !== 'authorPublicKeySpkiBase64')
+  const values = operation as unknown as Record<string, unknown>
+  return { protocolVersion: SYNC_PROTOCOL_VERSION, ...Object.fromEntries(fields.map(key => [key, values[key]])) } as unknown as SyncOperationEnvelope
 }

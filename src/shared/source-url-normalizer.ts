@@ -12,7 +12,18 @@ const TRACKING_QUERY_KEYS = new Set([
  * Comparison-only source URL normalization. Keep business query parameters and their order intact;
  * only remove transformations that cannot change source semantics. Mirrors Android SourceUrlNormalizer.
  */
+/** 新候选保留尾斜杠、业务 query 和原始转义，只移除 fragment。 */
 export function sourceUrlComparisonKey(value: string): string {
+  const trimmed = value.trim()
+  let url: URL
+  try { url = new URL(trimmed) } catch { return trimmed }
+  if (!['http:', 'https:'].includes(url.protocol)) return trimmed
+  url.hash = ''
+  return url.toString()
+}
+
+/** 已持久化 v1 key 的历史算法，不能重新作用于现有映射。 */
+export function legacySourceUrlComparisonKey(value: string): string {
   const trimmed = value.trim()
   let url: URL
   try {

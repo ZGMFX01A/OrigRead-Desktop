@@ -5,6 +5,8 @@ import { DesktopSyncBlobStateService } from './sync-blob-state'
 import { DesktopSyncLocalBlobStore } from './sync-local-blob-store'
 import { SyncRuntimeRepository } from './sync-runtime-repository'
 import { SyncStateRepository } from './sync-state-repository'
+import { pagedGcCoverage } from './sync-paged-gc-coverage'
+import type { SyncReplicationLane } from '../../shared/sync-runtime'
 
 export interface DesktopStableGcResult {
   snapshotBundleId: string
@@ -52,13 +54,17 @@ export class DesktopSyncStableGcCoordinator {
     }
     const acceptedCoverage = acceptedRaw as SyncCoverage
 
-    const stableCoverage: SyncCoverage = {}
-    for (const shard of this.runtime.listSnapshotShards(snapshotBundleId)) {
-      const laneCoverage = decodeGenesisFrontiers(shard.frontierJson)[shard.replicationLaneId] ?? {}
+    const paged = pagedGcCoverage({ database: this.database, runtime: this.runtime, state: this.state, bundle })
+    const stableCoverage: SyncCoverage = paged ?? {}
+    // 旧非 LAN 契约只读取轻量 frontier，分页清单存在时严禁转回旧 shard 读取。
+    for (const shard of paged ? [] : this.database.prepare(`SELECT replication_lane_id,frontier_json FROM sync_snapshot_shard
+      WHERE snapshot_bundle_id=? ORDER BY replication_lane_id`).iterate(snapshotBundleId)) {
+      const lane = String(shard.replication_lane_id) as SyncReplicationLane
+      const laneCoverage = decodeGenesisFrontiers(String(shard.frontier_json))[lane] ?? {}
       const normalized = Object.fromEntries(
         Object.entries(laneCoverage).filter(([, prefix]) => Number.isSafeInteger(prefix) && prefix > 0)
       )
-      if (Object.keys(normalized).length > 0) stableCoverage[shard.replicationLaneId] = normalized
+      if (Object.keys(normalized).length > 0) stableCoverage[lane] = normalized
     }
     if (!coverageDominates(acceptedCoverage, stableCoverage)) {
       throw new Error('GC baseline exceeds stable authorized coverage')
@@ -81,7 +87,7 @@ export class DesktopSyncStableGcCoordinator {
             SELECT operation_id,build_status FROM sync_operation_log
             WHERE sync_space_id=? AND replication_lane_id=? AND actor_incarnation_id=? AND sequence<=?
             ORDER BY sequence
-          `).all(bundle.syncSpaceId, lane, actor, prefix) as unknown as Array<{
+          `).iterate(bundle.syncSpaceId, lane, actor, prefix) as unknown as Iterable<{
             operation_id: string
             build_status: string
           }>

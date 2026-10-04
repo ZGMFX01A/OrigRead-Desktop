@@ -1,3 +1,4 @@
+import { frozenSnapshotDatabase } from './sync-frozen-database-context'
 import type { DatabaseSync } from 'node:sqlite'
 import type {
   SyncBlobAvailabilityState,
@@ -42,13 +43,18 @@ interface BlobManifestRow {
 
 /** R10 client-side Blob metadata, availability and durability state. */
 export class DesktopSyncBlobStateService {
+  /** 冻结转换只读取当前 cut 的副本，正常业务使用注入的数据库。 */
+  private readonly liveDatabase: DatabaseSync
+  private get database(): DatabaseSync { return frozenSnapshotDatabase(this.liveDatabase) }
   isCurrentReference(space: string, type: string, entity: string, generation: number, kind: string, hash: string): boolean {
     return Boolean(this.database.prepare(`SELECT 1 FROM sync_blob_reference
       WHERE sync_space_id=? AND owner_entity_type=? AND owner_entity_sync_id=?
         AND owner_entity_generation=? AND reference_kind=? AND hash=?`)
       .get(space,type,entity,generation,kind,hash))
   }
-  constructor(private readonly database: DatabaseSync) {}
+  constructor(database: DatabaseSync) {
+    this.liveDatabase = database
+}
 
   registerManifest(
     manifest: SyncBlobManifest,
@@ -178,11 +184,12 @@ export class DesktopSyncBlobStateService {
     const manifest = this.requireManifest(ack.hash)
     if (Number(manifest.total_bytes) !== ack.totalBytes) throw new Error('Persisted ACK size does not match Blob manifest')
     this.database.prepare(`
-      INSERT INTO sync_blob_persisted_ack(sync_space_id,hash,replica_id,total_bytes,persisted_at)
-      VALUES(?,?,?,?,?)
+      INSERT INTO sync_blob_persisted_ack(sync_space_id,hash,replica_id,total_bytes,persisted_at,storage_generation,custody_state)
+      VALUES(?,?,?,?,?,?,?)
       ON CONFLICT(sync_space_id,hash,replica_id) DO UPDATE SET
-        total_bytes=excluded.total_bytes,persisted_at=MAX(sync_blob_persisted_ack.persisted_at,excluded.persisted_at)
-    `).run(ack.syncSpaceId, ack.hash, ack.replicaId, ack.totalBytes, ack.persistedAt)
+        total_bytes=excluded.total_bytes,persisted_at=excluded.persisted_at,
+        storage_generation=excluded.storage_generation,custody_state=excluded.custody_state
+    `).run(ack.syncSpaceId, ack.hash, ack.replicaId, ack.totalBytes, ack.persistedAt, ack.storageGeneration ?? null, ack.custodyState ?? null)
   }
 
   canAutoGc(syncSpaceId: string, hash: string, localReplicaId: string): boolean {
@@ -192,11 +199,8 @@ export class DesktopSyncBlobStateService {
       .get(hash) as { count: number }
     if (Number(references.count) > 0) return false
     if (manifest.durability !== 'SYNC_DURABLE') return true
-    const durableReplica = this.database.prepare(`
-      SELECT 1 AS present FROM sync_blob_persisted_ack
-      WHERE sync_space_id=? AND hash=? AND replica_id<>? AND total_bytes=? LIMIT 1
-    `).get(syncSpaceId, hash, localReplicaId, Number(manifest.total_bytes))
-    return Boolean(durableReplica)
+    // HOLDING 只证明某次持有，不是可验证的责任转交，不能据此释放最后保管责任。
+    return false
   }
 
   transferAllowed(syncSpaceId: string, hash: string, policyByLane: Record<string, string>): boolean {

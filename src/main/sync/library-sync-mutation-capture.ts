@@ -6,7 +6,7 @@ import type { SyncIdentityMappingRecord } from '../../shared/sync-identity'
 import type { SyncWritableActorContext } from '../../shared/sync-runtime'
 import type { WebsiteRule } from '../../shared/website'
 import type { WebsiteParsePreferenceUserSyncState } from '../sources/website/website-parse-preference-repository'
-import { articleCanonicalKey, configRuleSyncId, feedCanonicalKey, newSyncId } from './sync-canonical-identity'
+import { articleCandidateKey, configRuleSyncId, feedCandidateKey, newSyncId } from './sync-canonical-identity'
 import { SyncIdentityRepository } from './sync-identity-repository'
 import { DesktopSyncOutboxAllocator } from './sync-outbox-allocator'
 import { DesktopSyncRuntimeCoordinator, SyncActorRollbackDetectedError } from './sync-runtime-coordinator'
@@ -22,9 +22,11 @@ import {
 import { DesktopSyncBlobStateService } from './sync-blob-state'
 import { DesktopSyncLocalBlobStore } from './sync-local-blob-store'
 import { DesktopSyncLocalEvictionService } from './sync-alias-protocol'
+import { libraryRowExists, libraryRows, type SyncLibrarySelection } from './sync-library-selection'
+import { hasDeletedDefaultGroup, isAccountDefaultGroup } from './sync-default-group-recovery'
 
 export interface LibrarySyncMutationCapture {
-  captureLibraryMutation?<T>(accountId: number, mutate: () => T, forceEmitCurrentState?: boolean): T
+  captureLibraryMutation?<T>(accountId: number, mutate: () => T, selection?: boolean | SyncLibrarySelection): T
   bootstrapCurrentLibraryState?(accountId: number): boolean
   captureFilterRulesMutation?<T>(
     accountId: number,
@@ -128,19 +130,26 @@ export class DesktopLibrarySyncMutationCapture implements LibrarySyncMutationCap
       WHERE sync_space_id=? AND local_account_id=?
       LIMIT 1
     `).get(context.syncSpaceId, accountId) as { present: number } | undefined
-    if (completed) return false
+    const restoreDefault = hasDeletedDefaultGroup(this.database, { accountId, syncSpaceId: context.syncSpaceId })
+    if (completed && !restoreDefault) return false
 
-    this.captureLibraryMutation(accountId, () => {
-      this.database.prepare(`
-        INSERT INTO sync_space_join_bootstrap(sync_space_id,local_account_id,completed_at)
-        VALUES(?,?,?)
-        ON CONFLICT(sync_space_id,local_account_id) DO UPDATE SET completed_at=excluded.completed_at
-      `).run(context.syncSpaceId, accountId, Date.now())
-    }, true)
+    this.runtime.transaction(() => {
+      // 旧 actor 的错误删除阻塞了顺序前缀；合法新 incarnation 才能先到达目标端恢复实体。
+      if (restoreDefault) this.coordinator.rotateActor(accountId, 'default-group-delete-recovery')
+      this.captureLibraryMutation(accountId, () => {
+        this.database.prepare(`
+          INSERT INTO sync_space_join_bootstrap(sync_space_id,local_account_id,completed_at)
+          VALUES(?,?,?)
+          ON CONFLICT(sync_space_id,local_account_id) DO UPDATE SET completed_at=excluded.completed_at
+        `).run(context.syncSpaceId, accountId, Date.now())
+      }, true)
+    })
     return true
   }
 
-  captureLibraryMutation<T>(accountId: number, mutate: () => T, forceEmitCurrentState = false): T {
+  captureLibraryMutation<T>(accountId: number, mutate: () => T, selection: boolean | SyncLibrarySelection = false): T {
+    const forceEmitCurrentState = selection === true
+    const scope = typeof selection === 'object' ? selection : undefined
     let context = this.coordinator.currentWritableContext(accountId)
     if (!context) return mutate()
     type LibraryRow = {
@@ -150,17 +159,17 @@ export class DesktopLibrarySyncMutationCapture implements LibrarySyncMutationCap
     }
     const read = (): Map<string, LibraryRow> => {
       const rows = new Map<string, LibraryRow>()
-      for (const row of this.database.prepare('SELECT id,name FROM groups WHERE account_id=? ORDER BY id').all(accountId)) {
+      for (const row of libraryRows({ database: this.database, accountId, scope, type: 'group' })) {
         rows.set('group:' + row.id, { type: 'group', id: String(row.id), fields: { name: row.name } })
       }
-      for (const row of this.database.prepare('SELECT * FROM feeds WHERE account_id=? ORDER BY id').all(accountId)) {
+      for (const row of libraryRows({ database: this.database, accountId, scope, type: 'feed' })) {
         rows.set('feed:' + row.id, { type: 'feed', id: String(row.id), fields: {
           name: row.name, url: row.url, sourceType: row.source_type, icon: row.icon,
           groupLocalId: row.group_id, isNotification: row.is_notification === 1,
           isFullContent: row.is_full_content === 1, isBrowser: row.is_browser === 1
         } })
       }
-      for (const row of this.database.prepare('SELECT * FROM articles WHERE account_id=? ORDER BY id').all(accountId)) {
+      for (const row of libraryRows({ database: this.database, accountId, scope, type: 'article' })) {
         rows.set('article:' + row.id, { type: 'article', id: String(row.id), fields: {
           feedLocalId: row.feed_id,
           title: row.title,
@@ -205,7 +214,7 @@ export class DesktopLibrarySyncMutationCapture implements LibrarySyncMutationCap
         const now = Date.now()
         let canonicalKey: string | null = null
         if (type === 'feed') {
-          canonicalKey = feedCanonicalKey(
+          canonicalKey = feedCandidateKey(
             String(fields.sourceType) as 'rss' | 'website' | 'json',
             String(fields.url)
           )
@@ -214,7 +223,7 @@ export class DesktopLibrarySyncMutationCapture implements LibrarySyncMutationCap
           const feed = after.get('feed:' + feedId) ?? before.get('feed:' + feedId)
           if (!feed) throw new Error(`Article ${id} has no local feed`)
           const feedMapping = ensure('feed', feed.id, feed.fields)
-          canonicalKey = articleCanonicalKey(feedMapping.canonicalKey, typeof fields.url === 'string' ? fields.url : null)
+          canonicalKey = articleCandidateKey(feedMapping.canonicalKey, typeof fields.url === 'string' ? fields.url : null)
         }
         const mapping: SyncIdentityMappingRecord = {
           syncSpaceId: context!.syncSpaceId, entityType: type, localId: id, syncId: newSyncId(),
@@ -229,27 +238,11 @@ export class DesktopLibrarySyncMutationCapture implements LibrarySyncMutationCap
         const old = before.get(key)
         const known = this.identities.findByLocalId(context!.syncSpaceId, row.type, row.id)
         if (!forceEmitCurrentState && known && old && JSON.stringify(old.fields) === JSON.stringify(row.fields)) continue
-        let mapping = ensure(row.type, row.id, row.fields, old == null)
-        let canonicalKey = mapping.canonicalKey
-        if (row.type === 'feed') {
-          canonicalKey = feedCanonicalKey(
-            String(row.fields.sourceType) as 'rss' | 'website' | 'json',
-            String(row.fields.url)
-          )
-        } else if (row.type === 'article') {
-          const feedId = String(row.fields.feedLocalId ?? '')
-          const feed = after.get('feed:' + feedId) ?? before.get('feed:' + feedId)
-          if (!feed) throw new Error(`Article ${row.id} has no local feed`)
-          const feedMapping = ensure('feed', feed.id, feed.fields)
-          canonicalKey = articleCanonicalKey(
-            feedMapping.canonicalKey,
-            typeof row.fields.url === 'string' ? row.fields.url : null
-          )
-        }
-        if (canonicalKey !== mapping.canonicalKey) {
-          mapping = { ...mapping, canonicalKey, updatedAt: Date.now() }
-          this.identities.updateMappings([mapping])
-        }
+        // 旧误删历史不改写；完整捕获以新 generation 恢复默认组，并重新签出 Feed 的父组版本。
+        const restoreDefault = forceEmitCurrentState && row.type === 'group' &&
+          isAccountDefaultGroup(this.database, { accountId, groupId: row.id })
+        let mapping = ensure(row.type, row.id, row.fields, old == null || restoreDefault)
+        // 创建时的 canonical key 与版本属于身份证据，修改 URL 不重写它。
         const fields = { ...row.fields }
         if (row.type === 'feed') {
           const groupId = String(fields.groupLocalId)
@@ -308,7 +301,9 @@ export class DesktopLibrarySyncMutationCapture implements LibrarySyncMutationCap
         })
       }
       const deletedRows = [...before.entries()]
-        .filter(([key]) => !after.has(key))
+        .filter(([key, row]) => !after.has(key) && !libraryRowExists({
+          database: this.database, accountId, type: row.type, id: row.id
+        }))
         .map(([, row]) => row)
         .sort((left, right) => {
           const rank = (type: LibraryRow['type']): number =>
@@ -1221,7 +1216,7 @@ export class DesktopLibrarySyncMutationCapture implements LibrarySyncMutationCap
         entityType: 'feed',
         localId: article.feed_id,
         syncId: newSyncId(),
-        canonicalKey: feedCanonicalKey(article.source_type, article.feed_url),
+        canonicalKey: feedCandidateKey(article.source_type, article.feed_url),
         generation: 0,
         createdAt: now,
         updatedAt: now
@@ -1235,7 +1230,7 @@ export class DesktopLibrarySyncMutationCapture implements LibrarySyncMutationCap
       entityType: 'article',
       localId: articleId,
       syncId: newSyncId(),
-      canonicalKey: articleCanonicalKey(feedMapping.canonicalKey, article.url),
+      canonicalKey: articleCandidateKey(feedMapping.canonicalKey, article.url),
       generation: 0,
       createdAt: now,
       updatedAt: now

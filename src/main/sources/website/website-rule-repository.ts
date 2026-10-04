@@ -5,13 +5,16 @@ import {
   type WebsiteRule,
   type WebsiteRuleBundle
 } from '../../../shared/website'
-import { readUtf8FileOrNull, writeUtf8FileAtomic } from '../../utils/atomic-utf8-file'
-import { compileAndroidRegex } from './website-dom'
+import { configDocument, type ConfigDocument } from '../config-document'
+import { compileAndroidRegex } from './website-rule-identity'
 
 const HOST_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/
 
 export class WebsiteRuleRepository {
-  constructor(private readonly ruleFile: string) {}
+  private readonly document: ConfigDocument
+
+  /** 生产传入 SQLite 文档，文件参数仅用于独立导入/规则工具。 */
+  constructor(input: string | ConfigDocument) { this.document = configDocument(input) }
 
   listRules(): WebsiteRule[] {
     const merged = new Map<string, WebsiteRule>()
@@ -164,13 +167,12 @@ export class WebsiteRuleRepository {
   }
 
   private loadCustomRules(): WebsiteRule[] {
-    const content = readUtf8FileOrNull(this.ruleFile)
+    const content = this.document.read()
     return content == null ? [] : this.decodeBundle(content).rules
   }
 
   private writeCustomRules(rules: WebsiteRule[]): void {
-    writeUtf8FileAtomic(
-      this.ruleFile,
+    this.document.write(
       JSON.stringify({ schemaVersion: WEBSITE_RULE_SCHEMA_VERSION, rules }, null, 2)
     )
   }

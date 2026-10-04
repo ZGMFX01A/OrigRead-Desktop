@@ -1,3 +1,4 @@
+import { SqliteConfigDocument } from './sources/config-document'
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, powerMonitor, shell, Tray, type IpcMainInvokeEvent } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
@@ -51,6 +52,7 @@ import { ElectronSecretStore } from './security/secret-store'
 import { SyncIdentityRepository } from './sync/sync-identity-repository'
 import { SyncRuntimeRepository } from './sync/sync-runtime-repository'
 import { DesktopSyncRollbackWitnessStore } from './sync/sync-rollback-witness'
+import { createProfileWitnessStore } from './sync/sync-profile-witness-path'
 import { DesktopSyncRuntimeCoordinator } from './sync/sync-runtime-coordinator'
 import { DesktopSyncOutboxAllocator } from './sync/sync-outbox-allocator'
 import { DesktopLibrarySyncMutationCapture } from './sync/library-sync-mutation-capture'
@@ -69,6 +71,16 @@ import { DesktopAiHistoryApplier } from './sync/desktop-ai-history-applier'
 import { DesktopExternalConfigReconciler } from './sync/desktop-external-config-reconciler'
 import { SyncSessionCoordinator } from './sync/sync-session-coordinator'
 import { DesktopGenesisSnapshotService } from './sync/genesis-snapshot-service'
+import { SyncPagedSnapshotStore } from './sync/sync-paged-snapshot-store'
+import { SyncSnapshotJobs } from './sync/sync-snapshot-jobs'
+import { convertFrozenSnapshotSource } from './sync/sync-snapshot-capture-executor'
+import { mergeSnapshotInWorker } from './sync/sync-snapshot-merge-executor'
+import { frozenSnapshotDatabase } from './sync/sync-frozen-database-context'
+import { SyncBufferedSnapshotCapture } from './sync/sync-buffered-snapshot-capture'
+import { createWorkerSnapshotTransfer } from './sync/sync-snapshot-publication-executor'
+import { SyncPagedSessionSnapshots } from './sync/sync-paged-session-snapshots'
+import { SyncSnapshotPageWriter } from './sync/sync-snapshot-page-writer'
+import { SyncPagedSnapshotCapture } from './sync/sync-paged-snapshot-capture'
 import { DesktopSnapshotInstallService } from './sync/desktop-snapshot-install-service'
 import { DesktopSyncService } from './sync/desktop-sync-service'
 import { isAllowedRendererUrl } from './security/renderer-trust'
@@ -2075,12 +2087,22 @@ function registerIpcHandlers(): void {
     const bindAddress = localBindAddress == null
       ? undefined
       : validateText(localBindAddress, 'localBindAddress', 256)
-    return desktopSyncService.initiatePairing(host, port, bindAddress)
+    const session = await desktopSyncService.initiatePairing(host, port, bindAddress)
+    // 页面只接收公开状态，临时私钥和会话密钥始终保留在主进程。
+    return desktopSyncService.getPairingCoordinator().getSessionPublicDto(session.sessionId)
   })
   ipcMain.handle(IPC_CHANNELS.confirmSyncPairing, async (event, sessionId: unknown) => {
     assertTrustedSender(event)
     if (!desktopSyncService) throw new Error('Sync service is not ready')
-    return desktopSyncService.confirmPairingSession(validateId(sessionId, 'sessionId'))
+    const session = await desktopSyncService.confirmPairingSession(validateId(sessionId, 'sessionId'))
+    return desktopSyncService.getPairingCoordinator().getSessionPublicDto(session.sessionId)
+  })
+  ipcMain.handle(IPC_CHANNELS.listSyncPairingSessions, (event) => {
+    assertTrustedSender(event)
+    if (!desktopSyncService) throw new Error('Sync service is not ready')
+    const coordinator = desktopSyncService.getPairingCoordinator()
+    // 打开设置时恢复仍有效的配对请求，避免页面未挂载期间的事件丢失。
+    return coordinator.listSessions().map((session) => coordinator.getSessionPublicDto(session.sessionId))
   })
   ipcMain.handle(IPC_CHANNELS.cancelSyncPairing, async (event, sessionId: unknown) => {
     assertTrustedSender(event)
@@ -2655,11 +2677,10 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   // Sequence rollback witness intentionally lives outside the normal profile directory. A copied or
   // restored userData folder must not roll back both SQLite sequence state and its witness together.
   // Electron safeStorage still binds the ciphertext to the OS account/machine protection available.
-  const syncWitnessSecretStore = new ElectronSecretStore(
-    join(app.getPath('appData'), 'origread-sync-rollback-witness.secrets.json')
-  )
   const syncIdentityRepository = new SyncIdentityRepository(desktopDatabase.connection)
   const syncRuntimeRepository = new SyncRuntimeRepository(desktopDatabase.connection)
+  const syncWitnessSecretStore = createProfileWitnessStore({ appDataPath: app.getPath('appData'), userDataPath,
+    hasPersistentDevice: syncRuntimeRepository.findDeviceIdentity() !== null })
   const syncRollbackWitness = new DesktopSyncRollbackWitnessStore(syncWitnessSecretStore, userDataPath)
   const syncRuntimeCoordinator = new DesktopSyncRuntimeCoordinator(
     syncRuntimeRepository,
@@ -2760,12 +2781,27 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   translationSettingsRepository = new TranslationSettingsRepository(desktopDatabase.connection, secretStore, systemLanguage)
   articleFilterRepository = new ArticleFilterRepository(join(app.getPath('userData'), 'article-filter-rules.json'), desktopDatabase.connection)
   rssHubSettingsRepository = new RssHubSettingsRepository(desktopDatabase.connection)
-  jsonRuleRepository = new JsonRuleRepository(join(app.getPath('userData'), 'json-source-rules.json'))
-  websiteRuleRepository = new WebsiteRuleRepository(join(app.getPath('userData'), 'website-rules.json'))
-  websitePreferenceRepository = new WebsiteParsePreferenceRepository(join(app.getPath('userData'), 'website-parse-preferences.json'))
+  jsonRuleRepository = new JsonRuleRepository(new SqliteConfigDocument({ database: desktopDatabase.connection, legacyFile: join(userDataPath, 'json-source-rules.json') }))
+  websiteRuleRepository = new WebsiteRuleRepository(new SqliteConfigDocument({ database: desktopDatabase.connection, legacyFile: join(userDataPath, 'website-rules.json') }))
+  websitePreferenceRepository = new WebsiteParsePreferenceRepository(new SqliteConfigDocument({ database: desktopDatabase.connection, legacyFile: join(userDataPath, 'website-parse-preferences.json') }))
   const syncStateRepository = new SyncStateRepository(desktopDatabase.connection)
   const syncOperationBuilder = new DesktopOperationBuilder(syncRuntimeRepository)
-  const syncSigningKeys = new DesktopSyncDeviceSigningKeyStore(secretStore)
+  const syncSigningKeys = new DesktopSyncDeviceSigningKeyStore(
+    new ElectronSecretStore(join(userDataPath, 'secrets.json'), true),
+    deviceId => {
+      // 已授权身份的私钥缺失必须显式恢复，不能在原设备 ID 上生成新密钥。
+      const row = desktopDatabase!.connection.prepare(
+        'SELECT public_key_spki_base64 FROM sync_peer_identity WHERE device_id=? LIMIT 1'
+      ).get(deviceId)
+      const initialized = desktopDatabase!.connection.prepare('SELECT value FROM local_config_document WHERE key=?').get(`sync.identity.public:${deviceId}`)
+      return row ? String(row.public_key_spki_base64) : initialized ? String(initialized.value) : null
+    },
+    (deviceId, publicKey) => {
+      // 首次成功保存后留下独立公钥见证；密文文件丢失也不能在旧设备 ID 下重新生成。
+      desktopDatabase!.connection.prepare('INSERT INTO local_config_document(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+        .run(`sync.identity.public:${deviceId}`, publicKey)
+    }
+  )
   const syncOperationSigner = new DesktopSyncOperationSigner(syncRuntimeRepository, syncSigningKeys)
   const syncAiHistoryApplier = new DesktopAiHistoryApplier(
     desktopDatabase.connection,
@@ -2797,8 +2833,22 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     websiteRuleRepository,
     jsonRuleRepository,
     rssHubSettingsRepository,
-    websitePreferenceRepository
+    websitePreferenceRepository,
+    { apply: syncApplyCoordinator }
   )
+  const syncPagedSnapshotStore = new SyncPagedSnapshotStore(desktopDatabase.connection)
+  const snapshotDatabasePath = desktopDatabase.connection.prepare('PRAGMA database_list').all().find(row => row.name === 'main')?.file
+  if (typeof snapshotDatabasePath !== 'string' || !snapshotDatabasePath) throw new Error('SNAPSHOT_WORKER_REQUIRED: production database is not on disk')
+  syncSnapshotInstaller.snapshotJobs = new SyncSnapshotJobs({ path: snapshotDatabasePath, userData: userDataPath,
+    blobRoot: syncLocalBlobStore.getRoot(), completed: input => {
+      const stage = syncRuntimeRepository.findSnapshotStreamStage(input.space, input.manifest.snapshotBundleId)
+      if (stage && stage.transportPeerDeviceId === input.peer) {
+        syncRuntimeRepository.upsertSnapshotStreamStage({ ...stage, state: 'READY', updatedAt: Date.now() })
+      }
+      if (accountRepository?.current().id === input.account && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(IPC_CHANNELS.syncLibraryChanged)
+      }
+    } })
   const syncGenesisService = new DesktopGenesisSnapshotService(
     desktopDatabase.connection,
     syncRuntimeRepository,
@@ -2811,8 +2861,29 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     websiteRuleRepository,
     jsonRuleRepository,
     rssHubSettingsRepository,
-    websitePreferenceRepository
+    websitePreferenceRepository,
+    {
+      store: syncPagedSnapshotStore,
+      mergeRecovery: (input, sign) => mergeSnapshotInWorker({ ...input, path: snapshotDatabasePath,
+        userData: userDataPath, blobRoot: syncLocalBlobStore.getRoot() }, sign),
+      convertCapture: input => convertFrozenSnapshotSource({ ...input, path: snapshotDatabasePath,
+        userData: userDataPath, blobRoot: syncLocalBlobStore.getRoot() }),
+      prepareCapture: space => { while (syncOperationSigner.signPending(space) > 0) { /* 本机原签名先于 raw cut。 */ } },
+      createWriter: (snapshotBundleId) => new SyncSnapshotPageWriter({ snapshotBundleId, storage: syncPagedSnapshotStore }),
+      // 分页捕获与 Reader 固定视图共享主库，页面发布参与同一次 Genesis 事务。
+      createCapture: ({ cut, snapshotBundleId, deferPages }) => {
+        // 分批签完本机已构建操作，快照不能重签其他设备的原始历史。
+        if (!deferPages) while (syncOperationSigner.signPending(cut.syncSpaceId) > 0) { /* 旧显式同步工具保持原签名流程。 */ }
+        const storage = deferPages ? new SyncBufferedSnapshotCapture(desktopDatabase!.connection, syncPagedSnapshotStore) : syncPagedSnapshotStore
+        const writer = new SyncSnapshotPageWriter({ snapshotBundleId, storage, deferPages })
+        const capture = new SyncPagedSnapshotCapture({ database: frozenSnapshotDatabase(desktopDatabase!.connection),
+          runtime: syncRuntimeRepository, state: syncStateRepository, cut, writer,
+          store: syncPagedSnapshotStore, snapshotBundleId })
+        return { capture, finish: (frontiers) => writer.finish(frontiers) }
+      }
+    }
   )
+  syncGenesisService.snapshotOwners = syncSnapshotInstaller.snapshotJobs.spaceOwner
   const syncStableGcCoordinator = new DesktopSyncStableGcCoordinator(
     desktopDatabase.connection,
     syncRuntimeRepository,
@@ -2839,7 +2910,9 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     syncBusinessApplier,
     syncGenesisService,
     syncStableGcCoordinator,
-    (syncSpaceId) => syncExternalConfigReconciler.reconcile(syncSpaceId)
+    (syncSpaceId) => syncExternalConfigReconciler.reconcile(syncSpaceId),
+    deps => new SyncPagedSessionSnapshots({ ...deps, transfer: createWorkerSnapshotTransfer({
+      database: desktopDatabase!.connection, store: syncPagedSnapshotStore }) })
   )
   desktopSyncService = new DesktopSyncService(
     syncRuntimeRepository,
@@ -2913,9 +2986,16 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     syncLocalBlobStore,
     syncSnapshotInstaller
   )
+  // 旧账户仍可被动接收数据，但只刷新当前窗口所选账户的阅读界面。
+  desktopSyncService.setBusinessDataChangedListener((localAccountId) => {
+    if (accountRepository?.current().id === localAccountId && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(IPC_CHANNELS.syncLibraryChanged)
+    }
+  })
   desktopSyncService.getPairingCoordinator().onSessionUpdated((session) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(IPC_CHANNELS.syncPairingUpdated, session)
+      const publicStatus = desktopSyncService?.getPairingCoordinator().getSessionPublicDto(session.sessionId)
+      if (publicStatus) mainWindow.webContents.send(IPC_CHANNELS.syncPairingUpdated, publicStatus)
     }
   })
   feedDiscoveryCatalog = new FeedDiscoveryCatalog()
@@ -3040,6 +3120,12 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   registerIpcHandlers()
   createMainWindow()
   createTray()
+  // 恢复用户此前启用的 LAN 意图；失败保留诊断，不把开关静默改为关闭。
+  if (desktopSyncService.status().isLanRequested) {
+    void desktopSyncService.resumeLanAfterSystem().catch((error) => {
+      console.error('[OrigRead] failed to restore LAN Sync after application restart', error)
+    })
+  }
   powerMonitor.on('suspend', () => {
     void desktopSyncService?.suspendLanForSystem('SYSTEM_SUSPEND').catch((error) => {
       console.warn('[OrigRead] failed to suspend LAN Sync before system sleep', error)

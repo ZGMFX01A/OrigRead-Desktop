@@ -10,13 +10,9 @@ export class SyncLocalLanePolicy {
     const row = this.database.prepare('SELECT value FROM app_settings WHERE key=?')
       .get(this.key(syncSpaceId)) as { value: string } | undefined
     if (!row) return {}
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(row.value)
-    } catch {
-      return {}
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    // 损坏的持久政策必须显式失败，不能按空政策重新启用 AI 数据。
+    const parsed: unknown = JSON.parse(row.value)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('SYNC_LANE_POLICY_CORRUPTED')
     const result: SyncPolicyByLane = {}
     for (const [lane, policy] of Object.entries(parsed as Record<string, unknown>)) {
       if (!SYNC_REPLICATION_LANES.includes(lane as SyncReplicationLane)) continue

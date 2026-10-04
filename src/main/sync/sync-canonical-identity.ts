@@ -1,9 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { SourceType } from '../../shared/library'
 import type { SyncEntityType } from '../../shared/sync-identity'
-import { sourceUrlComparisonKey } from '../../shared/source-url-normalizer'
+import { sourceUrlComparisonKey, legacySourceUrlComparisonKey } from '../../shared/source-url-normalizer'
 
+/** 历史 v1 算法及签名 fixture 保持固定。 */
 export const SYNC_CANONICAL_KEY_VERSION = 1
+/** 新候选保留百分号、尾斜杠及业务 query，不授权自动 Alias。 */
+export const SYNC_CANDIDATE_KEY_VERSION = 2
 export const SYNC_RELATION_ID_VERSION = 1
 export const SYNC_CONFIG_RULE_ID_VERSION = 1
 
@@ -12,7 +15,7 @@ const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]
 /** R10 canonicalSourceKey v1. Mirrors Android SyncCanonicalIdentity exactly. */
 export function feedCanonicalKey(sourceType: SourceType, sourceUrl: string): string {
   const normalizedType = sourceType.trim().toLowerCase()
-  const normalizedUrl = sourceUrlComparisonKey(sourceUrl)
+  const normalizedUrl = legacySourceUrlComparisonKey(sourceUrl)
   return `feed:v${SYNC_CANONICAL_KEY_VERSION}:${sha256Framed(normalizedType, normalizedUrl)}`
 }
 
@@ -24,8 +27,19 @@ export function articleCanonicalKey(feedKey: string | null | undefined, articleL
   if (!feedKey?.trim()) return null
   const link = articleLink?.trim()
   if (!link) return null
-  const normalizedLink = sourceUrlComparisonKey(link)
+  const normalizedLink = legacySourceUrlComparisonKey(link)
   return `article:v${SYNC_CANONICAL_KEY_VERSION}:${sha256Framed(feedKey, 'link', normalizedLink)}`
+}
+
+/** 新 Feed 身份的 v2 候选；旧映射不重算。 */
+export function feedCandidateKey(sourceType: SourceType, sourceUrl: string): string {
+  return `feed:v${SYNC_CANDIDATE_KEY_VERSION}:${sha256Framed(sourceType.trim().toLowerCase(), sourceUrlComparisonKey(sourceUrl))}`
+}
+
+/** 新 Article 的 link-only 候选不能独自证明实体等价。 */
+export function articleCandidateKey(feedKey: string | null | undefined, link: string | null | undefined): string | null {
+  if (!feedKey?.trim() || !link?.trim()) return null
+  return `article:v${SYNC_CANDIDATE_KEY_VERSION}:${sha256Framed(feedKey, 'link', sourceUrlComparisonKey(link))}`
 }
 
 export function newSyncId(): string {

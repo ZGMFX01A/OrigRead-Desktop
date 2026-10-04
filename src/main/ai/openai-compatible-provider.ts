@@ -234,8 +234,12 @@ function errorDetail(body: string): string {
         stringValue(value.message) || stringValue(value.detail) || stringValue(value.description) || stringValue(nested?.message)
       ).slice(0, 400)
     }
-  } catch { /* ignore */ }
-  return redactSensitiveText(body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()).slice(0, 400)
+  } catch {
+    // 网关可能返回 HTML 错误页，保留其中可读的错误信息而非页面资源。
+  }
+  // 样式和脚本内容不属于错误正文，先移除整段，避免字体/CSS 占满错误提示。
+  const visibleBody = body.replace(/<(style|script)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+  return redactSensitiveText(visibleBody.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()).slice(0, 400)
 }
 
 function chatCompletionRequestBody(
