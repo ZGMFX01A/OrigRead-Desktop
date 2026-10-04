@@ -46,9 +46,9 @@ describe('SourceSyncService', () => {
 
     const result = await service.refreshAllSources(fetchedAt)
 
-    expect(rssRefresh).toHaveBeenCalledWith('rss-feed', fetchedAt)
-    expect(jsonRefresh).toHaveBeenCalledWith('json-feed', fetchedAt)
-    expect(websiteRefresh).toHaveBeenCalledWith('website-feed', fetchedAt)
+    expect(rssRefresh).toHaveBeenCalledWith('rss-feed', fetchedAt, 1)
+    expect(jsonRefresh).toHaveBeenCalledWith('json-feed', fetchedAt, 1)
+    expect(websiteRefresh).toHaveBeenCalledWith('website-feed', fetchedAt, 1)
     expect(result).toMatchObject({
       sourceCount: 3,
       successCount: 3,
@@ -116,8 +116,8 @@ describe('SourceSyncService', () => {
 
     const result = await service.refreshSource('legacy-website-rss', fetchedAt)
 
-    expect(websiteRefresh).toHaveBeenCalledWith('legacy-website-rss', fetchedAt)
-    expect(rssRecovery).toHaveBeenCalledWith('legacy-website-rss', fetchedAt)
+    expect(websiteRefresh).toHaveBeenCalledWith('legacy-website-rss', fetchedAt, 1)
+    expect(rssRecovery).toHaveBeenCalledWith('legacy-website-rss', fetchedAt, 1)
     expect(result).toMatchObject({
       status: 'success',
       sourceType: 'rss',
@@ -234,10 +234,7 @@ function createService(
 ): SourceSyncService {
   return new SourceSyncService(
     repository,
-    { refresh: rssRefresh, tryRecoverMisclassifiedEmptyWebsite: rssRecovery } as unknown as RssSubscriptionService,
-    { refresh: jsonRefresh } as unknown as JsonSubscriptionService,
-    { refresh: websiteRefresh } as unknown as WebsiteSubscriptionService,
+    { rss: { refresh: rssRefresh, tryRecoverMisclassifiedEmptyWebsite: rssRecovery } as unknown as RssSubscriptionService, json: { refresh: jsonRefresh } as unknown as JsonSubscriptionService, website: { refresh: websiteRefresh } as unknown as WebsiteSubscriptionService },
     listener
   )
 }
-

@@ -90,12 +90,12 @@ describe('WebsiteSourceService parity', () => {
     dirs.push(dir)
     const preferenceRepository = new WebsiteParsePreferenceRepository(join(dir, 'prefs.json'))
     const ruleRepository = new WebsiteRuleRepository(join(dir, 'rules.json'))
-    const service = new WebsiteSourceService(ruleRepository, preferenceRepository, async () => {
+    const service = new WebsiteSourceService(ruleRepository, preferenceRepository, { fetcher: async () => {
       requests += 1
       return payload(fixture('url-clusters.html'))
-    }, {
+    }, dynamicRenderer: {
       render: async () => ({ finalUrl: 'https://news.example.com/', html: fixture('url-clusters.html') })
-    })
+    } })
     const feed = websiteFeed()
     preferenceRepository.setDynamicRenderingEnabled(feed.id, true)
     expect(await service.fetchArticles(feed, FETCHED_AT)).toHaveLength(5)
@@ -111,13 +111,12 @@ describe('WebsiteSourceService parity', () => {
     const service = new WebsiteSourceService(
       ruleRepository,
       preferenceRepository,
-      async () => { throw new Error('static fetch should not run') },
-      {
+      { fetcher: async () => { throw new Error('static fetch should not run') }, dynamicRenderer: {
         render: async (_url, signal) => {
           observedSignal = signal
           return { finalUrl: 'https://news.example.com/', html: fixture('url-clusters.html') }
         }
-      }
+      } }
     )
     const controller = new AbortController()
 
@@ -134,13 +133,12 @@ describe('WebsiteSourceService parity', () => {
     const service = new WebsiteSourceService(
       ruleRepository,
       preferenceRepository,
-      async () => { throw new Error('static fetch should not run') },
-      {
+      { fetcher: async () => { throw new Error('static fetch should not run') }, dynamicRenderer: {
         render: async () => ({
           finalUrl: 'https://app.example.com/',
           html: '<html><head><title>Rendered App</title></head><body><div id="root">Loaded</div></body></html>'
         })
-      }
+      } }
     )
 
     const inspected = await service.inspectDynamic('https://app.example.com/', FETCHED_AT)
@@ -164,7 +162,7 @@ function createService(queue: WebsiteFetchPayload[], customFetcher?: (url: strin
   return {
     preferenceRepository,
     ruleRepository,
-    service: new WebsiteSourceService(ruleRepository, preferenceRepository, fetcher)
+    service: new WebsiteSourceService(ruleRepository, preferenceRepository, { fetcher: fetcher })
   }
 }
 
@@ -182,7 +180,7 @@ function payload(html: string): WebsiteFetchPayload {
 }
 
 function fixture(name: string): string {
-  return readFileSync(join(process.cwd(), 'tests/fixtures/website-samples', name), 'utf8')
+  return readFileSync(join(process.cwd(), 'src/main/testing/fixtures/website-samples', name), 'utf8')
 }
 
 function changedStructureHtml(): string {

@@ -1,3 +1,4 @@
+// 这些广告跟踪参数不决定订阅内容，可在比较地址时移除。
 const TRACKING_QUERY_KEYS = new Set([
   'fbclid',
   'gclid',
@@ -9,8 +10,7 @@ const TRACKING_QUERY_KEYS = new Set([
 ])
 
 /**
- * Comparison-only source URL normalization. Keep business query parameters and their order intact;
- * only remove transformations that cannot change source semantics. Mirrors Android SourceUrlNormalizer.
+ * 仅用于比较订阅地址；保留业务参数及非根路径的斜杠，避免合并服务器上的不同资源。
  */
 export function sourceUrlComparisonKey(value: string): string {
   const trimmed = value.trim()
@@ -23,19 +23,22 @@ export function sourceUrlComparisonKey(value: string): string {
   const protocol = url.protocol.toLowerCase()
   if (protocol !== 'http:' && protocol !== 'https:') return trimmed
 
-  const hostname = url.hostname.toLowerCase()
-  const port = url.port && !((protocol === 'http:' && url.port === '80') || (protocol === 'https:' && url.port === '443'))
-    ? `:${url.port}`
-    : ''
-  const auth = url.username || url.password
-    ? `${url.username}${url.password ? `:${url.password}` : ''}@`
-    : ''
-  const path = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/, '')
+  // URL 本身已移除 HTTP / HTTPS 默认端口，host 同时保留 IPv6 方括号和非默认端口。
+  const host = url.host.toLowerCase()
+  const auth = authorityCredentials(url)
+  const path = url.pathname === '/' ? '' : url.pathname
   const rawQuery = url.search.startsWith('?') ? url.search.slice(1) : url.search
   const query = normalizeQuery(rawQuery)
-  return `${protocol}//${auth}${hostname}${port}${path}${query ? `?${query}` : ''}`
+  return `${protocol}//${auth}${host}${path}${query ? `?${query}` : ''}`
 }
 
+/** 用户信息参与来源身份比较，不能把不同凭据的订阅合并。 */
+function authorityCredentials(url: URL): string {
+  if (!url.username && !url.password) return ''
+  return `${url.username}${url.password ? `:${url.password}` : ''}@`
+}
+
+/** 只移除跟踪参数，业务参数及其顺序保持原样。 */
 function normalizeQuery(rawQuery: string): string {
   if (!rawQuery.trim()) return ''
   return rawQuery

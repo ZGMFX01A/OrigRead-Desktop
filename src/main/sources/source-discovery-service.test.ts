@@ -532,15 +532,16 @@ function createService(options: {
   existingRssHubRoute?: (routePath: string) => boolean
 }): SourceDiscoveryService {
   return new SourceDiscoveryService(
-    {
+    { rssDiscovery: {
       parseDirect: options.directRss ?? (async () => { throw new Error('not a direct feed') }),
       discover: options.rss
     } as unknown as RssDiscoveryService,
-    {
+      rssSubscription: {
       addDiscovered: () => ({ feedId: 'rss-feed', insertedArticles: 0 }),
+      getCurrentAccountId: () => 1,
       hasExistingSource: options.existingSource ?? (() => false)
     } as unknown as RssSubscriptionService,
-    {
+      rssHubResolver: {
       isEnabled: () => true,
       probe: options.rssHub,
       probeRoute: options.rssHubRoute ?? options.rssHub,
@@ -549,20 +550,24 @@ function createService(options: {
       localRouteDiagnostics: options.rssHubLocal ?? (() => []),
       knownInstanceUrls: () => options.knownRssHubInstances ?? []
     } as unknown as RssHubResolver,
-    {
+      rssHubSubscription: {
       subscribe: options.rssHubSubscribe ?? (() => ({ feedId: 'hub-feed' })),
+      subscribeMany: (selections: any[]) => selections.map((selection) => options.rssHubSubscribe
+        ? options.rssHubSubscribe(selection.sourceUrl, selection.result, selection.preferredInstance) : { feedId: 'hub-feed' }),
       hasExistingRoute: options.existingRssHubRoute ?? (() => false)
     } as unknown as RssHubSubscriptionService,
-    { probe: options.json } as unknown as JsonSourceService,
-    { add: async () => ({ feedId: 'json-feed', insertedArticles: 0 }) } as unknown as JsonSubscriptionService,
-    {
+      jsonSource: { probe: options.json } as unknown as JsonSourceService,
+      jsonSubscription: { add: async () => ({ feedId: 'json-feed', insertedArticles: 0 }) } as unknown as JsonSubscriptionService,
+      websiteSource: {
       inspect: options.website,
       inspectDynamic: options.dynamic,
       hasRule: () => false
     } as unknown as WebsiteSourceService,
-    { add: options.websiteSubscribe ?? (async () => ({ feedId: 'website-feed', insertedArticles: 0 })) } as unknown as WebsiteSubscriptionService,
-    options.accountCoordinator as any,
-    options.feedDiscoveryCatalog as any
+      websiteSubscription: { add: options.websiteSubscribe ?? (async () => ({ feedId: 'website-feed', insertedArticles: 0 })) } as unknown as WebsiteSubscriptionService,
+    accountCoordinator: options.accountCoordinator ? {
+      ...options.accountCoordinator, current: () => ({ id: 1, ...options.accountCoordinator!.current() })
+    } as any : undefined,
+      feedDiscoveryCatalog: options.feedDiscoveryCatalog as any }
   )
 }
 

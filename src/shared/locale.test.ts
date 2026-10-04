@@ -8,9 +8,14 @@ describe('desktop locale', () => {
     expect(resolveBrandName('zh-Hans')).toBe('原读')
   })
 
-  it('falls back to English for non-Chinese locales', () => {
+  it('uses available translations and defaults to English for unknown locales', () => {
     expect(resolveDesktopLanguage('en-US')).toBe('en')
-    expect(resolveDesktopLanguage('ja-JP')).toBe('en')
+    expect(resolveDesktopLanguage('ja-JP')).toBe('ja')
+    expect(resolveDesktopLanguage('es-ES')).toBe('es')
+    expect(resolveDesktopLanguage('pt-PT')).toBe('pt-BR')
+    expect(resolveDesktopLanguage('de-DE')).toBe('de')
+    expect(resolveDesktopLanguage('fr-FR')).toBe('fr')
+    expect(resolveDesktopLanguage('ko-KR')).toBe('en')
     expect(resolveBrandName('en-GB')).toBe('OrigRead')
   })
 })

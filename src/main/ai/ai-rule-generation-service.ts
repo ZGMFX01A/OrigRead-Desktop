@@ -111,7 +111,7 @@ export class AiRuleGenerationService {
       const rule = normalizeGeneratedJsonRule(generated, page.finalUrl, detected.kind, detected.json)
       this.jsonRules.validateCandidate(rule)
       const fetchedAt = Date.now()
-      const articles = this.jsonParser.parse(detected.json, rule, page.finalUrl, fetchedAt)
+      const articles = this.jsonParser.parse(detected.json, rule, { baseUrl: page.finalUrl, fetchedAt: fetchedAt })
       const diagnostics = scoreWebsiteCandidate(articles, fetchedAt)
       if (diagnostics.state !== 'AVAILABLE') {
         throw new Error(`生成的 JSON 规则未通过健康检查：${diagnostics.reasons.join('、') || '内容质量不足'}`)

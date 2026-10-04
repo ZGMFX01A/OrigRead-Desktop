@@ -65,7 +65,7 @@ function cards(prefix: string, start: number): string {
 }
 
 function fixtureText(name: string): string {
-  return readFileSync(join(process.cwd(), 'tests/fixtures/website-samples', name), 'utf8')
+  return readFileSync(join(process.cwd(), 'src/main/testing/fixtures/website-samples', name), 'utf8')
 }
 
 function loadFixture(name: string): cheerio.CheerioAPI {

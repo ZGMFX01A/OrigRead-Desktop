@@ -21,6 +21,15 @@
   </p>
 </div>
 
+## Interface languages
+
+OrigRead Desktop includes interface translations for **Spanish, Brazilian Portuguese, German, French, and Japanese**, alongside **English and Simplified Chinese**.
+
+To use one of the five additional languages, choose **Follow system** in the language setting and use the corresponding system language. The manual language list currently offers only English and Simplified Chinese.
+
+Interface language is separate from article translation. The README and standalone user guides are available in English and Simplified Chinese.
+
+
 ## A place for the things you want to read
 
 Your favorite blogs, the news you follow, that occasional column worth waiting for—all in one place. OrigRead brings your chosen sources into a timeline you can read at your own pace.

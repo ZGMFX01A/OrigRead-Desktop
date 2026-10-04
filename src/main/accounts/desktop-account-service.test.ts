@@ -42,6 +42,6 @@ function createFixture(valid:boolean) {
     markArticleUnread:vi.fn(),markArticleStarred:vi.fn(),addGroup:vi.fn(),updateFeed:vi.fn(),deleteFeed:vi.fn()
   }
   const localSync={refreshAllSources:vi.fn()}
-  const service=new DesktopAccountService(accounts,library,remote as never,localSync as never)
+  const service=new DesktopAccountService(accounts,library,{ remote: remote as never, localSync: localSync as never })
   return{database,library,accounts,remote,service}
 }

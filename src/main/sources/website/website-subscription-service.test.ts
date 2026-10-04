@@ -24,11 +24,11 @@ describe('WebsiteSubscriptionService', () => {
       const sourceService = new WebsiteSourceService(
         new WebsiteRuleRepository(join(dir, 'rules.json')),
         new WebsiteParsePreferenceRepository(join(dir, 'prefs.json')),
-        async () => {
+        { fetcher: async () => {
           const next = queue.shift()
           if (!next) throw new Error('No queued response')
           return next
-        }
+        } }
       )
       const subscription = new WebsiteSubscriptionService(repository, sourceService)
       const inspected = await sourceService.inspect('https://news.example.com/')
@@ -59,11 +59,11 @@ describe('WebsiteSubscriptionService', () => {
       const sourceService = new WebsiteSourceService(
         new WebsiteRuleRepository(join(dir, 'rules.json')),
         new WebsiteParsePreferenceRepository(join(dir, 'prefs.json')),
-        async () => {
+        { fetcher: async () => {
           calls += 1
           if (calls === 1) return payload(html)
           throw new Error('add must not make a second request')
-        }
+        } }
       )
       const subscription = new WebsiteSubscriptionService(repository, sourceService)
       const inspected = await sourceService.inspect('https://news.example.com/')
@@ -84,7 +84,7 @@ describe('WebsiteSubscriptionService', () => {
 })
 
 function fixture(name: string): string {
-  return readFileSync(join(process.cwd(), 'tests/fixtures/website-samples', name), 'utf8')
+  return readFileSync(join(process.cwd(), 'src/main/testing/fixtures/website-samples', name), 'utf8')
 }
 
 function payload(html: string): WebsiteFetchPayload {

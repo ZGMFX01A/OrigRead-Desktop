@@ -155,7 +155,7 @@ function rule(id: string, host: string, contentSelector: string | string[]): Web
 }
 
 function fixture(relative: string): string {
-  return readFileSync(join(process.cwd(), 'tests', 'fixtures', relative), 'utf8')
+  return readFileSync(join(process.cwd(), 'src', 'main', 'testing', 'fixtures', relative), 'utf8')
 }
 
 function stripHtml(html: string): string {

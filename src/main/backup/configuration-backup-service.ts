@@ -13,7 +13,7 @@ import type { ConfigurationBackup,ConfigurationBackupSecrets,ConfigurationRestor
 import { backupTargetToTranslationTarget } from '../../shared/configuration-backup'
 import { normalizeRssHubRoutePath } from '../sources/rsshub/rsshub-input'
 import type { RssHubSubscriptionDescriptor } from '../../shared/rsshub'
-import type { FeedRecord,GroupRecord,SourceType } from '../../shared/library'
+import type { FeedRecord, SourceType } from '../../shared/library'
 import type { TranslationProviderType } from '../../shared/translation'
 import { TRANSLATION_PROVIDER_TYPES } from '../../shared/translation'
 import { decryptConfigurationSecrets,encryptConfigurationSecrets } from './configuration-backup-crypto'
@@ -28,6 +28,7 @@ import { MAX_WEB_SEARCH_MAX_RESULTS, MIN_WEB_SEARCH_MAX_RESULTS, WEB_SEARCH_PROV
 import type { McpRemoteRepository } from '../mcp/mcp-remote-repository'
 import type { McpLocalRepository } from '../mcp/mcp-local-repository'
 import type { SecretStore } from '../security/secret-store'
+import { exportJsonSubscriptionBackup, validateJsonSubscriptionBackup, restoreJsonSubscriptionBackup } from './json-subscription-backup'
 
 export class ConfigurationBackupService {
   constructor(
@@ -70,7 +71,7 @@ export class ConfigurationBackupService {
       schemaVersion:1,appName:'OrigRead',sourceVersion:this.appVersion,createdAtEpochMillis:Date.now(),preferences:desktopPreferences(settings),
       accountSettings:{syncIntervalMinutes:account?.syncIntervalMinutes??settings.syncIntervalMinutes,syncOnStart:account?.syncOnStart??settings.syncOnStart,syncOnlyOnWiFi:account?.syncOnlyOnWiFi??false,syncOnlyWhenCharging:account?.syncOnlyWhenCharging??false,keepArchivedMillis:account?.keepArchivedMillis??2_592_000_000,syncBlockList:account?.syncBlockList??[]},
       subscriptions:{sourceAccountId:account?.id??1,groups:groups.map((group)=>({id:group.id,name:group.name,isDefault:group.isDefault})),feeds:feeds.map(toBackupFeed)},
-      websiteRules:JSON.parse(this.websiteRules.exportRules()),jsonRules:JSON.parse(this.jsonRules.exportRules()),articleFilters:JSON.parse(this.articleFilters.exportRules()),websiteParsePreferences:JSON.parse(this.websitePreferences.exportBackup(new Set(feeds.map((feed)=>feed.id)))),
+      websiteRules:JSON.parse(this.websiteRules.exportRules()),jsonRules:exportJsonSubscriptionBackup(this.library,this.jsonRules),articleFilters:JSON.parse(this.articleFilters.exportRules()),websiteParsePreferences:JSON.parse(this.websitePreferences.exportBackup(new Set(feeds.map((feed)=>feed.id)))),
       rssHub:this.rssHub.current(),rssHubSourceUrls:this.library.listRssHubSourceUrls(),rssHubSubscriptions:this.library.listRssHubDescriptors(),rssHubDescriptors:this.library.listRssHubDescriptors(),translation:toTranslationBackup(translation),ai:toAiBackup(ai),
       ...(this.llmSkills&&this.llmQuickMessages&&this.llmCustomization?{llm:{customization:this.llmCustomization.current(),skills:JSON.parse(this.llmSkills.exportBackupState()),quickMessages:JSON.parse(this.llmQuickMessages.exportBackupState())}}:{}),
       ...(this.webSearch?{webSearch:this.webSearch.exportStoredSettings()}:{}),
@@ -117,6 +118,7 @@ export class ConfigurationBackupService {
     }
     this.websiteRules.restoreBackup(JSON.stringify(backup.websiteRules))
     this.jsonRules.restoreBackup(JSON.stringify(backup.jsonRules))
+    restoreJsonSubscriptionBackup(backup,this.library,feedIdMap)
     const filterRulesRestored=this.articleFilters.restoreBackup(JSON.stringify(backup.articleFilters),feedIdMap)
     this.websitePreferences.restoreBackup(JSON.stringify(backup.websiteParsePreferences),feedIdMap)
     this.rssHub.restore(backup.rssHub)
@@ -198,6 +200,7 @@ export class ConfigurationBackupService {
     normalizeDesktopSyncInterval(backup.accountSettings?.syncIntervalMinutes)
     readDesktopPreferences(backup.preferences)
     this.websiteRules.validateBackup(JSON.stringify(backup.websiteRules));this.jsonRules.validateBackup(JSON.stringify(backup.jsonRules));this.articleFilters.validateBackup(JSON.stringify(backup.articleFilters));this.websitePreferences.validateBackup(JSON.stringify(backup.websiteParsePreferences))
+    validateJsonSubscriptionBackup(backup,this.jsonRules)
     validateRssHubBackup(backup.rssHub);validateTranslationBackup(backup.translation);validateAiBackup(backup.ai);this.validateLlmBackup(backup.llm);validateWebSearchBackup(backup.webSearch);this.validateMcpBackup(backup.mcp)
     return backup
   }

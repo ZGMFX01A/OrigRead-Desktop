@@ -6,7 +6,7 @@ import { AutomaticArticleDateExtractor } from './automatic-article-date-extracto
 
 describe('AutomaticArticleDateExtractor', () => {
   const fetchedAt = Date.parse('2026-08-05T10:00:00+08:00')
-  const html = readFileSync(join(process.cwd(), 'tests/fixtures/website-samples/date-extraction.html'), 'utf8')
+  const html = readFileSync(join(process.cwd(), 'src/main/testing/fixtures/website-samples/date-extraction.html'), 'utf8')
   const $ = cheerio.load(html)
   const extractor = AutomaticArticleDateExtractor.create($, 'https://news.example.com/', fetchedAt)
 

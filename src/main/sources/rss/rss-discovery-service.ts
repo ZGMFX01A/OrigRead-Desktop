@@ -1,13 +1,10 @@
 import * as cheerio from 'cheerio'
 import Parser from 'rss-parser'
-import type { DiscoveredRssFeed, RssFeedItem } from '../../../shared/rss'
+import type { DiscoveredRssFeed } from '../../../shared/rss'
+import { toRssFeedItem, safeHostName, optionalWithTimeout, type CustomRssItem } from './rss-feed-items'
 import { BestIconFinder, extractIconDomain, type RssIconFinder } from './best-icon-finder'
 import { DESKTOP_BROWSER_USER_AGENT } from '../../network/user-agent-policy'
 import { decodeHttpText } from '../../network/http-text-decoder'
-
-interface CustomRssItem {
-  contentEncoded?: string
-}
 
 export interface RssFetchPayload {
   finalUrl: string
@@ -32,16 +29,21 @@ export interface RssDirectFetchResult {
 
 export type RssFetcher = (url: string, validators?: RssRequestValidators, signal?: AbortSignal) => Promise<RssFetchPayload>
 
-interface RssParseOptions {
+export interface RssParseOptions {
+  sourcePageUrl?: string
+  validators?: RssRequestValidators
+  signal?: AbortSignal
   skipIconDiscovery?: boolean
 }
 
+// 保留 RSS 扩展正文，并使用解析库对 RSS / Atom 命名空间进行真实解析。
 const parser = new Parser<Record<string, never>, CustomRssItem>({
   customFields: {
     item: [['content:encoded', 'contentEncoded']]
   }
 })
 
+// 网页未声明 alternate 时按这些常见入口依次查找。
 const COMMON_FEED_PATHS = [
   '/feed',
   '/feed/',
@@ -72,19 +74,22 @@ export class RssDiscoveryService {
     // HTML 做 rel=alternate 发现，避免“先 parseDirect、失败后 discover 又下载一次”的重复请求。
     const inputPayload = await this.fetcher(normalizedInputUrl, undefined, signal)
     try {
-      return await this.parsePayload(inputPayload, normalizedInputUrl, normalizedInputUrl, false, signal)
+      return await this.parsePayload(inputPayload, { feedUrl: normalizedInputUrl, sourcePageUrl: normalizedInputUrl, discoveredFromPage: false, signal })
     } catch (directError) {
+      signal?.throwIfAborted()
+      const pageUrl = inputPayload.finalUrl
       const html = decodePayload(inputPayload)
       const candidates = distinct([
-        ...extractAlternateFeedUrls(html, normalizedInputUrl),
-        ...buildCommonFeedCandidates(normalizedInputUrl)
+        ...extractAlternateFeedUrls(html, pageUrl),
+        ...buildCommonFeedCandidates(pageUrl)
       ])
 
       for (const candidateUrl of candidates) {
         try {
-          return await this.parseFeedUrl(candidateUrl, normalizedInputUrl, true, signal)
+          return await this.parseFeedUrl(candidateUrl, { sourcePageUrl: pageUrl, discoveredFromPage: true, signal })
         } catch {
-          // 单个候选异常不影响后续候选。
+          // 解析失败可进入下一个候选；取消必须终止网络链。
+          signal?.throwIfAborted()
         }
       }
 
@@ -92,20 +97,16 @@ export class RssDiscoveryService {
     }
   }
 
-  async parseDirect(feedUrl: string, sourcePageUrl = feedUrl, signal?: AbortSignal, options: RssParseOptions = {}): Promise<DiscoveredRssFeed> {
-    return this.parseFeedUrl(normalizeHttpUrl(feedUrl), normalizeHttpUrl(sourcePageUrl), false, signal, options)
+  /** 直接请求已确认来源，页面地址、取消信号及图标策略由调用方提供。 */
+  async parseDirect(feedUrl: string, options: RssParseOptions = {}): Promise<DiscoveredRssFeed> {
+    return this.parseFeedUrl(normalizeHttpUrl(feedUrl), { ...options, discoveredFromPage: false })
   }
 
-  async parseDirectConditional(
-    feedUrl: string,
-    sourcePageUrl = feedUrl,
-    validators: RssRequestValidators = {},
-    signal?: AbortSignal,
-    options: RssParseOptions = {}
-  ): Promise<RssDirectFetchResult> {
+  /** 304 无正文时不解析 XML，验证器仍由同一来源的事务控制提交。 */
+  async parseDirectConditional(feedUrl: string, options: RssParseOptions = {}): Promise<RssDirectFetchResult> {
     const normalizedFeedUrl = normalizeHttpUrl(feedUrl)
-    const normalizedSourcePageUrl = normalizeHttpUrl(sourcePageUrl)
-    const payload = await this.fetcher(normalizedFeedUrl, validators, signal)
+    const validators = options.validators ?? {}
+    const payload = await this.fetcher(normalizedFeedUrl, validators, options.signal)
     if (payload.notModified) {
       return {
         feed: null,
@@ -115,32 +116,24 @@ export class RssDiscoveryService {
       }
     }
     return {
-      feed: await this.parsePayload(payload, normalizedFeedUrl, normalizedSourcePageUrl, false, signal, options),
+      feed: await this.parsePayload(payload, { ...options, feedUrl: normalizedFeedUrl, sourcePageUrl: options.sourcePageUrl ?? normalizedFeedUrl, discoveredFromPage: false }),
       notModified: false,
       etag: payload.etag ?? null,
       lastModified: payload.lastModified ?? null
     }
   }
 
-  private async parseFeedUrl(
-    feedUrl: string,
-    sourcePageUrl: string,
-    discoveredFromPage: boolean,
-    signal?: AbortSignal,
-    options: RssParseOptions = {}
-  ): Promise<DiscoveredRssFeed> {
-    const payload = await this.fetcher(feedUrl, undefined, signal)
-    return this.parsePayload(payload, feedUrl, sourcePageUrl, discoveredFromPage, signal, options)
+  private async parseFeedUrl(feedUrl: string, options: RssParseOptions & { discoveredFromPage: boolean }): Promise<DiscoveredRssFeed> {
+    options.signal?.throwIfAborted()
+    const payload = await this.fetcher(feedUrl, undefined, options.signal)
+    return this.parsePayload(payload, { ...options, feedUrl, sourcePageUrl: options.sourcePageUrl ?? feedUrl })
   }
 
-  private async parsePayload(
-    payload: RssFetchPayload,
-    feedUrl: string,
-    sourcePageUrl: string,
-    discoveredFromPage: boolean,
-    signal?: AbortSignal,
-    options: RssParseOptions = {}
-  ): Promise<DiscoveredRssFeed> {
+  /** 已解析出的 XML 内容独立于图标元数据；刷新可沿用既有图标。 */
+  private async parsePayload(payload: RssFetchPayload, context: RssParseOptions & {
+    feedUrl: string; sourcePageUrl: string; discoveredFromPage: boolean
+  }): Promise<DiscoveredRssFeed> {
+    const { feedUrl, sourcePageUrl, discoveredFromPage, signal } = context
     signal?.throwIfAborted()
     const xml = decodePayload(payload)
     const parsed = await parser.parseString(xml)
@@ -151,7 +144,7 @@ export class RssDiscoveryService {
     }
 
     // 图标是可选元数据，不能让一个已经成功解析的 Feed 因 favicon/站点首页慢而迟迟不能添加。
-    const iconUrl = options.skipIconDiscovery ? parsed.image?.url?.trim() || null : await optionalWithTimeout(
+    const iconUrl = context.skipIconDiscovery ? parsed.image?.url?.trim() || null : await optionalWithTimeout(
       this.iconFinder.findBestIcon(extractIconDomain(sourcePageUrl)),
       3_000
     )
@@ -166,7 +159,7 @@ export class RssDiscoveryService {
       siteUrl: parsed.link?.trim() || null,
       // Android 在 RssHelper.parseFeedUrl 中始终使用 BestIconFinder 覆盖 Feed 自带 image。
       iconUrl,
-      items: parsed.items.map((item, index) => toRssFeedItem(item, index))
+      items: parsed.items.map(toRssFeedItem)
     }
   }
 }
@@ -244,64 +237,6 @@ function decodePayload(payload: RssFetchPayload): string {
   return decodeHttpText(payload.bytes, payload.contentType, 'auto')
 }
 
-function toRssFeedItem(item: CustomRssItem & Parser.Item, index: number): RssFeedItem {
-  const descriptionHtml = item.content ?? item.summary ?? ''
-  const contentHtml = item.contentEncoded?.trim() || item.content?.trim() || null
-  const link = item.link?.trim() ?? ''
-  const publishedAt = parseFeedDate(item.isoDate ?? item.pubDate)
-  const title = decodeHtmlText(item.title ?? '') || link || 'Untitled'
-  const sourceId = item.guid?.trim() || link || `${title}|${publishedAt ?? 0}|${index}`
-  const bodyForImage = contentHtml ?? descriptionHtml
-  const enclosureImage = rssEnclosureImage(item.enclosure)
-
-  return {
-    sourceId,
-    title,
-    link,
-    author: item.creator?.trim() || null,
-    publishedAt,
-    descriptionHtml,
-    contentHtml,
-    imageUrl: enclosureImage || findFirstImage(bodyForImage)
-  }
-}
-
-function rssEnclosureImage(enclosure: Parser.Item['enclosure']): string | null {
-  const url = enclosure?.url?.trim()
-  if (!url) return null
-  const type = enclosure?.type?.trim().toLowerCase() ?? ''
-  if (type.startsWith('image/')) return url
-  if (type) return null
-  // 少数老 Feed 不写 MIME；只在 URL 明确是常见图片扩展名时兜底，绝不能把 Podcast mp3 当图片。
-  try {
-    const pathname = new URL(url).pathname.toLowerCase()
-    return /\.(?:avif|bmp|gif|jpe?g|png|webp|svg)$/.test(pathname) ? url : null
-  } catch {
-    return null
-  }
-}
-
-function parseFeedDate(value: string | undefined): number | null {
-  if (!value) return null
-  const timestamp = Date.parse(value)
-  if (!Number.isFinite(timestamp)) return null
-  const now = Date.now()
-  return timestamp > now ? now : timestamp
-}
-
-function decodeHtmlText(value: string): string {
-  if (!value) return ''
-  return cheerio.load(`<body>${value}</body>`)('body').text().trim()
-}
-
-function findFirstImage(html: string): string | null {
-  if (!html) return null
-  const $ = cheerio.load(html)
-  const src = $('img[src]').first().attr('src')?.trim()
-  if (!src || src.startsWith('data:')) return null
-  return src
-}
-
 function normalizeHttpUrl(value: string): string {
   const trimmed = value.trim()
   const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
@@ -312,27 +247,6 @@ function normalizeHttpUrl(value: string): string {
   return url.toString()
 }
 
-function safeHostName(url: string): string {
-  try {
-    return new URL(url).hostname
-  } catch {
-    return url
-  }
-}
-
 function distinct(values: string[]): string[] {
   return [...new Set(values)]
 }
-
-async function optionalWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
-  let timer: NodeJS.Timeout | undefined
-  try {
-    return await Promise.race([
-      promise.catch(() => null),
-      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs) })
-    ])
-  } finally {
-    if (timer) clearTimeout(timer)
-  }
-}
-

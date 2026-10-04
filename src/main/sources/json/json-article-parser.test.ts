@@ -32,8 +32,7 @@ describe('JsonArticleParser Android parity', () => {
     const article = new JsonArticleParser().parse(
       content,
       rule,
-      'https://example.com/api/posts',
-      0
+      { baseUrl: 'https://example.com/api/posts', fetchedAt: 0 }
     )[0]!
 
     expect(article.title).toBe('第一篇文章')
@@ -62,8 +61,7 @@ describe('JsonArticleParser Android parity', () => {
         link: 'https://example.com/posts/release'
       }]),
       rule,
-      'https://example.com/api/posts',
-      fetchedAt
+      { baseUrl: 'https://example.com/api/posts', fetchedAt: fetchedAt }
     )[0]!
 
     expect(article.title).toBe('OrigRead ’ Release')
@@ -78,8 +76,7 @@ describe('JsonArticleParser Android parity', () => {
     const article = new JsonArticleParser().parse(
       "{items:[{title:'Lenient',url:'/lenient'}]}",
       rule,
-      'https://example.com/api/',
-      0
+      { baseUrl: 'https://example.com/api/', fetchedAt: 0 }
     )[0]!
     expect(article.title).toBe('Lenient')
     expect(article.link).toBe('https://example.com/lenient')

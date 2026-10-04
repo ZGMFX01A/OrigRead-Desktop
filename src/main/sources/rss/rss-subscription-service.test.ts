@@ -28,7 +28,7 @@ describe('RssSubscriptionService', () => {
     const probe = vi.fn(async () => [])
     const discovery = new RssDiscoveryService(async (url) => rssPayload(url, '<rss version="2.0"><channel><title>Quiet</title><link>https://example.com</link><description>Feed</description></channel></rss>'), noIconFinder)
     try {
-      const service = new RssSubscriptionService(repository, discovery, { probeRouteForRecovery: probe } as unknown as RssHubResolver)
+      const service = new RssSubscriptionService(repository, discovery, { resolver: { probeRouteForRecovery: probe } as unknown as RssHubResolver })
       expect(await service.refresh(feed.id)).toMatchObject({ fetchedArticles: 0, insertedArticles: 0 })
       expect(probe).not.toHaveBeenCalled()
       expect(repository.getFeedById(feed.id)).toMatchObject({ url: physical, sourcePageUrl: logical })
@@ -50,7 +50,7 @@ describe('RssSubscriptionService', () => {
     const resolver = { probeRouteForRecovery: async () => [{ available: true, feed: recovered, match: { feedUrl: newUrl }, routePath: '/zhihu/hot', instanceBaseUrl: 'https://new.example.com' }] } as unknown as RssHubResolver
     vi.spyOn(repository, 'setRssHubDescriptor').mockImplementation(() => { throw new Error('descriptor write failed') })
     try {
-      await expect(new RssSubscriptionService(repository, discovery, resolver).refresh(feed.id)).rejects.toThrow('descriptor write failed')
+      await expect(new RssSubscriptionService(repository, discovery, { resolver: resolver }).refresh(feed.id)).rejects.toThrow('descriptor write failed')
       expect(repository.getFeedById(feed.id)?.url).toBe(oldUrl)
       expect(repository.listArticlesByFeed(feed.id)).toEqual([])
       expect(repository.getRssHttpCache(feed.id)).toBeNull()
@@ -173,7 +173,7 @@ describe('RssSubscriptionService', () => {
     const added = await service.add('https://example.com/feed.xml')
     const article = repository.listArticles()[0]!
     repository.setArticleUnread(article.id, false)
-    database.connection.prepare('UPDATE articles SET updated_at=? WHERE id=?').run(1, article.id)
+    database.connection.prepare('UPDATE articles SET published_at=? WHERE id=?').run(1, article.id)
     expect(repository.archiveExpiredArticlesForAccount(1, 86_400_000, Date.now())).toBe(1)
     expect(repository.listArticles()).toHaveLength(0)
 
@@ -284,7 +284,7 @@ describe('RssSubscriptionService', () => {
     const resolver = { probeRoute, probeRouteForRecovery: probeRoute, probe: vi.fn(), isEnabled: () => true } as unknown as RssHubResolver
 
     try {
-      const service = new RssSubscriptionService(repository, discovery, resolver)
+      const service = new RssSubscriptionService(repository, discovery, { resolver: resolver })
       const result = await service.refresh(feed.id)
       expect(result.insertedArticles).toBe(1)
       expect(repository.getFeedById(feed.id)?.url).toBe(newUrl)
@@ -309,7 +309,7 @@ describe('RssSubscriptionService', () => {
       const filters = new ArticleFilterRepository(join(dir, 'filters.json'))
       filters.add('Article two', 'KEYWORD')
       const fetcher: RssFetcher = async (url) => rssPayload(url, RSS_TWO)
-      const service = new RssSubscriptionService(repository, new RssDiscoveryService(fetcher, noIconFinder), undefined, filters)
+      const service = new RssSubscriptionService(repository, new RssDiscoveryService(fetcher, noIconFinder), { articleFilters: filters })
 
       const added = await service.add('https://example.com/feed.xml')
       expect(added.insertedArticles).toBe(1)
@@ -363,4 +363,3 @@ const RSS_TWO = `<?xml version="1.0"?><rss version="2.0"><channel>
 <item><guid>two</guid><title>Article two</title><link>https://example.com/2</link><description>Second</description></item>
 <item><guid>one</guid><title>Article one updated</title><link>https://example.com/1</link><description>First updated</description></item>
 </channel></rss>`
-

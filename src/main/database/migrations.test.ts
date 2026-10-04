@@ -174,7 +174,7 @@ describe('database migration v2 -> current schema', () => {
 
     expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
     expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all())
-      .toEqual([{version:9},{version:10},{version:11},{version:12},{version:13}])
+      .toEqual([{version:9},{version:10},{version:11},{version:12},{version:13},{version:14}])
     const columns = db.prepare("PRAGMA table_info('llm_messages')").all() as Array<{name:string}>
     expect(columns.map((column)=>column.name)).toEqual(expect.arrayContaining([
       'web_search_status','web_search_query','web_search_provider_name','web_search_result_count','web_search_error_message'

@@ -3556,3 +3556,15 @@ mark.reader-search-match.current { background: #ffc96b; outline: 2px solid #d9a2
   .about-shortcut-grid { grid-template-columns: minmax(0,1fr); padding-left: 45px; }
 }
 
+
+/* 五种新增语言的分段选项允许换行，不缩小字号或改变中文/英文布局。 */
+html:is(:lang(es), :lang(pt-BR), :lang(de), :lang(fr), :lang(ja)) .segmented-control {
+  flex-wrap: wrap;
+  max-width: 100%;
+  min-width: 0;
+}
+html:is(:lang(es), :lang(pt-BR), :lang(de), :lang(fr), :lang(ja)) .segmented-control button {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

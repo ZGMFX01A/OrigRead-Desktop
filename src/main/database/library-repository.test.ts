@@ -40,7 +40,8 @@ describe('LibraryRepository', () => {
     }
     repository.upsertFeed(feed)
 
-    expect(repository.findFeedByUrl('https://example.com/feed?a=1')).toMatchObject({ id: feed.id })
+    expect(repository.findFeedByUrl('https://example.com/feed/?a=1')).toMatchObject({ id: feed.id })
+    expect(repository.findFeedByUrl('https://example.com/feed?a=1')).toBeNull()
     expect(repository.findFeedByUrl('https://example.com/feed/?a=2')).toBeNull()
     database.close()
   })
@@ -120,10 +121,10 @@ describe('LibraryRepository', () => {
     const feed = createFeed()
     const now = 1_786_000_000_000
     repository.upsertFeed(feed)
-    repository.upsertArticle({ ...createArticle(feed.id), id:'expired', url:'https://example.com/expired', isUnread:false, isStarred:false, updatedAt:now-2*86_400_000 })
-    repository.upsertArticle({ ...createArticle(feed.id), id:'starred', url:'https://example.com/starred', isUnread:false, isStarred:true, updatedAt:now-2*86_400_000 })
-    repository.upsertArticle({ ...createArticle(feed.id), id:'unread', url:'https://example.com/unread', isUnread:true, isStarred:false, updatedAt:now-2*86_400_000 })
-    repository.upsertArticle({ ...createArticle(feed.id), id:'recent', url:'https://example.com/recent', isUnread:false, isStarred:false, updatedAt:now })
+    repository.upsertArticle({ ...createArticle(feed.id), id:'expired', url:'https://example.com/expired', isUnread:false, isStarred:false, publishedAt:now-2*86_400_000, updatedAt:now })
+    repository.upsertArticle({ ...createArticle(feed.id), id:'starred', url:'https://example.com/starred', isUnread:false, isStarred:true, publishedAt:now-2*86_400_000, updatedAt:now })
+    repository.upsertArticle({ ...createArticle(feed.id), id:'unread', url:'https://example.com/unread', isUnread:true, isStarred:false, publishedAt:now-2*86_400_000, updatedAt:now })
+    repository.upsertArticle({ ...createArticle(feed.id), id:'recent', url:'https://example.com/recent', isUnread:false, isStarred:false, publishedAt:now, updatedAt:now })
 
     expect(repository.archiveExpiredArticlesForAccount(1,86_400_000,now)).toBe(1)
     expect(repository.listArticles().map((article)=>article.id).sort()).toEqual(['recent','starred','unread'])
@@ -314,11 +315,13 @@ describe('LibraryRepository', () => {
     const repository = new LibraryRepository(database.connection)
     const feed = createFeed()
     repository.upsertFeedWithArticles(feed, [createArticle(feed.id)], {
+      rssHttpCache: {
       feedId: feed.id,
       feedUrl: feed.url,
       etag: '"etag-v1"',
       lastModified: 'Tue, 18 Aug 2026 12:00:00 GMT',
       updatedAt: 1234
+      }
     })
 
     expect(repository.getRssHttpCache(feed.id)).toEqual({
@@ -371,4 +374,3 @@ function createArticle(feedId: string): ArticleRecord {
     updatedAt: now
   }
 }
-

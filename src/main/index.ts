@@ -2325,8 +2325,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   rssSubscriptionService = new RssSubscriptionService(
     libraryRepository,
     new RssDiscoveryService(),
-    rssHubResolver,
-    articleFilterRepository
+    { resolver: rssHubResolver, articleFilters: articleFilterRepository }
   )
   jsonRuleRepository = new JsonRuleRepository(join(app.getPath('userData'), 'json-source-rules.json'))
   jsonSourceService = new JsonSourceService(jsonRuleRepository, new JsonArticleParser())
@@ -2337,8 +2336,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   websiteSourceService = new WebsiteSourceService(
     websiteRuleRepository,
     websitePreferenceRepository,
-    undefined,
-    dynamicWebsiteRenderer
+    { dynamicRenderer: dynamicWebsiteRenderer }
   )
   const contentExtractionService = new ContentExtractionService([
     new WeChatArticleContentExtractor(),
@@ -2379,9 +2377,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   )
   sourceSyncService = new SourceSyncService(
     libraryRepository,
-    rssSubscriptionService,
-    jsonSubscriptionService,
-    websiteSubscriptionService,
+    { rss: rssSubscriptionService, json: jsonSubscriptionService, website: websiteSubscriptionService },
     (feed, articles) => {
       if (!Notification.isSupported() || articles.length === 0) return
       const first = articles[0]!
@@ -2399,18 +2395,18 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     }
   )
   const remoteAccountSyncService = new RemoteAccountSyncService(accountRepository, libraryRepository)
-  accountService = new DesktopAccountService(accountRepository, libraryRepository, remoteAccountSyncService, sourceSyncService)
+  accountService = new DesktopAccountService(accountRepository, libraryRepository, { remote: remoteAccountSyncService, localSync: sourceSyncService })
   sourceDiscoveryService = new SourceDiscoveryService(
-    new RssDiscoveryService(),
-    rssSubscriptionService,
-    rssHubResolver,
-    rssHubSubscriptionService,
-    jsonSourceService,
-    jsonSubscriptionService,
-    websiteSourceService,
-    websiteSubscriptionService,
-    accountService,
-    feedDiscoveryCatalog
+    { rssDiscovery: new RssDiscoveryService(),
+      rssSubscription: rssSubscriptionService,
+      rssHubResolver: rssHubResolver,
+      rssHubSubscription: rssHubSubscriptionService,
+      jsonSource: jsonSourceService,
+      jsonSubscription: jsonSubscriptionService,
+      websiteSource: websiteSourceService,
+      websiteSubscription: websiteSubscriptionService,
+      accountCoordinator: accountService,
+      feedDiscoveryCatalog: feedDiscoveryCatalog }
   )
   periodicSyncScheduler = new PeriodicSyncScheduler(
     new AccountSyncSettingsProvider(accountRepository),

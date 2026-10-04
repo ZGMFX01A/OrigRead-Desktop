@@ -386,7 +386,7 @@ function createDefaultFeedProbe(): RssHubFeedProbe {
   // A logical route is not a website URL. Icon discovery is decorative and must not
   // consume the probe budget or leave requests running after peers are cancelled.
   const discovery = new RssDiscoveryService(fetchRssHubPayload)
-  return (feedUrl, _sourceUrl, signal) => discovery.parseDirect(feedUrl, feedUrl, signal, { skipIconDiscovery: true })
+  return (feedUrl, _sourceUrl, signal) => discovery.parseDirect(feedUrl, { sourcePageUrl: feedUrl, signal, skipIconDiscovery: true })
 }
 
 async function fetchRssHubPayload(

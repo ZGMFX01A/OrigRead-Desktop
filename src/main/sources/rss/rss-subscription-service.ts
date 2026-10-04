@@ -1,13 +1,13 @@
-import { createHash, randomUUID } from 'node:crypto'
-import * as cheerio from 'cheerio'
-import type { ArticleRecord, FeedRecord } from '../../../shared/library'
-import type { DiscoveredRssFeed, RssFeedItem, RssSubscriptionResult } from '../../../shared/rss'
-import type { RssHubSubscriptionDescriptor } from '../../../shared/rsshub'
-import { DEFAULT_GROUP_ID } from '../../database/migrations'
-import { LibraryRepository } from '../../database/library-repository'
+import { randomUUID } from 'node:crypto'
+import type { FeedRecord } from '../../../shared/library'
+import type { DiscoveredRssFeed, RssSubscriptionResult } from '../../../shared/rss'
+import type { LibraryRepository } from '../../database/library-repository'
 import type { RssHubResolver } from '../rsshub/rsshub-resolver'
 import { RssDiscoveryService } from './rss-discovery-service'
 import type { ArticleFilterRepository } from '../../filter/article-filter-repository'
+import { prepareRssArticles, toFeedRecord } from './rss-article-records'
+import { loadRssRefresh } from './rss-refresh-loader'
+export { toArticleRecord, toFeedRecord, stableArticleId } from './rss-article-records'
 
 export interface RssRefreshResult {
   feedId: string
@@ -19,257 +19,92 @@ export class RssSubscriptionService {
   constructor(
     private readonly repository: LibraryRepository,
     private readonly discovery: RssDiscoveryService = new RssDiscoveryService(),
-    private readonly rssHubResolver?: RssHubResolver,
-    private readonly articleFilters?: ArticleFilterRepository
+    private readonly options: { resolver?: RssHubResolver; articleFilters?: ArticleFilterRepository } = {}
   ) {}
 
+  /** 网络开始前固定账户，不能在回包后借用用户刚切换的账户。 */
   async add(inputUrl: string): Promise<RssSubscriptionResult> {
+    const accountId = this.repository.getCurrentAccountId()
     const discovered = await this.discovery.discover(inputUrl)
-    return this.addDiscovered(discovered)
+    return this.addDiscovered(discovered, accountId)
   }
 
-  /**
-   * Pre-network duplicate guard shared by the unified source-discovery flow.
-   * LibraryRepository.findFeedByUrl applies the same conservative comparison key used by the
-   * final persistence layer, so tracking parameters / trailing slash variants do not trigger a
-   * redundant discovery request for an already subscribed source.
-   */
   hasExistingSource(inputUrl: string): boolean {
     return this.repository.findFeedByUrl(inputUrl) !== null
   }
 
-  addDiscovered(discovered: DiscoveredRssFeed): RssSubscriptionResult {
-    const existing = this.repository.findFeedByUrl(discovered.feedUrl)
-    if (existing) {
-      return { feedId: existing.id, feed: discovered, insertedArticles: 0 }
-    }
+  getCurrentAccountId(): number { return this.repository.getCurrentAccountId() }
 
+  /** 直接复用预览文章，来源、身份映射与 HTTP 缓存一起写入。 */
+  addDiscovered(discovered: DiscoveredRssFeed, accountId = this.repository.getCurrentAccountId()): RssSubscriptionResult {
+    const existing = this.repository.findFeedByUrlForAccount(accountId, discovered.feedUrl)
+    if (existing) return { feedId: existing.id, feed: discovered, insertedArticles: 0 }
+    const group = this.repository.getDefaultGroupForAccount(accountId)
+    if (!group) throw new Error('订阅账户缺少默认分组')
     const now = Date.now()
-    const feedId = randomUUID()
-    const accountId = this.repository.getCurrentAccountId()
-    const feed = toFeedRecord(feedId, discovered, now, this.repository.getCurrentDefaultGroup().id, accountId)
-    const candidateArticles = discovered.items.map((item) => toArticleRecord(feedId, item, now, accountId))
-    const articles = this.articleFilters?.filterArticles(feedId, candidateArticles).kept ?? candidateArticles
-    this.repository.upsertFeedWithArticles(
-      feed,
-      articles,
-      discovered.etag || discovered.lastModified
-        ? {
-            feedId,
-            feedUrl: feed.url,
-            etag: discovered.etag ?? null,
-            lastModified: discovered.lastModified ?? null,
-            updatedAt: now
-          }
-        : undefined
-    )
-
-    return {
-      feedId,
-      feed: discovered,
-      insertedArticles: articles.length
-    }
+    const feed = toFeedRecord(randomUUID(), discovered, { now, groupId: group.id, accountId })
+    const batch = prepareRssArticles(this.repository, { feed, discovered, now })
+    const articles = this.options.articleFilters?.filterArticles(feed.id, batch.articles).kept ?? batch.articles
+    this.repository.upsertFeedWithArticles(feed, articles, {
+      rssIdentities: batch.identities,
+      rssHttpCache: discovered.etag || discovered.lastModified ? {
+        feedId: feed.id, feedUrl: feed.url, etag: discovered.etag ?? null,
+        lastModified: discovered.lastModified ?? null, updatedAt: now
+      } : undefined
+    })
+    return { feedId: feed.id, feed: discovered, insertedArticles: articles.length }
   }
 
-  async refresh(feedId: string, now = Date.now()): Promise<RssRefreshResult> {
-    const existing = this.repository.getFeedById(feedId)
-    if (!existing) throw new Error(`来源不存在：${feedId}`)
-    if (existing.sourceType !== 'rss') throw new Error(`来源不是 RSS/Atom：${existing.name}`)
-    const rssHubDescriptor = this.repository.getRssHubDescriptor(feedId)
-
-    let discovered: DiscoveredRssFeed
-    let responseValidators: { etag: string | null; lastModified: string | null } | null = null
-    let rssHubDescriptorUpdate: RssHubSubscriptionDescriptor | null = null
-    try {
-      const cache = this.repository.getRssHttpCache(feedId)
-      const validCache = cache?.feedUrl === existing.url ? cache : null
-      const direct = await this.discovery.parseDirectConditional(
-        existing.url,
-        rssHubDescriptor ? existing.url : existing.sourcePageUrl ?? existing.url,
-        {
-          etag: validCache?.etag,
-          lastModified: validCache?.lastModified
-        },
-        undefined,
-        { skipIconDiscovery: rssHubDescriptor !== null }
-      )
-      if (direct.notModified) {
-        // 304 是最便宜的成功路径：不解析 XML、不查 archived/articles、不跑过滤器、
-        // 不更新 Feed/Article/cache，避免无意义的 SQLite/renderer invalidation。
-        return { feedId, fetchedArticles: 0, insertedArticles: 0 }
-      }
-      discovered = rssHubDescriptor
-        ? { ...direct.feed!, sourcePageUrl: rssHubDescriptor.originalInput }
-        : direct.feed!
-      responseValidators = { etag: direct.etag, lastModified: direct.lastModified }
-      // A valid empty feed is a successful refresh, not evidence of instance failure.
-    } catch (error) {
-      const recovered = await this.tryRecoverRssHubFeed(existing)
-      if (!recovered) throw error
-      discovered = recovered.feed
-      rssHubDescriptorUpdate = recovered.descriptor
-      responseValidators = null
-    }
-    const candidates = discovered.items
-      .map((item) => toArticleRecord(existing.id, item, now, existing.accountId))
-    const archivedLinks = this.repository.archivedLinks(existing.id, candidates.map((article) => article.url))
-    const candidateArticles = candidates.filter((article) => !article.url || !archivedLinks.has(article.url))
-    const articles = this.articleFilters?.filterArticles(existing.id, candidateArticles).kept ?? candidateArticles
-    const existingIds = this.repository.existingArticleIds(articles.map((article) => article.id), existing.accountId)
-    const insertedArticles = articles.length - existingIds.size
-    const refreshedFeed: FeedRecord = {
-      ...existing,
-      url: discovered.feedUrl,
-      sourcePageUrl: discovered.sourcePageUrl || existing.sourcePageUrl,
-      name: discovered.title || existing.name,
-      icon: discovered.iconUrl ?? existing.icon,
-      updatedAt: now
-    }
-    this.repository.upsertFeedWithArticles(
-      refreshedFeed,
-      articles,
-      {
-        feedId,
-        feedUrl: refreshedFeed.url,
-        etag: responseValidators?.etag ?? null,
-        lastModified: responseValidators?.lastModified ?? null,
-        updatedAt: now
-      },
-      rssHubDescriptorUpdate ?? undefined
-    )
-    return { feedId, fetchedArticles: articles.length, insertedArticles }
+  /** 刷新使用批次开始时的账户；304 不写库，其他失败原样传播。 */
+  async refresh(feedId: string, now = Date.now(), accountId = this.repository.getCurrentAccountId()): Promise<RssRefreshResult> {
+    const existing = this.repository.getFeedByIdForAccount(accountId, feedId)
+    if (!existing) throw new Error('来源不存在：' + feedId)
+    if (existing.sourceType !== 'rss') throw new Error('来源不是 RSS/Atom：' + existing.name)
+    const loaded = await loadRssRefresh({ repository: this.repository, discovery: this.discovery, resolver: this.options.resolver }, existing)
+    if (!loaded.feed) return { feedId, fetchedArticles: 0, insertedArticles: 0 }
+    return this.persistRefresh(existing, loaded.feed, {
+      now, validators: loaded.validators, descriptor: loaded.descriptor
+    })
   }
 
-  /**
-   * 修复旧版 Desktop 把真实 RSS/Atom URL 错存成 Website 的空来源。
-   *
-   * 这里只允许“Website + 当前 0 篇文章”进入恢复，并且同一 URL 必须仍能直接解析出
-   * 非空结构化 Feed；已有文章的 Website 来源绝不会被自动改类型。
-   */
-  async tryRecoverMisclassifiedEmptyWebsite(feedId: string, now = Date.now()): Promise<RssRefreshResult | null> {
-    const existing = this.repository.getFeedById(feedId)
+  /** 对既有误分类空来源重新做真实 XML 校验，成功才改为 RSS。 */
+  async tryRecoverMisclassifiedEmptyWebsite(
+    feedId: string, now = Date.now(), accountId = this.repository.getCurrentAccountId()
+  ): Promise<RssRefreshResult | null> {
+    const existing = this.repository.getFeedByIdForAccount(accountId, feedId)
     if (!existing || existing.sourceType !== 'website') return null
-    if (this.repository.listArticlesByFeed(feedId).length > 0) return null
-
+    if (this.repository.listArticlesByFeedForAccount(accountId, feedId).length > 0) return null
     let direct: Awaited<ReturnType<RssDiscoveryService['parseDirectConditional']>>
     try {
-      direct = await this.discovery.parseDirectConditional(
-        existing.url,
-        existing.sourcePageUrl ?? existing.url
-      )
+      direct = await this.discovery.parseDirectConditional(existing.url, { sourcePageUrl: existing.sourcePageUrl ?? existing.url, skipIconDiscovery: true })
     } catch {
+      // 原 Website 失败由上层汇总；这里的验证失败表示没有可恢复的真实 RSS。
       return null
     }
     if (direct.notModified || !direct.feed || direct.feed.items.length === 0) return null
+    return this.persistRefresh({ ...existing, sourceType: 'rss', isBrowser: false, dynamicRendering: false }, direct.feed, {
+      now, validators: { etag: direct.etag, lastModified: direct.lastModified }
+    })
+  }
 
-    const discovered = direct.feed
-    const candidates = discovered.items
-      .map((item) => toArticleRecord(existing.id, item, now, existing.accountId))
-    const archivedLinks = this.repository.archivedLinks(existing.id, candidates.map((article) => article.url))
-    const candidateArticles = candidates.filter((article) => !article.url || !archivedLinks.has(article.url))
-    const articles = this.articleFilters?.filterArticles(existing.id, candidateArticles).kept ?? candidateArticles
-    const recoveredFeed: FeedRecord = {
-      ...existing,
-      url: discovered.feedUrl,
-      sourcePageUrl: discovered.sourcePageUrl || existing.sourcePageUrl,
-      sourceType: 'rss',
-      name: discovered.title || existing.name,
-      icon: discovered.iconUrl ?? existing.icon,
-      isBrowser: false,
-      dynamicRendering: false,
-      updatedAt: now
+  /** 内容刷新保留用户状态，并在同一事务提交文章、身份和响应验证器。 */
+  private persistRefresh(existing: FeedRecord, discovered: DiscoveredRssFeed, options: {
+    now: number
+    validators: { etag: string | null; lastModified: string | null }
+    descriptor?: import('../../../shared/rsshub').RssHubSubscriptionDescriptor
+  }): RssRefreshResult {
+    const batch = prepareRssArticles(this.repository, { feed: existing, discovered, now: options.now })
+    const articles = this.options.articleFilters?.filterArticles(existing.id, batch.articles).kept ?? batch.articles
+    const existingIds = this.repository.existingArticleIds(articles.map((article) => article.id), existing.accountId)
+    const refreshedFeed = {
+      ...existing, url: discovered.feedUrl, sourcePageUrl: discovered.sourcePageUrl || existing.sourcePageUrl,
+      name: discovered.title || existing.name, icon: discovered.iconUrl ?? existing.icon, updatedAt: options.now
     }
-    this.repository.upsertFeedWithArticles(
-      recoveredFeed,
-      articles,
-      {
-        feedId,
-        feedUrl: recoveredFeed.url,
-        etag: direct.etag,
-        lastModified: direct.lastModified,
-        updatedAt: now
-      }
-    )
-    return { feedId, fetchedArticles: articles.length, insertedArticles: articles.length }
+    this.repository.upsertFeedWithArticles(refreshedFeed, articles, {
+      rssIdentities: batch.identities, rssHubDescriptor: options.descriptor,
+      rssHttpCache: { feedId: existing.id, feedUrl: refreshedFeed.url, ...options.validators, updatedAt: options.now }
+    })
+    return { feedId: existing.id, fetchedArticles: articles.length, insertedArticles: articles.length - existingIds.size }
   }
-
-  private async tryRecoverRssHubFeed(
-    existing: FeedRecord
-  ): Promise<{ feed: DiscoveredRssFeed; descriptor: RssHubSubscriptionDescriptor } | null> {
-    const descriptor = this.repository.getRssHubDescriptor(existing.id)
-    if (!descriptor || !this.rssHubResolver) return null
-    const results = descriptor.routePath
-      ? await this.rssHubResolver.probeRouteForRecovery(
-          descriptor.routePath,
-          descriptor.lastResolvedInstance ?? descriptor.preferredInstance
-        )
-      : await this.rssHubResolver.probe(descriptor.originalInput)
-    const recovered = results.find((result) => result.available)
-    if (!recovered?.feed || !recovered.match.feedUrl) return null
-    return {
-      feed: {
-        ...recovered.feed,
-        feedUrl: recovered.match.feedUrl,
-        sourcePageUrl: descriptor.originalInput
-      },
-      descriptor: {
-        ...descriptor,
-        routePath: recovered.routePath ?? descriptor.routePath,
-        lastResolvedInstance: recovered.instanceBaseUrl ?? descriptor.lastResolvedInstance,
-        lastResolvedUrl: recovered.match.feedUrl
-      }
-    }
-  }
-}
-
-export function toFeedRecord(feedId: string, discovered: DiscoveredRssFeed, now: number, groupId = DEFAULT_GROUP_ID, accountId?: number): FeedRecord {
-  return {
-    id: feedId,
-    accountId,
-    groupId,
-    name: discovered.title,
-    url: discovered.feedUrl,
-    sourcePageUrl: discovered.sourcePageUrl,
-    sourceType: 'rss',
-    icon: discovered.iconUrl,
-    isNotification: false,
-    isFullContent: false,
-    isBrowser: false,
-    dynamicRendering: false,
-    createdAt: now,
-    updatedAt: now
-  }
-}
-
-export function toArticleRecord(feedId: string, item: RssFeedItem, now: number, accountId?: number): ArticleRecord {
-  const rawHtml = item.contentHtml ?? item.descriptionHtml
-  return {
-    id: stableArticleId(feedId, item),
-    accountId,
-    feedId,
-    title: item.title,
-    url: item.link || null,
-    author: item.author,
-    publishedAt: item.publishedAt ?? now,
-    description: htmlToText(item.descriptionHtml || rawHtml).slice(0, 280),
-    contentHtml: rawHtml || null,
-    fullContentHtml: null,
-    imageUrl: item.imageUrl,
-    isUnread: true,
-    isStarred: false,
-    createdAt: now,
-    updatedAt: now
-  }
-}
-
-/** Android 的同步去重键实际是 feedId + article.link；link 缺失时才使用 feed 自身标识兜底。 */
-export function stableArticleId(feedId: string, item: RssFeedItem): string {
-  const dedupeKey = item.link || item.sourceId
-  return `rss-${createHash('sha256').update(feedId).update('\u0000').update(dedupeKey).digest('hex')}`
-}
-
-function htmlToText(html: string): string {
-  if (!html) return ''
-  return cheerio.load(`<body>${html}</body>`)('body').text().replace(/\s+/g, ' ').trim()
 }
 

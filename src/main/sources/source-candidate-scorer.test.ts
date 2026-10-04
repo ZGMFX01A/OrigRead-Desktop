@@ -60,6 +60,7 @@ describe('SourceCandidateScorer parity', () => {
 
     expect(ranked.map((item) => item.feedLink)).toEqual([
       'https://Example.com/feed/?utm_source=x&a=1#frag',
+      'https://example.com/feed?a=1',
       'https://example.com/feed?a=2'
     ])
   })

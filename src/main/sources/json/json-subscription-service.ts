@@ -41,36 +41,40 @@ export class JsonSubscriptionService {
     // 首次订阅必须直接复用这批已确认数据，不能先写空 Feed 再对同一 API 发第二次请求：
     // 第二次请求一旦超时/限流，就会留下“预览 30 篇、订阅后 0 篇”的空来源。
     const candidates = probe.articles
-      .map((article) => toArticleRecord(feed.id, article, now, feed.accountId))
+      .map((article) => toArticleRecord(feed.id, article, { now, accountId: feed.accountId }))
     const archivedLinks = this.repository.archivedLinks(feed.id, candidates.map((article) => article.url))
     const candidateArticles = candidates.filter((article) => !article.url || !archivedLinks.has(article.url))
     const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
-    this.repository.upsertFeedWithArticles(feed, articles)
+    this.repository.upsertFeedWithArticles(feed, articles, { jsonRule: probe.rule })
     return { feedId, insertedArticles: articles.length }
   }
 
   async refresh(
     feedId: string,
-    fetchedAt = Date.now()
+    fetchedAt = Date.now(),
+    accountId = this.repository.getCurrentAccountId()
   ): Promise<{ feedId: string; fetchedArticles: number; insertedArticles: number }> {
-    const feed = this.repository.getFeedById(feedId)
+    const feed = this.repository.getFeedByIdForAccount(accountId, feedId)
     if (!feed) throw new Error(`来源不存在：${feedId}`)
     if (feed.sourceType !== 'json') throw new Error(`来源不是 JSON/API：${feed.name}`)
 
-    const parsed = await this.sourceService.fetch(feed, fetchedAt)
+    const boundRule = this.repository.getJsonFeedRule(feedId) ?? this.sourceService.resolveRule(feed)
+    const parsed = await this.sourceService.fetch(feed, fetchedAt, boundRule)
     const candidates = parsed
-      .map((article) => toArticleRecord(feed.id, article, fetchedAt, feed.accountId))
+      .map((article) => toArticleRecord(feed.id, article, { now: fetchedAt, accountId: feed.accountId }))
     const archivedLinks = this.repository.archivedLinks(feed.id, candidates.map((article) => article.url))
     const candidateArticles = candidates.filter((article) => !article.url || !archivedLinks.has(article.url))
     const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
     const existingIds = this.repository.existingArticleIds(articles.map((article) => article.id), feed.accountId)
     const insertedArticles = articles.length - existingIds.size
-    this.repository.upsertFeedWithArticles({ ...feed, updatedAt: fetchedAt }, articles)
+    this.repository.upsertFeedWithArticles({ ...feed, updatedAt: fetchedAt }, articles, { jsonRule: boundRule })
     return { feedId, fetchedArticles: articles.length, insertedArticles }
   }
 }
 
-function toArticleRecord(feedId: string, item: JsonParsedArticle, now: number, accountId?: number): ArticleRecord {
+/** 文章身份绑定 Feed，内容更新交给保留本地阅读状态的 UPSERT。 */
+function toArticleRecord(feedId: string, item: JsonParsedArticle, options: { now: number; accountId?: number }): ArticleRecord {
+  const { now, accountId } = options
   return {
     id: `json-${createHash('sha256').update(feedId).update('\u0000').update(item.stableId).digest('hex')}`,
     accountId,

@@ -40,12 +40,16 @@ export class JsonSourceService {
     return null
   }
 
-  async fetch(feed: FeedRecord, fetchedAt = Date.now()): Promise<JsonParsedArticle[]> {
-    const rule =
-      this.ruleRepository.findRuleForEndpoint(feed.url) ??
-      createWordPressRuleFromEndpoint(feed.url)
+  async fetch(feed: FeedRecord, fetchedAt = Date.now(), boundRule?: JsonRule | null): Promise<JsonParsedArticle[]> {
+    const rule = boundRule ?? this.resolveRule(feed)
+    return this.executeRule(feed.url, rule, { fetchedAt })
+  }
+
+  /** 旧订阅第一次成功刷新时只允许精确匹配规则，并由订阅服务原子保存快照。 */
+  resolveRule(feed: FeedRecord): JsonRule {
+    const rule = this.ruleRepository.findRuleForEndpoint(feed.url) ?? createWordPressRuleFromEndpoint(feed.url)
     if (!rule) throw new Error(`未找到 ${feed.url} 对应的 JSON 来源规则`)
-    return this.executeRule(feed.url, rule, fetchedAt)
+    return rule
   }
 
   private async tryProbeRule(inputUrl: string, rule: JsonRule, signal?: AbortSignal): Promise<JsonSourceProbeResult | null> {
@@ -54,7 +58,7 @@ export class JsonSourceService {
       const sourceUrl = rule.sourceKind === 'API'
         ? this.ruleRepository.resolveEndpoint(inputUrl, rule.endpoint)
         : inputUrl
-      const articles = await this.executeRule(sourceUrl, rule, Date.now(), signal)
+      const articles = await this.executeRule(sourceUrl, rule, { fetchedAt: Date.now(), signal })
       return {
         rule,
         endpointUrl: sourceUrl,
@@ -71,12 +75,12 @@ export class JsonSourceService {
   private async executeRule(
     sourceUrl: string,
     rule: JsonRule,
-    fetchedAt: number,
-    signal?: AbortSignal
+    options: { fetchedAt: number; signal?: AbortSignal }
   ): Promise<JsonParsedArticle[]> {
+    const { fetchedAt, signal } = options
     if (rule.sourceKind === 'API') {
       const content = await this.fetcher(sourceUrl, signal)
-      return this.parser.parse(content, rule, sourceUrl, fetchedAt)
+      return this.parser.parse(content, rule, { baseUrl: sourceUrl, fetchedAt })
     }
 
     const html = await this.fetcher(sourceUrl, signal)
@@ -84,7 +88,7 @@ export class JsonSourceService {
       ? extractNextData(html)
       : extractNuxtData(html)
     if (!jsonContent) throw new Error('网页中未找到对应的内嵌 JSON 数据')
-    return this.parser.parse(jsonContent, rule, sourceUrl, fetchedAt)
+    return this.parser.parse(jsonContent, rule, { baseUrl: sourceUrl, fetchedAt })
   }
 }
 

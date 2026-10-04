@@ -500,7 +500,8 @@ export default function App(): React.JSX.Element {
     if (!settings || !appInfo || !settings.autoCheckUpdates || autoUpdateCheckedRef.current) return
     autoUpdateCheckedRef.current = true
     const language = settings.language === 'system' ? resolveDesktopLanguage(appInfo.locale) : settings.language
-    void window.origread.checkForUpdates(language).then((result) => {
+    // 更新说明沿用设置页已有的中英文选择，界面语言不改变更新接口的契约。
+    void window.origread.checkForUpdates(language === 'zh' ? 'zh' : 'en').then((result) => {
       if (result.status === 'available' && result.release) setStartupUpdate(result)
     }).catch(() => undefined)
   }, [appInfo, settings])

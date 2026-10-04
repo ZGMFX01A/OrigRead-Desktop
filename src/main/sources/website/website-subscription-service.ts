@@ -40,38 +40,44 @@ export class WebsiteSubscriptionService {
       updatedAt: now
     }
     const candidates = inspection.candidate.articles
-      .map((item) => toWebsiteArticleRecord(feed.id, item, now, feed.accountId))
+      .map((item) => toWebsiteArticleRecord(feed.id, item, { now, accountId: feed.accountId }))
     const archivedLinks = this.repository.archivedLinks(feed.id, candidates.map((article) => article.url))
     const candidateArticles = candidates.filter((article) => !article.url || !archivedLinks.has(article.url))
     const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
-    this.repository.upsertFeedWithArticles(feed, articles)
-    this.sourceService.setDynamicRenderingEnabled(feedId, dynamicRendering)
+    // 偏好写入失败时不能留下已注册来源；网络解析已在订阅确认前完成。
+    this.repository.transaction(() => {
+      this.repository.upsertFeedWithArticles(feed, articles)
+      this.sourceService.setDynamicRenderingEnabled(feedId, dynamicRendering)
+    })
     return { feedId, insertedArticles: articles.length }
   }
 
   async refresh(
     feedId: string,
-    fetchedAt = Date.now()
+    fetchedAt = Date.now(),
+    accountId = this.repository.getCurrentAccountId()
   ): Promise<{ feedId: string; fetchedArticles: number; insertedArticles: number; deletedArticles: number }> {
-    const feed = this.repository.getFeedById(feedId)
+    const feed = this.repository.getFeedByIdForAccount(accountId, feedId)
     if (!feed) throw new Error(`来源不存在：${feedId}`)
     if (feed.sourceType !== 'website') throw new Error(`来源不是网站：${feed.name}`)
     const parsed = await this.sourceService.fetchArticles(feed, fetchedAt)
     const candidates = parsed
-      .map((item) => toWebsiteArticleRecord(feed.id, item, fetchedAt, feed.accountId))
+      .map((item) => toWebsiteArticleRecord(feed.id, item, { now: fetchedAt, accountId: feed.accountId }))
     const archivedLinks = this.repository.archivedLinks(feed.id, candidates.map((article) => article.url))
     const candidateArticles = candidates.filter((article) => !article.url || !archivedLinks.has(article.url))
     const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
     const existingIds = this.repository.existingArticleIds(articles.map((article) => article.id), feed.accountId)
     const insertedArticles = articles.length - existingIds.size
-    const existing = this.repository.listArticlesByFeed(feed.id)
+    const existing = this.repository.listArticlesByFeedForAccount(accountId, feed.id)
     const obsolete = this.sourceService.findObsoleteArticleIds(feed, existing, parsed)
     this.repository.upsertWebsiteFeedWithArticles({ ...feed, updatedAt: fetchedAt }, articles, obsolete)
     return { feedId, fetchedArticles: articles.length, insertedArticles, deletedArticles: obsolete.length }
   }
 }
 
-function toWebsiteArticleRecord(feedId: string, item: WebsiteParsedArticle, now: number, accountId?: number): ArticleRecord {
+/** 同一网站来源按文章链接去重，更新内容时保留本地状态。 */
+function toWebsiteArticleRecord(feedId: string, item: WebsiteParsedArticle, options: { now: number; accountId?: number }): ArticleRecord {
+  const { now, accountId } = options
   return {
     id: `website-${createHash('sha256').update(feedId).update('\u0000').update(item.link).digest('hex')}`,
     accountId,
@@ -90,4 +96,3 @@ function toWebsiteArticleRecord(feedId: string, item: WebsiteParsedArticle, now:
     updatedAt: now
   }
 }
-
