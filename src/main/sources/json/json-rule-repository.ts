@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import type { JsonRule, JsonRuleBundle } from '../../../shared/json-source'
 import { JSON_RULE_SCHEMA_VERSION, normalizeJsonRule } from '../../../shared/json-source'
 import { validateJsonPath } from './simple-json-path'
+import { sourceUrlComparisonKey } from '../../../shared/source-url-normalizer'
 
 // 规则仅填写域名；协议与路径通过 endpoint 独立配置。
 const HOST_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/
@@ -36,10 +37,15 @@ export class JsonRuleRepository {
 
   findRuleForEndpoint(endpointUrl: string): JsonRule | null {
     // 旧订阅只能按精确 endpoint 确认一次规则，不能任意选择同域目录中的第一条。
-    const matches = this.findRules(endpointUrl).filter((rule) => rule.sourceKind === 'API'
-      ? this.resolveEndpoint(endpointUrl, rule.endpoint) === endpointUrl : true)
+    const matches = this.findRulesForEndpoint(endpointUrl)
     if (matches.length > 1) throw new Error('JSON 来源匹配多条规则，请重新检测并确认订阅规则')
     return matches[0] ?? null
+  }
+
+  /** API 按完整接口地址匹配；Next/Nuxt 的 endpoint 是占位符，始终读取原页面。 */
+  findRulesForEndpoint(endpointUrl: string): JsonRule[] {
+    return this.findRules(endpointUrl).filter((rule) => rule.sourceKind !== 'API'
+      || sourceUrlComparisonKey(this.resolveEndpoint(endpointUrl, rule.endpoint)) === sourceUrlComparisonKey(endpointUrl))
   }
 
   resolveEndpoint(inputUrl: string, endpoint: string): string {

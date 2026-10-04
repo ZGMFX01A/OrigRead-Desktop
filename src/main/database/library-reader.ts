@@ -28,7 +28,11 @@ export class SqliteLibraryReader {
   }
 
   getArticleById(articleId: string): ArticleRecord | null {
-    const accountId = this.library.getCurrentAccountId()
+    return this.getArticleByIdForAccount(this.library.getCurrentAccountId(), articleId)
+  }
+
+  /** 异步任务按入口保存的账户读取，完成时不再借用当前界面账户。 */
+  getArticleByIdForAccount(accountId: number, articleId: string): ArticleRecord | null {
     const row = this.database.prepare(`
       SELECT id, account_id, feed_id, title, url, author, published_at, description,
              content_html, full_content_html, image_url, is_unread, is_starred,
@@ -37,6 +41,20 @@ export class SqliteLibraryReader {
       WHERE account_id = ? AND id = ?
     `).get(accountId, articleId) as ArticleRow | undefined
     return row ? toArticleRecord(row) : null
+  }
+
+  /** 文章 ID 全局唯一；状态操作用持久化归属选择账户凭据。 */
+  getArticleAccountId(articleId: string): number | null {
+    const row = this.database.prepare('SELECT account_id FROM articles WHERE id = ?')
+      .get(articleId) as { account_id: number } | undefined
+    return row?.account_id ?? null
+  }
+
+  /** 范围清理只读取身份、链接和收藏保护，避免搬运全部历史正文。 */
+  listArticleCleanupMetadata(accountId: number, feedId: string): Array<{ id: string; url: string | null; isStarred: boolean }> {
+    const rows = this.database.prepare('SELECT id, url, is_starred FROM articles WHERE account_id = ? AND feed_id = ?')
+      .all(accountId, feedId) as unknown as Array<{ id: string; url: string | null; is_starred: number }>
+    return rows.map((row) => ({ id: row.id, url: row.url, isStarred: row.is_starred === 1 }))
   }
 
   listArticlesByFeed(feedId: string): ArticleRecord[] {

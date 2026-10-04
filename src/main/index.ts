@@ -2,7 +2,8 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, powerMoni
 import { randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { readFileSync, statSync, writeFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
+import { readFile, writeFile } from 'node:fs/promises'
 import { IPC_CHANNELS, type AppInfo, type FeedSettingsPatch } from '../shared/contracts'
 import { resolveBrandName } from '../shared/locale'
 import { DesktopDatabase } from './database/database'
@@ -20,6 +21,7 @@ import { JsonArticleParser } from './sources/json/json-article-parser'
 import { JsonRuleRepository } from './sources/json/json-rule-repository'
 import { JsonSourceService } from './sources/json/json-source-service'
 import { JsonSubscriptionService } from './sources/json/json-subscription-service'
+import { JsonSourceRepairService } from './sources/json/json-source-repair-service'
 import { WebsiteRuleRepository } from './sources/website/website-rule-repository'
 import { WebsiteParsePreferenceRepository } from './sources/website/website-parse-preference-repository'
 import { WebsiteSourceService } from './sources/website/website-source-service'
@@ -145,6 +147,7 @@ let rssHubResolver: RssHubResolver | null = null
 let jsonRuleRepository: JsonRuleRepository | null = null
 let jsonSourceService: JsonSourceService | null = null
 let jsonSubscriptionService: JsonSubscriptionService | null = null
+let jsonSourceRepairService: JsonSourceRepairService | null = null
 let websiteRuleRepository: WebsiteRuleRepository | null = null
 let websitePreferenceRepository: WebsiteParsePreferenceRepository | null = null
 let websiteSourceService: WebsiteSourceService | null = null
@@ -765,7 +768,7 @@ function registerIpcHandlers(): void {
         filters: [{ name: 'JSON', extensions: ['json'] }]
       })
       if (selected.canceled || !selected.filePath) return { ok:false,cancelled:true,path:null,error:null }
-      writeFileSync(selected.filePath, content, 'utf8')
+      await writeFile(selected.filePath, content, 'utf8')
       return { ok:true,cancelled:false,path:selected.filePath,error:null }
     } catch (error) {
       return { ok:false,cancelled:false,path:null,error:error instanceof Error ? error.message : String(error) }
@@ -878,6 +881,22 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (!jsonSubscriptionService) throw new Error('JSON subscription service is not ready')
     return jsonSubscriptionService.refresh(validateId(feedId, 'feedId'))
+  })
+  // 来源修复仅接受已校验身份；主进程保留成功探测结果，确认时不信任界面提供的规则。
+  ipcMain.handle(IPC_CHANNELS.probeJsonSourceBinding, (event, feedId: unknown, url: unknown, requestId: unknown) => {
+    assertTrustedSender(event)
+    if (!jsonSourceRepairService) throw new Error('JSON source repair service is not ready')
+    return jsonSourceRepairService.probe({ feedId: validateId(feedId, 'feedId'), url: validateExternalHttpUrl(url), requestId: validateId(requestId, 'requestId') })
+  })
+  ipcMain.handle(IPC_CHANNELS.confirmJsonSourceBinding, (event, feedId: unknown, requestId: unknown, candidateId: unknown) => {
+    assertTrustedSender(event)
+    if (!jsonSourceRepairService) throw new Error('JSON source repair service is not ready')
+    return jsonSourceRepairService.confirm({ feedId: validateId(feedId, 'feedId'), requestId: validateId(requestId, 'requestId'), candidateId: validateId(candidateId, 'candidateId') })
+  })
+  ipcMain.handle(IPC_CHANNELS.cancelJsonSourceBindingProbe, (event, requestId: unknown) => {
+    assertTrustedSender(event)
+    if (!jsonSourceRepairService) throw new Error('JSON source repair service is not ready')
+    return jsonSourceRepairService.cancel(validateId(requestId, 'requestId'))
   })
   ipcMain.handle(IPC_CHANNELS.refreshSource, async (event, feedId: unknown) => {
     assertTrustedSender(event)
@@ -1631,10 +1650,12 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.setWebsiteSourceDynamicRendering, (event, feedId: unknown, enabled: unknown) => {
     assertTrustedSender(event);const id=validateId(feedId,'feedId');if(!websitePreferenceRepository)throw new Error('Website preferences are not ready');websitePreferenceRepository.setDynamicRenderingEnabled(id,validateBoolean(enabled,'enabled'));return websiteSourceRuleSettings(id)!
   })
+  // 用户文档使用异步文件 I/O，主进程仍可处理其它 IPC；读写关闭完成后才报告成功。
   ipcMain.handle(IPC_CHANNELS.importOpml, async (event) => {
     assertTrustedSender(event)
     if (!opmlService || !accountService) throw new Error('OPML/account service is not ready')
-    if (accountService.current().type !== 'local') {
+    const targetAccount = accountService.current()
+    if (targetAccount.type !== 'local') {
       return { ok: false, cancelled: false, path: null, error: '当前远端账户不支持从客户端导入 OPML；请在服务端管理订阅，或切换到 Local 账户。' }
     }
     try {
@@ -1645,7 +1666,10 @@ function registerIpcHandlers(): void {
       })
       if (selected.canceled || !selected.filePaths[0]) return { ok: false, cancelled: true, path: null, error: null }
       const path = selected.filePaths[0]
-      const importResult = opmlService.importFromString(readFileSync(path, 'utf8'))
+      const content = await readFile(path, 'utf8')
+      // 文档读取期间允许其它 IPC；账户变更后不能把原账户导入写入新账户。
+      if (accountService.current().id !== targetAccount.id) throw new Error('账户已切换，请重新导入 OPML')
+      const importResult = opmlService.importFromString(content)
       try {
         if (periodicSyncScheduler) await periodicSyncScheduler.runNow('manual')
         else if (sourceSyncService) await sourceSyncService.refreshAllSources()
@@ -1669,23 +1693,27 @@ function registerIpcHandlers(): void {
         filters: [{ name: 'OPML', extensions: ['opml'] }]
       })
       if (selected.canceled || !selected.filePath) return { ok: false, cancelled: true, path: null, error: null }
-      writeFileSync(selected.filePath, content, 'utf8')
+      await writeFile(selected.filePath, content, 'utf8')
       return { ok: true, cancelled: false, path: selected.filePath, error: null }
     } catch (error) {
       return { ok: false, cancelled: false, path: null, error: error instanceof Error ? error.message : String(error) }
     }
   })
   ipcMain.handle(IPC_CHANNELS.exportConfigurationBackup, async (event, password?: unknown) => {
-    assertTrustedSender(event);if(!configurationBackupService)throw new Error('Backup service is not ready');try{const content=configurationBackupService.exportBackup(password===undefined?'':validateOptionalText(password,'password',1_024));const selected=await showSaveDialog({title:'导出 OrigRead 配置备份',defaultPath:`OrigRead-Configuration-${new Date().toISOString().slice(0,10)}.json`,filters:[{name:'OrigRead JSON Backup',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};writeFileSync(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
+    assertTrustedSender(event);if(!configurationBackupService)throw new Error('Backup service is not ready');try{const content=configurationBackupService.exportBackup(password===undefined?'':validateOptionalText(password,'password',1_024));const selected=await showSaveDialog({title:'导出 OrigRead 配置备份',defaultPath:`OrigRead-Configuration-${new Date().toISOString().slice(0,10)}.json`,filters:[{name:'OrigRead JSON Backup',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};await writeFile(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
   })
   ipcMain.handle(IPC_CHANNELS.restoreConfigurationBackup, async (event, password?: unknown) => {
     assertTrustedSender(event)
-    if(!configurationBackupService)throw new Error('Backup service is not ready')
+    if(!configurationBackupService || !accountService)throw new Error('Backup/account service is not ready')
+    const targetAccountId = accountService.current().id
     try{
       const selected=await showOpenDialog({title:'恢复 OrigRead 配置备份',properties:['openFile'],filters:[{name:'OrigRead JSON Backup',extensions:['json']}]})
       if(selected.canceled||!selected.filePaths[0])return{ok:false,cancelled:true,path:null,error:null}
       const path=selected.filePaths[0]
-      const restoreResult=configurationBackupService.restoreBackup(readFileSync(path,'utf8'),password===undefined?'':validateOptionalText(password,'password',1_024))
+      const content = await readFile(path,'utf8')
+      // 恢复的来源和账户配置必须仍属于开始操作时的目标账户。
+      if (accountService.current().id !== targetAccountId) throw new Error('账户已切换，请重新恢复配置')
+      const restoreResult=configurationBackupService.restoreBackup(content,password===undefined?'':validateOptionalText(password,'password',1_024))
       await Promise.allSettled([mcpRemoteClientManager?.disconnectAll(),mcpLocalClientManager?.disconnectAll()])
       mcpToolCatalogService?.invalidateAll()
       mcpToolRuntimeBridge?.sync()
@@ -1694,10 +1722,10 @@ function registerIpcHandlers(): void {
     }catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
   })
   ipcMain.handle(IPC_CHANNELS.importRuleFile, async (event, kind: unknown) => {
-    assertTrustedSender(event);const ruleKind=validateRuleKind(kind);try{const selected=await showOpenDialog({title:'导入 OrigRead 规则',properties:['openFile'],filters:[{name:'JSON',extensions:['json']}]});if(selected.canceled||!selected.filePaths[0])return{ok:false,cancelled:true,count:0,error:null};const content=readFileSync(selected.filePaths[0],'utf8');const count=ruleKind==='website'?websiteRuleRepository!.importRules(content):ruleKind==='json'?jsonRuleRepository!.importRules(content):articleFilterRepository!.importRules(content);return{ok:true,cancelled:false,count,error:null}}catch(error){return{ok:false,cancelled:false,count:0,error:error instanceof Error?error.message:String(error)}}
+    assertTrustedSender(event);const ruleKind=validateRuleKind(kind);try{const selected=await showOpenDialog({title:'导入 OrigRead 规则',properties:['openFile'],filters:[{name:'JSON',extensions:['json']}]});if(selected.canceled||!selected.filePaths[0])return{ok:false,cancelled:true,count:0,error:null};const content=await readFile(selected.filePaths[0],'utf8');const count=ruleKind==='website'?websiteRuleRepository!.importRules(content):ruleKind==='json'?jsonRuleRepository!.importRules(content):articleFilterRepository!.importRules(content);return{ok:true,cancelled:false,count,error:null}}catch(error){return{ok:false,cancelled:false,count:0,error:error instanceof Error?error.message:String(error)}}
   })
   ipcMain.handle(IPC_CHANNELS.exportRuleFile, async (event, kind: unknown) => {
-    assertTrustedSender(event);const ruleKind=validateRuleKind(kind);try{const content=ruleKind==='website'?websiteRuleRepository!.exportRules():ruleKind==='json'?jsonRuleRepository!.exportRules():articleFilterRepository!.exportRules();const selected=await showSaveDialog({title:'导出 OrigRead 规则',defaultPath:`OrigRead-${ruleKind}-rules.json`,filters:[{name:'JSON',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};writeFileSync(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
+    assertTrustedSender(event);const ruleKind=validateRuleKind(kind);try{const content=ruleKind==='website'?websiteRuleRepository!.exportRules():ruleKind==='json'?jsonRuleRepository!.exportRules():articleFilterRepository!.exportRules();const selected=await showSaveDialog({title:'导出 OrigRead 规则',defaultPath:`OrigRead-${ruleKind}-rules.json`,filters:[{name:'JSON',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};await writeFile(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
   })
   ipcMain.handle(IPC_CHANNELS.openOriginalArticle, (event, url: unknown, bounds: unknown) => {
     assertTrustedSender(event)
@@ -2330,6 +2358,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   jsonRuleRepository = new JsonRuleRepository(join(app.getPath('userData'), 'json-source-rules.json'))
   jsonSourceService = new JsonSourceService(jsonRuleRepository, new JsonArticleParser())
   jsonSubscriptionService = new JsonSubscriptionService(libraryRepository, jsonSourceService, articleFilterRepository)
+  jsonSourceRepairService = new JsonSourceRepairService(libraryRepository, jsonSourceService, jsonSubscriptionService)
   websiteRuleRepository = new WebsiteRuleRepository(join(app.getPath('userData'), 'website-rules.json'))
   websitePreferenceRepository = new WebsiteParsePreferenceRepository(join(app.getPath('userData'), 'website-parse-preferences.json'))
   const dynamicWebsiteRenderer = new ElectronDynamicWebsiteRenderer()
@@ -2475,6 +2504,7 @@ app.on('before-quit', (event) => {
     rssHubSettingsRepository = null
     rssHubResolver = null
     jsonSubscriptionService = null
+    jsonSourceRepairService = null
     jsonSourceService = null
     jsonRuleRepository = null
     websiteSubscriptionService = null
@@ -2504,4 +2534,3 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
-

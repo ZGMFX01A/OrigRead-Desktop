@@ -55,7 +55,12 @@ export class DesktopAccountService {
     const account=this.accounts.current()
     if(account.type==='local'){
       const result=await this.services.localSync.refreshAllSources(Date.now(), account.id)
-      this.clearKeepArchived(account)
+      // 部分失败不能推进成功时间或清理历史；成功后重读用户在抓取期间修改的配置。
+      if(result.failedCount===0){
+        this.accounts.updateSyncMetadata(account.id,Date.now())
+        const current=this.accounts.get(account.id)
+        if(current)this.clearKeepArchived(current)
+      }
       return result
     }
     const startedAt=Date.now()
@@ -91,6 +96,9 @@ export class DesktopAccountService {
   async updateFeed(feedId:string,patch:{name?:string;url?:string;groupId?:string;isNotification?:boolean;isFullContent?:boolean;isBrowser?:boolean}):Promise<FeedRecord>{
     if(this.current().type!=='local')return this.services.remote.updateFeed(feedId,patch)
     const current=this.library.getFeedById(feedId);if(!current)throw new Error('来源不存在')
+    if(current.sourceType==='json'&&patch.url!==undefined&&patch.url!==current.url){
+      throw new Error('JSON 来源地址需要在解析设置中重新探测并确认规则')
+    }
     const next={...current,...patch,updatedAt:Date.now()};this.library.upsertFeed(next);return this.library.getFeedById(feedId)!
   }
 

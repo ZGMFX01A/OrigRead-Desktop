@@ -2,7 +2,7 @@ import type { ArticleRecord, ArticleSearchResult, FeedArticleStats, FeedRecord, 
 import type { DesktopSettings, DesktopSettingsPatch } from './settings'
 import type { RssSubscriptionResult } from './rss'
 import type { RssHubSettings } from './rsshub'
-import type { JsonRule } from './json-source'
+import type { JsonRule, JsonBindingProbe } from './json-source'
 import type { WebsiteInspectionResult, WebsiteParseCandidate, WebsiteRule } from './website'
 import type { SourceDiscoveryProgress, SourceDiscoveryResult, SourceSubscriptionResult } from './source-discovery'
 import type { SourceSyncBatchResult, SourceSyncItemResult } from './source-sync'
@@ -111,6 +111,9 @@ export interface OrigReadDesktopApi extends LlmChatDataApi {
   restoreDefaultRssHubSettings(): Promise<RssHubSettings>
   getSourceCatalog(): Promise<FeedCatalogSnapshot>
   listJsonRules(): Promise<JsonRule[]>
+  probeJsonSourceBinding(feedId: string, url: string, requestId: string): Promise<JsonBindingProbe>
+  confirmJsonSourceBinding(feedId: string, requestId: string, candidateId: string): Promise<FeedRecord>
+  cancelJsonSourceBindingProbe(requestId: string): Promise<boolean>
   listJsonRulesForUrl(url: string): Promise<JsonRule[]>
   importJsonRules(content: string): Promise<number>
   exportJsonRules(): Promise<string>
@@ -278,6 +281,9 @@ export const IPC_CHANNELS = {
   restoreDefaultRssHubSettings: 'rsshub:settings:restore-default',
   getSourceCatalog: 'source:catalog:get',
   listJsonRules: 'json:rules:list',
+  probeJsonSourceBinding: 'json:source:probe-binding',
+  confirmJsonSourceBinding: 'json:source:confirm-binding',
+  cancelJsonSourceBindingProbe: 'json:source:cancel-binding-probe',
   listJsonRulesForUrl: 'json:rules:list-for-url',
   importJsonRules: 'json:rules:import',
   exportJsonRules: 'json:rules:export',

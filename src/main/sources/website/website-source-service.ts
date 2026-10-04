@@ -4,11 +4,10 @@ import { WebsitePageTooComplexError } from './website-source-support'
 import { WebsiteCandidateBatch, type CandidateBatch } from './website-candidate-batch'
 import * as cheerio from 'cheerio'
 import type { FeedRecord } from '../../../shared/library'
-import type { WebsiteInspectionResult, WebsiteParseCandidate, WebsiteParsedArticle } from '../../../shared/website'
+import type { WebsiteInspectionResult, WebsiteParseCandidate, WebsiteParsedArticle, WebsiteRule } from '../../../shared/website'
 import { defaultWebsiteRule } from '../../../shared/website'
 
 import { isReusableAutomaticWebsiteRule } from './automatic-website-list-detector'
-import { ConfigurableWebsiteParser } from './configurable-website-parser'
 import { isSafeDynamicFallback, rankingScore, rejectedWebsiteCandidate } from './website-candidate-scorer'
 import { javaStringHash, unsignedHex } from './website-dom'
 import { WebsiteParsePreferenceRepository } from './website-parse-preference-repository'
@@ -28,11 +27,16 @@ interface CandidateSelection {
   batch: CandidateBatch
 }
 
+/** 清理规则与本轮文章一起返回，并发解析不能覆盖其它批次的规则身份。 */
+export interface WebsiteArticleBatch {
+  articles: WebsiteParsedArticle[]
+  cleanupRule: WebsiteRule | null
+}
+
 export class WebsiteSourceService {
   private readonly candidateBatch: WebsiteCandidateBatch
   private readonly fetcher: WebsiteFetcher
   private readonly dynamicRenderer: DynamicWebsiteRenderer | null
-  private readonly selectedRuleIds = new Map<string, string>()
 
   constructor(
     private readonly ruleRepository: WebsiteRuleRepository,
@@ -72,6 +76,11 @@ export class WebsiteSourceService {
   }
 
   async fetchArticles(feed: FeedRecord, fetchedAt = Date.now()): Promise<WebsiteParsedArticle[]> {
+    return (await this.fetchArticleBatch(feed, fetchedAt)).articles
+  }
+
+  /** 刷新携带实际选中的规则快照，自动识别结果不执行历史范围删除。 */
+  async fetchArticleBatch(feed: FeedRecord, fetchedAt = Date.now()): Promise<WebsiteArticleBatch> {
     if (this.preferenceRepository.get(feed.id)?.dynamicRenderingEnabled === true) {
       if (!this.dynamicRenderer) throw new Error('动态 Chromium 渲染器不可用')
       const rendered = await this.dynamicRenderer.render(feed.url)
@@ -104,18 +113,6 @@ export class WebsiteSourceService {
 
   hasRule(url: string): boolean {
     return this.ruleRepository.findRules(url).length > 0
-  }
-
-  findObsoleteArticleIds(
-    feed: FeedRecord,
-    existingArticles: Array<{ id: string; url: string | null; isStarred: boolean }>,
-    fetchedArticles: WebsiteParsedArticle[]
-  ): string[] {
-    const selectedRuleId = this.selectedRuleIds.get(feed.id)
-    this.selectedRuleIds.delete(feed.id)
-    if (selectedRuleId?.startsWith('auto-dom:')) return []
-    const rule = selectedRuleId ? this.ruleRepository.findRuleById(selectedRuleId) : this.ruleRepository.findRule(feed.url)
-    return rule ? new ConfigurableWebsiteParser(rule).findObsoleteArticleIds(existingArticles, fetchedArticles) : []
   }
 
   private async request(url: string, signal?: AbortSignal): Promise<WebsiteFetchPayload> {
@@ -185,11 +182,10 @@ export class WebsiteSourceService {
     feed: FeedRecord,
     $: cheerio.CheerioAPI,
     options: { baseUrl: string; fetchedAt: number; allowLowConfidenceFallback?: boolean; htmlLength: number }
-  ): WebsiteParsedArticle[] {
+  ): WebsiteArticleBatch {
     const fetchedAt = options.fetchedAt
     const selection = this.selectBestCandidate(feed, $, options)
     const candidate = selection.candidate
-    this.selectedRuleIds.set(feed.id, candidate.rule.id)
     if (isReusableAutomaticWebsiteRule(candidate.rule)) {
       const cachedId = this.preferenceRepository.get(feed.id)?.cachedAutomaticRule?.id
       if (cachedId !== candidate.rule.id) this.preferenceRepository.saveAutomaticRule(feed.id, candidate.rule)
@@ -202,7 +198,11 @@ export class WebsiteSourceService {
       )
     }
     this.preferenceRepository.saveLastSelection(feed.id, candidate)
-    return candidate.articles
+    return {
+      articles: candidate.articles,
+      cleanupRule: !candidate.rule.id.startsWith('auto-dom:') && candidate.rule.cleanupMode === 'URL_ID_RANGE'
+        ? structuredClone(candidate.rule) : null
+    }
   }
 
   private selectBestCandidate(

@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto'
 import * as cheerio from 'cheerio'
 import type { ArticleRecord, FeedRecord } from '../../../shared/library'
-import type { JsonParsedArticle, JsonSourceProbeResult } from '../../../shared/json-source'
+import type { JsonParsedArticle, JsonSourceProbeResult, JsonRule } from '../../../shared/json-source'
 import { LibraryRepository } from '../../database/library-repository'
 import { JsonSourceService } from './json-source-service'
 import type { ArticleFilterRepository } from '../../filter/article-filter-repository'
+import { SourceOperationQueue } from '../source-operation-queue'
 
 export class JsonSubscriptionService {
+  private readonly operations = new SourceOperationQueue()
   constructor(
     private readonly repository: LibraryRepository,
     private readonly sourceService: JsonSourceService,
@@ -54,12 +56,18 @@ export class JsonSubscriptionService {
     fetchedAt = Date.now(),
     accountId = this.repository.getCurrentAccountId()
   ): Promise<{ feedId: string; fetchedArticles: number; insertedArticles: number }> {
+    return this.operations.run(feedId, () => this.refreshResolved({ feedId, fetchedAt, accountId }))
+  }
+
+  /** 与重绑共用来源队列，旧网络回包不会重新发布已替换的规则或接口地址。 */
+  private async refreshResolved(input: { feedId: string; fetchedAt: number; accountId: number }): Promise<{ feedId: string; fetchedArticles: number; insertedArticles: number }> {
+    const { feedId, fetchedAt, accountId } = input
     const feed = this.repository.getFeedByIdForAccount(accountId, feedId)
     if (!feed) throw new Error(`来源不存在：${feedId}`)
     if (feed.sourceType !== 'json') throw new Error(`来源不是 JSON/API：${feed.name}`)
 
-    const boundRule = this.repository.getJsonFeedRule(feedId) ?? this.sourceService.resolveRule(feed)
-    const parsed = await this.sourceService.fetch(feed, fetchedAt, boundRule)
+    const batch = await this.sourceService.fetchResolved(feed, fetchedAt, this.repository.getJsonFeedRule(feedId))
+    const parsed = batch.articles
     const candidates = parsed
       .map((article) => toArticleRecord(feed.id, article, { now: fetchedAt, accountId: feed.accountId }))
     const archivedLinks = this.repository.archivedLinks(feed.id, candidates.map((article) => article.url))
@@ -67,8 +75,27 @@ export class JsonSubscriptionService {
     const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
     const existingIds = this.repository.existingArticleIds(articles.map((article) => article.id), feed.accountId)
     const insertedArticles = articles.length - existingIds.size
-    this.repository.upsertFeedWithArticles({ ...feed, updatedAt: fetchedAt }, articles, { jsonRule: boundRule })
+    const current = this.repository.getFeedByIdForAccount(accountId, feedId)
+    if (!current) throw new Error(`来源已不存在：${feedId}`)
+    this.repository.upsertFeedWithArticles({ ...current, updatedAt: fetchedAt }, articles, { jsonRule: batch.rule })
     return { feedId, fetchedArticles: articles.length, insertedArticles }
+  }
+
+  /** 确认只替换原来源的地址和规则；文章、阅读状态、收藏及引用身份全部保留。 */
+  replaceBinding(input: { base: FeedRecord; expectedRule: JsonRule | null; probe: JsonSourceProbeResult; signal: AbortSignal }): Promise<FeedRecord> {
+    return this.operations.run(input.base.id, async () => {
+      input.signal.throwIfAborted()
+      if (this.repository.getCurrentAccountId() !== input.base.accountId) throw new Error('账户已切换，请重新探测来源')
+      const current = this.repository.getFeedByIdForAccount(input.base.accountId!, input.base.id)
+      if (!current || current.sourceType !== 'json') throw new Error('JSON 来源已不存在')
+      const currentRule = this.repository.getJsonFeedRule(current.id)
+      if (current.url !== input.base.url || JSON.stringify(currentRule) !== JSON.stringify(input.expectedRule)) {
+        throw new Error('JSON 来源绑定已变化，请重新探测并确认')
+      }
+      const updated = { ...current, url: input.probe.endpointUrl, sourcePageUrl: input.probe.sourcePageUrl, updatedAt: Date.now() }
+      this.repository.upsertFeedWithArticles(updated, [], { jsonRule: input.probe.rule })
+      return updated
+    })
   }
 }
 

@@ -57,6 +57,21 @@ export interface JsonSourceProbeResult {
   articles: JsonParsedArticle[]
 }
 
+/** 只向界面发送可选规则和真实预览，确认时使用主进程保存的完整探测结果。 */
+export interface JsonBindingCandidate {
+  candidateId: string
+  name: string
+  sourceKind: JsonSourceKind
+  endpointUrl: string
+  articleCount: number
+  sampleTitles: string[]
+}
+
+export interface JsonBindingProbe {
+  requestId: string
+  candidates: JsonBindingCandidate[]
+}
+
 // 规则包格式版本；新增可选时区字段不改变已有包的读取方式。
 export const JSON_RULE_SCHEMA_VERSION = 1
 

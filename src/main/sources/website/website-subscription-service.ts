@@ -4,6 +4,7 @@ import type { WebsiteInspectionResult, WebsiteParsedArticle } from '../../../sha
 import { LibraryRepository } from '../../database/library-repository'
 import { WebsiteSourceService } from './website-source-service'
 import type { ArticleFilterRepository } from '../../filter/article-filter-repository'
+import { ConfigurableWebsiteParser } from './configurable-website-parser'
 
 export class WebsiteSubscriptionService {
   constructor(
@@ -60,7 +61,8 @@ export class WebsiteSubscriptionService {
     const feed = this.repository.getFeedByIdForAccount(accountId, feedId)
     if (!feed) throw new Error(`来源不存在：${feedId}`)
     if (feed.sourceType !== 'website') throw new Error(`来源不是网站：${feed.name}`)
-    const parsed = await this.sourceService.fetchArticles(feed, fetchedAt)
+    const batch = await this.sourceService.fetchArticleBatch(feed, fetchedAt)
+    const parsed = batch.articles
     const candidates = parsed
       .map((item) => toWebsiteArticleRecord(feed.id, item, { now: fetchedAt, accountId: feed.accountId }))
     const archivedLinks = this.repository.archivedLinks(feed.id, candidates.map((article) => article.url))
@@ -68,8 +70,11 @@ export class WebsiteSubscriptionService {
     const articles = this.articleFilters?.filterArticles(feed.id, candidateArticles).kept ?? candidateArticles
     const existingIds = this.repository.existingArticleIds(articles.map((article) => article.id), feed.accountId)
     const insertedArticles = articles.length - existingIds.size
-    const existing = this.repository.listArticlesByFeedForAccount(accountId, feed.id)
-    const obsolete = this.sourceService.findObsoleteArticleIds(feed, existing, parsed)
+    // 自动与非范围规则不查询历史正文；收藏保护仍由规则和删除 SQL 双重保留。
+    const obsolete = batch.cleanupRule
+      ? new ConfigurableWebsiteParser(batch.cleanupRule).findObsoleteArticleIds(
+        this.repository.listArticleCleanupMetadata(accountId, feed.id), parsed)
+      : []
     this.repository.upsertWebsiteFeedWithArticles({ ...feed, updatedAt: fetchedAt }, articles, obsolete)
     return { feedId, fetchedArticles: articles.length, insertedArticles, deletedArticles: obsolete.length }
   }

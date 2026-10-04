@@ -77,6 +77,10 @@ const api: OrigReadDesktopApi = Object.freeze({
   restoreDefaultRssHubSettings: () => ipcRenderer.invoke(IPC_CHANNELS.restoreDefaultRssHubSettings),
   getSourceCatalog: () => ipcRenderer.invoke(IPC_CHANNELS.getSourceCatalog),
   listJsonRules: () => ipcRenderer.invoke(IPC_CHANNELS.listJsonRules),
+  // 仅传递来源身份和候选 ID，规则快照由主进程的真实探测会话维护。
+  probeJsonSourceBinding: (feedId: string, url: string, requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.probeJsonSourceBinding, feedId, url, requestId),
+  confirmJsonSourceBinding: (feedId: string, requestId: string, candidateId: string) => ipcRenderer.invoke(IPC_CHANNELS.confirmJsonSourceBinding, feedId, requestId, candidateId),
+  cancelJsonSourceBindingProbe: (requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.cancelJsonSourceBindingProbe, requestId),
   listJsonRulesForUrl: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.listJsonRulesForUrl, url),
   importJsonRules: (content: string) => ipcRenderer.invoke(IPC_CHANNELS.importJsonRules, content),
   exportJsonRules: () => ipcRenderer.invoke(IPC_CHANNELS.exportJsonRules),

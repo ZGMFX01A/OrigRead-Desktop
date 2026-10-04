@@ -7,6 +7,8 @@ export type FullContentFailureReason =
   | 'PAGE_UNAVAILABLE'
   | 'INVALID_URL'
   | 'NETWORK'
+  | 'ARTICLE_UNAVAILABLE'
+  | 'CACHE_STORAGE'
   | 'UNKNOWN'
 
 export interface ReaderArticleContent {
@@ -20,5 +22,7 @@ export interface FullContentFetchResult {
   ok: boolean
   content: ReaderArticleContent | null
   failureReason: FullContentFailureReason | null
+  /** 正文仍可阅读，但离线缓存写入失败；不得将此状态报告为保存成功。 */
+  cacheWriteError?: string
 }
 

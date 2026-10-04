@@ -9,10 +9,15 @@ export class SqliteLibraryWriter {
   constructor(private readonly database: DatabaseSync, private readonly library: LibraryRepository) {}
 
   setArticleFullContent(articleId: string, html: string | null): void {
-    const accountId = this.library.getCurrentAccountId()
-    this.database
+    this.setArticleFullContentForAccount(this.library.getCurrentAccountId(), articleId, html)
+  }
+
+  /** 单条 SQLite 更新原子发布全文，行数交回调用方识别已删除的文章。 */
+  setArticleFullContentForAccount(accountId: number, articleId: string, html: string | null): number {
+    const result = this.database
       .prepare('UPDATE articles SET full_content_html = ?, updated_at = ? WHERE account_id = ? AND id = ?')
       .run(html, Date.now(), accountId, articleId)
+    return Number(result.changes)
   }
 
   deleteArticlesByFeed(feedId: string, includeStarred = false): void {

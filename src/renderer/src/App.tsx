@@ -86,6 +86,7 @@ import type { TranslationDocument, TranslationTarget } from '../../shared/transl
 import type { FeedCatalogEntry } from '../../shared/source-catalog'
 import { SourceDiscoveryPanel } from './SourceDiscoveryPanel'
 import { SourceSettingsDialog } from './SourceSettingsDialog'
+import { useReaderContentRequests } from './useReaderContentRequests'
 import { AiSummaryOptionsDialog, TranslationTargetDialog } from './ReaderToolDialogs'
 import type { AiSummaryRequestOptions } from '../../shared/ai'
 import { ReaderSearchBar, SearchableHtml, nextSearchIndex } from './ReaderSearch'
@@ -232,6 +233,7 @@ export default function App(): React.JSX.Element {
   const [readerContent, setReaderContent] = useState<ReaderArticleContent | null>(null)
   const [readerContentLoading, setReaderContentLoading] = useState(false)
   const [readerContentError, setReaderContentError] = useState<string | null>(null)
+  const [readerCacheWriteError, setReaderCacheWriteError] = useState<string | null>(null)
   const [readerMode, setReaderMode] = useState<ReaderMode>('article')
   const [readerAiSelection, setReaderAiSelection] = useState<ReaderAiSelection | null>(null)
   const [readerAiSelectionCandidate, setReaderAiSelectionCandidate] = useState<ReaderAiSelectionCandidate | null>(null)
@@ -352,6 +354,8 @@ export default function App(): React.JSX.Element {
   const selectedArticleIdRef = useRef<string | null>(null)
   const sourceDiscoveryRequestIdRef = useRef<string | null>(null)
   const aiSummaryRunRef = useRef(0)
+  // 活动摘要身份覆盖整个生成期，首帧性能采样结束不能使后续流式更新失效。
+  const aiSummaryActiveRunRef = useRef<{ runId: number; articleId: string } | null>(null)
   const aiSummaryPerfRunRef = useRef<{ runId: number; articleId: string; startedAt: number } | null>(null)
   const aiSummaryUiTtfvRecordedRef = useRef(false)
   const translationRunRef = useRef(0)
@@ -635,7 +639,28 @@ export default function App(): React.JSX.Element {
   const selectedArticle = selectedArticleRecord?.id === selectedArticleId ? selectedArticleRecord : null
   const selectedFeed = selectedArticle ? feeds.find((feed) => feed.id === selectedArticle.feedId) ?? null : null
   const selectedArticleFeedId = selectedArticle?.feedId ?? null
+  const selectedArticleAccountId = selectedArticle?.accountId ?? null
   const selectedFeedRequiresFullContent = selectedFeed?.sourceType === 'website' || selectedFeed?.isFullContent === true
+  const readerContentRequests = useReaderContentRequests({
+    articleId: selectedArticleId, accountId: selectedArticleAccountId, api: window.origread,
+    setContent: setReaderContent, setLoading: setReaderContentLoading, setError: setReaderContentError,
+    setCacheWriteError: setReaderCacheWriteError, failureMessage: (reason) => t(`fullContentFailure.${reason}`),
+    onContentChanged: () => {
+      // 正文代次改变后旧摘要和译文不能重新发布，包含同一文章的重复请求。
+      const summaryRun = aiSummaryActiveRunRef.current
+      aiSummaryActiveRunRef.current = null
+      aiSummaryPerfRunRef.current = null
+      if (summaryRun) void window.origread.stopAiSummary(summaryRun.articleId)
+        .catch((error) => console.error('停止旧正文的摘要请求失败', error))
+      aiSummaryRunRef.current += 1
+      translationRunRef.current += 1
+      setAiSummary(null)
+      setAiSummaryProgress(null)
+      setAiSummaryStream(null)
+      setTranslationDocument(null)
+      setReaderToolLoading(null)
+    }
+  })
   useEffect(() => {
     document.documentElement.dataset.theme = resolvedTheme
     document.documentElement.style.colorScheme = resolvedTheme
@@ -667,10 +692,12 @@ export default function App(): React.JSX.Element {
     })
     const unsubscribeOriginal = window.origread.onOriginalArticleStateChanged(setOriginalViewState)
     const unsubscribeAiProgress = window.origread.onAiSummaryProgress((progress) => {
-      if (progress.articleId === selectedArticleIdRef.current) setAiSummaryProgress(progress)
+      const run = aiSummaryActiveRunRef.current
+      if (run?.runId === aiSummaryRunRef.current && run.articleId === progress.articleId && progress.articleId === selectedArticleIdRef.current) setAiSummaryProgress(progress)
     })
     const unsubscribeAiStream = window.origread.onAiSummaryStreamUpdate((update) => {
-      if (update.articleId === selectedArticleIdRef.current) setAiSummaryStream(update)
+      const run = aiSummaryActiveRunRef.current
+      if (run?.runId === aiSummaryRunRef.current && run.articleId === update.articleId && update.articleId === selectedArticleIdRef.current) setAiSummaryStream(update)
     })
     const unsubscribeLlmExecution = window.origread.onLlmExecutionEvent((event) => {
       if (event.requestId !== chatActiveRequestIdRef.current) return
@@ -853,19 +880,26 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     let cancelled = false
     const translatingArticleId = translationRequestArticleRef.current
+    // 导航和离开使 AI 任务身份失效，A→B→A 也不能接受第一轮 A 的旧结果。
+    aiSummaryRunRef.current += 1
+    translationRunRef.current += 1
     if (translatingArticleId && translatingArticleId !== selectedArticleId) {
       translationRunRef.current += 1
       translationRequestArticleRef.current = null
       void window.origread.stopTranslation(translatingArticleId).catch(() => undefined)
       setReaderToolLoading((current) => current === 'translation' ? null : current)
     }
-    if (aiSummaryPerfRunRef.current && aiSummaryPerfRunRef.current.articleId !== selectedArticleId) {
+    if (aiSummaryActiveRunRef.current) {
+      const articleId = aiSummaryActiveRunRef.current.articleId
+      aiSummaryActiveRunRef.current = null
       aiSummaryPerfRunRef.current = null
+      void window.origread.stopAiSummary(articleId).catch((error) => console.error('停止导航前的摘要请求失败', error))
       aiSummaryUiTtfvRecordedRef.current = false
     }
     if (!selectedArticleId) {
       setReaderContent(null)
       setReaderContentError(null)
+      setReaderCacheWriteError(null)
       setReaderContentLoading(false)
       return () => { cancelled = true }
     }
@@ -943,32 +977,9 @@ export default function App(): React.JSX.Element {
     setAiSummaryStartedAt(null)
     setTranslationDocument(null)
     setReaderToolNotice(null)
-    setReaderContentLoading(true)
-    void window.origread.getReaderContent(selectedArticleId)
-      .then(async (content) => {
-        if (cancelled) return
-        if (selectedFeedRequiresFullContent && content.mode !== 'full') {
-          const result = await window.origread.fetchFullContent(selectedArticleId)
-          if (cancelled) return
-          if (result.ok && result.content) {
-            setReaderContent(result.content)
-          } else {
-            setReaderContent(content)
-            setReaderContentError(t(`fullContentFailure.${result.failureReason ?? 'UNKNOWN'}`))
-          }
-          return
-        }
-        setReaderContent(content)
-      })
-      .catch((error) => {
-        if (!cancelled) setReaderContentError(error instanceof Error ? error.message : String(error))
-      })
-      .finally(() => {
-        if (!cancelled) setReaderContentLoading(false)
-      })
-
-    return () => { cancelled = true }
-  }, [selectedArticleFeedId, selectedArticleId, selectedFeedRequiresFullContent, t])
+    void readerContentRequests.loadInitial(selectedFeedRequiresFullContent)
+    return () => { cancelled = true; readerContentRequests.invalidate() }
+  }, [selectedArticleAccountId, selectedArticleFeedId, selectedArticleId, selectedFeedRequiresFullContent, t])
 
   useEffect(() => {
     const target = readerCitationTarget
@@ -1930,9 +1941,11 @@ export default function App(): React.JSX.Element {
     if (!closeSettingsIfAllowed()) return
     const requestArticleId = selectedArticleId
     const runId = ++aiSummaryRunRef.current
+    aiSummaryActiveRunRef.current = { runId, articleId: requestArticleId }
     aiSummaryPerfRunRef.current = { runId, articleId: requestArticleId, startedAt: performance.now() }
     aiSummaryUiTtfvRecordedRef.current = false
     if (originalViewState.open) await closeOriginalArticle()
+    if (runId !== aiSummaryRunRef.current || selectedArticleIdRef.current !== requestArticleId) return
     setReaderToolLoading('ai')
     setReaderToolNotice(null)
     setAiSummaryProgress({ articleId: requestArticleId, stage: 'PREPARING' })
@@ -1956,6 +1969,7 @@ export default function App(): React.JSX.Element {
       }
     } finally {
       if (runId === aiSummaryRunRef.current) {
+        aiSummaryActiveRunRef.current = null
         setReaderToolLoading(null)
         setAiSummaryProgress(null)
         setAiSummaryStream(null)
@@ -1965,12 +1979,13 @@ export default function App(): React.JSX.Element {
   }
 
   const stopAiSummary = (): void => {
-    const articleId = selectedArticleIdRef.current
-    if (!articleId || readerToolLoading !== 'ai') return
+    const run = aiSummaryActiveRunRef.current
+    if (!run || readerToolLoading !== 'ai') return
     aiSummaryRunRef.current += 1
+    aiSummaryActiveRunRef.current = null
     aiSummaryPerfRunRef.current = null
     aiSummaryUiTtfvRecordedRef.current = false
-    void window.origread.stopAiSummary(articleId).catch(() => undefined)
+    void window.origread.stopAiSummary(run.articleId).catch((error) => console.error('停止摘要请求失败', error))
     setReaderToolLoading(null)
     setAiSummaryProgress(null)
     setAiSummaryStream(null)
@@ -2288,21 +2303,7 @@ export default function App(): React.JSX.Element {
 
   const fetchSelectedFullContent = async (): Promise<void> => {
     if (!selectedArticleId || readerContentLoading) return
-    setReaderContentLoading(true)
-    setReaderContentError(null)
-    try {
-      const result = await window.origread.fetchFullContent(selectedArticleId)
-      if (result.ok && result.content) {
-        setReaderContent(result.content)
-        await reloadLibrary()
-      } else {
-        setReaderContentError(t(`fullContentFailure.${result.failureReason ?? 'UNKNOWN'}`))
-      }
-    } catch (error) {
-      setReaderContentError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setReaderContentLoading(false)
-    }
+    await readerContentRequests.fetchFullContent()
   }
 
   const openExternal = async (url: string): Promise<void> => {
@@ -2601,15 +2602,7 @@ export default function App(): React.JSX.Element {
       await fetchSelectedFullContent()
       return
     }
-    setReaderContentLoading(true)
-    setReaderContentError(null)
-    try {
-      setReaderContent(await window.origread.getReaderContent(selectedArticleId, false))
-    } catch (error) {
-      setReaderContentError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setReaderContentLoading(false)
-    }
+    await readerContentRequests.showFeedContent()
   }
 
   useEffect(() => {
@@ -4025,6 +4018,11 @@ export default function App(): React.JSX.Element {
                 <button type="button" className="reader-tool-notice-close" aria-label={t('close')} onClick={()=>setReaderToolNotice(null)}><X size={14}/></button>
               </div>
             )}
+            {readerCacheWriteError && readerContent?.html && (
+              <div className="reader-tool-notice" role="status" aria-live="polite">
+                <div className="reader-tool-notice-copy"><strong>{t('fullContentCacheWriteFailed')}</strong><span>{readerCacheWriteError}</span></div>
+              </div>
+            )}
             {readerMode === 'translation' && translationDocument ? (
               <>
                 <div className="translation-result-meta">{translationTargetLabel(translationDocument.target)} · {translationDocument.targetLanguage} · {translationDocument.displayMode === 'BILINGUAL' ? t('bilingual') : t('translatedOnly')}</div>
@@ -4496,6 +4494,7 @@ export default function App(): React.JSX.Element {
       })()}
       {sourceSettingsFeed && (
         <SourceSettingsDialog
+          key={sourceSettingsFeed.id}
           feed={sourceSettingsFeed}
           onClose={()=>setSourceSettingsFeed(null)}
           onChanged={(updated)=>{
