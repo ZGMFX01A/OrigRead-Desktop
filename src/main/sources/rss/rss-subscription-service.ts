@@ -61,8 +61,13 @@ export class RssSubscriptionService {
     if (!existing) throw new Error('来源不存在：' + feedId)
     if (existing.sourceType !== 'rss') throw new Error('来源不是 RSS/Atom：' + existing.name)
     const loaded = await loadRssRefresh({ repository: this.repository, discovery: this.discovery, resolver: this.options.resolver }, existing)
+    const current = this.requireCurrentSource(existing, accountId)
+
     if (!loaded.feed) return { feedId, fetchedArticles: 0, insertedArticles: 0 }
-    return this.persistRefresh(existing, loaded.feed, {
+    return this.persistRefresh(current, {
+      ...loaded.feed, title: current.name === existing.name ? loaded.feed.title : current.name
+    }, {
+
       now, validators: loaded.validators, descriptor: loaded.descriptor
     })
   }
@@ -82,10 +87,28 @@ export class RssSubscriptionService {
       return null
     }
     if (direct.notModified || !direct.feed || direct.feed.items.length === 0) return null
-    return this.persistRefresh({ ...existing, sourceType: 'rss', isBrowser: false, dynamicRendering: false }, direct.feed, {
+    const current = this.requireCurrentSource(existing, accountId)
+    if (current.dynamicRendering !== existing.dynamicRendering || current.isBrowser !== existing.isBrowser
+      || this.repository.listArticlesByFeedForAccount(accountId, feedId).length > 0) return null
+    return this.persistRefresh({ ...current, sourceType: 'rss', isBrowser: false, dynamicRendering: false }, {
+      ...direct.feed, title: current.name === existing.name ? direct.feed.title : current.name
+    }, {
+
       now, validators: { etag: direct.etag, lastModified: direct.lastModified }
     })
   }
+
+  /** 回包后重新读取当前来源；检查到提交之间没有 await，不复活已删除来源或回退用户偏好。 */
+  private requireCurrentSource(before: FeedRecord, accountId: number): FeedRecord {
+    const current = this.repository.getFeedByIdForAccount(accountId, before.id)
+    if (!current) throw new Error('来源已删除，已忽略本次刷新结果')
+    if (current.url !== before.url || current.sourceType !== before.sourceType
+      || current.sourcePageUrl !== before.sourcePageUrl) {
+      throw new Error('来源地址或类型已变化，请重新刷新')
+    }
+    return current
+  }
+
 
   /** 内容刷新保留用户状态，并在同一事务提交文章、身份和响应验证器。 */
   private persistRefresh(existing: FeedRecord, discovered: DiscoveredRssFeed, options: {

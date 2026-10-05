@@ -46,6 +46,8 @@ export class SourceDiscoveryService {
       if (!explicit && outcome.candidates.length === 0) outcome = await discoverFallbacks(context, outcome.error)
     }
     signal?.throwIfAborted()
+    if (accountId !== this.currentAccountId()) throw new Error('账户已切换，请重新检测来源')
+
     reportProgress('ranking', 'running')
     const result = this.createSession({ sourceUrl, accountId, catalogMatch, outcome })
     reportProgress('ranking', 'completed')
@@ -141,11 +143,18 @@ export class SourceDiscoveryService {
   private createSession(options: { sourceUrl: string; accountId: number; catalogMatch: FeedCatalogUrlMatch; outcome: DiscoveryOutcome }): SourceDiscoveryResult {
     const { sourceUrl, accountId, catalogMatch, outcome } = options
     const candidates = rankSourceCandidates(outcome.candidates)
+    const selected = candidates.find((candidate) => candidate.diagnostics.accepted)
+    // 已确认的普通 RSS/Atom 不再混入未验证目录推荐；RSSHub 路由仍保持独立可选。
+    const nativeRss = selected?.sourceType === 'rss'
+      && (selected.kind === 'RSS_DIRECT' || selected.kind === 'RSS_DISCOVERED')
+
     const result: SourceDiscoveryResult = {
       discoveryId: randomUUID(), sourceUrl, candidates,
-      rssHubRoutes: this.routeStatuses(outcome, candidates), catalogMatches: catalogMatch.suggestions,
-      catalogMatchCount: catalogMatch.totalSuggestions,
-      selectedCandidateId: candidates.find((candidate) => candidate.diagnostics.accepted)?.id ?? null,
+      rssHubRoutes: this.routeStatuses(outcome, candidates),
+      catalogMatches: nativeRss ? [] : catalogMatch.suggestions,
+      catalogMatchCount: nativeRss ? 0 : catalogMatch.totalSuggestions,
+      selectedCandidateId: selected?.id ?? null,
+
       error: candidates.length === 0 ? outcome.error : null
     }
     const payloads = new Map<string, CandidatePayload>()

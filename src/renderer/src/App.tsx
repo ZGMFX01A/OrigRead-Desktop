@@ -353,6 +353,8 @@ export default function App(): React.JSX.Element {
   const readerSecondaryActionsRef = useRef<HTMLDivElement>(null)
   const selectedArticleIdRef = useRef<string | null>(null)
   const sourceDiscoveryRequestIdRef = useRef<string | null>(null)
+  const sourceSubscriptionPendingRef = useRef(false)
+  const sourceDialogGenerationRef = useRef(0)
   const aiSummaryRunRef = useRef(0)
   // 活动摘要身份覆盖整个生成期，首帧性能采样结束不能使后续流式更新失效。
   const aiSummaryActiveRunRef = useRef<{ runId: number; articleId: string } | null>(null)
@@ -2037,6 +2039,12 @@ export default function App(): React.JSX.Element {
   }
 
   const handleConfigurationRestored = async (): Promise<void> => {
+    cancelSourceSearch()
+    setAddSourceOpen(false)
+    setSourceDiscovery(null)
+    setSelectedCandidateId(null)
+    setSelectedCandidateIds([])
+    setSourceError(null)
     const [nextSettings, nextSync] = await Promise.all([window.origread.getSettings(), window.origread.getSyncRuntimeState()])
     setSettings(nextSettings)
     setSyncRuntimeState(nextSync)
@@ -2052,6 +2060,12 @@ export default function App(): React.JSX.Element {
   }
 
   const handleAccountChanged = async (): Promise<void> => {
+    cancelSourceSearch()
+    setAddSourceOpen(false)
+    setSourceDiscovery(null)
+    setSelectedCandidateId(null)
+    setSelectedCandidateIds([])
+    setSourceError(null)
     closeSourceSwitcher(false)
     closeSourceManager(false)
     setRecentSourceScopeKeys([])
@@ -2765,6 +2779,8 @@ export default function App(): React.JSX.Element {
   }, [aiSummaryPlacement, chatConversation?.id, focusReading, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerAiPanel.detailView, readerAiPanel.open, readerAiPanel.view, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settings?.layoutMode, settings?.workspaceCollapsed, settingsOpen, sourceCatalogOpen, sourceManagerOpen, sourceSwitcherOpen, subscriptionMenuOpen, toggleFocusReading, toggleReaderAiAssistant, visibleArticles])
 
   const openAddSource = (): void => {
+    if (sourceSubscriptionPendingRef.current) return
+    cancelSourceSearch()
     closeSourceSwitcher(false)
     closeSourceManager(false)
     setSubscriptionMenuOpen(false)
@@ -2833,82 +2849,73 @@ export default function App(): React.JSX.Element {
     setSourceCatalogOpen(true)
   }
 
-  const discoverSourceWithProgress = async (url: string): Promise<SourceDiscoveryResult> => {
+  /** 先撤销本轮结果的发布资格，再通知主进程取消；不能等待 IPC 后才更新身份。 */
+  const cancelSourceSearch = (): void => {
+    const requestId = sourceDiscoveryRequestIdRef.current
+    sourceDiscoveryRequestIdRef.current = null
+    sourceDialogGenerationRef.current += 1
+    setSourceDiscoveryRequestId(null)
+    setSourceDiscoveryStartedAt(null)
+    setSourceDiscoveryStages({})
+    if (!sourceSubscriptionPendingRef.current) setIsAddingSource(false)
+    if (requestId) void window.origread.cancelSourceDiscovery(requestId).catch(() => false)
+  }
+
+  /** 结果、错误和 busy 状态只由当前请求发布，关闭或新搜索后旧 Promise 不再写 UI。 */
+  const discoverSourceWithProgress = async (url: string): Promise<void> => {
+    if (sourceSubscriptionPendingRef.current) return
     const previousRequestId = sourceDiscoveryRequestIdRef.current
-    if (previousRequestId) {
-      await window.origread.cancelSourceDiscovery(previousRequestId).catch(() => false)
-    }
     const requestId = crypto.randomUUID()
     sourceDiscoveryRequestIdRef.current = requestId
     setSourceDiscoveryRequestId(requestId)
     setSourceDiscoveryStages({})
     setSourceDiscoveryStartedAt(Date.now())
+    setSourceError(null)
+    setSourceDiscovery(null)
+    setSelectedCandidateId(null)
+    setSelectedCandidateIds([])
+    setIsAddingSource(true)
+    if (previousRequestId) void window.origread.cancelSourceDiscovery(previousRequestId).catch(() => false)
     try {
-      return await window.origread.discoverSource(url, requestId)
+      const discovered = await window.origread.discoverSource(url, requestId)
+      if (sourceDiscoveryRequestIdRef.current !== requestId) return
+      setSourceDiscovery(discovered)
+      setSelectedCandidateId(discovered.selectedCandidateId)
+      setSelectedCandidateIds(discovered.selectedCandidateId ? [discovered.selectedCandidateId] : [])
+      if (discovered.candidates.length === 0) setSourceError(discovered.error ?? t('noSourceCandidate'))
+    } catch (error) {
+      if (sourceDiscoveryRequestIdRef.current === requestId) {
+        setSourceError(error instanceof Error ? error.message : String(error))
+      }
     } finally {
       if (sourceDiscoveryRequestIdRef.current === requestId) {
         sourceDiscoveryRequestIdRef.current = null
-        setSourceDiscoveryRequestId((current) => current === requestId ? null : current)
+        setSourceDiscoveryRequestId(null)
         setSourceDiscoveryStartedAt(null)
+        setIsAddingSource(false)
       }
     }
   }
 
   const subscribeCatalogFeed = async (feed: FeedCatalogEntry): Promise<void> => {
+    if (sourceSubscriptionPendingRef.current) return
     setSourceCatalogOpen(false)
     setSettingsOpen(false)
     setSourceUrl(feed.feedUrl)
-    setSourceError(null)
-    setSourceDiscovery(null)
-    setSelectedCandidateId(null)
-    setSelectedCandidateIds([])
     setAddSourceOpen(true)
-    setIsAddingSource(true)
-    try {
-      const discovered = await discoverSourceWithProgress(feed.feedUrl)
-      setSourceDiscovery(discovered)
-      setSelectedCandidateId(discovered.selectedCandidateId)
-      setSelectedCandidateIds(discovered.selectedCandidateId ? [discovered.selectedCandidateId] : [])
-      if (discovered.candidates.length === 0) setSourceError(discovered.error ?? t('noSourceCandidate'))
-    } catch (error) {
-      setSourceError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setIsAddingSource(false)
-    }
+    await discoverSourceWithProgress(feed.feedUrl)
   }
 
   const validateCatalogMatch = async (feed: FeedCatalogEntry): Promise<void> => {
-    if (isAddingSource) return
+    if (isAddingSource || sourceSubscriptionPendingRef.current) return
     setSourceUrl(feed.feedUrl)
-    setSourceError(null)
-    setSourceDiscovery(null)
-    setSelectedCandidateId(null)
-    setSelectedCandidateIds([])
-    setIsAddingSource(true)
-    try {
-      const discovered = await discoverSourceWithProgress(feed.feedUrl)
-      setSourceDiscovery(discovered)
-      setSelectedCandidateId(discovered.selectedCandidateId)
-      setSelectedCandidateIds(discovered.selectedCandidateId ? [discovered.selectedCandidateId] : [])
-      if (discovered.candidates.length === 0) setSourceError(discovered.error ?? t('noSourceCandidate'))
-    } catch (error) {
-      setSourceError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setIsAddingSource(false)
-    }
+    await discoverSourceWithProgress(feed.feedUrl)
   }
 
   const closeAddSource = (): void => {
-    const activeRequestId = sourceDiscoveryRequestIdRef.current
-    // Subscription persistence has no discovery request and remains non-cancellable. During the
-    // network discovery phase, closing the dialog mirrors Android cancelSearch() and aborts Main.
-    if (isAddingSource && !activeRequestId) return
-    if (activeRequestId) {
-      sourceDiscoveryRequestIdRef.current = null
-      setSourceDiscoveryRequestId(null)
-      setSourceDiscoveryStartedAt(null)
-      void window.origread.cancelSourceDiscovery(activeRequestId).catch(() => false)
-    }
+    // 已开始持久化的订阅不能通过关闭面板假装取消；发现请求可以立即撤销。
+    if (sourceSubscriptionPendingRef.current) return
+    cancelSourceSearch()
     setAddSourceOpen(false)
     setSourceError(null)
     setSourceDiscovery(null)
@@ -2917,30 +2924,27 @@ export default function App(): React.JSX.Element {
   }
 
   const submitSource = async (): Promise<void> => {
-    if (!sourceUrl.trim() || isAddingSource) return
+    if (!sourceUrl.trim() || isAddingSource || sourceSubscriptionPendingRef.current) return
+    if (!sourceDiscovery) {
+      await discoverSourceWithProgress(sourceUrl)
+      return
+    }
+    const fallbackCandidateId = selectedCandidateId ?? sourceDiscovery.selectedCandidateId
+    const candidateIds = selectedCandidateIds.length > 0
+      ? selectedCandidateIds : fallbackCandidateId ? [fallbackCandidateId] : []
+    if (candidateIds.length === 0) {
+      setSourceError(t('selectSourceCandidate'))
+      return
+    }
+    const generation = sourceDialogGenerationRef.current
+    sourceSubscriptionPendingRef.current = true
     setIsAddingSource(true)
     setSourceError(null)
     try {
-      if (!sourceDiscovery) {
-        const discovered = await discoverSourceWithProgress(sourceUrl)
-        setSourceDiscovery(discovered)
-        setSelectedCandidateId(discovered.selectedCandidateId)
-        setSelectedCandidateIds(discovered.selectedCandidateId ? [discovered.selectedCandidateId] : [])
-        if (discovered.candidates.length === 0) {
-          setSourceError(discovered.error ?? t('noSourceCandidate'))
-        }
-        return
-      }
-      const fallbackCandidateId = selectedCandidateId ?? sourceDiscovery.selectedCandidateId
-      const candidateIds = selectedCandidateIds.length > 0
-        ? selectedCandidateIds
-        : fallbackCandidateId ? [fallbackCandidateId] : []
-      if (candidateIds.length === 0) {
-        setSourceError(t('selectSourceCandidate'))
-        return
-      }
       await window.origread.subscribeSource(sourceDiscovery.discoveryId, candidateIds)
+      if (generation !== sourceDialogGenerationRef.current) return
       await reloadLibrary()
+      if (generation !== sourceDialogGenerationRef.current) return
       setSourceUrl('')
       setSourceDiscovery(null)
       setSelectedCandidateId(null)
@@ -2948,8 +2952,11 @@ export default function App(): React.JSX.Element {
       setAddSourceOpen(false)
       setDestination('all')
     } catch (error) {
-      setSourceError(error instanceof Error ? error.message : String(error))
+      if (generation === sourceDialogGenerationRef.current) {
+        setSourceError(error instanceof Error ? error.message : String(error))
+      }
     } finally {
+      sourceSubscriptionPendingRef.current = false
       setIsAddingSource(false)
     }
   }
@@ -4203,9 +4210,9 @@ export default function App(): React.JSX.Element {
                 <div className="source-discovery-progress-bar" aria-hidden="true"><span /></div>
                 <div className="source-discovery-stage-list">
                   {sourceDiscoveryStageOrder
-                    .filter((stage) => ['rss', 'rsshub', 'json', 'website'].includes(stage) || sourceDiscoveryStages[stage] !== undefined)
+                    .filter((stage) => sourceDiscoveryStages[stage] !== undefined)
                     .map((stage) => {
-                      const state = sourceDiscoveryStages[stage] ?? 'running'
+                      const state = sourceDiscoveryStages[stage]!
                       return (
                         <div key={stage} className={`source-discovery-stage ${state}`}>
                           <span className="source-discovery-stage-dot" aria-hidden="true" />
@@ -4217,36 +4224,20 @@ export default function App(): React.JSX.Element {
                 </div>
               </div>
             )}
-            {sourceDiscovery && sourceDiscovery.catalogMatches.length > 0 && (
-              <div className="source-candidate-section catalog-match-section">
-                <div className="source-candidate-heading">
-                  <span>{t('sourceCatalogMatchesTitle')}</span>
-                  <span>{t('sourceCatalogMatchesCount', { count: sourceDiscovery.catalogMatchCount })}</span>
-                </div>
-                <p className="source-candidate-hint">
-                  {sourceDiscovery.catalogMatchCount > sourceDiscovery.catalogMatches.length
-                    ? t('sourceCatalogMatchesTruncated', { total: sourceDiscovery.catalogMatchCount, shown: sourceDiscovery.catalogMatches.length })
-                    : t('sourceCatalogMatchesHint')}
-                </p>
-                <div className="source-candidate-list" aria-label={t('sourceCatalogMatchesTitle')}>
-                  {sourceDiscovery.catalogMatches.map((feed) => (
-                    <button
-                      key={feed.id}
-                      type="button"
-                      className="source-candidate catalog-match-candidate"
-                      disabled={isAddingSource}
-                      onClick={() => void validateCatalogMatch(feed)}
-                    >
-                      <span className="candidate-main">
-                        <strong>{feed.name}</strong>
-                        <span className="candidate-notice">{feed.siteUrl?.trim() || feed.feedUrl}</span>
-                      </span>
-                      <span className="candidate-stats"><span className="candidate-kind kind-rss_direct">{t('sourceCatalogValidate')}</span></span>
-                    </button>
-                  ))}
-                </div>
+            {sourceDiscovery && (() => {
+              const ids = selectedCandidateIds.length > 0 ? selectedCandidateIds
+                : [selectedCandidateId ?? sourceDiscovery.selectedCandidateId].filter((id): id is string => id !== null)
+              const selected = sourceDiscovery.candidates.filter((candidate) => ids.includes(candidate.id))
+              if (selected.length === 0) return null
+              const nativeRss = selected.length === 1 && selected[0]!.sourceType === 'rss'
+                && (selected[0]!.kind === 'RSS_DIRECT' || selected[0]!.kind === 'RSS_DISCOVERED')
+              return <div className="source-current-selection" role="status">
+                <strong>{t(nativeRss ? 'sourceNativeRssConfirmed' : 'sourceCurrentSelection')}</strong>
+                {selected.map((candidate) => <span key={candidate.id} className="source-subscription-url">
+                  {t('sourceSubscriptionAddress', { url: candidate.feedLink })}
+                </span>)}
               </div>
-            )}
+            })()}
             {sourceDiscovery && sourceDiscovery.rssHubRoutes.length > 0 && (() => {
               const selectableRoutes = sourceDiscovery.rssHubRoutes.filter((route) => {
                 if (!route.candidateId) return false
@@ -4347,6 +4338,7 @@ export default function App(): React.JSX.Element {
                           role="checkbox"
                           aria-checked={selected}
                           className={`source-candidate rsshub-route-status ${selected ? 'selected' : ''}`}
+                          disabled={isAddingSource}
                           onClick={chooseCandidate}
                         >
                           {content}
@@ -4377,11 +4369,13 @@ export default function App(): React.JSX.Element {
                         role="radio"
                         aria-checked={selected}
                         className={`source-candidate ${selected ? 'selected' : ''}`}
+                        disabled={isAddingSource}
                         onClick={chooseCandidate}
                       >
                         <span className="candidate-radio" aria-hidden="true"><span /></span>
                         <span className="candidate-main">
                           <strong>{candidate.title}</strong>
+                          <span className="source-subscription-url">{candidate.feedLink}</span>
                           {candidate.sourceNotice && <span className="candidate-notice">{candidate.sourceNotice}</span>}
                           {candidate.kind === 'WEBSITE_DYNAMIC' && !candidate.diagnostics.accepted && (
                             <span className="candidate-notice warning">{t('dynamicWebsiteLowConfidenceNotice')}</span>
@@ -4396,6 +4390,28 @@ export default function App(): React.JSX.Element {
                   })}
                 </div>
               </div>
+            )}
+            {sourceDiscovery && sourceDiscovery.catalogMatches.length > 0 && (
+              <details key={sourceDiscovery.discoveryId} className="source-candidate-section catalog-match-section">
+                <summary>{t('sourceOtherCatalogSuggestions')}</summary>
+                <p className="source-candidate-hint">
+                  {sourceDiscovery.catalogMatchCount > sourceDiscovery.catalogMatches.length
+                    ? t('sourceCatalogMatchesTruncated', { total: sourceDiscovery.catalogMatchCount, shown: sourceDiscovery.catalogMatches.length })
+                    : t('sourceCatalogMatchesHint')}
+                </p>
+                <div className="source-candidate-list" aria-label={t('sourceCatalogMatchesTitle')}>
+                  {sourceDiscovery.catalogMatches.map((feed) => (
+                    <button key={feed.id} type="button" className="source-candidate catalog-match-candidate"
+                      disabled={isAddingSource} onClick={() => void validateCatalogMatch(feed)}>
+                      <span className="candidate-main">
+                        <strong>{feed.name}</strong>
+                        <span className="source-subscription-url">{feed.feedUrl}</span>
+                      </span>
+                      <span className="candidate-stats"><span className="candidate-kind kind-rss_direct">{t('sourceCatalogValidate')}</span></span>
+                    </button>
+                  ))}
+                </div>
+              </details>
             )}
             {sourceError && <div className="dialog-error">{sourceError}</div>}
             <footer className="dialog-footer">

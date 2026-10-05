@@ -66,13 +66,25 @@ export class FeedCatalogIndex {
 
     const host = normalizedHost(rawUrl)
     if (!host) return emptyFeedCatalogUrlMatch()
-    const hostMatches = distinctEntries(this.hostIndex.get(host) ?? [])
+    const hostMatches = distinctEntries(this.relatedHostMatches(host, rawUrl))
+
     return {
       preferred: null,
       suggestions: hostMatches.slice(0, FeedCatalogIndex.MAX_URL_SUGGESTIONS),
       totalSuggestions: hostMatches.length
     }
   }
+
+  /** GitHub 的同域地址属于不同仓库；其他站点保留现有目录建议规则。 */
+  private relatedHostMatches(host: string, rawUrl: string): FeedCatalogEntry[] {
+    const matches = this.hostIndex.get(host) ?? []
+    if (host !== 'github.com') return matches
+    const repository = githubRepository(rawUrl)
+    if (!repository) return []
+    return matches.filter((feed) => [feed.feedUrl, feed.siteUrl].some((url) =>
+      normalizedHost(url) === 'github.com' && githubRepository(url) === repository))
+  }
+
 }
 
 export function preferredCatalogProbeUrl(match: FeedCatalogUrlMatch, inputUrl: string): string | null {
@@ -125,6 +137,20 @@ function normalizedHost(value: string | null | undefined): string | null {
     return null
   }
 }
+
+/** 比较完整 owner/repo 路径段，不能把 ReadYou-Other 当作 ReadYou。 */
+function githubRepository(value: string | null | undefined): string | null {
+  if (!value?.trim()) return null
+  try {
+    const input = value.trim()
+    const url = new URL(/^https?:\/\//i.test(input) ? input : `https://${input}`)
+    const segments = url.pathname.replace(/^\/+|\/+$/g, '').split('/').slice(0, 2)
+    return segments.length === 2 && segments.every(Boolean) ? segments.join('/').toLowerCase() : null
+  } catch {
+    return null
+  }
+}
+
 
 function appendIndex(index: Map<string, FeedCatalogEntry[]>, key: string, feed: FeedCatalogEntry): void {
   const items = index.get(key)

@@ -79,18 +79,28 @@ export class WebsiteSourceService {
     return (await this.fetchArticleBatch(feed, fetchedAt)).articles
   }
 
-  /** 刷新携带实际选中的规则快照，自动识别结果不执行历史范围删除。 */
-  async fetchArticleBatch(feed: FeedRecord, fetchedAt = Date.now()): Promise<WebsiteArticleBatch> {
-    if (this.preferenceRepository.get(feed.id)?.dynamicRenderingEnabled === true) {
+  /** 回包后先校验来源与实际渲染偏好，再解析和记录规则，避免旧请求重建已删除的偏好。 */
+  async fetchArticleBatch(feed: FeedRecord, fetchedAt = Date.now(), beforeParse?: () => void): Promise<WebsiteArticleBatch> {
+    const dynamicRenderingEnabled = this.preferenceRepository.get(feed.id)?.dynamicRenderingEnabled === true
+    if (dynamicRenderingEnabled) {
       if (!this.dynamicRenderer) throw new Error('动态 Chromium 渲染器不可用')
       const rendered = await this.dynamicRenderer.render(feed.url)
+      this.validateRefreshContext(feed.id, dynamicRenderingEnabled, beforeParse)
       const $ = cheerio.load(rendered.html)
       return this.parseAndRecordSelection(feed, $, { baseUrl: rendered.finalUrl, fetchedAt, allowLowConfidenceFallback: true, htmlLength: rendered.html.length })
     }
     const payload = await this.request(feed.url)
+    this.validateRefreshContext(feed.id, dynamicRenderingEnabled, beforeParse)
     this.ensureAutomaticParsingAllowed(feed, payload.html)
     const $ = cheerio.load(payload.html)
     return this.parseAndRecordSelection(feed, $, { baseUrl: payload.finalUrl, fetchedAt, htmlLength: payload.html.length })
+  }
+
+  /** 动态渲染开关以解析偏好为准，不能用来源记录中创建时的值判断请求是否仍有效。 */
+  private validateRefreshContext(feedId: string, dynamicRenderingEnabled: boolean, beforeParse: (() => void) | undefined): void {
+    beforeParse?.()
+    const currentRenderingEnabled = this.preferenceRepository.get(feedId)?.dynamicRenderingEnabled === true
+    if (currentRenderingEnabled !== dynamicRenderingEnabled) throw new Error('来源解析方式已变化，请重新刷新')
   }
 
   getParsePreference(feedId: string) {

@@ -53,6 +53,7 @@ export class WebsiteSubscriptionService {
     return { feedId, insertedArticles: articles.length }
   }
 
+  /** 刷新前固定账户，回包后校验来源身份并保留用户最新偏好，再原子更新文章。 */
   async refresh(
     feedId: string,
     fetchedAt = Date.now(),
@@ -61,7 +62,10 @@ export class WebsiteSubscriptionService {
     const feed = this.repository.getFeedByIdForAccount(accountId, feedId)
     if (!feed) throw new Error(`来源不存在：${feedId}`)
     if (feed.sourceType !== 'website') throw new Error(`来源不是网站：${feed.name}`)
-    const batch = await this.sourceService.fetchArticleBatch(feed, fetchedAt)
+    // 来源身份必须在解析偏好写入前检查；回到订阅层后再次取当前值以保留用户修改。
+    const batch = await this.sourceService.fetchArticleBatch(feed, fetchedAt, () => { this.requireCurrentSource(feed, accountId) })
+    const current = this.requireCurrentSource(feed, accountId)
+
     const parsed = batch.articles
     const candidates = parsed
       .map((item) => toWebsiteArticleRecord(feed.id, item, { now: fetchedAt, accountId: feed.accountId }))
@@ -75,8 +79,20 @@ export class WebsiteSubscriptionService {
       ? new ConfigurableWebsiteParser(batch.cleanupRule).findObsoleteArticleIds(
         this.repository.listArticleCleanupMetadata(accountId, feed.id), parsed)
       : []
-    this.repository.upsertWebsiteFeedWithArticles({ ...feed, updatedAt: fetchedAt }, articles, obsolete)
+    this.repository.upsertWebsiteFeedWithArticles({ ...current, updatedAt: fetchedAt }, articles, obsolete)
+
     return { feedId, fetchedArticles: articles.length, insertedArticles, deletedArticles: obsolete.length }
+  }
+
+  /** 网络期间允许修改普通偏好；删除来源或改变地址、类型及解析方式时拒绝旧响应。 */
+  private requireCurrentSource(before: FeedRecord, accountId: number): FeedRecord {
+    const current = this.repository.getFeedByIdForAccount(accountId, before.id)
+    if (!current) throw new Error('来源已删除，已忽略本次刷新结果')
+    if (current.url !== before.url || current.sourceType !== before.sourceType
+      || current.sourcePageUrl !== before.sourcePageUrl || current.dynamicRendering !== before.dynamicRendering) {
+      throw new Error('来源地址或解析方式已变化，请重新刷新')
+    }
+    return current
   }
 }
 

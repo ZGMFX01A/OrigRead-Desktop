@@ -178,6 +178,22 @@ describe('RssDiscoveryService Android behavior parity', () => {
       vi.unstubAllGlobals()
     }
   })
+
+  it.each([false, true])('never starts icon discovery while adding a source, page discovery=%s', async (fromPage) => {
+    const requests: string[] = []
+    const findBestIcon = vi.fn(() => new Promise<string | null>(() => undefined))
+    const xml = RSS_XML.replace('<channel>', '<channel><image><url>https://example.com/feed-icon.png</url></image>')
+    const input = fromPage ? 'https://example.com/news' : 'https://example.com/feed.xml'
+    const service = new RssDiscoveryService(createFetcher({
+      'https://example.com/news': html('<html><head><link rel="alternate" type="application/rss+xml" href="/feed.xml"></head></html>'),
+      'https://example.com/feed.xml': { ...rss(xml), etag: 'feed-v1', lastModified: 'Mon, 05 Oct 2026 00:00:00 GMT' }
+    }, requests), { findBestIcon })
+    const discovered = await service.discover(input)
+    expect(discovered).toMatchObject({ feedUrl: 'https://example.com/feed.xml', discoveredFromPage: fromPage,
+      iconUrl: 'https://example.com/feed-icon.png', etag: 'feed-v1', lastModified: 'Mon, 05 Oct 2026 00:00:00 GMT' })
+    expect(requests).toEqual(fromPage ? [input, 'https://example.com/feed.xml'] : [input])
+    expect(findBestIcon).not.toHaveBeenCalled()
+  })
 })
 
 function createFetcher(fixtures: Record<string, RssFetchPayload>, requests: string[]): RssFetcher {

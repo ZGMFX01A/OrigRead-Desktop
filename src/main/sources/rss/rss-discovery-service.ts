@@ -63,7 +63,8 @@ export class RssDiscoveryService {
   /**
    * 与 Android RssHelper.discoverFeed 保持同一顺序：
    * 1. 输入 URL 直接按 Feed 解析；
-   * 2. 失败后重新请求输入页，读取 rel=alternate；
+   * 2. 失败后复用输入响应，读取 rel=alternate；
+
    * 3. 追加同源常见 Feed 路径；
    * 4. 候选按顺序逐个真实请求并解析，第一个成功项胜出；
    * 5. 全部失败时重新抛出首次直接解析错误。
@@ -74,7 +75,9 @@ export class RssDiscoveryService {
     // HTML 做 rel=alternate 发现，避免“先 parseDirect、失败后 discover 又下载一次”的重复请求。
     const inputPayload = await this.fetcher(normalizedInputUrl, undefined, signal)
     try {
-      return await this.parsePayload(inputPayload, { feedUrl: normalizedInputUrl, sourcePageUrl: normalizedInputUrl, discoveredFromPage: false, signal })
+      // Feed 已解析即可进入配置，额外站点图标不占用整轮发现预算。
+      return await this.parsePayload(inputPayload, { feedUrl: normalizedInputUrl, sourcePageUrl: normalizedInputUrl, discoveredFromPage: false, signal, skipIconDiscovery: true })
+
     } catch (directError) {
       signal?.throwIfAborted()
       const pageUrl = inputPayload.finalUrl
@@ -86,7 +89,8 @@ export class RssDiscoveryService {
 
       for (const candidateUrl of candidates) {
         try {
-          return await this.parseFeedUrl(candidateUrl, { sourcePageUrl: pageUrl, discoveredFromPage: true, signal })
+          return await this.parseFeedUrl(candidateUrl, { sourcePageUrl: pageUrl, discoveredFromPage: true, signal, skipIconDiscovery: true })
+
         } catch {
           // 解析失败可进入下一个候选；取消必须终止网络链。
           signal?.throwIfAborted()

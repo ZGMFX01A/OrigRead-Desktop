@@ -502,7 +502,8 @@ describe('SourceDiscoveryService parity', () => {
 
     const result = await service.discover('https://example.com/')
 
-    expect(result.catalogMatches).toEqual([catalogEntry])
+    expect(result.catalogMatches).toEqual([])
+    expect(result.catalogMatchCount).toBe(0)
     expect(result.candidates).toHaveLength(1)
     expect(result.candidates[0]).toMatchObject({ kind: 'RSS_DIRECT', feedLink: knownFeedUrl })
     expect(rss).toHaveBeenCalledWith('https://example.com/', expect.anything())
@@ -511,6 +512,36 @@ describe('SourceDiscoveryService parity', () => {
     expect(json).not.toHaveBeenCalled()
     expect(rssHub).not.toHaveBeenCalled()
     expect(website).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('drops unverified suggestions after native RSS success, page discovery=%s', async (fromPage) => {
+    const url = 'https://github.com/ReadYouApp/ReadYou/releases.atom'
+    const other = { id: 'bun', name: 'Bun', feedUrl: 'https://github.com/oven-sh/bun/releases.atom',
+      siteUrl: null, categories: [], origins: [] }
+    const unused = vi.fn(async () => { throw new Error('Unexpected fallback') })
+    const service = createService({ rss: async () => rssFeed(url, fromPage),
+      rssHub: unused, json: unused, website: unused, dynamic: unused,
+      feedDiscoveryCatalog: { matchUrl: () => ({ preferred: null, suggestions: [other], totalSuggestions: 1 }) } })
+    const result = await service.discover(url)
+    expect(result.catalogMatches).toEqual([])
+    expect(result.catalogMatchCount).toBe(0)
+    expect(result.candidates[0]).toMatchObject({ feedLink: url, kind: fromPage ? 'RSS_DISCOVERED' : 'RSS_DIRECT' })
+    expect(result.selectedCandidateId).toBe(result.candidates[0]!.id)
+    const saved = await service.subscribe(result.discoveryId, result.selectedCandidateId!)
+    expect(saved.selectedCandidate.feedLink).toBe(url)
+    expect(unused).not.toHaveBeenCalled()
+  })
+
+  it('rejects results when the account changes during discovery, before publishing a session', async () => {
+    let accountId = 1
+    const unused = vi.fn(async () => { throw new Error('Unexpected fallback') })
+    const service = createService({
+      rss: async () => { accountId = 2; return rssFeed('https://example.com/feed.xml', false) },
+      rssHub: unused, json: unused, website: unused, dynamic: unused,
+      accountCoordinator: { current: () => ({ id: accountId, type: 'local' }), subscribeRss: unused }
+    })
+    await expect(service.discover('https://example.com/feed.xml')).rejects.toThrow('账户已切换')
+    expect(unused).not.toHaveBeenCalled()
   })
 })
 
