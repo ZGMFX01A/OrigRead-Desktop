@@ -222,8 +222,23 @@ const api: OrigReadDesktopApi = Object.freeze({
   updateTranslationProvider: (patch: TranslationProviderPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateTranslationProvider, patch),
   testTranslationProvider: (type: TranslationProviderType) => ipcRenderer.invoke(IPC_CHANNELS.testTranslationProvider, type),
   getDeepLUsage: () => ipcRenderer.invoke(IPC_CHANNELS.getDeepLUsage),
-  translateArticle: (articleId: string, target?: TranslationTarget, forceRefresh?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.translateArticle, articleId, target, forceRefresh),
-  stopTranslation: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.stopTranslation, articleId),
+  translateArticle: (articleId: string, target?: TranslationTarget, forceRefresh?: boolean, requestId?: string) => ipcRenderer.invoke(IPC_CHANNELS.translateArticle, articleId, target, forceRefresh, requestId),
+  stopTranslation: (articleId: string, requestId?: string) => ipcRenderer.invoke(IPC_CHANNELS.stopTranslation, articleId, requestId),
+  restoreArticleTranslation: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.restoreArticleTranslation, articleId),
+  restoreListTranslations: (accountId: number, articleIds: string[]) => ipcRenderer.invoke(IPC_CHANNELS.restoreListTranslations, accountId, articleIds),
+  translateList: (request: import('../shared/translation').ListTranslationRequest) => ipcRenderer.invoke(IPC_CHANNELS.translateList, request),
+  stopListTranslation: (requestId: string) => ipcRenderer.invoke(IPC_CHANNELS.stopListTranslation, requestId),
+  setTranslationVisible: (accountId: number, articleId: string, kind: 'LIST' | 'FULL', key: string, show: boolean) => ipcRenderer.invoke(IPC_CHANNELS.setTranslationVisible, accountId, articleId, kind, key, show),
+  onListTranslationProgress: (listener: (value: import('../shared/translation').ListTranslationProgress) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, value: import('../shared/translation').ListTranslationProgress): void => listener(value)
+    ipcRenderer.on(IPC_CHANNELS.listTranslationProgress, wrapped)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.listTranslationProgress, wrapped)
+  },
+  onTranslationChanged: (listener: () => void) => {
+    const wrapped = (): void => listener()
+    ipcRenderer.on(IPC_CHANNELS.translationChanged, wrapped)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.translationChanged, wrapped)
+  },
   getArticleFilters: () => ipcRenderer.invoke(IPC_CHANNELS.getArticleFilters),
   addArticleFilter: (keyword: string, type: ArticleFilterRuleType, feedId?: string | null) => ipcRenderer.invoke(IPC_CHANNELS.addArticleFilter, keyword, type, feedId),
   setArticleFilterEnabled: (id: string, enabled: boolean) => ipcRenderer.invoke(IPC_CHANNELS.setArticleFilterEnabled, id, enabled),

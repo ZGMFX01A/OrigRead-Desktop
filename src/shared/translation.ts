@@ -44,6 +44,49 @@ export interface TranslationDocument {
   displayMode: TranslationDisplayMode
   translatedTitle: string
   translatedContent: string
+  accountId?: number
+  sourceHash?: string
+  cacheKey?: string
+  expiresAt?: number
+  showTranslation?: boolean
+  cacheWriteFailed?: boolean
+}
+
+export interface TranslationOwner { accountId: number; feedId: string; articleId: string }
+export interface ListTranslationSource extends TranslationOwner { title: string; description: string }
+export interface ListTranslationItem extends ListTranslationSource {
+  translatedTitle: string
+  translatedDescription: string
+  target: TranslationTarget
+  language: string
+  cacheKey: string | null
+  expiresAt: number
+  showTranslation: boolean
+  cacheWriteFailed: boolean
+}
+export interface ListTranslationRequest {
+  requestId: string
+  accountId: number
+  articleIds: string[]
+  target?: TranslationTarget
+}
+export interface ListTranslationProgress {
+  requestId: string
+  completed: number
+  total: number
+  items: ListTranslationItem[]
+}
+export interface ListTranslationSnapshot {
+  settings: TranslationSettings
+  items: ListTranslationItem[]
+}
+export const LIST_TRANSLATION_LIMIT = 50
+export function translationTargetKey(target: TranslationTarget): string {
+  return target.type === 'traditional' ? `traditional:${target.provider}` : `ai:${target.providerId}:${target.model}`
+}
+/** Same limits as Android; never pass body HTML as a list preview. */
+export function listTranslationExcerpt(value: string, limit: number): string {
+  return Array.from(value.trim()).slice(0, limit).join('')
 }
 
 export interface TranslationProviderTestResult {

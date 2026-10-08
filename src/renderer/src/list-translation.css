@@ -1,0 +1,20 @@
+/* Scoped to the list toolbar: body translation keeps its own existing action. */
+.article-list-actions { flex: 0 0 auto; }
+.article-pane .list-meta { min-height: 34px; height: auto; gap: 8px; }
+.article-pane .list-meta > span { min-width: 0; overflow-wrap: anywhere; }
+.list-translation-split { display: inline-flex; align-items: center; flex: 0 0 auto; border-radius: 8px; }
+.list-translation-split.active { background: var(--accent-soft); color: var(--accent); }
+.list-translation-main, .list-translation-options { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 28px; border: 0; background: transparent; color: inherit; cursor: pointer; border-radius: 7px; }
+.list-translation-main { width: 28px; padding: 3px 6px; }
+.list-translation-options { width: 22px; padding: 3px; }
+.list-translation-main:hover:not(:disabled), .list-translation-options:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
+.list-translation-main:disabled, .list-translation-options:disabled { opacity: .4; cursor: default; }
+.list-translation-main:focus-visible, .list-translation-options:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.list-translation-status { display: flex; align-items: center; gap: 6px; width: fit-content; max-width: 100%; box-sizing: border-box; margin: 2px 0 5px 4px; padding: 5px 9px; border-radius: 8px; background: var(--accent-soft); color: var(--text); font-size: 11px; line-height: 1.45; }
+.list-translation-status span { min-width: 0; overflow-wrap: anywhere; }
+.list-translation-status.error { color: #a74343; }
+[data-theme='dark'] .list-translation-status.error { color: #ffaaaa; }
+.list-translation-status .icon-button { flex: 0 0 auto; width: 24px; height: 24px; }
+.article-title-copy { min-width: 0; }
+.article-pane .article-item .article-title-translation { margin-top: 4px; color: var(--accent); }
+.article-pane .article-item .article-preview-translation { margin-top: 4px; }

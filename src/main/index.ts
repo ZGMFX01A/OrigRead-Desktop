@@ -53,7 +53,8 @@ import { isAllowedRendererUrl } from './security/renderer-trust'
 import { AiSettingsRepository } from './ai/ai-settings-repository'
 import { AiSummaryService } from './ai/ai-summary-service'
 import { TranslationSettingsRepository } from './translation/translation-settings-repository'
-import { TranslationService } from './translation/translation-service'
+import { TranslationService, validateTranslationTarget } from './translation/translation-service'
+import { registerTranslationIpc } from './translation/translation-ipc'
 import { ArticleFilterRepository } from './filter/article-filter-repository'
 import { ConfigurationBackupService } from './backup/configuration-backup-service'
 import { OpmlService } from './import-export/opml-service'
@@ -175,7 +176,8 @@ let mcpToolRuntimeBridge: McpToolRuntimeBridge | null = null
 let activeAiSummaryRequest: { articleId: string; controller: AbortController } | null = null
 let translationSettingsRepository: TranslationSettingsRepository | null = null
 let translationService: TranslationService | null = null
-let activeTranslationRequest: { articleId: string; controller: AbortController } | null = null
+let activeTranslationRequest: { articleId: string; requestId?: string; senderId: number; controller: AbortController } | null = null
+let stopListTranslationRequests = (): void => {}
 let articleFilterRepository: ArticleFilterRepository | null = null
 let configurationBackupService: ConfigurationBackupService | null = null
 let opmlService: OpmlService | null = null
@@ -430,6 +432,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.switchAccount, (event, accountId: unknown) => {
     assertTrustedSender(event)
     if (!accountService) throw new Error('Account service is not ready')
+    activeTranslationRequest?.controller.abort()
+    stopListTranslationRequests()
     const result = accountService.switchTo(validateAccountId(accountId))
     periodicSyncScheduler?.reconfigure()
     return result
@@ -438,6 +442,8 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (!accountService) throw new Error('Account service is not ready')
     const result = accountService.delete(validateAccountId(accountId))
+    void translationService?.maintain().catch(error => console.warn('Translation cleanup failed', error))
+    event.sender.send(IPC_CHANNELS.translationChanged)
     periodicSyncScheduler?.reconfigure()
     return result
   })
@@ -450,6 +456,8 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (!accountService) throw new Error('Account service is not ready')
     accountService.clearArticles(validateAccountId(accountId))
+    void translationService?.maintain().catch(error => console.warn('Translation cleanup failed', error))
+    event.sender.send(IPC_CHANNELS.translationChanged)
   })
   ipcMain.handle(IPC_CHANNELS.importAccountClientCertificate, async (event, accountId: unknown, passphrase: unknown) => {
     assertTrustedSender(event)
@@ -500,6 +508,8 @@ function registerIpcHandlers(): void {
     const id = validateId(feedId, 'feedId')
     if (!libraryRepository.getFeedById(id)) throw new Error('来源不存在')
     libraryRepository.deleteArticlesByFeed(id, false)
+    void translationService?.maintain().catch(error => console.warn('Translation cleanup failed', error))
+    event.sender.send(IPC_CHANNELS.translationChanged)
   })
   ipcMain.handle(IPC_CHANNELS.deleteFeed, async (event, feedId: unknown) => {
     assertTrustedSender(event)
@@ -509,6 +519,8 @@ function registerIpcHandlers(): void {
     articleFilterRepository?.deleteByFeed(id)
     websitePreferenceRepository?.delete(id)
     await accountService.deleteFeed(id)
+    void translationService?.maintain().catch(error => console.warn('Translation cleanup failed', error))
+    event.sender.send(IPC_CHANNELS.translationChanged)
   })
   ipcMain.handle(IPC_CHANNELS.reloadFeedIcon, async (event, feedId: unknown) => {
     assertTrustedSender(event)
@@ -1576,6 +1588,7 @@ function registerIpcHandlers(): void {
       cancelled: llmExecutionRegistry.cancelOwned(id, String(event.sender.id))
     }
   })
+  stopListTranslationRequests = registerTranslationIpc(ipcMain, () => translationService, assertTrustedSender)
   ipcMain.handle(IPC_CHANNELS.getTranslationSettings, (event) => {
     assertTrustedSender(event); if (!translationSettingsRepository) throw new Error('Translation settings are not ready'); return translationSettingsRepository.current()
   })
@@ -1585,13 +1598,19 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.updateTranslationSettings, (event, patch: unknown) => {
     assertTrustedSender(event); if (!translationSettingsRepository) throw new Error('Translation settings are not ready')
     const value = validateRecord(patch, 'translation settings patch') as TranslationSettingsPatch; let result=translationSettingsRepository.current()
-    if(value.defaultTarget!==undefined) result=translationSettingsRepository.setDefaultTarget(validateRecord(value.defaultTarget,'translation target') as unknown as TranslationTarget)
+    if(value.defaultTarget!==undefined) result=translationSettingsRepository.setDefaultTarget(validateTranslationTarget(value.defaultTarget))
     if(value.targetLanguage!==undefined) result=translationSettingsRepository.setTargetLanguage(validateText(value.targetLanguage,'targetLanguage',64))
     if(value.displayMode!==undefined) result=translationSettingsRepository.setDisplayMode(value.displayMode)
+    if(value.targetLanguage!==undefined || value.defaultTarget!==undefined) { activeTranslationRequest?.controller.abort(); stopListTranslationRequests() }
+    event.sender.send(IPC_CHANNELS.translationChanged)
     return result
   })
   ipcMain.handle(IPC_CHANNELS.updateTranslationProvider, (event, patch: unknown) => {
-    assertTrustedSender(event); if(!translationSettingsRepository)throw new Error('Translation settings are not ready');return translationSettingsRepository.updateProvider(validateRecord(patch,'translation provider patch') as unknown as TranslationProviderPatch)
+    assertTrustedSender(event); if(!translationSettingsRepository)throw new Error('Translation settings are not ready')
+    const result = translationSettingsRepository.updateProvider(validateRecord(patch,'translation provider patch') as unknown as TranslationProviderPatch)
+    activeTranslationRequest?.controller.abort(); stopListTranslationRequests()
+    event.sender.send(IPC_CHANNELS.translationChanged)
+    return result
   })
   ipcMain.handle(IPC_CHANNELS.testTranslationProvider, async (event, type: unknown) => {
     assertTrustedSender(event); if(!translationService)throw new Error('Translation service is not ready');return translationService.testProvider(validateTranslationProviderType(type))
@@ -1599,17 +1618,17 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.getDeepLUsage, async (event) => {
     assertTrustedSender(event); if(!translationService)throw new Error('Translation service is not ready');return translationService.getDeepLUsage()
   })
-  ipcMain.handle(IPC_CHANNELS.translateArticle, async (event, articleId: unknown, target?: unknown, forceRefresh?: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.translateArticle, async (event, articleId: unknown, target?: unknown, forceRefresh?: unknown, requestId?: unknown) => {
     assertTrustedSender(event)
     if(!translationService)throw new Error('Translation service is not ready')
     const validatedArticleId=validateId(articleId,'articleId')
     activeTranslationRequest?.controller.abort()
-    const request={articleId:validatedArticleId,controller:new AbortController()}
+    const request={articleId:validatedArticleId,requestId:requestId===undefined?undefined:validateId(requestId,'requestId'),senderId:event.sender.id,controller:new AbortController()}
     activeTranslationRequest=request
     try{
       return await translationService.translateArticle(
         validatedArticleId,
-        target===undefined?undefined:validateRecord(target,'translation target') as unknown as TranslationTarget,
+        target===undefined?undefined:validateTranslationTarget(target),
         forceRefresh===undefined?false:validateBoolean(forceRefresh,'forceRefresh'),
         request.controller.signal
       )
@@ -1617,11 +1636,12 @@ function registerIpcHandlers(): void {
       if(activeTranslationRequest===request)activeTranslationRequest=null
     }
   })
-  ipcMain.handle(IPC_CHANNELS.stopTranslation, (event, articleId: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.stopTranslation, (event, articleId: unknown, requestId?: unknown) => {
     assertTrustedSender(event)
     const validatedArticleId=validateId(articleId,'articleId')
     const active=activeTranslationRequest
-    if(!active||active.articleId!==validatedArticleId)return false
+    if(!active||active.articleId!==validatedArticleId||active.senderId!==event.sender.id)return false
+    if(requestId!==undefined&&active.requestId!==validateId(requestId,'requestId'))return false
     active.controller.abort()
     activeTranslationRequest=null
     return true
@@ -2398,6 +2418,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     new OpenAiCompatibleProvider(),
     llmTaskPromptCustomizer
   )
+  translationService.startMaintenance()
   configurationBackupService = new ConfigurationBackupService(
     app.getVersion(), libraryRepository, settingsRepository, websiteRuleRepository, jsonRuleRepository,
     articleFilterRepository, websitePreferenceRepository, rssHubSettingsRepository, translationSettingsRepository, aiSettingsRepository,
@@ -2495,6 +2516,9 @@ app.on('before-quit', (event) => {
     originalArticleViewController?.dispose()
     originalArticleViewController = null
     mainWindow = null
+    activeTranslationRequest?.controller.abort()
+    stopListTranslationRequests()
+    await translationService?.dispose()
     desktopDatabase?.close()
     desktopDatabase = null
     libraryRepository = null

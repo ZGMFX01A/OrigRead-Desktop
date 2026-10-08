@@ -2,6 +2,7 @@ import i18n from 'i18next'
 import { initReactI18next } from 'react-i18next'
 import { resolveDesktopLanguage } from '../../shared/locale'
 import { withSourceRepairMessages } from './source-repair-messages'
+import { withListTranslationMessages } from './list-translation-messages'
 
 const resources = {
   zh: {
@@ -8028,7 +8029,7 @@ const resources = {
 const initialLanguage = resolveDesktopLanguage(navigator.language)
 
 void i18n.use(initReactI18next).init({
-  resources: withSourceRepairMessages(resources),
+  resources: withListTranslationMessages(withSourceRepairMessages(resources)),
   lng: initialLanguage,
   fallbackLng: 'en',
   interpolation: { escapeValue: false }

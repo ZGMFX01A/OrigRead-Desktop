@@ -282,6 +282,7 @@ export default function App(): React.JSX.Element {
   const [aiSummaryStartedAt, setAiSummaryStartedAt] = useState<number | null>(null)
   const [aiSummaryElapsedSeconds, setAiSummaryElapsedSeconds] = useState(0)
   const [translationDocument, setTranslationDocument] = useState<TranslationDocument | null>(null)
+  const [translationRevision, setTranslationRevision] = useState(0)
   const [readerToolLoading, setReaderToolLoading] = useState<ReaderToolLoading | null>(null)
   const [readerToolNotice, setReaderToolNotice] = useState<ReaderToolFeedback | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -362,6 +363,8 @@ export default function App(): React.JSX.Element {
   const aiSummaryUiTtfvRecordedRef = useRef(false)
   const translationRunRef = useRef(0)
   const translationRequestArticleRef = useRef<string | null>(null)
+  const translationRequestIdRef = useRef<string | null>(null)
+  const translationRestoreSuppressedRef = useRef<string | null>(null)
   const lastObservedSyncFinish = useRef<number | null>(null)
   const autoUpdateCheckedRef = useRef(false)
   const speech = useReaderSpeech(settings?.ttsVoiceURI ?? '')
@@ -656,6 +659,11 @@ export default function App(): React.JSX.Element {
         .catch((error) => console.error('停止旧正文的摘要请求失败', error))
       aiSummaryRunRef.current += 1
       translationRunRef.current += 1
+      const translatingArticleId = translationRequestArticleRef.current
+      const translatingRequestId = translationRequestIdRef.current
+      translationRequestArticleRef.current = null
+      translationRequestIdRef.current = null
+      if (translatingArticleId) void window.origread.stopTranslation(translatingArticleId, translatingRequestId ?? undefined).catch(() => undefined)
       setAiSummary(null)
       setAiSummaryProgress(null)
       setAiSummaryStream(null)
@@ -882,13 +890,16 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     let cancelled = false
     const translatingArticleId = translationRequestArticleRef.current
+    const translatingRequestId = translationRequestIdRef.current
+    translationRestoreSuppressedRef.current = citationArticleNavigationRef.current === selectedArticleId ? selectedArticleId : null
     // 导航和离开使 AI 任务身份失效，A→B→A 也不能接受第一轮 A 的旧结果。
     aiSummaryRunRef.current += 1
     translationRunRef.current += 1
-    if (translatingArticleId && translatingArticleId !== selectedArticleId) {
+    if (translatingArticleId) {
       translationRunRef.current += 1
       translationRequestArticleRef.current = null
-      void window.origread.stopTranslation(translatingArticleId).catch(() => undefined)
+      translationRequestIdRef.current = null
+      void window.origread.stopTranslation(translatingArticleId, translatingRequestId ?? undefined).catch(() => undefined)
       setReaderToolLoading((current) => current === 'translation' ? null : current)
     }
     if (aiSummaryActiveRunRef.current) {
@@ -982,6 +993,47 @@ export default function App(): React.JSX.Element {
     void readerContentRequests.loadInitial(selectedFeedRequiresFullContent)
     return () => { cancelled = true; readerContentRequests.invalidate() }
   }, [selectedArticleAccountId, selectedArticleFeedId, selectedArticleId, selectedFeedRequiresFullContent, t])
+
+  useEffect(() => window.origread.onTranslationChanged(() => {
+    setTranslationRevision(value => value + 1)
+  }), [])
+
+  // Restore is strictly local. A miss leaves original content visible, never starts translation.
+  useEffect(() => {
+    if (!selectedArticleId || readerContent?.articleId !== selectedArticleId || !readerContent.html
+      || translationRequestIdRef.current || originalViewState.open || readerCitationTarget
+      || translationRestoreSuppressedRef.current === selectedArticleId) return
+    let cancelled = false
+    const serial = translationRunRef.current
+    const articleId = selectedArticleId
+    void window.origread.restoreArticleTranslation(articleId).then(result => {
+      if (cancelled || serial !== translationRunRef.current || selectedArticleIdRef.current !== articleId
+        || translationRequestIdRef.current) return
+      if (!result) {
+        setTranslationDocument(current => current?.cacheKey ? null : current)
+        setReaderMode(current => current === 'translation' ? 'article' : current)
+        return
+      }
+      setTranslationDocument(result)
+      setReaderMode(current => current === 'article' || current === 'translation'
+        ? result.showTranslation === false ? 'article' : 'translation' : current)
+    }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [selectedArticleId, selectedArticleAccountId, selectedArticle?.title, readerContent?.html, readerContent?.articleId, translationRevision, originalViewState.open, readerCitationTarget])
+
+  useEffect(() => {
+    const expiresAt = translationDocument?.expiresAt
+    if (!expiresAt) return
+    let timer: ReturnType<typeof setTimeout>
+    const expire = (): void => {
+      const remaining = expiresAt - Date.now()
+      if (remaining > 0) { timer = setTimeout(expire, Math.min(2_147_483_647, remaining)); return }
+      setTranslationDocument(null)
+      setReaderMode(current => current === 'translation' ? 'article' : current)
+    }
+    expire()
+    return () => clearTimeout(timer)
+  }, [translationDocument?.expiresAt, translationDocument?.cacheKey])
 
   useEffect(() => {
     const target = readerCitationTarget
@@ -2017,12 +2069,16 @@ export default function App(): React.JSX.Element {
     if (!closeSettingsIfAllowed()) return
     const requestArticleId = selectedArticleId
     const runId = ++translationRunRef.current
+    const requestId = crypto.randomUUID()
+    translationRequestIdRef.current = requestId
+    translationRestoreSuppressedRef.current = null
     translationRequestArticleRef.current = requestArticleId
-    if (originalViewState.open) await closeOriginalArticle()
     setReaderToolLoading('translation')
     setReaderToolNotice(null)
     try {
-      const result = await window.origread.translateArticle(requestArticleId, target, forceRefresh)
+      if (originalViewState.open) await closeOriginalArticle()
+      if (runId !== translationRunRef.current || selectedArticleIdRef.current !== requestArticleId) return
+      const result = await window.origread.translateArticle(requestArticleId, target, forceRefresh, requestId)
       if (runId !== translationRunRef.current || selectedArticleIdRef.current !== requestArticleId) return
       setTranslationDocument(result)
       setReaderMode('translation')
@@ -2033,8 +2089,34 @@ export default function App(): React.JSX.Element {
     } finally {
       if (runId === translationRunRef.current) {
         translationRequestArticleRef.current = null
+        translationRequestIdRef.current = null
         setReaderToolLoading(null)
       }
+    }
+  }
+
+  const stopSelectedTranslation = (): void => {
+    const articleId = translationRequestArticleRef.current
+    const requestId = translationRequestIdRef.current
+    translationRunRef.current++
+    translationRequestArticleRef.current = null
+    translationRequestIdRef.current = null
+    setReaderToolLoading(current => current === 'translation' ? null : current)
+    if (articleId) void window.origread.stopTranslation(articleId, requestId ?? undefined).catch(() => undefined)
+  }
+  const toggleStoredTranslation = (): void => {
+    if (readerToolLoading === 'translation') { stopSelectedTranslation(); return }
+    if (!translationDocument || (translationDocument.expiresAt && translationDocument.expiresAt <= Date.now())) {
+      void translateSelectedArticle(); return
+    }
+    translationRunRef.current++
+    const show = readerMode !== 'translation'
+    translationRestoreSuppressedRef.current = null
+    setReaderMode(show ? 'translation' : 'article')
+    setTranslationDocument({ ...translationDocument, showTranslation: show })
+    if (translationDocument.cacheKey && translationDocument.accountId !== undefined) {
+      void window.origread.setTranslationVisible(translationDocument.accountId, translationDocument.articleId, 'FULL', translationDocument.cacheKey, show)
+        .then(saved => { if (!saved) console.warn('Translation display selection was not saved') }).catch(() => undefined)
     }
   }
 
@@ -3175,6 +3257,7 @@ export default function App(): React.JSX.Element {
 
   const renderArticleListPane = (onChooseSourceScope?: () => void): React.JSX.Element => (
     <ArticleListPane
+      onOpenTranslationSettings={() => { void showSettings('translation') }}
       destination={destination}
       articleScope={articleScope}
       activeScopeFeed={activeScopeFeed}
@@ -3850,12 +3933,12 @@ export default function App(): React.JSX.Element {
                   <button
                     type="button"
                     className={`translation-button reader-tool-split-main ${readerMode === 'translation' ? 'active' : ''}`}
-                    disabled={!selectedArticle || readerToolLoading !== null}
-                    title={t('translation')}
-                    aria-label={t('translation')}
-                    onClick={() => readerMode === 'translation' ? setReaderMode('article') : translationDocument ? setReaderMode('translation') : void translateSelectedArticle()}
+                    disabled={!selectedArticle || readerToolLoading === 'ai'}
+                    title={t(readerToolLoading === 'translation' ? 'stopTranslation' : 'translation')}
+                    aria-label={t(readerToolLoading === 'translation' ? 'stopTranslation' : 'translation')}
+                    onClick={toggleStoredTranslation}
                   >
-                    {readerToolLoading === 'translation' ? <RefreshCw size={17} className="spinning" /> : <Languages size={18} />}
+                    {readerToolLoading === 'translation' ? <Square size={15} fill="currentColor" /> : <Languages size={18} />}
                     <span>{t('translation')}</span>
                   </button>
                   <button
@@ -4006,7 +4089,7 @@ export default function App(): React.JSX.Element {
             <div className="article-heading">
               <span>{selectedFeed?.name ?? ''}</span>
               <h1>{readerMode === 'translation' && translationDocument ? translationDocument.translatedTitle : selectedArticle.title}</h1>
-              {readerMode === 'translation' && translationDocument && translationDocument.translatedTitle.trim() !== selectedArticle.title.trim() && (
+              {readerMode === 'translation' && translationDocument?.displayMode === 'BILINGUAL' && translationDocument.translatedTitle.trim() !== selectedArticle.title.trim() && (
                 <div className="article-original-title"><strong>{t('originalTitle')}：</strong>{selectedArticle.title}</div>
               )}
               <div>{selectedArticle.author ?? ''}</div>
@@ -4033,6 +4116,7 @@ export default function App(): React.JSX.Element {
             {readerMode === 'translation' && translationDocument ? (
               <>
                 <div className="translation-result-meta">{translationTargetLabel(translationDocument.target)} · {translationDocument.targetLanguage} · {translationDocument.displayMode === 'BILINGUAL' ? t('bilingual') : t('translatedOnly')}</div>
+                {translationDocument.cacheWriteFailed && <div className="dialog-error" role="status">{t('translationCacheSaveFailed')}</div>}
                 <SearchableHtml
                   key={`translation:${selectedArticle.id}:${translationDocument.target}:${translationDocument.displayMode}`}
                   html={translationDocument.translatedContent}
@@ -4550,7 +4634,8 @@ export default function App(): React.JSX.Element {
           onOpenSettings={()=>{setTranslationTargetOpen(false);void showSettings('translation')}}
           onTranslate={async(target,setDefault)=>{
             if(setDefault) await window.origread.updateTranslationSettings({defaultTarget:target})
-            await translateSelectedArticle(true,target)
+            setTranslationTargetOpen(false)
+            void translateSelectedArticle(false,target)
           }}
         />
       )}

@@ -11,7 +11,7 @@ export interface TranslationProvider {
   maxBatchItems: number
   maxBatchCharacters: number
   maxSegmentCharacters: number
-  translate(texts: string[], sourceLanguage: string | null, targetLanguage: string, config: TranslationRuntimeConfig): Promise<TranslationBatchResult>
+  translate(texts: string[], sourceLanguage: string | null, targetLanguage: string, config: TranslationRuntimeConfig, signal?: AbortSignal): Promise<TranslationBatchResult>
 }
 
 abstract class HttpProvider implements TranslationProvider {
@@ -19,7 +19,7 @@ abstract class HttpProvider implements TranslationProvider {
   maxBatchItems = 50
   maxBatchCharacters = 30_000
   maxSegmentCharacters = 4_000
-  abstract translate(texts: string[], sourceLanguage: string | null, targetLanguage: string, config: TranslationRuntimeConfig): Promise<TranslationBatchResult>
+  abstract translate(texts: string[], sourceLanguage: string | null, targetLanguage: string, config: TranslationRuntimeConfig, signal?: AbortSignal): Promise<TranslationBatchResult>
   protected async json(url: string, init: RequestInit): Promise<unknown> {
     const response = await fetch(url, {
       ...init,
@@ -35,13 +35,13 @@ export class MicrosoftTranslationProvider extends HttpProvider {
   type = 'MICROSOFT' as const
   maxBatchItems = 100
   maxBatchCharacters = 40_000
-  async translate(texts: string[], sourceLanguage: string | null, targetLanguage: string, config: TranslationRuntimeConfig): Promise<TranslationBatchResult> {
+  async translate(texts: string[], sourceLanguage: string | null, targetLanguage: string, config: TranslationRuntimeConfig, signal?: AbortSignal): Promise<TranslationBatchResult> {
     requireEndpoint(config); requireApiKey(config)
     const params = new URLSearchParams({ 'api-version': '3.0', to: microsoftLanguage(targetLanguage) })
     if (sourceLanguage) params.set('from', microsoftLanguage(sourceLanguage))
     const headers: Record<string,string> = { 'Content-Type': 'application/json', 'Ocp-Apim-Subscription-Key': config.apiKey.trim() }
     if (config.region.trim()) headers['Ocp-Apim-Subscription-Region'] = config.region.trim()
-    const root = await this.json(`${config.endpoint.replace(/\/+$/,'')}/translate?${params}`, { method:'POST',headers,body:JSON.stringify(texts.map((Text) => ({ Text }))) })
+    const root = await this.json(`${config.endpoint.replace(/\/+$/,'')}/translate?${params}`, { method:'POST',headers,body:JSON.stringify(texts.map((Text) => ({ Text }))),signal })
     if (!Array.isArray(root)) throw new Error('Microsoft Translator 返回结构无效')
     const translated = root.map((item) => {
       const record = asRecord(item); const list = Array.isArray(record?.translations) ? record.translations : []
@@ -55,11 +55,11 @@ export class MicrosoftTranslationProvider extends HttpProvider {
 export class DeepLTranslationProvider extends HttpProvider {
   type = 'DEEPL' as const
   maxBatchItems = 50
-  async translate(texts: string[], sourceLanguage: string | null, targetLanguage: string, config: TranslationRuntimeConfig): Promise<TranslationBatchResult> {
+  async translate(texts: string[], sourceLanguage: string | null, targetLanguage: string, config: TranslationRuntimeConfig, signal?: AbortSignal): Promise<TranslationBatchResult> {
     requireEndpoint(config); requireApiKey(config)
     const body: Record<string, unknown> = { text: texts, target_lang: deepLLanguage(targetLanguage, true) }
     if (sourceLanguage) body.source_lang = deepLLanguage(sourceLanguage, false)
-    const root = asRecord(await this.json(resolveDeepLEndpoint(config.endpoint, config.apiKey), { method:'POST',headers:{'Content-Type':'application/json','Authorization':`DeepL-Auth-Key ${config.apiKey.trim()}`},body:JSON.stringify(body) }))
+    const root = asRecord(await this.json(resolveDeepLEndpoint(config.endpoint, config.apiKey), { method:'POST',headers:{'Content-Type':'application/json','Authorization':`DeepL-Auth-Key ${config.apiKey.trim()}`},body:JSON.stringify(body),signal }))
     const list = Array.isArray(root?.translations) ? root.translations : []
     const translated = list.map((item) => stringValue(asRecord(item)?.text))
     ensureCount(translated, texts.length)
@@ -75,12 +75,12 @@ export class DeepLTranslationProvider extends HttpProvider {
 export class GoogleCloudTranslationProvider extends HttpProvider {
   type = 'GOOGLE_CLOUD' as const
   maxBatchItems = 100
-  async translate(texts: string[], sourceLanguage: string | null, targetLanguage: string, config: TranslationRuntimeConfig): Promise<TranslationBatchResult> {
+  async translate(texts: string[], sourceLanguage: string | null, targetLanguage: string, config: TranslationRuntimeConfig, signal?: AbortSignal): Promise<TranslationBatchResult> {
     requireEndpoint(config); requireApiKey(config)
     const url = new URL(config.endpoint); url.searchParams.set('key', config.apiKey.trim())
     const body: Record<string, unknown> = { q:texts,target:googleLanguage(targetLanguage),format:'text' }
     if (sourceLanguage) body.source = googleLanguage(sourceLanguage)
-    const root = asRecord(await this.json(url.toString(), { method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body) }))
+    const root = asRecord(await this.json(url.toString(), { method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal }))
     const list = Array.isArray(asRecord(root?.data)?.translations) ? asRecord(root?.data)!.translations as unknown[] : []
     const translated = list.map((item) => decodeHtmlEntities(stringValue(asRecord(item)?.translatedText)))
     ensureCount(translated,texts.length)
@@ -92,13 +92,14 @@ export class DlxTranslationProvider extends HttpProvider {
   type = 'DLX' as const
   maxBatchItems = 1
   maxBatchCharacters = 5_000
-  async translate(texts: string[], sourceLanguage: string | null, targetLanguage: string, config: TranslationRuntimeConfig): Promise<TranslationBatchResult> {
+  async translate(texts: string[], sourceLanguage: string | null, targetLanguage: string, config: TranslationRuntimeConfig, signal?: AbortSignal): Promise<TranslationBatchResult> {
     requireEndpoint(config)
     const output:string[]=[]
     for (const text of texts) {
+      signal?.throwIfAborted()
       const headers:Record<string,string>={'Content-Type':'application/json'}
       if (config.apiKey.trim()) headers.Authorization=`Bearer ${config.apiKey.trim()}`
-      const root = asRecord(await this.json(resolveDlxEndpoint(config.endpoint), { method:'POST',headers,body:JSON.stringify({text,source_lang:sourceLanguage?dlxLanguage(sourceLanguage):'auto',target_lang:dlxLanguage(targetLanguage)}) }))
+      const root = asRecord(await this.json(resolveDlxEndpoint(config.endpoint), { method:'POST',headers,body:JSON.stringify({text,source_lang:sourceLanguage?dlxLanguage(sourceLanguage):'auto',target_lang:dlxLanguage(targetLanguage)}),signal }))
       const direct = stringValue(root?.data) || stringValue(root?.translation)
       if (direct) { output.push(direct); continue }
       const list=Array.isArray(root?.translations)?root.translations:[]; const first=list[0]

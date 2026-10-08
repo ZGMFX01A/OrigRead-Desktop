@@ -172,7 +172,11 @@ describe('translation providers Android parity',()=>{
 })
 
 function createAiTranslationService(cacheDir:string,provider:OpenAiCompatibleProvider,endpoint:string,model:string,promptCustomizer?:LlmTaskPromptCustomizer):TranslationService{
-  const library={getArticleById:()=>({id:'article-1',title:'Article title'})}
+  const library={
+    getArticleById:()=>({id:'article-1',accountId:1,feedId:'feed-1',title:'Article title'}),
+    getCurrentAccountId:()=>1,
+    hasTranslationOwner:(owner:{accountId:number;articleId:string;feedId:string})=>owner.accountId===1&&owner.articleId==='article-1'&&owner.feedId==='feed-1'
+  }
   const reader={get:()=>({articleId:'article-1',mode:'content',html:'<p>First paragraph with enough content for translation.</p><p>Second paragraph.</p>',sourceUrl:'https://example.com/article'})}
   const translationSettings={current:()=>({targetLanguage:'zh-CN',defaultTarget:{type:'ai',providerId:'ai',providerName:'AI',model},displayMode:'TRANSLATED',providers:[]})} as unknown as TranslationSettingsRepository
   const aiSettings={

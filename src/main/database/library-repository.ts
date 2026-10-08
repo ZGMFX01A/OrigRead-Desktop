@@ -41,6 +41,20 @@ export class LibraryRepository {
   }
 
   getCurrentAccountId(): number { return this.catalog.getCurrentAccountId() }
+  /** Translation screening reads only titles/previews, never content_html/full_content_html. */
+  getTranslationSources(accountId: number, articleIds: string[]): import('../../shared/translation').ListTranslationSource[] {
+    const ids = [...new Set(articleIds)].slice(0, 50)
+    if (!ids.length) return []
+    return this.database.prepare(`SELECT a.id AS articleId, a.account_id AS accountId,
+      a.feed_id AS feedId, a.title, a.description FROM articles a
+      JOIN feeds f ON f.id = a.feed_id AND f.account_id = a.account_id
+      WHERE a.account_id = ? AND a.id IN (${ids.map(() => '?').join(',')})`)
+      .all(accountId, ...ids) as unknown as import('../../shared/translation').ListTranslationSource[]
+  }
+  hasTranslationOwner(owner: import('../../shared/translation').TranslationOwner): boolean {
+    return this.database.prepare(`SELECT 1 FROM articles a JOIN feeds f ON f.id = a.feed_id AND f.account_id = a.account_id
+      WHERE a.id = ? AND a.account_id = ? AND a.feed_id = ?`).get(owner.articleId, owner.accountId, owner.feedId) !== undefined
+  }
   snapshot(accountId = this.getCurrentAccountId()): LibrarySnapshot { return this.reader.snapshot(accountId) }
   setArticleFullContent(articleId: string, html: string | null): void { return this.writer.setArticleFullContent(articleId, html) }
   getArticleById(articleId: string): ArticleRecord | null { return this.reader.getArticleById(articleId) }

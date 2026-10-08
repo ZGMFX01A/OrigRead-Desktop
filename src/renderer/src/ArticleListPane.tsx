@@ -1,8 +1,9 @@
 import { ChevronDown, Inbox, Plus, RefreshCw, Rss, Search, SearchX, Star, X } from 'lucide-react'
-import type { RefObject } from 'react'
+import { useEffect, useRef, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ArticleRecord, FeedRecord } from '../../shared/library'
 import { FeedIcon, type ArticleScope, type Destination } from './SourceSidebar'
+import { ListTranslationButton, ListTranslationStatus, useListTranslation } from './ListTranslationControls'
 
 interface ArticleListPaneProps {
   destination: Destination
@@ -31,6 +32,7 @@ interface ArticleListPaneProps {
   onChooseSourceScope?: () => void
   sourceSwitcherTriggerRef?: RefObject<HTMLButtonElement | null>
   sourceSwitcherOpen?: boolean
+  onOpenTranslationSettings?: () => void
 }
 
 /**
@@ -66,7 +68,8 @@ export function ArticleListPane({
   onAddSource,
   onChooseSourceScope,
   sourceSwitcherTriggerRef,
-  sourceSwitcherOpen = false
+  sourceSwitcherOpen = false,
+  onOpenTranslationSettings = () => {}
 }: ArticleListPaneProps): React.JSX.Element {
   const { t } = useTranslation()
   const destinationLabelKey = destination === 'all' ? 'allArticles' : destination
@@ -80,6 +83,11 @@ export function ArticleListPane({
   const searchShortcut = /Mac|iPhone|iPad|iPod/i.test(navigator.platform) ? '⌘K' : 'Ctrl K'
   const articleScopeKey = articleScope.kind === 'all' ? 'all' : `${articleScope.kind}:${articleScope.id}`
   const articleListMotionKey = `${articleScopeKey}:${destination}`
+  const listRef = useRef<HTMLDivElement>(null)
+  const translation = useListTranslation(`${visibleArticles[0]?.accountId ?? ''}:${articleListMotionKey}:${articleQuery}`, visibleArticles, listRef)
+  const bilingual = translation.state.settings?.displayMode === 'BILINGUAL'
+  // Keyboard/next-article navigation also leaves the screening task, not only mouse clicks.
+  useEffect(() => { translation.controller.stop() }, [translation.controller, selectedArticleId])
 
   return (
     <section className="article-pane" aria-label={t(destinationLabelKey)} aria-busy={refreshing}>
@@ -160,6 +168,7 @@ export function ArticleListPane({
             ? t('articleSearchResultCount', { visible: visibleArticles.length, total: destinationCount })
             : t('articleCount', { count: destinationCount })}</span>
           <div className="article-list-actions">
+            <ListTranslationButton translation={translation} onOpenSettings={onOpenTranslationSettings} />
             <button
               type="button"
               className="icon-button refresh-all-button"
@@ -172,13 +181,16 @@ export function ArticleListPane({
             </button>
           </div>
         </div>
+        <ListTranslationStatus translation={translation} />
       </div>
 
       <div className="workspace-list-stage">
         {articleListError && <div className="workspace-error article-list-error" role="alert">{articleListError}</div>}
         {visibleArticles.length > 0 ? (
-          <div key={articleListMotionKey} className="list-content article-list article-list-motion">
-            {visibleArticles.map((article) => (
+          <div ref={listRef} key={articleListMotionKey} className="list-content article-list article-list-motion">
+            {visibleArticles.map((article) => {
+              const translated = translation.item(article)
+              return (
               <article
                 className={`article-item ${article.isUnread ? 'unread' : 'read'} ${selectedArticleId === article.id ? 'selected' : ''}`}
                 key={article.id}
@@ -187,11 +199,12 @@ export function ArticleListPane({
                 tabIndex={0}
                 role="button"
                 aria-current={selectedArticleId === article.id ? 'true' : undefined}
-                onClick={() => onSelectArticle(article)}
+                onClick={() => { translation.controller.stop(); onSelectArticle(article) }}
                 onKeyDown={(event) => {
                   if (event.target !== event.currentTarget) return
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault()
+                    translation.controller.stop()
                     onSelectArticle(article)
                   }
                 }}
@@ -203,7 +216,11 @@ export function ArticleListPane({
               >
                 <div className="article-topline">
                   <span className={`unread-dot ${article.isUnread ? 'visible' : ''}`} />
-                  <strong>{article.title}</strong>
+                  <div className="article-title-copy">
+                    <strong dir="auto">{translated && !bilingual ? translated.translatedTitle || article.title : article.title}</strong>
+                    {translated && bilingual && translated.translatedTitle && translated.translatedTitle !== article.title &&
+                      <strong className="article-title-translation" dir="auto">{translated.translatedTitle}</strong>}
+                  </div>
                   <button
                     className={`star-button ${article.isStarred ? 'active' : ''}`}
                     type="button"
@@ -217,13 +234,16 @@ export function ArticleListPane({
                     <Star size={15} fill={article.isStarred ? 'currentColor' : 'none'} />
                   </button>
                 </div>
-                <p>{article.description || t('sourcePreviewUnavailable')}</p>
+                <p dir="auto">{(translated && !bilingual ? translated.translatedDescription : article.description) || t('sourcePreviewUnavailable')}</p>
+                {translated && bilingual && translated.translatedDescription && translated.translatedDescription !== article.description &&
+                  <p className="article-preview-translation" dir="auto">{translated.translatedDescription}</p>}
                 <div className="article-meta">
                   <span>{feeds.find((feed) => feed.id === article.feedId)?.name ?? ''}</span>
                   <span>{article.isUnread ? t('unreadStatus') : t('readStatus')}</span>
                 </div>
               </article>
-            ))}
+              )
+            })}
           </div>
         ) : (
           <div key={`${articleListMotionKey}:empty`} className="empty-list-state article-list-empty article-list-motion">

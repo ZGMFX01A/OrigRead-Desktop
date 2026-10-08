@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { join } from 'node:path'
 import { _electron, expect, test as base, type Page } from '@playwright/test'
 import type { OrigReadDesktopApi } from '../../src/shared/contracts'
@@ -80,4 +81,93 @@ test('实际关闭重启后账户和默认订阅身份保持且没有重复', as
   expect(after.accounts).toEqual(before.accounts)
   expect(after.snapshot).toEqual(before.snapshot)
   expect(after.feeds).toEqual(before.feeds)
+})
+
+test('列表翻译位于计数行，模式切换与重启只读本地，停止中断实际请求', async ({ userDataDir }) => {
+  test.setTimeout(90_000)
+  let translations = 0
+  let slow = false
+  const server = createServer(async (request, response) => {
+    if (request.url === '/feed') {
+      response.setHeader('Content-Type', 'application/rss+xml')
+      response.end('<rss version="2.0"><channel><title>Translation fixture</title><link>https://fixture.invalid</link><description>Local test</description><item><guid>translation-fixture-article</guid><title>Screening demo title</title><link>https://fixture.invalid/article</link><description><![CDATA[<p>Article preview for screening.</p><p>Second paragraph for body translation.</p>]]></description></item></channel></rss>')
+      return
+    }
+    if (request.url !== '/translate') { response.writeHead(404).end(); return }
+    let body = ''
+    for await (const chunk of request) body += chunk
+    const input = JSON.parse(body) as { text: string }
+    translations++
+    const send = (): void => { if (!response.destroyed) response.setHeader('Content-Type', 'application/json').end(JSON.stringify({ data: `译:${input.text}` })) }
+    if (!slow) send()
+    else {
+      const timer = setTimeout(send, 5_000)
+      response.once('close', () => clearTimeout(timer))
+    }
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('No test HTTP port')
+  const baseUrl = `http://127.0.0.1:${address.port}`
+  try {
+    await withDesktop(userDataDir, async ({ page, pageErrors }) => {
+      await expect(page.locator('.article-pane')).toBeVisible()
+      await page.evaluate(async baseUrl => {
+        await window.origread.updateTranslationProvider({ type: 'DLX', enabled: true, endpoint: `${baseUrl}/translate` })
+        await window.origread.updateTranslationSettings({ defaultTarget: { type: 'traditional', provider: 'DLX' }, targetLanguage: 'zh-CN', displayMode: 'TRANSLATED' })
+        await window.origread.addRssSource(`${baseUrl}/feed`)
+      }, baseUrl)
+      await page.reload()
+      const title = page.locator('.article-title-copy strong').first()
+      await expect(title).toHaveText('Screening demo title')
+      const action = page.locator('.list-meta .list-translation-main')
+      await expect(action).toBeEnabled()
+      await expect(page.locator('.list-translation-status')).toHaveCount(0)
+      expect(translations).toBe(0)
+      await action.click()
+      await expect(title).toHaveText('译:Screening demo title')
+      await expect(page.locator('.list-translation-status')).toHaveCount(0)
+      const calls = translations
+      await page.evaluate(() => window.origread.updateTranslationSettings({ displayMode: 'BILINGUAL' }))
+      await expect(page.locator('.article-title-translation').first()).toHaveText('译:Screening demo title')
+      await expect(title).toHaveText('Screening demo title')
+      expect(translations).toBe(calls)
+      const meta = await page.locator('.article-pane .list-meta').boundingBox()
+      const button = await action.boundingBox()
+      const refresh = await page.locator('.list-meta .refresh-all-button').boundingBox()
+      expect(meta && button && refresh).toBeTruthy()
+      expect(button!.x).toBeGreaterThan(meta!.x)
+      expect(button!.x + button!.width).toBeLessThanOrEqual(refresh!.x)
+      await page.screenshot({ path: 'test-results/desktop-list-translation.png' })
+      await page.locator('.article-item').first().click()
+      await expect(page.locator('.translation-button')).toBeEnabled()
+      await page.locator('.translation-button').click()
+      await expect(page.locator('.translated-article-body')).toBeVisible()
+      await expect(page.locator('.translated-article-body')).toContainText('译:')
+      expect(pageErrors).toEqual([])
+    })
+    const beforeRestart = translations
+    await withDesktop(userDataDir, async ({ page, pageErrors }) => {
+      await expect(page.locator('.article-title-translation').first()).toHaveText('译:Screening demo title')
+      await page.locator('.article-item').first().click()
+      await expect(page.locator('.translated-article-body')).toBeVisible()
+      expect(translations).toBe(beforeRestart)
+      await page.setViewportSize({ width: 920, height: 760 })
+      // Narrow/two-pane mode must retain the list action; return from the reader if collapsed.
+      await page.setViewportSize({ width: 1428, height: 890 })
+      slow = true
+      await page.evaluate(() => window.origread.updateTranslationSettings({ targetLanguage: 'ja' }))
+      await expect(page.locator('.article-title-translation')).toHaveCount(0)
+      await page.locator('.list-translation-main').click()
+      await expect(page.locator('.list-translation-status')).toBeVisible()
+      await expect.poll(() => translations).toBeGreaterThan(beforeRestart)
+      await page.locator('.list-translation-main').click()
+      await expect(page.locator('.list-translation-status')).toHaveCount(0)
+      await expect(page.locator('.list-translation-main svg')).toBeVisible()
+      expect(pageErrors).toEqual([])
+    })
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
 })

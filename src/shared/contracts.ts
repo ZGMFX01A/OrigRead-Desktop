@@ -14,7 +14,7 @@ import type {
   OriginalViewBounds
 } from './original-view'
 import type { AiProviderPatch, AiProviderTestResult, AiSettings, AiSettingsPatch, AiSummaryDocument, AiSummaryProgress, AiSummaryRequestOptions, AiSummaryStreamUpdate } from './ai'
-import type { DeepLUsage, TranslationDocument, TranslationProviderPatch, TranslationProviderTestResult, TranslationSettings, TranslationSettingsPatch, TranslationTarget } from './translation'
+import type { DeepLUsage, TranslationDocument, TranslationProviderPatch, TranslationProviderTestResult, TranslationSettings, TranslationSettingsPatch, TranslationTarget, ListTranslationRequest, ListTranslationProgress, ListTranslationSnapshot } from './translation'
 import type { ArticleFilterRule, ArticleFilterSnapshot, ArticleFilterRuleType } from './filter-rules'
 import type { ConfigurationBackupFileResult } from './configuration-backup'
 import type { FeedCatalogSnapshot } from './source-catalog'
@@ -209,8 +209,15 @@ export interface OrigReadDesktopApi extends LlmChatDataApi {
   updateTranslationProvider(patch: TranslationProviderPatch): Promise<TranslationSettings>
   testTranslationProvider(type: TranslationProviderPatch['type']): Promise<TranslationProviderTestResult>
   getDeepLUsage(): Promise<DeepLUsage>
-  translateArticle(articleId: string, target?: TranslationTarget, forceRefresh?: boolean): Promise<TranslationDocument>
-  stopTranslation(articleId: string): Promise<boolean>
+  translateArticle(articleId: string, target?: TranslationTarget, forceRefresh?: boolean, requestId?: string): Promise<TranslationDocument>
+  stopTranslation(articleId: string, requestId?: string): Promise<boolean>
+  restoreArticleTranslation(articleId: string): Promise<TranslationDocument | null>
+  restoreListTranslations(accountId: number, articleIds: string[]): Promise<ListTranslationSnapshot>
+  translateList(request: ListTranslationRequest): Promise<ListTranslationProgress>
+  stopListTranslation(requestId: string): Promise<boolean>
+  setTranslationVisible(accountId: number, articleId: string, kind: 'LIST' | 'FULL', key: string, show: boolean): Promise<boolean>
+  onListTranslationProgress(listener: (progress: ListTranslationProgress) => void): () => void
+  onTranslationChanged(listener: () => void): () => void
   getArticleFilters(): Promise<ArticleFilterSnapshot>
   addArticleFilter(keyword: string, type: ArticleFilterRuleType, feedId?: string | null): Promise<ArticleFilterSnapshot>
   setArticleFilterEnabled(id: string, enabled: boolean): Promise<ArticleFilterSnapshot>
@@ -400,6 +407,13 @@ export const IPC_CHANNELS = {
   getDeepLUsage: 'translation:deepl:usage',
   translateArticle: 'translation:article:translate',
   stopTranslation: 'translation:article:stop',
+  restoreArticleTranslation: 'translation:article:restore',
+  restoreListTranslations: 'translation:list:restore',
+  translateList: 'translation:list:translate',
+  stopListTranslation: 'translation:list:stop',
+  setTranslationVisible: 'translation:visible',
+  listTranslationProgress: 'translation:list:progress',
+  translationChanged: 'translation:changed',
   getArticleFilters: 'rules:filter:list',
   addArticleFilter: 'rules:filter:add',
   setArticleFilterEnabled: 'rules:filter:set-enabled',
