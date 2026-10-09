@@ -69,9 +69,11 @@ export interface OrigReadDesktopApi extends LlmChatDataApi {
   getLibrarySnapshot(): Promise<LibrarySnapshot>
   listFeeds(): Promise<FeedRecord[]>
   listGroups(): Promise<GroupRecord[]>
+  /** List APIs return metadata with null body fields. Reader loads content through getReaderContent. */
   listArticles(limit?: number): Promise<ArticleRecord[]>
   getArticleById(articleId: string): Promise<ArticleRecord | null>
   searchArticles(query: string, limit?: number): Promise<ArticleSearchResult[]>
+  /** Metadata only, including null contentHtml/fullContentHtml. No per-source row limit. */
   listArticlesByFeed(feedId: string): Promise<ArticleRecord[]>
   listArticlesByGroup(groupId: string): Promise<ArticleRecord[]>
   listFeedArticleStats(): Promise<FeedArticleStats[]>

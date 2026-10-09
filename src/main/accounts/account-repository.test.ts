@@ -27,6 +27,9 @@ describe('AccountRepository', () => {
     })
     expect(library.listFeeds().filter((item) => item.url !== ORIGREAD_DESKTOP_RELEASE_FEED_URL).map((item) => item.id)).toEqual(['feed-a'])
     expect(library.listArticles().map((item) => item.id)).toEqual(['article-a'])
+    expect(library.listArticleSummaries().map((item) => item.id)).toEqual(['article-a'])
+    expect(library.listArticleSummaries({ kind: 'feed', id: 'feed-b' })).toEqual([])
+    expect(library.listArticleSummaries({ kind: 'group', id: library.getFeedByIdForAccount(second.id, 'feed-b')!.groupId })).toEqual([])
     database.close()
   })
 

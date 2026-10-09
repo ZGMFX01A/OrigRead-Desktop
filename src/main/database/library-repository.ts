@@ -4,7 +4,7 @@ import type { JsonRule } from '../../shared/json-source'
 import type { RssHubSubscriptionDescriptor } from '../../shared/rsshub'
 export type { RssHttpCacheRecord, ArticleMetadataRecord } from './library-rows'
 import { SqliteLibraryCatalog } from './library-catalog'
-import { SqliteLibraryReader } from './library-reader'
+import { SqliteLibraryReader, type ArticleListScope } from './library-reader'
 import { SqliteLibraryWriter } from './library-writer'
 import { SqliteLibrarySearch } from './library-search'
 import { SqliteLibraryMetadata } from './library-metadata'
@@ -122,6 +122,7 @@ export class LibraryRepository {
   upsertFeed(feed: FeedRecord): void { return this.catalog.upsertFeed(feed) }
   upsertArticle(article: ArticleRecord): void { return this.writer.upsertArticle(article) }
   listArticles(limit = 200): ArticleRecord[] { return this.reader.listArticles(limit) }
+  listArticleSummaries(scope?: ArticleListScope, limit = 200): ArticleRecord[] { return this.reader.listArticleSummaries(scope, limit) }
   listArticleMetadata(limit = 30, titleQuery = ''): ArticleMetadataRecord[] { return this.search.listArticleMetadata(limit, titleQuery) }
   getArticleMetadataById(articleId: string): ArticleMetadataRecord | null { return this.search.getArticleMetadataById(articleId) }
   listArticlesForAccount(accountId: number, limit = 200): ArticleRecord[] { return this.reader.listArticlesForAccount(accountId, limit) }

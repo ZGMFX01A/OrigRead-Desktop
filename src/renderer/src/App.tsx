@@ -104,6 +104,9 @@ import {
 } from './reading-share'
 import { SourceBrandHeader, SourceSidebar, type ArticleScope, type Destination } from './SourceSidebar'
 import { ArticleListPane } from './ArticleListPane'
+import { useStableActions } from './useStableActions'
+import { ElapsedTime } from './useElapsedSeconds'
+import { useDebouncedValue } from './useDebouncedValue'
 import { PaneDivider } from './PaneDivider'
 import { TwoPaneReadingLayout } from './TwoPaneReadingLayout'
 import { SourceSwitcherPopover } from './SourceSwitcherPopover'
@@ -227,7 +230,6 @@ export default function App(): React.JSX.Element {
   const [sourceDiscoveryRequestId, setSourceDiscoveryRequestId] = useState<string | null>(null)
   const [sourceDiscoveryStages, setSourceDiscoveryStages] = useState<Partial<Record<SourceDiscoveryStage, SourceDiscoveryProgress['state']>>>({})
   const [sourceDiscoveryStartedAt, setSourceDiscoveryStartedAt] = useState<number | null>(null)
-  const [sourceDiscoveryElapsedSeconds, setSourceDiscoveryElapsedSeconds] = useState(0)
   const [refreshingFeedId, setRefreshingFeedId] = useState<string | null>(null)
   const [isRefreshingAll, setIsRefreshingAll] = useState(false)
   const [readerContent, setReaderContent] = useState<ReaderArticleContent | null>(null)
@@ -280,7 +282,6 @@ export default function App(): React.JSX.Element {
   const [aiSummaryProgress, setAiSummaryProgress] = useState<AiSummaryProgress | null>(null)
   const [aiSummaryStream, setAiSummaryStream] = useState<AiSummaryStreamUpdate | null>(null)
   const [aiSummaryStartedAt, setAiSummaryStartedAt] = useState<number | null>(null)
-  const [aiSummaryElapsedSeconds, setAiSummaryElapsedSeconds] = useState(0)
   const [translationDocument, setTranslationDocument] = useState<TranslationDocument | null>(null)
   const [translationRevision, setTranslationRevision] = useState(0)
   const [readerToolLoading, setReaderToolLoading] = useState<ReaderToolLoading | null>(null)
@@ -782,19 +783,6 @@ export default function App(): React.JSX.Element {
   }, [reloadCurrentScope, reloadLibrary])
 
   useEffect(() => {
-    if (!sourceDiscoveryRequestId || sourceDiscoveryStartedAt === null) {
-      setSourceDiscoveryElapsedSeconds(0)
-      return
-    }
-    const update = (): void => setSourceDiscoveryElapsedSeconds(
-      Math.max(0, Math.floor((Date.now() - sourceDiscoveryStartedAt) / 1000))
-    )
-    update()
-    const timer = window.setInterval(update, 1_000)
-    return () => window.clearInterval(timer)
-  }, [sourceDiscoveryRequestId, sourceDiscoveryStartedAt])
-
-  useEffect(() => {
     const conversationId = readerAiPanel.conversationId
     if (!readerAiPanel.open || readerAiPanel.view !== 'chat' || !conversationId || !selectedArticleId) return
     if (chatConversation?.id === conversationId && chatMessages.length > 0) return
@@ -830,17 +818,6 @@ export default function App(): React.JSX.Element {
     if (!articleId || !chatConversation?.id) return
     readerAiConversationByArticleRef.current.set(articleId, chatConversation.id)
   }, [chatConversation?.articleId, chatConversation?.id])
-
-  useEffect(() => {
-    if (readerToolLoading !== 'ai' || aiSummaryStartedAt === null) {
-      setAiSummaryElapsedSeconds(0)
-      return
-    }
-    const update = (): void => setAiSummaryElapsedSeconds(Math.max(0, Math.floor((Date.now() - aiSummaryStartedAt) / 1000)))
-    update()
-    const timer = window.setInterval(update, 1_000)
-    return () => window.clearInterval(timer)
-  }, [aiSummaryStartedAt, readerToolLoading])
 
   useEffect(() => {
     let cancelled = false
@@ -1316,7 +1293,8 @@ export default function App(): React.JSX.Element {
     setGlobalSearchError(null)
   }, [])
 
-  const normalizedArticleQuery = articleQuery.trim().toLocaleLowerCase()
+  const debouncedArticleQuery = useDebouncedValue(articleQuery)
+  const normalizedArticleQuery = debouncedArticleQuery.trim().toLocaleLowerCase()
   const normalizedSourceQuery = sourceQuery.trim().toLocaleLowerCase()
   const scopedArticles = articleScope.kind === 'all' ? articles : (scopeArticles ?? [])
   const visibleArticles = useMemo(() => {
@@ -3255,9 +3233,21 @@ export default function App(): React.JSX.Element {
     )
   }
 
+  const articleListActions = useStableActions({
+    onOpenTranslationSettings: () => { void showSettings('translation') },
+    onDestinationChange: (id: Destination) => { setArticleQuery(''); setDestination(id) },
+    onClearScope: () => { setArticleScope({ kind: 'all' }); setArticleQuery('') },
+    onRefresh: () => activeScopeFeed ? void refreshFeed(activeScopeFeed, undefined, 'article') : void refreshAllSources(),
+    onSelectArticle: selectArticle,
+    onToggleStarred: toggleStarred,
+    onArticleContextMenu: (article: ArticleRecord, x: number, y: number) => setContextMenu({ kind: 'article', x, y, articleId: article.id }),
+    onAddSource: openAddSource
+  })
+  const readerBodyActions = useStableActions({ onClick: handleReaderHtmlClick })
   const renderArticleListPane = (onChooseSourceScope?: () => void): React.JSX.Element => (
     <ArticleListPane
-      onOpenTranslationSettings={() => { void showSettings('translation') }}
+      {...articleListActions}
+      accountId={groups[0]?.accountId ?? null}
       destination={destination}
       articleScope={articleScope}
       activeScopeFeed={activeScopeFeed}
@@ -3266,6 +3256,7 @@ export default function App(): React.JSX.Element {
       scopeUnreadCount={scopedUnreadCount}
       scopeStarredCount={scopedStarredCount}
       articleQuery={articleQuery}
+      filterQuery={debouncedArticleQuery}
       visibleArticles={visibleArticles}
       feeds={feeds}
       selectedArticleId={selectedArticleId}
@@ -3273,14 +3264,7 @@ export default function App(): React.JSX.Element {
       searchInputRef={articleSearchInputRef}
       refreshing={isRefreshingAll || refreshingFeedId === activeScopeFeed?.id}
       refreshDisabled={feeds.length === 0 || isRefreshingAll || refreshingFeedId !== null}
-      onDestinationChange={(id) => { setArticleQuery(''); setDestination(id) }}
-      onClearScope={() => { setArticleScope({ kind: 'all' }); setArticleQuery('') }}
       onArticleQueryChange={setArticleQuery}
-      onRefresh={() => activeScopeFeed ? void refreshFeed(activeScopeFeed, undefined, 'article') : void refreshAllSources()}
-      onSelectArticle={selectArticle}
-      onToggleStarred={toggleStarred}
-      onArticleContextMenu={(article, x, y) => setContextMenu({ kind: 'article', x, y, articleId: article.id })}
-      onAddSource={openAddSource}
       onChooseSourceScope={onChooseSourceScope}
       sourceSwitcherTriggerRef={onChooseSourceScope ? sourceSwitcherTriggerRef : undefined}
       sourceSwitcherOpen={Boolean(onChooseSourceScope && sourceSwitcherOpen)}
@@ -3478,7 +3462,7 @@ export default function App(): React.JSX.Element {
             loading={aiLoading}
             progressStage={aiSummaryProgress?.stage ?? null}
             streamUpdate={aiSummaryStream}
-            elapsedSeconds={aiSummaryElapsedSeconds}
+            startedAt={aiLoading ? aiSummaryStartedAt : null}
             onRegenerate={()=>{if(!aiLoading)setAiOptionsOpen(true)}}
             onStop={stopAiSummary}
             onFirstVisibleValue={recordAiSummaryUiTtfv}
@@ -4124,7 +4108,7 @@ export default function App(): React.JSX.Element {
                   query={readerSearchQuery}
                   activeIndex={readerSearchIndex}
                   onMatchCount={handleReaderSearchCount}
-                  onClick={handleReaderHtmlClick}
+                  onClick={readerBodyActions.onClick}
                 />
                 <button className="mini-action regenerate-button" onClick={() => void translateSelectedArticle(true, translationDocument.target)}><RefreshCw size={13}/>{t('retranslate')}</button>
               </>
@@ -4140,7 +4124,7 @@ export default function App(): React.JSX.Element {
                 query={readerSearchQuery}
                 activeIndex={readerSearchIndex}
                 onMatchCount={handleReaderSearchCount}
-                onClick={handleReaderHtmlClick}
+                onClick={readerBodyActions.onClick}
               />
             ) : (
               <div className="article-body-status">{selectedArticle.description || t('readerTextUnavailable')}</div>
@@ -4287,7 +4271,7 @@ export default function App(): React.JSX.Element {
                 <div className="source-discovery-progress-head">
                   <div>
                     <strong>{t('sourceDiscoveryWorking')}</strong>
-                    <span>{t('sourceDiscoveryElapsed', { count: sourceDiscoveryElapsedSeconds })}</span>
+                    <ElapsedTime startedAt={sourceDiscoveryStartedAt} label="sourceDiscoveryElapsed" />
                   </div>
                   <RefreshCw size={16} className="spinning" aria-hidden="true" />
                 </div>
@@ -6262,7 +6246,7 @@ function AiSummaryBody({
   loading,
   progressStage,
   streamUpdate,
-  elapsedSeconds,
+  startedAt,
   onRegenerate,
   onStop,
   onFirstVisibleValue,
@@ -6272,7 +6256,7 @@ function AiSummaryBody({
   loading: boolean
   progressStage: AiSummaryProgressStage | null
   streamUpdate: AiSummaryStreamUpdate | null
-  elapsedSeconds: number
+  startedAt: number | null
   onRegenerate():void
   onStop():void
   onFirstVisibleValue(firstVisible:'reasoning'|'content'):void
@@ -6300,7 +6284,7 @@ function AiSummaryBody({
     }
   }, [firstVisibleValue, onFirstVisibleValue])
   return <>
-      {loading&&<AiSummaryProgressStatus stage={progressStage} elapsedSeconds={elapsedSeconds}/>}
+      {loading&&<AiSummaryProgressStatus stage={progressStage} startedAt={startedAt}/>}
       {hasStreamingPreview ? <>
         {streamUpdate?.reasoningPreview&&<details className="ai-reasoning ai-reasoning-streaming" open><summary>{t('aiReasoning')}</summary><pre>{streamUpdate.reasoningPreview}</pre></details>}
         {streamingSummaryMarkdown&&<SimpleMarkdown text={streamingSummaryMarkdown}/>}
@@ -6316,13 +6300,13 @@ function AiSummaryBody({
               <button className="mini-action" type="button" onClick={onContinueChat}>{t('continueAsking')}</button>
               <button className="mini-action regenerate-button" type="button" onClick={onRegenerate}><RefreshCw size={13}/>{t('regenerateWithOptions')}</button>
             </div>}
-      </> : <div className="ai-summary-progress-empty"><AiSummaryAccentIcon variant="panel" loading/><strong>{t(aiSummaryProgressLabelKey(progressStage))}</strong><span>{t('aiSummaryElapsed',{count:elapsedSeconds})}</span><button className="mini-action ai-summary-stop-action" type="button" onClick={onStop}><Square size={12}/>{t('stopAiSummary')}</button></div>}
+      </> : <div className="ai-summary-progress-empty"><AiSummaryAccentIcon variant="panel" loading/><strong>{t(aiSummaryProgressLabelKey(progressStage))}</strong><ElapsedTime startedAt={startedAt} label="aiSummaryElapsed"/><button className="mini-action ai-summary-stop-action" type="button" onClick={onStop}><Square size={12}/>{t('stopAiSummary')}</button></div>}
   </>
 }
 
-function AiSummaryProgressStatus({stage,elapsedSeconds}:{stage:AiSummaryProgressStage|null;elapsedSeconds:number}):React.JSX.Element{
+function AiSummaryProgressStatus({stage,startedAt}:{stage:AiSummaryProgressStage|null;startedAt:number|null}):React.JSX.Element{
   const {t}=useTranslation()
-  return <div className="ai-summary-progress-status" role="status"><span className="ai-summary-progress-track"><span/></span><div><strong>{t(aiSummaryProgressLabelKey(stage))}</strong><span>{t('aiSummaryElapsed',{count:elapsedSeconds})}</span></div></div>
+  return <div className="ai-summary-progress-status" role="status"><span className="ai-summary-progress-track"><span/></span><div><strong>{t(aiSummaryProgressLabelKey(stage))}</strong><ElapsedTime startedAt={startedAt} label="aiSummaryElapsed"/></div></div>
 }
 
 function aiSummaryProgressLabelKey(stage:AiSummaryProgressStage|null):string{

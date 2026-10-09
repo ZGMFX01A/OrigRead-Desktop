@@ -4,9 +4,30 @@ import type { ArticleRecord, FeedArticleStats, LibrarySnapshot } from '../../sha
 import type { LibraryRepository } from './library-repository'
 import { ARTICLE_ID_QUERY_CHUNK_SIZE, ArticleRow, toArticleRecord } from './library-rows'
 
+export type ArticleListScope = { kind: 'all' } | { kind: 'feed' | 'group'; id: string }
+
 /** 按文章读取职责保留 SQLite 查询；调用方账户由入口显式捕获。 */
 export class SqliteLibraryReader {
   constructor(private readonly database: DatabaseSync, private readonly library: LibraryRepository) {}
+
+  /** Renderer lists never select body columns; full records remain available to sync and Reader. */
+  listArticleSummaries(scope: ArticleListScope = { kind: 'all' }, limit = 200): ArticleRecord[] {
+    const accountId = this.library.getCurrentAccountId()
+    const filter = scope.kind === 'feed' ? 'AND a.feed_id = ?' : scope.kind === 'group' ? 'AND f.group_id = ?' : ''
+    const params = scope.kind === 'all'
+      ? [accountId, Math.min(Math.max(Math.trunc(limit), 1), 1_000)]
+      : [accountId, scope.id]
+    return (this.database.prepare(`
+      SELECT a.id, a.account_id, a.feed_id, a.title, a.url, a.author, a.published_at, a.description,
+             NULL AS content_html, NULL AS full_content_html, a.image_url, a.is_unread, a.is_starred,
+             a.created_at, a.updated_at
+      FROM articles a
+      ${scope.kind === 'group' ? 'INNER JOIN feeds f ON f.id = a.feed_id AND f.account_id = a.account_id' : ''}
+      WHERE a.account_id = ? ${filter}
+      ORDER BY COALESCE(a.published_at, a.created_at) DESC
+      ${scope.kind === 'all' ? 'LIMIT ?' : ''}
+    `).all(...params) as unknown as ArticleRow[]).map(toArticleRecord)
+  }
 
   snapshot(accountId = this.library.getCurrentAccountId()): LibrarySnapshot {
     const row = this.database.prepare(`

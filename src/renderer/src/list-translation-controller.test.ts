@@ -22,6 +22,31 @@ const fixture = () => {
   return { controller, api }
 }
 describe('list translation ownership and explicit generation', () => {
+  it('retains an in-flight local restore when selecting an article stops idle generation', async () => {
+    const { controller, api } = fixture()
+    const disk = deferred<ListTranslationSnapshot>()
+    api.restoreListTranslations.mockReturnValue(disk.promise)
+    const pending = controller.restore(1, [row()])
+    controller.stop()
+    disk.resolve({ settings, items: [item()] })
+    await pending
+    expect(controller.snapshot().settings).toEqual(settings)
+    expect(controller.snapshot().items.get('a')).toMatchObject({ translatedTitle: '标题 a' })
+  })
+
+  it('does not let a pre-generation restore overwrite newly generated translations', async () => {
+    const { controller, api } = fixture()
+    const disk = deferred<ListTranslationSnapshot>()
+    api.restoreListTranslations.mockReturnValue(disk.promise)
+    const restore = controller.restore(1, [row()])
+    api.translateList.mockImplementation(async request => ({ requestId: request.requestId, completed: 1, total: 1,
+      items: [{ ...item(), translatedTitle: 'New translation' }] }))
+    await controller.translate(1, [row()])
+    disk.resolve({ settings, items: [item()] })
+    await restore
+    expect(controller.snapshot().items.get('a')?.translatedTitle).toBe('New translation')
+  })
+
   it('restores cached display and toggles without generating or passing body HTML', async () => {
     const { controller, api } = fixture()
     api.restoreListTranslations.mockResolvedValue({ settings, items: [item()] })

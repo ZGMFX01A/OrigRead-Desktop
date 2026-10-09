@@ -356,7 +356,7 @@ function registerIpcHandlers(): void {
     if (limit !== undefined && (typeof limit !== 'number' || !Number.isFinite(limit))) {
       throw new TypeError('Article limit must be a finite number')
     }
-    return libraryRepository.listArticles(limit === undefined ? 200 : limit)
+    return libraryRepository.listArticleSummaries({ kind: 'all' }, limit === undefined ? 200 : limit)
   })
   ipcMain.handle(IPC_CHANNELS.getArticleById, (event, articleId: unknown) => {
     assertTrustedSender(event)
@@ -376,12 +376,12 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.listArticlesByFeed, (event, feedId: unknown) => {
     assertTrustedSender(event)
     if (!libraryRepository) throw new Error('OrigRead database is not ready')
-    return libraryRepository.listArticlesByFeed(validateId(feedId, 'feedId'))
+    return libraryRepository.listArticleSummaries({ kind: 'feed', id: validateId(feedId, 'feedId') })
   })
   ipcMain.handle(IPC_CHANNELS.listArticlesByGroup, (event, groupId: unknown) => {
     assertTrustedSender(event)
     if (!libraryRepository) throw new Error('OrigRead database is not ready')
-    return libraryRepository.listArticlesByGroup(validateId(groupId, 'groupId'))
+    return libraryRepository.listArticleSummaries({ kind: 'group', id: validateId(groupId, 'groupId') })
   })
   ipcMain.handle(IPC_CHANNELS.listFeedArticleStats, (event) => {
     assertTrustedSender(event)

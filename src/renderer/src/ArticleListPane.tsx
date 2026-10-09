@@ -1,11 +1,14 @@
 import { ChevronDown, Inbox, Plus, RefreshCw, Rss, Search, SearchX, Star, X } from 'lucide-react'
-import { useEffect, useRef, type RefObject } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ArticleRecord, FeedRecord } from '../../shared/library'
 import { FeedIcon, type ArticleScope, type Destination } from './SourceSidebar'
 import { ListTranslationButton, ListTranslationStatus, useListTranslation } from './ListTranslationControls'
+import type { ListTranslationItem } from '../../shared/translation'
+import { useArticleListWindow } from './useArticleListWindow'
 
 interface ArticleListPaneProps {
+  accountId?: number | null
   destination: Destination
   articleScope: ArticleScope
   activeScopeFeed: FeedRecord | null
@@ -14,6 +17,7 @@ interface ArticleListPaneProps {
   scopeUnreadCount: number
   scopeStarredCount: number
   articleQuery: string
+  filterQuery?: string
   visibleArticles: ArticleRecord[]
   feeds: FeedRecord[]
   selectedArticleId: string | null
@@ -42,7 +46,8 @@ interface ArticleListPaneProps {
  * 只负责当前来源范围、文章集合过滤、搜索与文章列表。
  * SourceSidebar 只管理来源范围，避免“来源”和“文章过滤”在两个 Pane 重复出现。
  */
-export function ArticleListPane({
+export const ArticleListPane = memo(function ArticleListPane({
+  accountId,
   destination,
   articleScope,
   activeScopeFeed,
@@ -51,6 +56,7 @@ export function ArticleListPane({
   scopeUnreadCount,
   scopeStarredCount,
   articleQuery,
+  filterQuery = articleQuery,
   visibleArticles,
   feeds,
   selectedArticleId,
@@ -78,13 +84,20 @@ export function ArticleListPane({
     : destination === 'unread'
       ? scopeUnreadCount
       : scopeStarredCount
-  const hasArticleQuery = articleQuery.trim().length > 0
+  const hasArticleQuery = filterQuery.trim().length > 0
   const hasSubscriptions = feeds.length > 0
   const searchShortcut = /Mac|iPhone|iPad|iPod/i.test(navigator.platform) ? '⌘K' : 'Ctrl K'
   const articleScopeKey = articleScope.kind === 'all' ? 'all' : `${articleScope.kind}:${articleScope.id}`
   const articleListMotionKey = `${articleScopeKey}:${destination}`
   const listRef = useRef<HTMLDivElement>(null)
-  const translation = useListTranslation(`${visibleArticles[0]?.accountId ?? ''}:${articleListMotionKey}:${articleQuery}`, visibleArticles, listRef)
+  const listScope = `${accountId ?? activeScopeFeed?.accountId ?? feeds[0]?.accountId ?? visibleArticles[0]?.accountId ?? ''}:${articleListMotionKey}:${filterQuery}`
+  const virtual = useArticleListWindow(visibleArticles, listScope, listRef, selectedArticleId)
+  const translation = useListTranslation(listScope, visibleArticles, virtual.first)
+  const feedNames = useMemo(() => new Map(feeds.map(feed => [feed.id, feed.name])), [feeds])
+  const select = useCallback((article: ArticleRecord) => {
+    translation.controller.stop()
+    onSelectArticle(article)
+  }, [translation.controller, onSelectArticle])
   const bilingual = translation.state.settings?.displayMode === 'BILINGUAL'
   // Keyboard/next-article navigation also leaves the screening task, not only mouse clicks.
   useEffect(() => { translation.controller.stop() }, [translation.controller, selectedArticleId])
@@ -187,63 +200,15 @@ export function ArticleListPane({
       <div className="workspace-list-stage">
         {articleListError && <div className="workspace-error article-list-error" role="alert">{articleListError}</div>}
         {visibleArticles.length > 0 ? (
-          <div ref={listRef} key={articleListMotionKey} className="list-content article-list article-list-motion">
-            {visibleArticles.map((article) => {
+          <div ref={listRef} className="list-content article-list article-list-motion">
+            <div aria-hidden="true" style={{ height: virtual.offsets[virtual.start] }} />
+            {visibleArticles.slice(virtual.start, virtual.end).map((article) => {
               const translated = translation.item(article)
-              return (
-              <article
-                className={`article-item ${article.isUnread ? 'unread' : 'read'} ${selectedArticleId === article.id ? 'selected' : ''}`}
-                key={article.id}
-                data-article-id={article.id}
-                data-feed-id={article.feedId}
-                tabIndex={0}
-                role="button"
-                aria-current={selectedArticleId === article.id ? 'true' : undefined}
-                onClick={() => { translation.controller.stop(); onSelectArticle(article) }}
-                onKeyDown={(event) => {
-                  if (event.target !== event.currentTarget) return
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    translation.controller.stop()
-                    onSelectArticle(article)
-                  }
-                }}
-                onContextMenu={(event) => {
-                  event.preventDefault()
-                  event.stopPropagation()
-                  onArticleContextMenu(article, event.clientX, event.clientY)
-                }}
-              >
-                <div className="article-topline">
-                  <span className={`unread-dot ${article.isUnread ? 'visible' : ''}`} />
-                  <div className="article-title-copy">
-                    <strong dir="auto">{translated && !bilingual ? translated.translatedTitle || article.title : article.title}</strong>
-                    {translated && bilingual && translated.translatedTitle && translated.translatedTitle !== article.title &&
-                      <strong className="article-title-translation" dir="auto">{translated.translatedTitle}</strong>}
-                  </div>
-                  <button
-                    className={`star-button ${article.isStarred ? 'active' : ''}`}
-                    type="button"
-                    aria-label={article.isStarred ? t('removeStar') : t('addStar')}
-                    title={article.isStarred ? t('removeStar') : t('addStar')}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onToggleStarred(article)
-                    }}
-                  >
-                    <Star size={15} fill={article.isStarred ? 'currentColor' : 'none'} />
-                  </button>
-                </div>
-                <p dir="auto">{(translated && !bilingual ? translated.translatedDescription : article.description) || t('sourcePreviewUnavailable')}</p>
-                {translated && bilingual && translated.translatedDescription && translated.translatedDescription !== article.description &&
-                  <p className="article-preview-translation" dir="auto">{translated.translatedDescription}</p>}
-                <div className="article-meta">
-                  <span>{feeds.find((feed) => feed.id === article.feedId)?.name ?? ''}</span>
-                  <span>{article.isUnread ? t('unreadStatus') : t('readStatus')}</span>
-                </div>
-              </article>
-              )
+              return <ArticleListRow key={article.id} article={article} translated={translated} bilingual={bilingual}
+                selected={selectedArticleId === article.id} feedName={feedNames.get(article.feedId) ?? ''}
+                onMeasure={virtual.measure} onSelect={select} onToggleStarred={onToggleStarred} onContextMenu={onArticleContextMenu} />
             })}
+            <div aria-hidden="true" style={{ height: virtual.offsets[visibleArticles.length]! - virtual.offsets[virtual.end]! }} />
           </div>
         ) : (
           <div key={`${articleListMotionKey}:empty`} className="empty-list-state article-list-empty article-list-motion">
@@ -268,4 +233,53 @@ export function ArticleListPane({
       </div>
     </section>
   )
-}
+})
+
+const ArticleListRow = memo(function ArticleListRow({ article, translated, bilingual, selected, feedName, onMeasure, onSelect, onToggleStarred, onContextMenu }: {
+  article: ArticleRecord; translated: ListTranslationItem | null; bilingual: boolean; selected: boolean; feedName: string
+  onMeasure(id: string, height: number): void
+  onSelect(article: ArticleRecord): void
+  onToggleStarred(article: ArticleRecord): void
+  onContextMenu(article: ArticleRecord, x: number, y: number): void
+}) {
+  const { t } = useTranslation()
+  const ref = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const element = ref.current
+    if (!element) return
+    const observer = new ResizeObserver(entries => {
+      const entry = entries[0]
+      if (entry) onMeasure(article.id, entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height + 4)
+    })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [article.id, onMeasure])
+  return <div ref={ref} className="article-virtual-row">
+    <article className={`article-item ${article.isUnread ? 'unread' : 'read'} ${selected ? 'selected' : ''}`}
+      data-article-id={article.id} data-feed-id={article.feedId} tabIndex={0} role="button"
+      aria-current={selected ? 'true' : undefined} onClick={() => onSelect(article)}
+      onKeyDown={event => {
+        if (event.target !== event.currentTarget) return
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(article) }
+      }}
+      onContextMenu={event => { event.preventDefault(); event.stopPropagation(); onContextMenu(article, event.clientX, event.clientY) }}>
+      <div className="article-topline">
+        <span className={`unread-dot ${article.isUnread ? 'visible' : ''}`} />
+        <div className="article-title-copy">
+          <strong dir="auto">{translated && !bilingual ? translated.translatedTitle || article.title : article.title}</strong>
+          {translated && bilingual && translated.translatedTitle && translated.translatedTitle !== article.title &&
+            <strong className="article-title-translation" dir="auto">{translated.translatedTitle}</strong>}
+        </div>
+        <button className={`star-button ${article.isStarred ? 'active' : ''}`} type="button"
+          aria-label={article.isStarred ? t('removeStar') : t('addStar')} title={article.isStarred ? t('removeStar') : t('addStar')}
+          onClick={event => { event.stopPropagation(); onToggleStarred(article) }}>
+          <Star size={15} fill={article.isStarred ? 'currentColor' : 'none'} />
+        </button>
+      </div>
+      <p dir="auto">{(translated && !bilingual ? translated.translatedDescription : article.description) || t('sourcePreviewUnavailable')}</p>
+      {translated && bilingual && translated.translatedDescription && translated.translatedDescription !== article.description &&
+        <p className="article-preview-translation" dir="auto">{translated.translatedDescription}</p>}
+      <div className="article-meta"><span>{feedName}</span><span>{article.isUnread ? t('unreadStatus') : t('readStatus')}</span></div>
+    </article>
+  </div>
+})

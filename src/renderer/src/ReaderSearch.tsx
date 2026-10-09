@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, Search, X } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { memo, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 interface SearchableHtmlProps {
@@ -11,7 +11,7 @@ interface SearchableHtmlProps {
   onClick?(event: React.MouseEvent<HTMLDivElement>): void
 }
 
-export function SearchableHtml({ html, className, query, activeIndex, onMatchCount, onClick }: SearchableHtmlProps): React.JSX.Element {
+export const SearchableHtml = memo(function SearchableHtml({ html, className, query, activeIndex, onMatchCount, onClick }: SearchableHtmlProps): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -37,7 +37,7 @@ export function SearchableHtml({ html, className, query, activeIndex, onMatchCou
   }, [activeIndex, html, query])
 
   return <div ref={ref} className={className} onClick={onClick} />
-}
+})
 
 export function ReaderSearchBar({
   query,

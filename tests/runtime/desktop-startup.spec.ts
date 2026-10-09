@@ -83,6 +83,80 @@ test('实际关闭重启后账户和默认订阅身份保持且没有重复', as
   expect(after.feeds).toEqual(before.feeds)
 })
 
+test('大列表限制 DOM 和 IPC 体积，滚动末尾仍能阅读与键盘切换', async ({ userDataDir }) => {
+  test.setTimeout(90_000)
+  const count = 1_200
+  const now = Date.now()
+  const items = Array.from({ length: count }, (_, index) => `<item><guid>large-${index}</guid><title>Large article ${index}${index % 3 === 0 ? ' — A longer title that wraps across multiple lines in the article pane'.repeat(2) : ''}</title>
+    <link>https://fixture.invalid/large/${index}</link><pubDate>${new Date(now - index * 1_000).toUTCString()}</pubDate>
+    <description>Preview ${index}</description><content:encoded><![CDATA[<p>Body ${index}</p><p>${'Long body text. '.repeat(700)}</p>]]></content:encoded></item>`).join('')
+  const server = createServer((request, response) => {
+    if (request.url !== '/feed') { response.writeHead(404).end(); return }
+    response.setHeader('Content-Type', 'application/rss+xml')
+    response.end(`<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>Large list fixture</title>
+      <link>https://fixture.invalid</link><description>Large list test</description>${items}</channel></rss>`)
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address() as { port: number }
+  try {
+    await withDesktop(userDataDir, async ({ page, pageErrors }) => {
+      await expect(page.locator('.app-shell')).toBeVisible()
+      const payload = await page.evaluate(async url => {
+        const source = await window.origread.addRssSource(url)
+        const articles = await window.origread.listArticlesByFeed(source.feedId)
+        return { count: articles.length, bytes: JSON.stringify(articles).length,
+          bodies: articles.some(article => article.contentHtml !== null || article.fullContentHtml !== null) }
+      }, `http://127.0.0.1:${address.port}/feed`)
+      expect(payload.count).toBe(count)
+      expect(payload.bodies).toBe(false)
+      expect(payload.bytes).toBeLessThan(1_000_000)
+      await page.reload()
+      await page.setViewportSize({ width: 1428, height: 890 })
+      await page.locator('.source-item[title="Large list fixture"]').click()
+      const list = page.locator('.article-list')
+      const rows = list.locator('.article-item')
+      await expect(rows.first()).toContainText('Large article 0')
+      await expect.poll(() => rows.count()).toBeLessThan(40)
+      await list.evaluate(element => { element.scrollTop = element.scrollHeight })
+      const last = list.locator('.article-item', { hasText: 'Large article 1199' })
+      await expect(last).toBeInViewport()
+      await page.setViewportSize({ width: 1000, height: 700 })
+      await list.evaluate(element => { element.scrollTop = element.scrollHeight })
+      await expect(last).toBeInViewport()
+      await page.setViewportSize({ width: 1428, height: 890 })
+      await expect.poll(() => rows.count()).toBeLessThan(40)
+      await last.click()
+      await expect(page.locator('.article-body')).toContainText('Body 1199')
+      await page.locator('.reader-content').click({ position: { x: 20, y: 20 } })
+      await page.keyboard.press('k')
+      await expect(page.locator('.article-body')).toContainText('Body 1198')
+      await expect(list.locator('.article-item.selected')).toBeInViewport()
+      // Debounced search and external clear must reset the scroll window.
+      await page.locator('.article-pane .search-field input').fill('Large article 42')
+      await expect(rows.first()).toContainText('Large article 42')
+      await page.locator('.article-pane .search-field input').fill('')
+      await expect(rows.first()).toContainText('Large article 0')
+      await rows.first().locator('.star-button').click()
+      await page.locator('.article-destination-item').nth(2).click()
+      await expect(rows).toHaveCount(1)
+      await expect(rows.first()).toContainText('Large article 0')
+      await page.locator('.article-destination-item').nth(1).click()
+      await expect(rows.first()).toContainText('Large article 0')
+      await list.evaluate(element => { element.scrollTop = element.scrollHeight })
+      const unreadTail = list.locator('.article-item', { hasText: 'Large article 1197' })
+      await expect(unreadTail).toBeInViewport()
+      await unreadTail.click()
+      await expect(page.locator('.article-body')).toContainText('Body 1197')
+      await page.locator('.article-destination-item').nth(0).click()
+      await expect(rows.first()).toContainText('Large article 0')
+      expect(pageErrors).toEqual([])
+    })
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
+
 test('列表翻译位于计数行，模式切换与重启只读本地，停止中断实际请求', async ({ userDataDir }) => {
   test.setTimeout(90_000)
   let translations = 0

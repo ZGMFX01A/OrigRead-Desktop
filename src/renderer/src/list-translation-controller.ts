@@ -34,11 +34,14 @@ export class ListTranslationController {
   }
   reset(scope: string): void {
     if (scope === this.scope) return
+    this.readSerial++
     this.stop(); this.scope = scope; this.value = empty(); this.listeners.forEach(listener => listener())
   }
   stop = (): void => {
-    this.serial++; this.readSerial++
+    this.serial++
     const request = this.active; this.active = null
+    // Clicking a row stops paid generation, but must not discard an idle local cache read.
+    if (request) this.readSerial++
     if (request) void this.api.stopListTranslation(request).catch(() => undefined)
     if (this.value.busy) this.publish({ busy: false, error: null })
   }
@@ -70,6 +73,8 @@ export class ListTranslationController {
     if (this.active && !target) { this.stop(); return }
     if (!articles.length) return
     this.stop()
+    // A pre-generation cache snapshot must not overwrite the new output or visibility toggle.
+    this.readSerial++
     const scope = this.scope; const serial = ++this.serial
     const rows = articles.slice(0, 50)
     const chosen = target ?? this.value.target ?? this.value.items.get(rows[0]!.id)?.target ?? this.value.settings?.defaultTarget

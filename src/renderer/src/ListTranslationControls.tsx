@@ -1,6 +1,6 @@
 import { ChevronDown, Languages, Square, X } from 'lucide-react'
 import { createPortal } from 'react-dom'
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ArticleRecord } from '../../shared/library'
 import type { TranslationTarget } from '../../shared/translation'
@@ -8,7 +8,7 @@ import { ListTranslationController, matchesListTranslation } from './list-transl
 import { TranslationTargetDialog } from './ReaderToolDialogs'
 import './list-translation.css'
 
-export function useListTranslation(scope: string, articles: ArticleRecord[], listRef: RefObject<HTMLDivElement | null>) {
+export function useListTranslation(scope: string, articles: ArticleRecord[], firstVisibleIndex: number) {
   const controller = useMemo(() => new ListTranslationController(window.origread), [])
   const state = useSyncExternalStore(controller.subscribe, controller.snapshot, controller.snapshot)
   const accountId = articles[0]?.accountId
@@ -16,12 +16,10 @@ export function useListTranslation(scope: string, articles: ArticleRecord[], lis
   currentScope.current = scope
   const [menuOpen, setMenuOpen] = useState(false)
   const getRows = useCallback((): ArticleRecord[] => {
-    const element = listRef.current
-    const top = element?.getBoundingClientRect().top ?? 0
-    const first = element ? Array.from(element.querySelectorAll<HTMLElement>('[data-article-id]')).find(row => row.getBoundingClientRect().bottom > top) : null
-    const index = first ? articles.findIndex(article => article.id === first.dataset.articleId) : 0
-    return articles.slice(Math.max(0, index), Math.max(0, index) + 50)
-  }, [articles, listRef])
+    return articles.slice(firstVisibleIndex, firstVisibleIndex + 50)
+  }, [articles, firstVisibleIndex])
+  // Read/star changes do not invalidate translation content or require another IPC restore.
+  const restoreKey = JSON.stringify(getRows().map(article => [article.id, article.title, article.description]))
   const rowsRef = useRef(getRows)
   rowsRef.current = getRows
   useEffect(() => {
@@ -41,17 +39,9 @@ export function useListTranslation(scope: string, articles: ArticleRecord[], lis
   }, [controller, accountId])
   useEffect(() => {
     if (accountId === undefined) return
-    const element = listRef.current
-    let timer: ReturnType<typeof setTimeout> | null = null
-    const restore = (): void => { void controller.restore(accountId, getRows()) }
-    const scrolled = (): void => {
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(restore, 120)
-    }
-    restore()
-    element?.addEventListener('scroll', scrolled, { passive: true })
-    return () => { if (timer) clearTimeout(timer); element?.removeEventListener('scroll', scrolled) }
-  }, [controller, scope, accountId, getRows, listRef])
+    const timer = setTimeout(() => { void controller.restore(accountId, rowsRef.current()) }, 120)
+    return () => clearTimeout(timer)
+  }, [controller, scope, accountId, restoreKey])
   useEffect(() => {
     const expiresAt = Math.min(...[...state.items.values()].map(item => item.expiresAt))
     if (!Number.isFinite(expiresAt)) return

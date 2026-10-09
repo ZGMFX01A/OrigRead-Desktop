@@ -1,7 +1,8 @@
 import { ChevronDown, ChevronRight, Compass, Download, Inbox, MoreHorizontal, Plus, RefreshCw, Rss, Search, Upload } from 'lucide-react'
-import { useEffect, useState, type MouseEvent, type RefObject } from 'react'
+import { memo, useEffect, useState, type MouseEvent, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { FeedArticleStats, FeedRecord, GroupRecord } from '../../shared/library'
+import { useStableActions } from './useStableActions'
 
 export type ArticleScope =
   | { kind: 'all' }
@@ -115,7 +116,20 @@ export function SourceBrandHeader({
  * 高频来源切换由独立 SourceSwitcherPopover 负责，避免再次把完整来源页当成快速导航。
  * 这里只负责来源范围选择和来源级操作；文章筛选与文章列表由 ArticleListPane 独立承担。
  */
-export function SourceSidebar({
+export function SourceSidebar(props: SourceSidebarProps): React.JSX.Element {
+  const actions = useStableActions({
+    onSourceQueryChange: props.onSourceQueryChange, onSelectAll: props.onSelectAll,
+    onSelectGroup: props.onSelectGroup, onToggleGroupCollapsed: props.onToggleGroupCollapsed,
+    onSelectFeed: props.onSelectFeed, onRefreshFeed: props.onRefreshFeed,
+    onOpenFeedSettings: props.onOpenFeedSettings, onFeedContextMenu: props.onFeedContextMenu,
+    onShowSourceCatalog: props.onShowSourceCatalog, onToggleSubscriptionMenu: props.onToggleSubscriptionMenu,
+    onCloseSubscriptionMenu: props.onCloseSubscriptionMenu, onAddSource: props.onAddSource,
+    onImportOpml: props.onImportOpml, onOpenOpmlExport: props.onOpenOpmlExport
+  })
+  return <SourceSidebarContent {...props} {...actions} />
+}
+
+const SourceSidebarContent = memo(function SourceSidebarContent({
   articleScope,
   sourceQuery,
   visibleFeedCount,
@@ -283,7 +297,7 @@ export function SourceSidebar({
       </div>
     </section>
   )
-}
+})
 
 function handleFeedContextMenu(
   event: MouseEvent<HTMLElement>,

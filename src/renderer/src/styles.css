@@ -161,6 +161,9 @@
   padding: 4px 10px 14px;
 }
 .article-list-motion { animation: motion-list-enter var(--motion-duration-emphasized) var(--motion-ease-structural) both; }
+.article-virtual-row { padding-block: 2px; }
+.article-virtual-row > .article-item { margin: 0; }
+.article-list { overflow-anchor: none; }
 
 .source-item,
 .article-item {

@@ -17,6 +17,25 @@ afterEach(() => {
 })
 
 describe('LibraryRepository', () => {
+  it('keeps list payloads small while retaining full bodies for reading and synchronization', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const feed = createFeed()
+    repository.upsertFeed(feed)
+    const article = { ...createArticle(feed.id), contentHtml: 'body'.repeat(25_000), fullContentHtml: 'full'.repeat(25_000) }
+    repository.upsertArticle(article)
+    try {
+      for (const scope of [{ kind: 'all' }, { kind: 'feed', id: feed.id }, { kind: 'group', id: feed.groupId }] as const) {
+        const summaries = repository.listArticleSummaries(scope)
+        expect(summaries).toHaveLength(1)
+        expect(summaries[0]).toMatchObject({ id: article.id, title: article.title, contentHtml: null, fullContentHtml: null })
+        expect(JSON.stringify(summaries).length).toBeLessThan(1_000)
+      }
+      expect(repository.getArticleById(article.id)).toMatchObject({ contentHtml: article.contentHtml, fullContentHtml: article.fullContentHtml })
+      expect(repository.listArticlesByFeedForAccount(1, feed.id)[0]?.contentHtml).toBe(article.contentHtml)
+    } finally { database.close() }
+  })
+
   it('creates schema and default group', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)
@@ -189,6 +208,9 @@ describe('LibraryRepository', () => {
     expect(repository.listArticles()).toHaveLength(200)
     expect(repository.listArticlesByFeed(feed.id)).toHaveLength(470)
     expect(repository.listArticlesByGroup(secondGroupId)).toHaveLength(470)
+    expect(repository.listArticleSummaries()).toHaveLength(200)
+    expect(repository.listArticleSummaries({ kind: 'feed', id: feed.id })).toHaveLength(470)
+    expect(repository.listArticleSummaries({ kind: 'group', id: secondGroupId })).toHaveLength(470)
     expect(repository.listFeedArticleStats()).toEqual([
       { feedId: feed.id, total: 470, unread: 469, starred: 1 }
     ])
