@@ -6,7 +6,8 @@ export const WEB_SEARCH_PROVIDER_KINDS = [
   'LINKUP',
   'FIRECRAWL',
   'KEENABLE',
-  'SEARXNG'
+  'SEARXNG',
+  'DEEPSEEK'
 ] as const
 export type WebSearchProviderKind = typeof WEB_SEARCH_PROVIDER_KINDS[number]
 
@@ -29,6 +30,7 @@ export const DEFAULT_WEB_SEARCH_MAX_RESULTS = 5
 export const MIN_WEB_SEARCH_MAX_RESULTS = 1
 export const MAX_WEB_SEARCH_MAX_RESULTS = 20
 export const MAX_WEB_SEARCH_QUERY_LENGTH = 400
+export const DEEPSEEK_MAX_QUERY_CODE_POINTS = 128
 
 export interface WebSearchProviderDefinition {
   kind: WebSearchProviderKind
@@ -103,6 +105,14 @@ export const WEB_SEARCH_PROVIDER_DEFINITIONS: Readonly<Record<WebSearchProviderK
     backendKind: 'RAW_SEARCH',
     requiresApiKey: false,
     supportsApiKey: false
+  },
+  DEEPSEEK: {
+    kind: 'DEEPSEEK',
+    defaultName: 'DeepSeek Search',
+    defaultEndpoint: 'https://api.deepseek.com/v1/tools/search',
+    backendKind: 'RAW_SEARCH',
+    requiresApiKey: true,
+    supportsApiKey: true
   }
 })
 

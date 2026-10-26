@@ -34,6 +34,8 @@ Keep the default **Local** account, add a source you want to read, and open an a
 
 This guide is also available inside the app under **Settings → About & support → User guide**.
 
+Use the search field in Settings to find an option such as fonts, translation, or web search. Each result shows its category and takes you to the relevant setting. Leaving a page with unsaved changes still asks for confirmation.
+
 ---
 
 ## Add a source
@@ -166,6 +168,8 @@ Citation buttons in the desktop article locate evidence again. After checking, c
 ### Look up background or recent developments
 
 Add and test a search service under **Settings → AI reading → Web search**, supplying its required endpoint or key. Keep **AUTO** to search when a question needs recent information, or use **OFF** to disable automatic search. The composer search button can force a search for the next message only, then restores the prior mode.
+
+To use DeepSeek, add **DeepSeek Search** and enter your DeepSeek API key. The default endpoint is `https://api.deepseek.com/v1/tools/search`; no chat model setup is required. Queries accept up to 128 Unicode characters. Your question stays intact; only the automatically added article title is shortened or omitted to fit. Questions that exceed the limit produce an explicit error.
 
 Answers show search activity and results so you can inspect the queries and sources.
 

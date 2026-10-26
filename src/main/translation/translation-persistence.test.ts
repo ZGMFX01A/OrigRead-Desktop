@@ -9,7 +9,10 @@ import type { ArticleRecord, FeedRecord } from '../../shared/library'
 import type { TranslationSettings, TranslationTarget } from '../../shared/translation'
 import type { OpenAiCompatibleProvider } from '../ai/openai-compatible-provider'
 import { TranslationService } from './translation-service'
-import { TRANSLATION_TTL } from './translation-cache'
+import { TranslationCache, TRANSLATION_TTL, entryKey, sourceHash, type TranslationIdentity } from './translation-cache'
+import { LlmTaskPromptCustomizer } from '../llm/prompt-customization'
+import { LlmSkillRepository } from '../llm/skill-repository'
+import { LlmCustomizationSettingsRepository } from '../llm/customization-settings-repository'
 
 const target: TranslationTarget = { type: 'ai', providerId: 'ai', providerName: 'Fixture', model: 'fixture-model' }
 describe('desktop list/body persistence with the real library schema', () => {
@@ -24,9 +27,9 @@ describe('desktop list/body persistence with the real library schema', () => {
     const fragments = (JSON.parse(user) as { fragments: Array<{ id: number; text: string }> }).fragments
     return { content: JSON.stringify({ translations: fragments.map(item => ({ id: item.id, text: `译:${item.text}` })) }), reasoning: null }
   } } as unknown as OpenAiCompatibleProvider
-  const create = (): TranslationService => new TranslationService(library, reader as never, { current: () => settings } as never,
+  const create = (promptCustomizer?: LlmTaskPromptCustomizer): TranslationService => new TranslationService(library, reader as never, { current: () => settings } as never,
     { current: () => ({ enabled, providers: [{ id: 'ai', enabled: true, name: 'Fixture', endpoint: 'https://fixture.invalid/v1', models: ['fixture-model'], defaultModel: 'fixture-model' }] }), getApiKey: () => 'fixture-not-a-secret' } as never,
-    directory, provider, undefined, () => now)
+    directory, provider, promptCustomizer, () => now)
   const add = (id: string): void => { library.upsertArticle({ id, accountId: 1, feedId: 'feed', title: `Title ${id}`, description: `Preview ${id}`,
     contentHtml: '<p>BODY_ONLY_SENTINEL</p><p>Second body paragraph.</p>', fullContentHtml: null,
     imageUrl: null, author: null, url: `https://fixture.invalid/${id}`, publishedAt: now,
@@ -68,6 +71,52 @@ describe('desktop list/body persistence with the real library schema', () => {
     await list(); await service.translateArticle('a', target)
     expect(requests).toHaveLength(2)
     expect(library.getArticleById('a')).toMatchObject({ title: 'Title a', description: 'Preview a', isUnread: true, isStarred: false })
+  })
+  it('restores other local rows when an AI cache cannot validate an oversized Skill', async () => {
+    await list()
+    await service.dispose()
+    add('b')
+    const identity: TranslationIdentity = { owner: { accountId: 1, feedId: 'feed', articleId: 'b' },
+      kind: 'LIST', sourceHash: sourceHash('Title b', 'Preview b'),
+      target: { type: 'traditional', provider: 'DEEPL' }, language: 'zh-CN', promptVariant: '' }
+    const cache = new TranslationCache(join(directory, 'v3'), owner => library.hasTranslationOwner(owner), () => now)
+    expect(await cache.write({ ...identity, version: 3, key: entryKey(identity),
+      texts: ['本地标题 b', '本地摘要 b'], sourceLanguage: null, createdAt: now, expiresAt: now + TRANSLATION_TTL })).toBe(true)
+    const skills = new LlmSkillRepository(database.connection)
+    await skills.createFromMarkdown('---\nname: oversized-translation\ndescription: Oversized translation fixture.\n---\n' + '证据'.repeat(9000))
+    skills.setBinding('TRANSLATION', 'oversized-translation')
+    const customization = new LlmCustomizationSettingsRepository(database.connection)
+    customization.update({ skillsEnabled: true })
+    service = create(new LlmTaskPromptCustomizer(skills, customization))
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const restored = await service.restoreList(1, ['a', 'b'])
+      expect(restored.items.map(item => item.articleId)).toEqual(['b'])
+      expect(restored.items[0]?.translatedTitle).toBe('本地标题 b')
+      expect(requests).toHaveLength(1)
+      expect(warning).toHaveBeenCalledWith('Stored list translation could not be restored', expect.any(Error))
+    } finally { warning.mockRestore() }
+  })
+  it.each(['aborted', 'closed', 'account-switched'] as const)('does not treat %s as a recoverable row failure', async reason => {
+    await list()
+    await service.dispose()
+    const failure = new Error('Interrupted local restore')
+    if (reason === 'aborted') failure.name = 'AbortError'
+    const account = vi.spyOn(library, 'getCurrentAccountId')
+    const promptCustomizer = { customize: () => {
+      if (reason === 'closed') void service.dispose()
+      if (reason === 'account-switched') account.mockReturnValue(2)
+      throw failure
+    } } as unknown as LlmTaskPromptCustomizer
+    service = create(promptCustomizer)
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const restore = service.restoreList(1, ['a'])
+      if (reason === 'account-switched') await expect(restore).rejects.toThrow('账户')
+      else await expect(restore).rejects.toBe(failure)
+      expect(warning).not.toHaveBeenCalled()
+      expect(requests).toHaveLength(1)
+    } finally { warning.mockRestore(); account.mockRestore() }
   })
   it('preserves show-original choice without extending 30-day lifetime', async () => {
     const result = await service.translateArticle('a', target)

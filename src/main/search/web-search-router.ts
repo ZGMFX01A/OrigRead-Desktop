@@ -3,6 +3,7 @@ import type { WebSearchRepository } from './web-search-repository'
 import type { WebSearchProviderSnapshot, WebSearchService } from './web-search-service'
 import { WebSearchException } from './web-search-adapters'
 import {
+  DEEPSEEK_MAX_QUERY_CODE_POINTS,
   MAX_WEB_SEARCH_QUERY_LENGTH,
   normalizeWebSearchMaxResults,
   type WebSearchDecision,
@@ -24,8 +25,10 @@ export class WebSearchRouter {
     const settings = this.repository.current()
     const decision = resolveWebSearchDecision(mode, userInput)
     if (!decision.triggered) return { plan: emptyPlan(mode, decision), providerSnapshot: null }
-    const query = buildSearchQuery(articleTitle, userInput)
     const provider = selectConfiguredSearchProvider(this.repository.configuredProviders(), settings.defaultProviderId)
+    const query = provider?.kind === 'DEEPSEEK'
+      ? buildDeepSeekSearchQuery(articleTitle, userInput)
+      : buildSearchQuery(articleTitle, userInput)
     if (!provider) {
       return {
         plan: {
@@ -99,6 +102,21 @@ export function buildSearchQuery(articleTitle: string | null | undefined, userIn
   const input = userInput.trim()
   const combined = !title || input.toLocaleLowerCase().includes(title.toLocaleLowerCase()) ? input : `${title} — ${input}`
   return combined.slice(0, MAX_WEB_SEARCH_QUERY_LENGTH)
+}
+
+/**
+ * Preserve the entire user question and spend only the remaining code point budget on an
+ * automatically added article title. Oversized questions stay intact for the adapter to reject.
+ */
+export function buildDeepSeekSearchQuery(articleTitle: string | null | undefined, userInput: string): string {
+  const title = articleTitle?.trim() ?? ''
+  const input = userInput.trim()
+  if (!title || input.toLocaleLowerCase().includes(title.toLocaleLowerCase())) return input
+  const separator = ' — '
+  const titleBudget = DEEPSEEK_MAX_QUERY_CODE_POINTS - Array.from(input).length - separator.length
+  if (titleBudget <= 0) return input
+  const searchTitle = Array.from(title).slice(0, titleBudget).join('').trimEnd()
+  return `${searchTitle}${separator}${input}`
 }
 
 export function deduplicateWebSearchResults(response: WebSearchResponse): WebSearchResponse {

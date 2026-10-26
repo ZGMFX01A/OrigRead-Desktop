@@ -1,6 +1,7 @@
 import { requestSignal } from '../network/request-policy'
 import { redactSensitiveText } from '../security/sensitive-text'
 import {
+  DEEPSEEK_MAX_QUERY_CODE_POINTS,
   webSearchProviderDefinition,
   type WebSearchProviderKind,
   type WebSearchProviderProfile,
@@ -177,6 +178,70 @@ export class SearxngWebSearchAdapter implements WebSearchProviderAdapter {
     }, request.timeoutMs, signal, 'SearXNG')
     return parseSearxngResponse(profile, payload, request.maxResults)
   }
+}
+
+/** Standalone Search API; it does not require or modify a chat model configuration. */
+export class DeepSeekWebSearchAdapter implements WebSearchProviderAdapter {
+  readonly kind = 'DEEPSEEK' as const
+
+  async search(profile: WebSearchProviderProfile, apiKey: string, request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResponse> {
+    requireProfile(profile, this.kind)
+    if (!apiKey.trim()) throw new WebSearchException('DeepSeek 缺少 API Key')
+    const payload = await fetchSearchJson(profile.endpoint, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey.trim()}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildDeepSeekSearchBody(request))
+    }, request.timeoutMs, signal, 'DeepSeek')
+    return parseDeepSeekResponse(profile, payload, request.includeContent)
+  }
+}
+
+/** Reject oversized user queries instead of silently changing the search recorded by the UI. */
+export function buildDeepSeekSearchBody(request: WebSearchRequest) {
+  const query = request.query.trim()
+  if (!query) throw new WebSearchException('DeepSeek 搜索词不能为空')
+  if (Array.from(query).length > DEEPSEEK_MAX_QUERY_CODE_POINTS) {
+    throw new WebSearchException(`DeepSeek 搜索词不能超过 ${DEEPSEEK_MAX_QUERY_CODE_POINTS} 个 Unicode 字符`)
+  }
+  return { query, count: request.maxResults, need_content: request.includeContent }
+}
+
+/** Keep ranked results and model evidence; missing/null dates are allowed by the Android adapter. */
+export function parseDeepSeekResponse(profile: WebSearchProviderProfile, payload: unknown, includeContent = false): WebSearchResponse {
+  const root = asRecord(payload, 'DeepSeek')
+  if (!Array.isArray(root.results)) throw new WebSearchException('DeepSeek 返回了无效的搜索结果格式')
+  const results = root.results.map((value): WebSearchResult => {
+    const record = asRecord(value, 'DeepSeek')
+    const url = deepSeekString(record, 'url').trim()
+    let parsedUrl: URL
+    try { parsedUrl = new URL(url) } catch (error) {
+      throw new WebSearchException('DeepSeek 返回了无效的搜索结果 URL', { cause: error })
+    }
+    if ((parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') || !parsedUrl.hostname) {
+      throw new WebSearchException('DeepSeek 返回了无效的搜索结果 URL')
+    }
+    const summary = deepSeekString(record, 'summary').trim()
+    const content = deepSeekString(record, 'content').trim()
+    const date = record.date
+    if (date !== undefined && date !== null && typeof date !== 'string') {
+      throw new WebSearchException('DeepSeek 字段 date 必须是字符串或 null')
+    }
+    return {
+      title: deepSeekString(record, 'title'),
+      url,
+      snippet: deepSeekString(record, 'snippet'),
+      publishedAt: date ?? null,
+      source: parsedUrl.hostname,
+      content: [summary, includeContent ? content : ''].filter(Boolean).join('\n\n') || null
+    }
+  })
+  return response(profile, results)
+}
+
+function deepSeekString(record: Record<string, unknown>, name: string): string {
+  const value = record[name]
+  if (typeof value !== 'string') throw new WebSearchException(`DeepSeek 字段 ${name} 必须是字符串`)
+  return value
 }
 
 export function parseTavilyResponse(profile: WebSearchProviderProfile, payload: unknown): WebSearchResponse {

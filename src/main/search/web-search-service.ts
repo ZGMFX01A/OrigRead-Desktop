@@ -3,6 +3,7 @@ import { NETWORK_REQUEST_TIMEOUT_MS } from '../network/request-policy'
 import type { WebSearchRepository } from './web-search-repository'
 import {
   BraveWebSearchAdapter,
+  DeepSeekWebSearchAdapter,
   ExaWebSearchAdapter,
   FirecrawlWebSearchAdapter,
   KeenableWebSearchAdapter,
@@ -40,7 +41,8 @@ export class WebSearchService {
       new LinkupWebSearchAdapter(),
       new FirecrawlWebSearchAdapter(),
       new KeenableWebSearchAdapter(),
-      new SearxngWebSearchAdapter()
+      new SearxngWebSearchAdapter(),
+      new DeepSeekWebSearchAdapter()
     ]
   ) {
     this.adapters = new Map(adapters.map((adapter) => [adapter.kind, adapter]))

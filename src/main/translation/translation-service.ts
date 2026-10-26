@@ -180,7 +180,14 @@ export class TranslationService{
     const settings = this.settings.current()
     const items: ListTranslationItem[] = []
     for (const row of this.listSources(accountId, ids)) {
-      const item = await this.cachedList(row, settings.targetLanguage.trim())
+      const item = await this.cachedList(row, settings.targetLanguage.trim()).catch(error => {
+        // Cancellation and ownership changes still invalidate the entire restore.
+        if (this.disposed || (error instanceof Error && error.name === 'AbortError')) throw error
+        this.assertAccount(accountId)
+        // A bad local entry or Skill must not hide the other rows or trigger generation.
+        console.warn('Stored list translation could not be restored', error)
+        return null
+      })
       if (this.disposed) throw new Error('Translation service is closed')
       if (item) items.push(item)
     }

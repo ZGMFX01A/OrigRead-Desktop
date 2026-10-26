@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowRight, ArrowUp, BookOpenText, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleAlert, Clock3, Copy, DatabaseBackup, FileJson2, Filter, Globe2, Languages, Link2, ListChecks, MessageSquareText, Pencil, Plus, RefreshCw, Settings2, Trash2, Upload, Download, CircleHelp, Sparkles, FileText, Search, RadioTower, RotateCcw, X, Eye, EyeOff, Save, ExternalLink, Monitor, Smartphone, Keyboard, MessageSquareWarning, UserRound } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AiProviderProfile, AiSettings } from '../../shared/ai'
 import type { AppInfo } from '../../shared/contracts'
@@ -29,7 +29,9 @@ import type {
   McpToolCatalogSnapshot
 } from '../../shared/mcp'
 
-export type SettingsPage = 'general' | 'accounts' | 'translation' | 'ai' | 'filters' | 'jsonRules' | 'websiteRules' | 'rsshub' | 'backup' | 'about' | 'update'
+import { SettingsSearchResults, SettingsSearchToolbar } from './SettingsSearch'
+import { searchSettings, type AiSettingsView, type SettingsPage, type SettingsSearchItem, type SettingsSearchRequest } from './settings-search'
+export type { SettingsPage } from './settings-search'
 const SETTINGS_PAGE_ORDER: SettingsPage[] = ['general', 'accounts', 'ai', 'translation', 'filters', 'jsonRules', 'websiteRules', 'rsshub', 'backup', 'about', 'update']
 const INTERNAL_ITHOME_RULE_ID = 'ithome-home'
 const DESKTOP_REPOSITORY_URL = 'https://github.com/ZGMFX01A/OrigRead-Desktop'
@@ -49,26 +51,135 @@ interface SettingsPanelProps {
 }
 
 export function SettingsPanel({ settings, appInfo, syncState, initialPage = 'general', onChange, onConfigurationRestored, onAccountChanged, onUnsavedChange }: SettingsPanelProps): React.JSX.Element {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [page, setPage] = useState<SettingsPage>(initialPage)
   const [pageDirection, setPageDirection] = useState<'forward' | 'backward'>('forward')
-  const [aiUnsaved,setAiUnsaved]=useState(false)
-  useEffect(()=>{
-    setPage((current)=>{
-      if(initialPage===current)return current
-      setPageDirection(SETTINGS_PAGE_ORDER.indexOf(initialPage)>=SETTINGS_PAGE_ORDER.indexOf(current)?'forward':'backward')
+  const [aiUnsaved, setAiUnsaved] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchRequest, setSearchRequest] = useState<SettingsSearchRequest | null>(null)
+  const searchRevision = useRef(0)
+  const scroller = useRef<HTMLDivElement>(null)
+  const pageScroll = useRef(0)
+  const resultsScroll = useRef(0)
+  const showResults = searchOpen && searchQuery.trim().length > 0
+  const searchResults = useMemo(() => searchSettings(searchQuery, key => t(key)), [searchQuery, t, i18n.resolvedLanguage])
+
+  useEffect(() => {
+    setPage(current => {
+      if (initialPage === current) return current
+      setPageDirection(SETTINGS_PAGE_ORDER.indexOf(initialPage) >= SETTINGS_PAGE_ORDER.indexOf(current) ? 'forward' : 'backward')
       return initialPage
     })
-  },[initialPage])
-  useEffect(()=>{onUnsavedChange?.(page==='ai'&&aiUnsaved)},[aiUnsaved,onUnsavedChange,page])
-  const navigate=(next:SettingsPage)=>{
-    if(next===page)return
-    if(page==='ai'&&aiUnsaved&&!window.confirm(t('customInstructionsDiscardConfirm')))return
-    if(page==='ai')setAiUnsaved(false)
-    setPageDirection(SETTINGS_PAGE_ORDER.indexOf(next)>=SETTINGS_PAGE_ORDER.indexOf(page)?'forward':'backward')
-    setPage(next)
+    setSearchQuery('')
+    setSearchOpen(false)
+    setSearchRequest(null)
+  }, [initialPage])
+  useEffect(() => { onUnsavedChange?.(page === 'ai' && aiUnsaved) }, [aiUnsaved, onUnsavedChange, page])
+
+  const navigate = (next: SettingsPage, item?: SettingsSearchItem): boolean => {
+    // Search may cross AI tabs without changing the top-level page. Keep the same
+    // discard confirmation used by ordinary settings navigation in that case too.
+    const leavesDraft = page === 'ai' && aiUnsaved
+      && (next !== 'ai' || Boolean(item?.aiView && item.aiView !== 'behavior'))
+    if (leavesDraft && !window.confirm(t('customInstructionsDiscardConfirm'))) return false
+    if (leavesDraft) setAiUnsaved(false)
+    if (next !== page) {
+      setPageDirection(SETTINGS_PAGE_ORDER.indexOf(next) >= SETTINGS_PAGE_ORDER.indexOf(page) ? 'forward' : 'backward')
+      setPage(next)
+      pageScroll.current = 0
+    }
+    if (item) {
+      resultsScroll.current = scroller.current?.scrollTop ?? 0
+      setSearchRequest({ item, revision: ++searchRevision.current })
+    } else {
+      setSearchQuery('')
+      setSearchRequest(null)
+    }
+    setSearchOpen(false)
+    return true
   }
-  return <div className="settings-layout">
+  const openSearch = (): void => {
+    setSearchRequest(null)
+    if (!showResults) pageScroll.current = scroller.current?.scrollTop ?? 0
+    setSearchOpen(true)
+  }
+  const changeSearch = (query: string): void => {
+    setSearchRequest(null)
+    if (!showResults) pageScroll.current = scroller.current?.scrollTop ?? 0
+    resultsScroll.current = 0
+    setSearchQuery(query)
+    setSearchOpen(true)
+  }
+  const clearSearch = (): void => {
+    if (!showResults) pageScroll.current = scroller.current?.scrollTop ?? 0
+    setSearchRequest(null)
+    setSearchQuery('')
+    setSearchOpen(false)
+  }
+  useEffect(() => {
+    if (scroller.current) scroller.current.scrollTop = showResults ? resultsScroll.current : pageScroll.current
+  }, [showResults, searchQuery])
+
+  useEffect(() => {
+    if (showResults || !searchRequest) return
+    const container = scroller.current
+    if (!container) return
+    let focused: HTMLElement | null = null
+    let temporaryTabIndex = false
+    let frame = 0
+    const locate = (): void => {
+      const root = container.querySelector<HTMLElement>('[data-settings-page]')
+      if (!root || root.hidden) return
+      const { item } = searchRequest
+      if (item.aiView && !root.querySelector('[data-ai-settings-view="' + item.aiView + '"]')) return
+      const target = item.anchor
+        ? root.querySelector<HTMLElement>('[data-setting-anchor="' + item.anchor + '"]')
+        : root.querySelector<HTMLElement>('.settings-intro')
+      if (!target) return
+      observer.disconnect()
+      focused = target
+      // Native controls keep their normal keyboard order. Only an unfocusable
+      // container without its own tabindex needs a temporary programmatic target.
+      if (!target.hasAttribute('tabindex') && target.tabIndex < 0) {
+        target.setAttribute('tabindex', '-1')
+        temporaryTabIndex = true
+      }
+      target.setAttribute('data-settings-search-highlight', 'true')
+      target.scrollIntoView({ block: item.anchor ? 'center' : 'start', behavior: 'auto' })
+      target.focus({ preventScroll: true })
+    }
+    // Pages such as Accounts and AI load their controls through IPC. Wait for the
+    // actual destination, and stop observing as soon as it exists or navigation changes.
+    const observer = new MutationObserver(() => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(locate)
+    })
+    observer.observe(container, { childList: true, subtree: true })
+    frame = requestAnimationFrame(locate)
+    return () => {
+      observer.disconnect()
+      cancelAnimationFrame(frame)
+      focused?.removeAttribute('data-settings-search-highlight')
+      if (temporaryTabIndex && focused?.getAttribute('tabindex') === '-1') {
+        focused.removeAttribute('tabindex')
+      }
+    }
+  }, [showResults, searchRequest])
+
+  return <div className="settings-layout" onKeyDown={event => {
+    if (event.key !== 'Escape' || event.nativeEvent.isComposing
+      || (event.target instanceof Element && event.target.closest('[role="dialog"]'))) return
+    if (showResults) {
+      event.preventDefault()
+      event.stopPropagation()
+      clearSearch()
+    } else if (searchQuery.trim()) {
+      event.preventDefault()
+      event.stopPropagation()
+      openSearch()
+    }
+  }}>
     <aside className="settings-nav">
       <div className="settings-nav-title"><Settings2 size={18}/><span>{t('settings')}</span></div>
       <div className="settings-nav-items">
@@ -88,19 +199,27 @@ export function SettingsPanel({ settings, appInfo, syncState, initialPage = 'gen
       <div className="settings-nav-spacer" />
       <small>{appInfo ? `v${appInfo.version} · ${appInfo.platform}` : '—'}</small>
     </aside>
-    <div className="settings-page settings-subpage">
-      <div key={page} className={`settings-page-motion settings-page-motion-${pageDirection}`} data-settings-page={page}>
-        {page==='general' && <GeneralSettings settings={settings} onChange={onChange}/>}
-        {page==='accounts' && <AccountsSettingsPage syncState={syncState} onChanged={onAccountChanged}/>}
-        {page==='update' && <UpdateSettingsPage settings={settings} appInfo={appInfo} onChange={onChange}/>}
-        {page==='translation' && <TranslationSettingsPage/>}
-        {page==='ai' && <AiSettingsPage onUnsavedChange={setAiUnsaved}/>}
-        {page==='filters' && <ArticleFilterSettingsPage/>}
-        {page==='jsonRules' && <JsonRulesSettingsPage/>}
-        {page==='websiteRules' && <WebsiteRulesSettingsPage/>}
-        {page==='rsshub' && <RssHubSettingsPage/>}
-        {page==='backup' && <BackupSettingsPage onRestored={onConfigurationRestored}/>}
-        {page==='about' && <AboutAndSupportPage appInfo={appInfo} onOpenUpdate={()=>navigate('update')}/>}
+    <div className="settings-workspace">
+      <SettingsSearchToolbar query={searchQuery} showBack={!showResults && searchQuery.trim().length > 0}
+        onChange={changeSearch} onFocus={() => { if (searchQuery.trim()) openSearch() }}
+        onClear={clearSearch} onBack={openSearch}
+        onSubmit={() => { const first = searchResults[0]; if (first) navigate(first.item.page, first.item) }}/>
+      <div className="settings-page settings-subpage" ref={scroller}>
+        {showResults && <SettingsSearchResults results={searchResults} onSelect={item => navigate(item.page, item)}/>}
+        {/* Keep the current page mounted while searching so unfinished edits remain intact. */}
+        <div key={page} hidden={showResults} className={`settings-page-motion settings-page-motion-${pageDirection}`} data-settings-page={page}>
+          {page==='general' && <GeneralSettings settings={settings} onChange={onChange}/>}
+          {page==='accounts' && <AccountsSettingsPage syncState={syncState} onChanged={onAccountChanged}/>}
+          {page==='update' && <UpdateSettingsPage settings={settings} appInfo={appInfo} onChange={onChange}/>}
+          {page==='translation' && <TranslationSettingsPage/>}
+          {page==='ai' && <AiSettingsPage onUnsavedChange={setAiUnsaved} hasUnsavedChanges={aiUnsaved} searchRequest={searchRequest}/>}
+          {page==='filters' && <ArticleFilterSettingsPage/>}
+          {page==='jsonRules' && <JsonRulesSettingsPage/>}
+          {page==='websiteRules' && <WebsiteRulesSettingsPage/>}
+          {page==='rsshub' && <RssHubSettingsPage/>}
+          {page==='backup' && <BackupSettingsPage onRestored={onConfigurationRestored}/>}
+          {page==='about' && <AboutAndSupportPage appInfo={appInfo} onOpenUpdate={()=>navigate('update')}/>}
+        </div>
       </div>
     </div>
   </div>
@@ -116,9 +235,9 @@ function GeneralSettings({settings,onChange}:{settings:DesktopSettings;onChange:
   return <>
     <PageIntro icon={<Settings2 size={22}/>} title={t('settingsGeneral')} description={t('settingsDescription')}/>
     <SettingsSection icon={<Globe2 size={17}/>} title={t('settingsGeneral')}>
-      <SettingRow title={t('language')} description={t('languageDescription')}><select aria-label={t('language')} className="language-select" value={settings.language} onChange={(e)=>onChange({language:e.target.value as DesktopSettings['language']})}><option value="system">{t('languageSystem')}</option><option value="zh">简体中文</option><option value="en">English</option></select></SettingRow>
-      <SettingRow title={t('appearanceTheme')} description={t('appearanceThemeDescription')}><select aria-label={t('appearanceTheme')} className="theme-select" value={settings.theme} onChange={(e)=>onChange({theme:e.target.value as DesktopSettings['theme']})}><option value="system">{t('themeSystem')}</option><option value="light">{t('themeLight')}</option><option value="dark">{t('themeDark')}</option></select></SettingRow>
-      <SettingRow className="layout-mode-setting-row" title={t('layoutMode')} description={t('layoutModeDescription')}>
+      <SettingRow searchId="language" title={t('language')} description={t('languageDescription')}><select aria-label={t('language')} className="language-select" value={settings.language} onChange={(e)=>onChange({language:e.target.value as DesktopSettings['language']})}><option value="system">{t('languageSystem')}</option><option value="zh">简体中文</option><option value="en">English</option></select></SettingRow>
+      <SettingRow searchId="appearanceTheme" title={t('appearanceTheme')} description={t('appearanceThemeDescription')}><select aria-label={t('appearanceTheme')} className="theme-select" value={settings.theme} onChange={(e)=>onChange({theme:e.target.value as DesktopSettings['theme']})}><option value="system">{t('themeSystem')}</option><option value="light">{t('themeLight')}</option><option value="dark">{t('themeDark')}</option></select></SettingRow>
+      <SettingRow className="layout-mode-setting-row" searchId="layoutMode" title={t('layoutMode')} description={t('layoutModeDescription')}>
         <div className="layout-mode-segmented" role="group" aria-label={t('layoutMode')}>
           {([
             ['two-pane', 'layoutModeTwoPane'],
@@ -140,14 +259,14 @@ function GeneralSettings({settings,onChange}:{settings:DesktopSettings;onChange:
       </SettingRow>
     </SettingsSection>
     <SettingsSection icon={<BookOpenText size={17}/>} title={t('settingsReading')}>
-      <SettingRow title={t('readerFont')} description={t('readerFontDescription')}><div className="reader-font-setting"><select aria-label={t('readerFont')} className="reader-font-select" value={settings.readerFontId} onChange={(e)=>onChange({readerFontId:e.target.value})}>{BUILTIN_READER_FONTS.map((font)=><option key={font.id} value={font.id}>{t(font.nameKey)}</option>)}{customFonts.map((font)=><option key={font.id} value={font.id}>{font.name}</option>)}</select><button type="button" className="mini-action" onClick={()=>void importFont()}><Upload size={13}/>{t('importFont')}</button>{settings.readerFontId.startsWith('custom:')&&<button type="button" className="mini-action danger" onClick={()=>void deleteSelectedFont()}><Trash2 size={13}/>{t('delete')}</button>}</div>{fontStatus&&<div className="setting-inline-status">{fontStatus}</div>}</SettingRow>
-      <SettingRow className="reader-background-setting-row" title={t('readerBackground')} description={t('readerBackgroundDescription')}><div className="reader-background-options">{([
+      <SettingRow searchId="readerFont" title={t('readerFont')} description={t('readerFontDescription')}><div className="reader-font-setting"><select aria-label={t('readerFont')} className="reader-font-select" value={settings.readerFontId} onChange={(e)=>onChange({readerFontId:e.target.value})}>{BUILTIN_READER_FONTS.map((font)=><option key={font.id} value={font.id}>{t(font.nameKey)}</option>)}{customFonts.map((font)=><option key={font.id} value={font.id}>{font.name}</option>)}</select><button type="button" className="mini-action" onClick={()=>void importFont()}><Upload size={13}/>{t('importFont')}</button>{settings.readerFontId.startsWith('custom:')&&<button type="button" className="mini-action danger" onClick={()=>void deleteSelectedFont()}><Trash2 size={13}/>{t('delete')}</button>}</div>{fontStatus&&<div className="setting-inline-status">{fontStatus}</div>}</SettingRow>
+      <SettingRow className="reader-background-setting-row" searchId="readerBackground" title={t('readerBackground')} description={t('readerBackgroundDescription')}><div className="reader-background-options">{([
         ['theme','readerBackgroundTheme'],['paper','readerBackgroundPaper'],['warm','readerBackgroundWarm'],['sepia','readerBackgroundSepia'],['mint','readerBackgroundMint']
       ] as const).map(([value,label])=><button key={value} type="button" className={`reader-background-option bg-${value} ${settings.readerBackground===value?'selected':''}`} onClick={()=>onChange({readerBackground:value})}><span className="reader-background-swatch"/><strong>{t(label)}</strong></button>)}</div></SettingRow>
-      <SettingRow title={t('readerBackgroundCustom')} description={t('readerBackgroundCustomDescription')}><div className="reader-background-custom"><button type="button" className={`reader-background-option bg-custom ${settings.readerBackground==='custom'?'selected':''}`} onClick={()=>onChange({readerBackground:'custom'})}><span className="reader-background-swatch" style={{background:settings.readerBackgroundCustom}}/><strong>{t('readerBackgroundCustomUse')}</strong></button><label className="reader-color-picker"><input type="color" value={settings.readerBackgroundCustom} onChange={(event)=>onChange({readerBackground:'custom',readerBackgroundCustom:event.target.value})}/><span>{settings.readerBackgroundCustom.toUpperCase()}</span></label></div></SettingRow>
-      <SettingRow title={t('readerFontSize')} description={t('readerFontSizeDescription')}><select aria-label={t('readerFontSize')} className="reader-font-size-select" value={settings.readerFontSize} onChange={(e)=>onChange({readerFontSize:Number(e.target.value)})}><option value={15}>{t('readerFontSmall')}</option><option value={17}>{t('readerFontStandard')}</option><option value={19}>{t('readerFontLarge')}</option><option value={21}>{t('readerFontExtraLarge')}</option></select></SettingRow>
-      <SettingRow title={t('readerLineHeight')} description={t('readerLineHeightDescription')}><select aria-label={t('readerLineHeight')} className="reader-line-height-select" value={settings.readerLineHeight} onChange={(e)=>onChange({readerLineHeight:Number(e.target.value)})}><option value={1.65}>{t('readerCompact')}</option><option value={1.85}>{t('readerStandard')}</option><option value={2.05}>{t('readerRelaxed')}</option></select></SettingRow>
-      <SettingRow title={t('readerContentWidth')} description={t('readerContentWidthDescription')}><select aria-label={t('readerContentWidth')} className="reader-content-width-select" value={settings.readerContentWidth} onChange={(e)=>onChange({readerContentWidth:Number(e.target.value)})}><option value={680}>{t('readerWidthNarrow')}</option><option value={760}>{t('readerWidthStandard')}</option><option value={900}>{t('readerWidthWide')}</option></select></SettingRow>
+      <SettingRow searchId="readerBackgroundCustom" title={t('readerBackgroundCustom')} description={t('readerBackgroundCustomDescription')}><div className="reader-background-custom"><button type="button" className={`reader-background-option bg-custom ${settings.readerBackground==='custom'?'selected':''}`} onClick={()=>onChange({readerBackground:'custom'})}><span className="reader-background-swatch" style={{background:settings.readerBackgroundCustom}}/><strong>{t('readerBackgroundCustomUse')}</strong></button><label className="reader-color-picker"><input type="color" value={settings.readerBackgroundCustom} onChange={(event)=>onChange({readerBackground:'custom',readerBackgroundCustom:event.target.value})}/><span>{settings.readerBackgroundCustom.toUpperCase()}</span></label></div></SettingRow>
+      <SettingRow searchId="readerFontSize" title={t('readerFontSize')} description={t('readerFontSizeDescription')}><select aria-label={t('readerFontSize')} className="reader-font-size-select" value={settings.readerFontSize} onChange={(e)=>onChange({readerFontSize:Number(e.target.value)})}><option value={15}>{t('readerFontSmall')}</option><option value={17}>{t('readerFontStandard')}</option><option value={19}>{t('readerFontLarge')}</option><option value={21}>{t('readerFontExtraLarge')}</option></select></SettingRow>
+      <SettingRow searchId="readerLineHeight" title={t('readerLineHeight')} description={t('readerLineHeightDescription')}><select aria-label={t('readerLineHeight')} className="reader-line-height-select" value={settings.readerLineHeight} onChange={(e)=>onChange({readerLineHeight:Number(e.target.value)})}><option value={1.65}>{t('readerCompact')}</option><option value={1.85}>{t('readerStandard')}</option><option value={2.05}>{t('readerRelaxed')}</option></select></SettingRow>
+      <SettingRow searchId="readerContentWidth" title={t('readerContentWidth')} description={t('readerContentWidthDescription')}><select aria-label={t('readerContentWidth')} className="reader-content-width-select" value={settings.readerContentWidth} onChange={(e)=>onChange({readerContentWidth:Number(e.target.value)})}><option value={680}>{t('readerWidthNarrow')}</option><option value={760}>{t('readerWidthStandard')}</option><option value={900}>{t('readerWidthWide')}</option></select></SettingRow>
     </SettingsSection>
   </>
 }
@@ -205,7 +324,7 @@ function AccountsSettingsPage({syncState,onChanged}:{syncState:SyncRuntimeState|
 
     {selected&&<AccountDetailsEditor key={selected.id} account={selected} isCurrent={snapshot?.currentAccountId===selected.id} accountCount={snapshot?.accounts.length??1} syncState={syncState} locale={locale} onReload={async()=>{await reload();onChanged?.()}} onStatus={setStatus}/>}
 
-    <SettingsSection icon={<Plus size={17}/>} title={t('addAccount')}>
+    <SettingsSection icon={<Plus size={17}/>} searchId="addAccount" title={t('addAccount')}>
       <SettingRow title={t('accountType')} description={t('accountTypeDescription')}><select aria-label={t('accountType')} value={addType} onChange={(event)=>setAddType(event.target.value as AccountType)}><option value="local">Local</option><option value="fresh_rss">FreshRSS</option><option value="google_reader">Google Reader</option><option value="fever">Fever</option></select></SettingRow>
       <SettingRow title={t('accountName')} description={t('accountNameDescription')}><input aria-label={t('accountName')} value={addName} placeholder={t(accountTypeLabelKey(addType))} onChange={(event)=>setAddName(event.target.value)}/></SettingRow>
       {addType!=='local'&&<>
@@ -251,11 +370,11 @@ function AccountDetailsEditor({account,isCurrent,accountCount,syncState,locale,o
       <SettingRow title={t('clientCertificate')} description={account.hasClientCertificate?t('clientCertificateConfigured'):t('clientCertificateOptional')}><div className="inline-controls"><input aria-label={t('clientCertificatePassphrase')} type="password" value={clientCertificatePassphrase} placeholder={t('clientCertificatePassphrasePlaceholder')} onChange={(event)=>setClientCertificatePassphrase(event.target.value)}/><button type="button" className="mini-action" disabled={busy!==null} onClick={()=>void importCertificate()}>{busy==='certificate'&&<RefreshCw size={13} className="spinning"/>}{account.hasClientCertificate?t('replaceClientCertificate'):t('importClientCertificate')}</button>{account.hasClientCertificate&&<button type="button" className="mini-action danger" disabled={busy!==null} onClick={()=>void clearCertificate()}>{t('removeClientCertificate')}</button>}</div></SettingRow>
       <SettingRow title={t('connection')} description={t('accountConnectionDescription')}><button type="button" className="mini-action" disabled={busy!==null} onClick={()=>void test()}>{busy==='test'&&<RefreshCw size={13} className="spinning"/>}{busy==='test'?t('connectionTestingShort'):t('testConnection')}</button></SettingRow>
     </>}
-    <SettingRow title={t('syncInterval')} description={t('syncIntervalDescription')}><select aria-label={t('syncInterval')} className="account-sync-interval-select" value={account.syncIntervalMinutes} onChange={(event)=>void update({id:account.id,syncIntervalMinutes:Number(event.target.value)},t('accountSaved'))}>{SYNC_INTERVAL_OPTIONS.map((minutes)=><option key={minutes} value={minutes}>{syncIntervalLabel(minutes,t)}</option>)}</select></SettingRow>
-    <SettingRow title={t('syncOnStart')} description={t('syncOnStartDescription')}><Toggle ariaLabel={t('syncOnStart')} checked={account.syncOnStart} onChange={(value)=>void update({id:account.id,syncOnStart:value},t('accountSaved'))}/></SettingRow>
+    <SettingRow searchId="syncInterval" title={t('syncInterval')} description={t('syncIntervalDescription')}><select aria-label={t('syncInterval')} className="account-sync-interval-select" value={account.syncIntervalMinutes} onChange={(event)=>void update({id:account.id,syncIntervalMinutes:Number(event.target.value)},t('accountSaved'))}>{SYNC_INTERVAL_OPTIONS.map((minutes)=><option key={minutes} value={minutes}>{syncIntervalLabel(minutes,t)}</option>)}</select></SettingRow>
+    <SettingRow searchId="syncOnStart" title={t('syncOnStart')} description={t('syncOnStartDescription')}><Toggle ariaLabel={t('syncOnStart')} checked={account.syncOnStart} onChange={(value)=>void update({id:account.id,syncOnStart:value},t('accountSaved'))}/></SettingRow>
     <SettingRow title={t('syncOnlyOnWiFi')} description={t('desktopWifiConstraintDescription')}><Toggle ariaLabel={t('syncOnlyOnWiFi')} checked={account.syncOnlyOnWiFi} onChange={(value)=>void update({id:account.id,syncOnlyOnWiFi:value},t('accountSaved'))}/></SettingRow>
     <SettingRow title={t('syncOnlyWhenCharging')} description={t('desktopChargingConstraintDescription')}><Toggle ariaLabel={t('syncOnlyWhenCharging')} checked={account.syncOnlyWhenCharging} onChange={(value)=>void update({id:account.id,syncOnlyWhenCharging:value},t('accountSaved'))}/></SettingRow>
-    <SettingRow title={t('keepArchivedArticles')} description={t('keepArchivedDescription')}><select aria-label={t('keepArchivedArticles')} value={account.keepArchivedMillis} onChange={(event)=>void update({id:account.id,keepArchivedMillis:Number(event.target.value)},t('accountSaved'))}>{KEEP_ARCHIVED_OPTIONS.map((option)=><option key={option.value} value={option.value}>{t(option.labelKey)}</option>)}</select></SettingRow>
+    <SettingRow searchId="keepArchivedArticles" title={t('keepArchivedArticles')} description={t('keepArchivedDescription')}><select aria-label={t('keepArchivedArticles')} value={account.keepArchivedMillis} onChange={(event)=>void update({id:account.id,keepArchivedMillis:Number(event.target.value)},t('accountSaved'))}>{KEEP_ARCHIVED_OPTIONS.map((option)=><option key={option.value} value={option.value}>{t(option.labelKey)}</option>)}</select></SettingRow>
     {isCurrent&&<div className="sync-runtime-card"><div><span>{t('syncStatus')}</span><strong>{syncState?.running?t('syncRunning'):t('syncIdle')}</strong></div><div><span>{t('lastSync')}</span><strong>{formatDate(account.updatedAt??syncState?.lastFinishedAt,t('never'),locale)}</strong></div><div><span>{t('nextSync')}</span><strong>{formatDate(syncState?.nextRunAt,t('manualOnly'),locale)}</strong></div></div>}
     <div className="settings-inline-actions"><button type="button" className="mini-action" disabled={busy!==null} onClick={()=>void save()}>{busy==='save'&&<RefreshCw size={13} className="spinning"/>}<Save size={13}/>{t('save')}</button><button type="button" className="mini-action danger" disabled={busy!==null} onClick={()=>void clear()}>{t('clearAccountArticles')}</button>{accountCount>1&&<button type="button" className="mini-action danger" disabled={busy!==null} onClick={()=>void remove()}><Trash2 size={13}/>{t('deleteAccount')}</button>}</div>
   </SettingsSection>
@@ -289,8 +408,8 @@ function UpdateSettingsPage({settings,appInfo,onChange}:{settings:DesktopSetting
   return <>
     <PageIntro icon={<RefreshCw size={22}/>} title={t('softwareUpdate')} description={t('softwareUpdateDescription')}/>
     <SettingsSection icon={<RefreshCw size={17}/>} title={t('softwareUpdate')}>
-      <SettingRow title={t('autoCheckUpdates')} description={t('autoCheckUpdatesDescription')}><Toggle ariaLabel={t('autoCheckUpdates')} checked={settings.autoCheckUpdates} onChange={(value)=>onChange({autoCheckUpdates:value})}/></SettingRow>
-      <SettingRow title={t('checkUpdatesNow')} description={`${t('currentVersion')}: v${appInfo?.version??'—'}`}><button type="button" className="mini-action update-check-button" disabled={checking} onClick={()=>void check()}>{checking&&<RefreshCw size={13} className="spinning"/>}{checking?t('checkingUpdates'):t('checkUpdatesNow')}</button></SettingRow>
+      <SettingRow searchId="autoCheckUpdates" title={t('autoCheckUpdates')} description={t('autoCheckUpdatesDescription')}><Toggle ariaLabel={t('autoCheckUpdates')} checked={settings.autoCheckUpdates} onChange={(value)=>onChange({autoCheckUpdates:value})}/></SettingRow>
+      <SettingRow searchId="checkUpdatesNow" title={t('checkUpdatesNow')} description={`${t('currentVersion')}: v${appInfo?.version??'—'}`}><button type="button" className="mini-action update-check-button" disabled={checking} onClick={()=>void check()}>{checking&&<RefreshCw size={13} className="spinning"/>}{checking?t('checkingUpdates'):t('checkUpdatesNow')}</button></SettingRow>
       <SettingRow title={t('mainlandUpdateOptimization')} description={t('mainlandUpdateOptimizationDescription')}><span className="setting-value">{t('automatic')}</span></SettingRow>
     </SettingsSection>
     {(result||status)&&<SettingsSection icon={<FileText size={17}/>} title={t('softwareUpdate')}>
@@ -361,19 +480,19 @@ function AboutAndSupportPage({appInfo,onOpenUpdate}:{appInfo:AppInfo|null;onOpen
     </SettingsSection>
 
     <SettingsSection icon={<CircleHelp size={17}/>} title={t('supportAndHelp')}>
-      <div className="about-shortcuts">
+      <div className="about-shortcuts" data-setting-anchor="keyboardShortcuts" tabIndex={-1}>
         <div className="about-shortcuts-heading"><div className="settings-action-icon"><Keyboard size={16}/></div><div><strong>{t('keyboardShortcuts')}</strong><span>{t('keyboardShortcutsDescription')}</span></div></div>
         <div className="about-shortcut-grid">{shortcuts.map(([key,label])=><div className="about-shortcut" key={key}><kbd>{key}</kbd><span>{label}</span></div>)}</div>
       </div>
-      <AboutLinkRow icon={<BookOpenText size={16}/>} title={t('userGuide')} description={t('userGuideDescription')} actionLabel={t('openGuide')} onClick={()=>void window.origread.getUserGuide(language).then(setUserGuide).catch((error)=>window.alert(errorText(error)))}/>
-      <AboutLinkRow icon={<MessageSquareWarning size={16}/>} title={t('feedbackAndIssues')} description={t('feedbackAndIssuesDescription')} actionLabel={t('submitIssue')} onClick={()=>void window.origread.openExternalUrl(DESKTOP_ISSUES_URL)}/>
+      <AboutLinkRow icon={<BookOpenText size={16}/>} searchId="userGuide" title={t('userGuide')} description={t('userGuideDescription')} actionLabel={t('openGuide')} onClick={()=>void window.origread.getUserGuide(language).then(setUserGuide).catch((error)=>window.alert(errorText(error)))}/>
+      <AboutLinkRow icon={<MessageSquareWarning size={16}/>} searchId="feedbackAndIssues" title={t('feedbackAndIssues')} description={t('feedbackAndIssuesDescription')} actionLabel={t('submitIssue')} onClick={()=>void window.origread.openExternalUrl(DESKTOP_ISSUES_URL)}/>
     </SettingsSection>
     {userGuide!==null&&<RuleModal title={t('userGuide')} onClose={()=>setUserGuide(null)}><MarkdownContent text={userGuide}/></RuleModal>}
   </div>
 }
 
-function AboutLinkRow({icon,title,description,actionLabel,onClick}:{icon:React.ReactNode;title:string;description:string;actionLabel:string;onClick:()=>void}):React.JSX.Element{
-  return <div className="about-link-row">
+function AboutLinkRow({icon,title,description,actionLabel,onClick,searchId}:{icon:React.ReactNode;title:string;description:string;actionLabel:string;onClick:()=>void;searchId?:string}):React.JSX.Element{
+  return <div className="about-link-row" data-setting-anchor={searchId} tabIndex={searchId?-1:undefined}>
     <div className="settings-action-icon">{icon}</div>
     <div className="about-link-copy"><strong>{title}</strong><span>{description}</span></div>
     <button type="button" className="mini-action about-link-action" onClick={onClick}><ExternalLink size={13}/>{actionLabel}</button>
@@ -385,11 +504,15 @@ function updateStatusTitle(result:UpdateCheckResult,t:(key:string)=>string):stri
 function updateErrorDescription(result:UpdateCheckResult,t:(key:string)=>string):string{switch(result.errorCode){case'REPOSITORY_UNAVAILABLE':return t('updateRepositoryPrivate');case'RATE_LIMITED':return t('updateRateLimited');case'INVALID_RESPONSE':return t('updateInvalidResponse');case'DISABLED':return t('updateDisabledForTest');default:return t('updateNetworkError')}}
 function formatBytes(value:number):string{if(value<1024)return`${value} B`;if(value<1024*1024)return`${(value/1024).toFixed(1)} KB`;return`${(value/1024/1024).toFixed(1)} MB`}
 
-function AiSettingsPage({onUnsavedChange}:{onUnsavedChange?:(dirty:boolean)=>void}):React.JSX.Element{
+function AiSettingsPage({onUnsavedChange,hasUnsavedChanges,searchRequest}:{onUnsavedChange?:(dirty:boolean)=>void;hasUnsavedChanges:boolean;searchRequest:SettingsSearchRequest|null}):React.JSX.Element{
   const {t}=useTranslation()
   const [settings,setSettings]=useState<AiSettings|null>(null)
-  const [view,setView]=useState<'reading'|'providers'|'search'|'behavior'>('reading')
+  const [view,setView]=useState<AiSettingsView>(searchRequest?.item.aiView ?? 'reading')
   const [viewDirection,setViewDirection]=useState<'forward'|'backward'>('forward')
+  useEffect(() => {
+    const next = searchRequest?.item.aiView
+    if (next) { setViewDirection('forward'); setView(next) }
+  }, [searchRequest?.revision])
   const [selectedProviderId,setSelectedProviderId]=useState<string|null>(null)
   const [keys,setKeys]=useState<Record<string,string>>({})
   const [dirtyKeys,setDirtyKeys]=useState<Record<string,boolean>>({})
@@ -469,6 +592,8 @@ function AiSettingsPage({onUnsavedChange}:{onUnsavedChange?:(dirty:boolean)=>voi
   ] as const
   const changeView=(next:typeof view)=>{
     if(next===view)return
+    if(view==='behavior'&&hasUnsavedChanges&&!window.confirm(t('customInstructionsDiscardConfirm')))return
+    if(view==='behavior')onUnsavedChange?.(false)
     const currentIndex=tabs.findIndex(([id])=>id===view)
     const nextIndex=tabs.findIndex(([id])=>id===next)
     setViewDirection(nextIndex>=currentIndex?'forward':'backward')
@@ -504,17 +629,17 @@ function AiSettingsPage({onUnsavedChange}:{onUnsavedChange?:(dirty:boolean)=>voi
     <div key={view} className={`ai-settings-view-motion ai-settings-view-motion-${viewDirection}`} data-ai-settings-view={view}>
     {view==='reading'&&<><div className="ai-settings-summary-card"><div className="ai-settings-summary-icon"><Sparkles size={18}/></div><div><span>{t('aiCurrentDefault')}</span><strong>{defaultProvider?`${defaultProvider.name}${defaultProvider.defaultModel?` · ${defaultProvider.defaultModel}`:''}`:t('notConfigured')}</strong></div><button type="button" className="mini-action" onClick={()=>{setSelectedProviderId(defaultProvider?.id??null);changeView('providers')}}>{t('aiManage')}</button></div>
     <SettingsSection icon={<BookOpenText size={17}/>} title={t('aiReadingDefaults')}>
-      <SettingRow title={t('aiEnabled')} description={t('aiEnabledDescription')}><Toggle ariaLabel={t('aiEnabled')} checked={settings.enabled} onChange={(v)=>void updateGlobal({enabled:v})}/></SettingRow>
-      <SettingRow title={t('aiDefaultModel')} description={t('aiDefaultModelDescription')}><div className="ai-default-model-picker"><select aria-label={t('aiDefaultProvider')} value={defaultProvider?.id??''} onChange={(e)=>{clearTransientKeys();setSelectedProviderId(e.target.value);void updateGlobal({defaultProviderId:e.target.value})}}>{settings.providers.filter((provider)=>provider.enabled).map((provider)=><option key={provider.id} value={provider.id}>{provider.name}</option>)}</select><select aria-label={t('aiModel')} value={defaultProvider?.defaultModel??''} disabled={!defaultProvider} onChange={(e)=>{if(defaultProvider)void updateProvider(defaultProvider,{defaultModel:e.target.value})}}><option value="">{t('selectModel')}</option>{defaultProvider?.models.map((model)=><option key={model} value={model}>{model}</option>)}</select></div></SettingRow>
-      <SettingRow title={t('aiOutputLanguage')} description={t('aiOutputLanguageDescription')}><input aria-label={t('aiOutputLanguage')} value={settings.outputLanguage} onChange={(e)=>void updateGlobal({outputLanguage:e.target.value})}/></SettingRow>
-      <SettingRow title={t('aiSummaryLength')} description={t('aiSummaryLengthDescription')}><div className="summary-mode-selector compact">{([
+      <SettingRow searchId="aiEnabled" title={t('aiEnabled')} description={t('aiEnabledDescription')}><Toggle ariaLabel={t('aiEnabled')} checked={settings.enabled} onChange={(v)=>void updateGlobal({enabled:v})}/></SettingRow>
+      <SettingRow searchId="aiDefaultModel" title={t('aiDefaultModel')} description={t('aiDefaultModelDescription')}><div className="ai-default-model-picker"><select aria-label={t('aiDefaultProvider')} value={defaultProvider?.id??''} onChange={(e)=>{clearTransientKeys();setSelectedProviderId(e.target.value);void updateGlobal({defaultProviderId:e.target.value})}}>{settings.providers.filter((provider)=>provider.enabled).map((provider)=><option key={provider.id} value={provider.id}>{provider.name}</option>)}</select><select aria-label={t('aiModel')} value={defaultProvider?.defaultModel??''} disabled={!defaultProvider} onChange={(e)=>{if(defaultProvider)void updateProvider(defaultProvider,{defaultModel:e.target.value})}}><option value="">{t('selectModel')}</option>{defaultProvider?.models.map((model)=><option key={model} value={model}>{model}</option>)}</select></div></SettingRow>
+      <SettingRow searchId="aiOutputLanguage" title={t('aiOutputLanguage')} description={t('aiOutputLanguageDescription')}><input aria-label={t('aiOutputLanguage')} value={settings.outputLanguage} onChange={(e)=>void updateGlobal({outputLanguage:e.target.value})}/></SettingRow>
+      <SettingRow searchId="aiSummaryLength" title={t('aiSummaryLength')} description={t('aiSummaryLengthDescription')}><div className="summary-mode-selector compact">{([
         ['BRIEF','summaryModeQuick'],['STANDARD','summaryModeBalanced'],['DETAILED','summaryModeDeep']
       ] as const).map(([value,labelKey])=><button type="button" key={value} title={t(summaryLengthDescriptionKey(value))} className={`summary-mode-option ${settings.summaryLength===value?'selected':''}`} onClick={()=>void updateGlobal({summaryLength:value})}><strong>{t(labelKey)}</strong></button>)}</div></SettingRow>
     </SettingsSection>
     </>}
     {view==='behavior'&&<><LlmCustomizationSettingsSections onUnsavedChange={onUnsavedChange}/><RemoteMcpSettingsSection/><LocalMcpSettingsSection/></>}
     {view==='search'&&<WebSearchSettingsSection/>}
-    {view==='providers'&&<section className="ai-provider-workspace">
+    {view==='providers'&&<section className="ai-provider-workspace" data-setting-anchor="aiProviders" tabIndex={-1}>
       <header className="ai-provider-workspace-head"><div><h2>{t('aiProviders')}</h2><p>{t('aiProvidersDescription')}</p></div><button type="button" className="mini-action icon-only" title={`${t('add')}: ${t('aiProviders')}`} aria-label={`${t('add')}: ${t('aiProviders')}`} onClick={()=>void addProvider()}><Plus size={14}/></button></header>
       <div className="ai-provider-workspace-body">
         <div className="ai-provider-list" role="listbox" aria-label={t('aiProviders')}>
@@ -600,13 +725,13 @@ function WebSearchSettingsSection():React.JSX.Element{
     }catch(error){setProviderStatus((current)=>({...current,[provider.id]:`${t('connectionFailed')}: ${errorText(error)}`}))}finally{setTestingProviders((current)=>({...current,[provider.id]:false}))}
   }
 
-  if(!settings)return <SettingsSection icon={<Search size={17}/>} title={t('webSearchTitle')}><LoadingSettings/></SettingsSection>
+  if(!settings)return <SettingsSection icon={<Search size={17}/>} searchId="webSearchTitle" title={t('webSearchTitle')}><LoadingSettings/></SettingsSection>
   const enabledProviders=settings.providers.filter((provider)=>provider.enabled)
-  return <SettingsSection icon={<Search size={17}/>} title={t('webSearchTitle')}>
-    <SettingRow title={t('webSearchMode')} description={t('webSearchModeDescription')}><select aria-label={t('webSearchMode')} value={settings.mode} onChange={(event)=>void updateSettings({mode:event.target.value as WebSearchSettings['mode']})}><option value="AUTO">{t('webSearchModeAuto')}</option><option value="OFF">{t('webSearchModeOff')}</option></select></SettingRow>
-    <SettingRow title={t('webSearchDefaultProvider')} description={t('webSearchDefaultProviderDescription')}><select aria-label={t('webSearchDefaultProvider')} value={settings.defaultProviderId??''} disabled={enabledProviders.length===0} onChange={(event)=>void updateSettings({defaultProviderId:event.target.value||null})}><option value="">{t('webSearchNoProvider')}</option>{enabledProviders.map((provider)=><option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></SettingRow>
-    <SettingRow title={t('webSearchResultLimit')} description={t('webSearchResultLimitDescription')}><select aria-label={t('webSearchResultLimit')} value={settings.maxResults} onChange={(event)=>void updateSettings({maxResults:Number(event.target.value)})}>{[3,5,8,10,15,20].map((value)=><option key={value} value={value}>{value}</option>)}</select></SettingRow>
-    <div className="llm-settings-toolbar web-search-toolbar"><div><strong>{t('webSearchProviders')}</strong><span>{t('webSearchProvidersDescription')}</span></div><div className="inline-controls"><select aria-label={t('webSearchProvider')} className="web-search-kind-select" value={addKind} onChange={(event)=>setAddKind(event.target.value as WebSearchProviderKind)}>{WEB_SEARCH_PROVIDER_KINDS.map((kind)=><option key={kind} value={kind}>{webSearchProviderDefinition(kind).defaultName}</option>)}</select><button type="button" className="mini-action icon-only" title={`${t('add')}: ${webSearchProviderDefinition(addKind).defaultName}`} aria-label={`${t('add')}: ${webSearchProviderDefinition(addKind).defaultName}`} onClick={()=>void addProvider()}><Plus size={13}/></button></div></div>
+  return <SettingsSection icon={<Search size={17}/>} searchId="webSearchTitle" title={t('webSearchTitle')}>
+    <SettingRow searchId="webSearchMode" title={t('webSearchMode')} description={t('webSearchModeDescription')}><select aria-label={t('webSearchMode')} value={settings.mode} onChange={(event)=>void updateSettings({mode:event.target.value as WebSearchSettings['mode']})}><option value="AUTO">{t('webSearchModeAuto')}</option><option value="OFF">{t('webSearchModeOff')}</option></select></SettingRow>
+    <SettingRow searchId="webSearchDefaultProvider" title={t('webSearchDefaultProvider')} description={t('webSearchDefaultProviderDescription')}><select aria-label={t('webSearchDefaultProvider')} value={settings.defaultProviderId??''} disabled={enabledProviders.length===0} onChange={(event)=>void updateSettings({defaultProviderId:event.target.value||null})}><option value="">{t('webSearchNoProvider')}</option>{enabledProviders.map((provider)=><option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></SettingRow>
+    <SettingRow searchId="webSearchResultLimit" title={t('webSearchResultLimit')} description={t('webSearchResultLimitDescription')}><select aria-label={t('webSearchResultLimit')} value={settings.maxResults} onChange={(event)=>void updateSettings({maxResults:Number(event.target.value)})}>{[3,5,8,10,15,20].map((value)=><option key={value} value={value}>{value}</option>)}</select></SettingRow>
+    <div className="llm-settings-toolbar web-search-toolbar" data-setting-anchor="webSearchProviders" tabIndex={-1}><div><strong>{t('webSearchProviders')}</strong><span>{t('webSearchProvidersDescription')}</span></div><div className="inline-controls"><select aria-label={t('webSearchProvider')} className="web-search-kind-select" value={addKind} onChange={(event)=>setAddKind(event.target.value as WebSearchProviderKind)}>{WEB_SEARCH_PROVIDER_KINDS.map((kind)=><option key={kind} value={kind}>{webSearchProviderDefinition(kind).defaultName}</option>)}</select><button type="button" className="mini-action icon-only" title={`${t('add')}: ${webSearchProviderDefinition(addKind).defaultName}`} aria-label={`${t('add')}: ${webSearchProviderDefinition(addKind).defaultName}`} onClick={()=>void addProvider()}><Plus size={13}/></button></div></div>
     <div className="web-search-provider-list">
       {settings.providers.length?settings.providers.map((provider)=>{const dirty=dirtyKeys[provider.id]===true;const testing=testingProviders[provider.id]===true;const definition=webSearchProviderDefinition(provider.kind);return <section className="provider-card web-search-provider-card" key={provider.id}>
         <div className="provider-card-head"><label className="provider-default-radio" title={t('webSearchSetDefault')}><input type="radio" name="web-search-default-provider" aria-label={`${t('webSearchSetDefault')}: ${provider.name}`} checked={settings.defaultProviderId===provider.id} disabled={!provider.enabled} onChange={()=>void updateSettings({defaultProviderId:provider.id})}/><span/></label><div className="provider-card-title"><input className="provider-name" value={provider.name} onChange={(event)=>setSettings({...settings,providers:settings.providers.map((item)=>item.id===provider.id?{...item,name:event.target.value}:item)})} onBlur={()=>void updateProvider(provider,{name:settings.providers.find((item)=>item.id===provider.id)!.name})}/><span>{definition.defaultName}</span></div><Toggle ariaLabel={provider.name} checked={provider.enabled} onChange={(value)=>void updateProvider(provider,{enabled:value})}/><button type="button" className="icon-button danger" title={t('delete')} aria-label={t('delete')} onClick={()=>void removeProvider(provider.id)}><Trash2 size={14}/></button></div>
@@ -754,8 +879,8 @@ function RemoteMcpSettingsSection():React.JSX.Element{
     }
   }
 
-  if(!settings)return <SettingsSection icon={<Link2 size={17}/>} title={t('mcpTitle')}><LoadingSettings/></SettingsSection>
-  return <SettingsSection icon={<Link2 size={17}/>} title={t('mcpTitle')}>
+  if(!settings)return <SettingsSection icon={<Link2 size={17}/>} searchId="mcpTitle" title={t('mcpTitle')}><LoadingSettings/></SettingsSection>
+  return <SettingsSection icon={<Link2 size={17}/>} searchId="mcpTitle" title={t('mcpTitle')}>
     <div className="llm-settings-toolbar mcp-remote-toolbar"><div><strong>{t('mcpServers')}</strong><span>{t('mcpDescription')}</span></div><button type="button" className="mini-action icon-only" title={`${t('add')}: ${t('mcpServers')}`} aria-label={`${t('add')}: ${t('mcpServers')}`} onClick={()=>void addServer()}><Plus size={13}/></button></div>
     <div className="mcp-remote-list">
       {settings.servers.length?settings.servers.map((server)=>{
@@ -916,8 +1041,8 @@ function LocalMcpSettingsSection():React.JSX.Element{
     }
   }
 
-  if(!settings)return <SettingsSection icon={<Monitor size={17}/>} title={t('mcpLocalTitle')}><LoadingSettings/></SettingsSection>
-  return <SettingsSection icon={<Monitor size={17}/>} title={t('mcpLocalTitle')}>
+  if(!settings)return <SettingsSection icon={<Monitor size={17}/>} searchId="mcpLocalTitle" title={t('mcpLocalTitle')}><LoadingSettings/></SettingsSection>
+  return <SettingsSection icon={<Monitor size={17}/>} searchId="mcpLocalTitle" title={t('mcpLocalTitle')}>
     <div className="llm-settings-toolbar mcp-remote-toolbar"><div><strong>{t('mcpLocalServers')}</strong><span>{t('mcpLocalDescription')}</span></div><button type="button" className="mini-action icon-only" title={`${t('add')}: ${t('mcpLocalServers')}`} aria-label={`${t('add')}: ${t('mcpLocalServers')}`} onClick={()=>void addServer()}><Plus size={13}/></button></div>
     <div className="mcp-remote-list mcp-local-list">
       {settings.servers.length?settings.servers.map((server)=>{
@@ -1077,7 +1202,7 @@ function LlmCustomizationSettingsSections({onUnsavedChange}:{onUnsavedChange?:(d
   ]
   return <>
     <SettingsSection icon={<FileText size={17}/>} title={t('customInstructions')}>
-      <SettingRow className="llm-custom-instructions-row" title={t('customInstructions')} description={t('customInstructionsDescription')}>
+      <SettingRow className="llm-custom-instructions-row" searchId="customInstructions" title={t('customInstructions')} description={t('customInstructionsDescription')}>
         <div className="llm-custom-instructions-editor">
           <textarea aria-label={t('customInstructions')} rows={5} maxLength={8000} value={customInstructionsDraft} placeholder={t('customInstructionsPlaceholder')} onChange={(event)=>setCustomInstructionsDraft(event.target.value)}/>
           <div className="llm-editor-footer"><span>{customInstructionsDraft.length}/8000</span><button type="button" className="mini-action" disabled={!customization||customInstructionsDraft.trim()===customization.customInstructions} onClick={()=>void saveInstructions()}><Save size={13}/>{t('save')}</button></div>
@@ -1085,7 +1210,7 @@ function LlmCustomizationSettingsSections({onUnsavedChange}:{onUnsavedChange?:(d
       </SettingRow>
     </SettingsSection>
 
-    <SettingsSection icon={<Sparkles size={17}/>} title={t('skillsTitle')}>
+    <SettingsSection icon={<Sparkles size={17}/>} searchId="skillsTitle" title={t('skillsTitle')}>
       <SettingRow title={t('skillsEnabled')} description={t('skillsEnabledDescription')}><Toggle ariaLabel={t('skillsEnabled')} checked={customization?.skillsEnabled!==false} onChange={(value)=>void setSkillsEnabled(value)}/></SettingRow>
       {skills&&taskBindings.map(([task,titleKey,descriptionKey])=><SettingRow key={task} title={t(titleKey)} description={t(descriptionKey)}><select aria-label={t(titleKey)} value={llmSkillBindingId(skills.bindings,task)??''} onChange={(event)=>void bindSkill(task,event.target.value)}><option value="">{t('skillBindingNone')}</option>{enabledSkills.map((skill)=><option key={skill.id} value={skill.id}>{skill.metadata['origread-display-name']?.trim()||skill.id}</option>)}</select></SettingRow>)}
       <div className="llm-settings-toolbar"><div><strong>{t('installedSkills')}</strong><span>{t('skillsAutoRoutingDescription')}</span></div><div className="inline-controls"><button type="button" className="mini-action icon-only" title={t('createSkill')} aria-label={t('createSkill')} onClick={()=>{setCreatingSkill(true);setStatus('')}}><Plus size={13}/></button><button type="button" className="mini-action" onClick={()=>void importSkill()}><Upload size={13}/>{t('importSkill')}</button></div></div>
@@ -1120,7 +1245,7 @@ function LlmCustomizationSettingsSections({onUnsavedChange}:{onUnsavedChange?:(d
       </div>
     </RuleModal>}
 
-    <SettingsSection icon={<MessageSquareText size={17}/>} title={t('quickMessagesTitle')}>
+    <SettingsSection icon={<MessageSquareText size={17}/>} searchId="quickMessagesTitle" title={t('quickMessagesTitle')}>
       <div className="llm-settings-toolbar"><div><strong>{t('quickMessagesTitle')}</strong><span>{t('quickMessagesDescription')}</span></div><button type="button" className="mini-action icon-only" title={`${t('add')}: ${t('quickMessagesTitle')}`} aria-label={`${t('add')}: ${t('quickMessagesTitle')}`} onClick={()=>beginQuickEdit()}><Plus size={13}/></button></div>
       <div className="quick-variable-hint"><span>{t('quickMessageVariables')}</span>{['article_title','article_url','selection','summary'].map((item)=><code key={item}>{`{{${item}}}`}</code>)}</div>
       {editingQuickId&&<div className="quick-message-editor">
@@ -1181,10 +1306,10 @@ function TranslationSettingsPage():React.JSX.Element{
   }
   return <><PageIntro icon={<Languages size={22}/>} title={t('translationSettingsTitle')} description={t('translationSettingsDescription')}/>
     <SettingsSection icon={<Languages size={17}/>} title={t('translationGlobal')}>
-      <SettingRow title={t('translationTargetLanguage')} description={t('translationTargetLanguageDescription')}><input aria-label={t('translationTargetLanguage')} className="translation-target-language-input" value={targetLanguageDraft} onChange={(e)=>setTargetLanguageDraft(e.target.value)} onBlur={()=>void update({targetLanguage:targetLanguageDraft})} onKeyDown={(e)=>{if(e.key==='Enter')e.currentTarget.blur()}}/></SettingRow>
-      <SettingRow title={t('translationDisplayMode')} description={t('translationDisplayModeDescription')}><select aria-label={t('translationDisplayMode')} value={settings.displayMode} onChange={(e)=>void update({displayMode:e.target.value as TranslationSettings['displayMode']})}><option value="TRANSLATED">{t('translatedOnly')}</option><option value="BILINGUAL">{t('bilingual')}</option></select></SettingRow>
+      <SettingRow searchId="translationTargetLanguage" title={t('translationTargetLanguage')} description={t('translationTargetLanguageDescription')}><input aria-label={t('translationTargetLanguage')} className="translation-target-language-input" value={targetLanguageDraft} onChange={(e)=>setTargetLanguageDraft(e.target.value)} onBlur={()=>void update({targetLanguage:targetLanguageDraft})} onKeyDown={(e)=>{if(e.key==='Enter')e.currentTarget.blur()}}/></SettingRow>
+      <SettingRow searchId="translationDisplayMode" title={t('translationDisplayMode')} description={t('translationDisplayModeDescription')}><select aria-label={t('translationDisplayMode')} value={settings.displayMode} onChange={(e)=>void update({displayMode:e.target.value as TranslationSettings['displayMode']})}><option value="TRANSLATED">{t('translatedOnly')}</option><option value="BILINGUAL">{t('bilingual')}</option></select></SettingRow>
     </SettingsSection>
-    <div className="settings-section-title standalone-settings-section-title"><Languages size={17}/><span>{t('translationDefaultTarget')}</span></div>
+    <div className="settings-section-title standalone-settings-section-title" data-setting-anchor="translationDefaultTarget" tabIndex={-1}><Languages size={17}/><span>{t('translationDefaultTarget')}</span></div>
     <p className="settings-section-description">{t('translationDefaultTargetDescription')}</p>
     {desktopProviders.map((provider)=>{const selected=settings.defaultTarget.type==='traditional'&&settings.defaultTarget.provider===provider.type;const dirty=(keys[provider.type]??'')!==(savedKeys[provider.type]??'');const displayName=providerName(provider.type)||provider.type;return <section className="provider-card" key={provider.type}><div className="provider-card-head"><label className="provider-default-radio"><input type="radio" name="translation-default-provider" aria-label={`${t('translationDefaultTarget')}: ${displayName}`} checked={selected} disabled={!provider.enabled} onChange={()=>void update({defaultTarget:{type:'traditional',provider:provider.type}})}/><span/></label><div className="provider-card-title"><strong>{displayName}</strong><span>{t(translationProviderDescriptionKey(provider.type))}</span></div><Toggle ariaLabel={displayName} checked={provider.enabled} onChange={(v)=>void updateProvider(provider,{enabled:v})}/></div><>
       <Field label="Endpoint"><input disabled={!provider.enabled} value={provider.endpoint} onChange={(e)=>setSettings({...settings,providers:settings.providers.map((p)=>p.type===provider.type?{...p,endpoint:e.target.value}:p)})} onBlur={()=>void updateProvider(provider,{endpoint:settings.providers.find((p)=>p.type===provider.type)!.endpoint})}/></Field>
@@ -1207,7 +1332,7 @@ function ArticleFilterSettingsPage():React.JSX.Element{
     <SettingsSection icon={<Filter size={17}/>} title={t('filterStatsTitle')}>
       <SettingRow title={t('filterStatsTitle')} description={t('filterStatsDescription',{count:filters.stats.totalFiltered})}><span className="setting-value">{filters.stats.totalFiltered}</span></SettingRow>
     </SettingsSection>
-    <SettingsSection icon={<Plus size={17}/>} title={t('addFilterRule')}>
+    <SettingsSection icon={<Plus size={17}/>} searchId="addFilterRule" title={t('addFilterRule')}>
       <p className="settings-card-description">{t('addFilterRuleDescription')}</p>
       <div className="rule-add-row filter-rule-add-row"><input aria-label={t('filterKeywordPlaceholder')} value={keyword} placeholder={t('filterKeywordPlaceholder')} onChange={(e)=>setKeyword(e.target.value)}/><select aria-label={t('filterRuleType')} value={ruleType} onChange={(e)=>setRuleType(e.target.value as ArticleFilterRuleType)}><option value="KEYWORD">{t('filterTypeKeyword')}</option><option value="REGEX">{t('filterTypeRegex')}</option></select><button className="mini-action icon-only" title={t('addFilterRule')} aria-label={t('addFilterRule')} disabled={!keyword.trim()} onClick={async()=>{try{setFilters(await window.origread.addArticleFilter(keyword,ruleType,null));setKeyword('')}catch(e){setStatus(errorText(e))}}}><Plus size={13}/></button></div>
     </SettingsSection>
@@ -1306,9 +1431,9 @@ function RssHubSettingsPage():React.JSX.Element{
   if(!settings)return <LoadingSettings/>
   const test=async(instanceUrl:string,addOnSuccess=false)=>{if(testing)return;setTesting(instanceUrl);try{const result=await window.origread.testRssHubInstance(instanceUrl);if(result.ok){setResults((value)=>({...value,[instanceUrl]:t('rssHubTestSuccess')}));if(addOnSuccess){setSettings(await window.origread.addRssHubInstance(instanceUrl));setUrl('')}}else setResults((value)=>({...value,[instanceUrl]:`${t('rssHubTestFailed')}${result.error??''}`}))}finally{setTesting(null)}}
   return <><PageIntro icon={<RadioTower size={22}/>} title={t('rssHubSettings')} description={t('rssHubSettingsDescription')}/>
-    <SettingsSection icon={<RadioTower size={17}/>} title={t('rssHubEnable')}><SettingRow title={t('rssHubEnable')} description={t('rssHubEnableDescription')}><Toggle ariaLabel={t('rssHubEnable')} checked={settings.enabled} onChange={async(v)=>setSettings(await window.origread.setRssHubEnabled(v))}/></SettingRow></SettingsSection>
-    <SettingsSection icon={<RadioTower size={17}/>} title={t('rssHubInstanceList')}><p className="settings-card-description rsshub-list-description">{t('rssHubInstanceListDescription')}</p><div className="rsshub-instance-list">{settings.instances.map((instance)=>{const location=formatRssHubLocation(instance.location,language);return <div className="rsshub-instance-row" key={instance.id}><div className="rsshub-instance-head"><div><strong>{instance.url}</strong>{[location,instance.maintainer].filter(Boolean).length>0&&<span>{[location,instance.maintainer].filter(Boolean).join(' · ')}</span>}</div><Toggle ariaLabel={instance.url} checked={instance.enabled} disabled={!settings.enabled} onChange={async(v)=>setSettings(await window.origread.setRssHubInstanceEnabled(instance.id,v))}/></div><div className="rsshub-instance-actions"><button className="mini-action secondary" disabled={!settings.enabled||testing!==null} onClick={()=>void test(instance.url)}>{testing===instance.url?t('working'):t('rssHubTestInstance')}</button>{results[instance.url]&&<span>{results[instance.url]}</span>}<button className="icon-button danger" disabled={!settings.enabled} title={t('rssHubDeleteInstance')} aria-label={t('rssHubDeleteInstance')} onClick={async()=>setSettings(await window.origread.deleteRssHubInstance(instance.id))}><Trash2 size={14}/></button></div></div>})}</div></SettingsSection>
-    <SettingsSection icon={<Plus size={17}/>} title={t('rssHubAddInstance')}><div className="rsshub-add-row"><label><span>{t('rssHubInstanceUrl')}</span><input disabled={!settings.enabled} value={url} onChange={(e)=>setUrl(e.target.value)} placeholder="https://rsshub.example.com"/><small>{t('rssHubInstanceDescription')}</small></label><button className="mini-action" disabled={!settings.enabled||!url.trim()||testing!==null} onClick={()=>void test(url,true)}>{testing!==null?t('working'):t('rssHubSaveAndTest')}</button></div><button className="mini-action secondary rsshub-restore" onClick={async()=>{setSettings(await window.origread.restoreDefaultRssHubSettings());setResults({});setUrl('');setStatus(t('restoreDefaultsDone'))}}><RotateCcw size={13}/>{t('restoreDefaults')}</button></SettingsSection>{status&&<StatusText text={status}/>}</>
+    <SettingsSection icon={<RadioTower size={17}/>} searchId="rssHubEnable" title={t('rssHubEnable')}><SettingRow title={t('rssHubEnable')} description={t('rssHubEnableDescription')}><Toggle ariaLabel={t('rssHubEnable')} checked={settings.enabled} onChange={async(v)=>setSettings(await window.origread.setRssHubEnabled(v))}/></SettingRow></SettingsSection>
+    <SettingsSection icon={<RadioTower size={17}/>} searchId="rssHubInstanceList" title={t('rssHubInstanceList')}><p className="settings-card-description rsshub-list-description">{t('rssHubInstanceListDescription')}</p><div className="rsshub-instance-list">{settings.instances.map((instance)=>{const location=formatRssHubLocation(instance.location,language);return <div className="rsshub-instance-row" key={instance.id}><div className="rsshub-instance-head"><div><strong>{instance.url}</strong>{[location,instance.maintainer].filter(Boolean).length>0&&<span>{[location,instance.maintainer].filter(Boolean).join(' · ')}</span>}</div><Toggle ariaLabel={instance.url} checked={instance.enabled} disabled={!settings.enabled} onChange={async(v)=>setSettings(await window.origread.setRssHubInstanceEnabled(instance.id,v))}/></div><div className="rsshub-instance-actions"><button className="mini-action secondary" disabled={!settings.enabled||testing!==null} onClick={()=>void test(instance.url)}>{testing===instance.url?t('working'):t('rssHubTestInstance')}</button>{results[instance.url]&&<span>{results[instance.url]}</span>}<button className="icon-button danger" disabled={!settings.enabled} title={t('rssHubDeleteInstance')} aria-label={t('rssHubDeleteInstance')} onClick={async()=>setSettings(await window.origread.deleteRssHubInstance(instance.id))}><Trash2 size={14}/></button></div></div>})}</div></SettingsSection>
+    <SettingsSection icon={<Plus size={17}/>} searchId="rssHubAddInstance" title={t('rssHubAddInstance')}><div className="rsshub-add-row"><label><span>{t('rssHubInstanceUrl')}</span><input disabled={!settings.enabled} value={url} onChange={(e)=>setUrl(e.target.value)} placeholder="https://rsshub.example.com"/><small>{t('rssHubInstanceDescription')}</small></label><button className="mini-action" disabled={!settings.enabled||!url.trim()||testing!==null} onClick={()=>void test(url,true)}>{testing!==null?t('working'):t('rssHubSaveAndTest')}</button></div><button className="mini-action secondary rsshub-restore" onClick={async()=>{setSettings(await window.origread.restoreDefaultRssHubSettings());setResults({});setUrl('');setStatus(t('restoreDefaultsDone'))}}><RotateCcw size={13}/>{t('restoreDefaults')}</button></SettingsSection>{status&&<StatusText text={status}/>}</>
 }
 
 function BackupSettingsPage({onRestored}:{onRestored?:()=>void}):React.JSX.Element{
@@ -1316,10 +1441,10 @@ function BackupSettingsPage({onRestored}:{onRestored?:()=>void}):React.JSX.Eleme
   return <><PageIntro icon={<DatabaseBackup size={22}/>} title={t('backupRestore')} description={t('backupRestoreDescription')}/>
     <SettingsSection icon={<DatabaseBackup size={17}/>} title={t('backupScopeTitle')}>
       <div className="settings-banner"><strong>{t('backupScopeTitle')}</strong><span>{t('backupScopeDescription')}</span></div>
-      <SettingRow title={t('backupIncludeSecrets')} description={t('backupIncludeSecretsDescription')}><Toggle ariaLabel={t('backupIncludeSecrets')} checked={includeSecrets} onChange={(value)=>{setIncludeSecrets(value);if(!value)setPassword('')}}/></SettingRow>
+      <SettingRow searchId="backupIncludeSecrets" title={t('backupIncludeSecrets')} description={t('backupIncludeSecretsDescription')}><Toggle ariaLabel={t('backupIncludeSecrets')} checked={includeSecrets} onChange={(value)=>{setIncludeSecrets(value);if(!value)setPassword('')}}/></SettingRow>
       {includeSecrets&&<SettingRow title={t('backupPassword')} description={t('backupPasswordDescription')}><input aria-label={t('backupPassword')} type="password" value={password} onChange={(e)=>setPassword(e.target.value)}/></SettingRow>}
-      <SettingsActionRow icon={<Download size={16}/>} title={t('exportBackup')} description={t('exportBackupDescription')} disabled={busy||(includeSecrets&&password.length<6)} onClick={async()=>{setBusy(true);const r=await window.origread.exportConfigurationBackup(includeSecrets?password:'');setBusy(false);if(!r.cancelled)setStatus(r.ok?`${t('backupSaved')}: ${r.path}`:r.error??'Error')}}/>
-      <SettingsActionRow icon={<Upload size={16}/>} title={t('restoreBackup')} description={t('restoreBackupDescription')} disabled={busy} onClick={async()=>{setBusy(true);const r=await window.origread.restoreConfigurationBackup(password);setBusy(false);if(!r.cancelled){setStatus(r.ok?t('restoreSuccess',{feeds:r.restoreResult?.feedsAdded??0,updated:r.restoreResult?.feedsUpdated??0}):r.error??'Error');if(r.ok)onRestored?.()}}}/>
+      <SettingsActionRow icon={<Download size={16}/>} searchId="exportBackup" title={t('exportBackup')} description={t('exportBackupDescription')} disabled={busy||(includeSecrets&&password.length<6)} onClick={async()=>{setBusy(true);const r=await window.origread.exportConfigurationBackup(includeSecrets?password:'');setBusy(false);if(!r.cancelled)setStatus(r.ok?`${t('backupSaved')}: ${r.path}`:r.error??'Error')}}/>
+      <SettingsActionRow icon={<Upload size={16}/>} searchId="restoreBackup" title={t('restoreBackup')} description={t('restoreBackupDescription')} disabled={busy} onClick={async()=>{setBusy(true);const r=await window.origread.restoreConfigurationBackup(password);setBusy(false);if(!r.cancelled){setStatus(r.ok?t('restoreSuccess',{feeds:r.restoreResult?.feedsAdded??0,updated:r.restoreResult?.feedsUpdated??0}):r.error??'Error');if(r.ok)onRestored?.()}}}/>
     </SettingsSection>{status&&<StatusText text={status}/>}</>
 }
 
@@ -1330,14 +1455,14 @@ function providerName(type:TranslationProviderType):string{return{ML_KIT:'',MICR
 function translationProviderDescriptionKey(type:TranslationProviderType):string{return{ML_KIT:'',MICROSOFT:'translationProviderMicrosoftDescription',DEEPL:'translationProviderDeepLDescription',GOOGLE_CLOUD:'translationProviderGoogleCloudDescription',DLX:'translationProviderDlxDescription'}[type]}
 function SettingsNavButton({active,icon,label,onClick}:{active:boolean;icon:React.ReactNode;label:string;onClick:()=>void}){return <button className={`settings-nav-button ${active?'active':''}`} onClick={onClick}>{icon}<span>{label}</span></button>}
 function PageIntro({icon,title,description}:{icon:React.ReactNode;title:string;description:string}){return <div className="settings-intro"><div className="settings-intro-icon">{icon}</div><div><h1>{title}</h1><p>{description}</p></div></div>}
-function SettingsSection({icon,title,children}:{icon:React.ReactNode;title:string;children:React.ReactNode}){return <section className="settings-section"><div className="settings-section-title">{icon}<span>{title}</span></div><div className="settings-card">{children}</div></section>}
-function SettingRow({title,description,children,className=''}:{title:string;description:string;children:React.ReactNode;className?:string}){return <div className={`setting-row ${className}`.trim()}><div className="setting-copy"><strong>{title}</strong><span>{description}</span></div><div className="setting-control">{children}</div></div>}
+function SettingsSection({icon,title,children,searchId}:{icon:React.ReactNode;title:string;children:React.ReactNode;searchId?:string}){return <section className="settings-section" data-setting-anchor={searchId} tabIndex={searchId?-1:undefined}><div className="settings-section-title">{icon}<span>{title}</span></div><div className="settings-card">{children}</div></section>}
+function SettingRow({title,description,children,className='',searchId}:{title:string;description:string;children:React.ReactNode;className?:string;searchId?:string}){return <div className={`setting-row ${className}`.trim()} data-setting-anchor={searchId} tabIndex={searchId?-1:undefined}><div className="setting-copy"><strong>{title}</strong><span>{description}</span></div><div className="setting-control">{children}</div></div>}
 function Field({label,children}:{label:string;children:React.ReactNode}){return <label className="provider-field"><span>{label}</span>{children}</label>}
 function AiSecretKeyEditor({value,hasStoredValue,storedLength,dirty,visible,onChange,onToggle,onSave}:{value:string;hasStoredValue:boolean;storedLength:number;dirty:boolean;visible:boolean;onChange:(value:string)=>void;onToggle:()=>void;onSave:()=>void}){const{t}=useTranslation();const placeholder=hasStoredValue&&!dirty?t('credentialStored',{count:storedLength}):t('notConfigured');return <div className="secret-key-editor"><div className="secret-key-input-wrap"><input className="secret-key-input" type={visible?'text':'password'} value={value} autoComplete="off" spellCheck={false} placeholder={placeholder} onChange={(e)=>onChange(e.target.value)}/><button type="button" className="secret-key-eye" disabled={!value&&!hasStoredValue} title={visible?t('hideCredential'):t('showCredential')} aria-label={visible?t('hideCredential'):t('showCredential')} onClick={onToggle}>{visible?<EyeOff size={15}/>:<Eye size={15}/>}</button></div><button type="button" className="mini-action secret-key-save" disabled={!dirty} onClick={onSave}><Save size={13}/>{value?t('saveCredential'):hasStoredValue?t('removeCredential'):t('saveCredential')}</button><small className={`secret-key-state ${dirty?'dirty':'saved'}`}>{dirty?t('credentialUnsaved'):hasStoredValue?t('credentialStored',{count:storedLength}):t('credentialNotStored')}</small></div>}
 function SecretKeyEditor({value,savedValue,visible,onChange,onToggle,onSave,disabled=false,optional=false}:{value:string;savedValue:string;visible:boolean;onChange:(value:string)=>void;onToggle:()=>void;onSave:()=>void;disabled?:boolean;optional?:boolean}){const{t}=useTranslation();const dirty=value!==savedValue;return <div className="secret-key-editor"><div className="secret-key-input-wrap"><input className="secret-key-input" disabled={disabled} type={visible?'text':'password'} value={value} autoComplete="off" spellCheck={false} placeholder={optional?t('optional'):t('notConfigured')} onChange={(e)=>onChange(e.target.value)}/><button type="button" className="secret-key-eye" disabled={disabled||!value} title={visible?t('hideCredential'):t('showCredential')} aria-label={visible?t('hideCredential'):t('showCredential')} onClick={onToggle}>{visible?<EyeOff size={15}/>:<Eye size={15}/>}</button></div><button type="button" className="mini-action secret-key-save" disabled={disabled||!dirty} onClick={onSave}><Save size={13}/>{value?t('saveCredential'):savedValue?t('removeCredential'):t('saveCredential')}</button><small className={`secret-key-state ${dirty?'dirty':'saved'}`}>{dirty?t('credentialUnsaved'):savedValue?t('credentialStored',{count:savedValue.length}):t('credentialNotStored')}</small></div>}
 function summaryLengthDescriptionKey(length:AiSettings['summaryLength']):string{return length==='BRIEF'?'summaryBriefDescription':length==='DETAILED'?'summaryDetailedDescription':'summaryStandardDescription'}
 function RuleActionRow({icon,title,description,disabled=false,unavailable=false,onClick}:{icon:React.ReactNode;title:string;description?:string;disabled?:boolean;unavailable?:boolean;onClick?:()=>void}){if(onClick)return <button type="button" className={`settings-action-row interactive ${unavailable?'disabled':''}`} data-unavailable={unavailable||undefined} disabled={disabled} onClick={onClick}><div className="settings-action-icon">{icon}</div><div><strong>{title}</strong>{description&&<span>{description}</span>}</div></button>;return <div className={`settings-action-row ${disabled||unavailable?'disabled':''}`}><div className="settings-action-icon">{icon}</div><div><strong>{title}</strong>{description&&<span>{description}</span>}</div></div>}
-function SettingsActionRow({icon,title,description,onClick,disabled=false}:{icon:React.ReactNode;title:string;description:string;onClick:()=>void;disabled?:boolean}){return <button type="button" className="settings-action-row interactive" disabled={disabled} onClick={onClick}><div className="settings-action-icon">{icon}</div><div><strong>{title}</strong><span>{description}</span></div></button>}
+function SettingsActionRow({icon,title,description,onClick,disabled=false,searchId}:{icon:React.ReactNode;title:string;description:string;onClick:()=>void;disabled?:boolean;searchId?:string}){return <button type="button" className="settings-action-row interactive" data-setting-anchor={searchId} disabled={disabled} onClick={onClick}><div className="settings-action-icon">{icon}</div><div><strong>{title}</strong><span>{description}</span></div></button>}
 function RuleModal({title,description,wide=false,onClose,children}:{title:string;description?:string;wide?:boolean;onClose:()=>void;children:React.ReactNode}){return <div className="rule-modal-backdrop" role="presentation" onMouseDown={(e)=>{if(e.target===e.currentTarget)onClose()}}><section className={`rule-modal ${wide?'wide':''}`} role="dialog" aria-modal="true"><header><div><h2>{title}</h2>{description&&<p>{description}</p>}</div><button type="button" className="icon-button" onClick={onClose}><X size={17}/></button></header><div className="rule-modal-body">{children}</div></section></div>}
 function MarkdownContent({text}:{text:string}){
   const lines=text.replace(/\r\n/g,'\n').split('\n');const blocks:React.ReactNode[]=[];let index=0

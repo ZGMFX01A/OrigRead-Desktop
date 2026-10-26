@@ -22,6 +22,38 @@ const fixture = () => {
   return { controller, api }
 }
 describe('list translation ownership and explicit generation', () => {
+  it('refreshes settings in the same window without clearing saved translations or generating', async () => {
+    const { controller, api } = fixture()
+    api.restoreListTranslations.mockResolvedValue({ settings, items: [item()] })
+    await controller.restore(1, [row()])
+    const updated: TranslationSettings = { ...settings, defaultProvider: 'MICROSOFT',
+      defaultTarget: { type: 'traditional', provider: 'MICROSOFT' }, displayMode: 'BILINGUAL' }
+    api.restoreListTranslations.mockResolvedValue({ settings: updated, items: [item()] })
+    controller.reset('feed')
+    expect(controller.snapshot().items.get('a')?.translatedTitle).toBe('标题 a')
+    // onTranslationChanged restores this exact window even though its rows have not changed.
+    await controller.restore(1, [row()])
+    expect(controller.snapshot().settings).toEqual(updated)
+    expect(controller.snapshot().items.get('a')?.target).toEqual(target)
+    expect(api.translateList).not.toHaveBeenCalled()
+    expect(api.setTranslationVisible).not.toHaveBeenCalled()
+  })
+
+  it('keeps existing local translations after an IPC lookup failure and can restore later', async () => {
+    const { controller, api } = fixture()
+    api.restoreListTranslations.mockResolvedValueOnce({ settings, items: [item()] })
+    await controller.restore(1, [row()])
+    const previous = controller.snapshot()
+    api.restoreListTranslations.mockRejectedValueOnce(new Error('Local translation lookup unavailable'))
+    await expect(controller.restore(1, [row(), row('b')])).resolves.toBeUndefined()
+    expect(controller.snapshot()).toBe(previous)
+    api.restoreListTranslations.mockResolvedValueOnce({ settings, items: [item(), item('b')] })
+    await controller.restore(1, [row(), row('b')])
+    expect([...controller.snapshot().items.keys()]).toEqual(['a', 'b'])
+    expect(controller.snapshot().error).toBeNull()
+    expect(api.translateList).not.toHaveBeenCalled()
+  })
+
   it('retains an in-flight local restore when selecting an article stops idle generation', async () => {
     const { controller, api } = fixture()
     const disk = deferred<ListTranslationSnapshot>()
