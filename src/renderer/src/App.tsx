@@ -106,6 +106,7 @@ import { SourceBrandHeader, SourceSidebar, type ArticleScope, type Destination }
 import { ArticleListPane } from './ArticleListPane'
 import { useStableActions } from './useStableActions'
 import { useWindowChrome } from './useWindowChrome'
+import { consumeEscape, focusVisibleElement, isImeComposing, shouldHandleEscape, topmostEscapeLayer, type PageEscapeHandler } from './escape-navigation'
 import { ElapsedTime } from './useElapsedSeconds'
 import { useDebouncedValue } from './useDebouncedValue'
 import { PaneDivider } from './PaneDivider'
@@ -290,6 +291,10 @@ export default function App(): React.JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsUnsaved, setSettingsUnsaved] = useState(false)
   const [settingsInitialPage, setSettingsInitialPage] = useState<SettingsPage>('general')
+  const pageEscapeHandlerRef = useRef<PageEscapeHandler | null>(null)
+  const registerPageEscapeHandler = useCallback((handler: PageEscapeHandler | null): void => {
+    pageEscapeHandlerRef.current = handler
+  }, [])
   const [startupUpdate, setStartupUpdate] = useState<UpdateCheckResult | null>(null)
   const [sourceCatalogOpen, setSourceCatalogOpen] = useState(false)
   const [subscriptionMenuOpen, setSubscriptionMenuOpen] = useState(false)
@@ -322,6 +327,14 @@ export default function App(): React.JSX.Element {
     setSettingsUnsaved(false)
     setSettingsOpen(false)
     return true
+  }
+  const returnFromReaderPage = (): void => {
+    if (settingsOpen && !closeSettingsIfAllowed()) return
+    if (sourceCatalogOpen) setSourceCatalogOpen(false)
+    const trigger = settingsOpen ? '.settings-button' : '.source-discovery-button'
+    window.requestAnimationFrame(() => {
+      if (!focusVisibleElement(trigger)) focusVisibleElement('.settings-button')
+    })
   }
   const [originalViewState, setOriginalViewState] = useState<OriginalArticleViewState>(closedOriginalState())
   const readerPaneRef = useRef<HTMLElement>(null)
@@ -544,55 +557,26 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     if (settings?.layoutMode === 'two-pane' || !adaptiveSourceOverlayOpen || settings?.sourcePaneCollapsed) return
-    window.requestAnimationFrame(() => adaptiveSourceOverlayCloseRef.current?.focus())
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        setAdaptiveSourceOverlayOpen(false)
-        setSubscriptionMenuOpen(false)
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    const focusFrame = window.requestAnimationFrame(() => adaptiveSourceOverlayCloseRef.current?.focus())
+    return () => window.cancelAnimationFrame(focusFrame)
   }, [adaptiveSourceOverlayOpen, settings?.layoutMode, settings?.sourcePaneCollapsed])
 
   useEffect(() => {
     if (!sourceSwitcherOpen) return
-    // Workspace 不可见或主布局已经切走时直接退场，不把焦点强行拉回已隐藏的 Trigger。
+    // Workspace 不可见时不把焦点强行拉回已隐藏的 Trigger。
     if (settings?.layoutMode !== 'two-pane' || settings?.workspaceCollapsed || focusReading) {
       closeSourceSwitcher(false)
-      return
-    }
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      event.stopPropagation()
-      closeSourceSwitcher(true)
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => {
-      window.removeEventListener('keydown', onKeyDown)
     }
   }, [closeSourceSwitcher, focusReading, settings?.layoutMode, settings?.workspaceCollapsed, sourceSwitcherOpen])
 
   useEffect(() => {
     if (!sourceManagerOpen) return
-    // Source Manager 仅存在于可见的双栏 Workspace；离开布局时直接关闭，避免残留覆盖层。
     if (settings?.layoutMode !== 'two-pane' || settings?.workspaceCollapsed || focusReading) {
       closeSourceManager(false)
       return
     }
     const focusFrame = window.requestAnimationFrame(() => sourceManagerCloseRef.current?.focus())
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      event.stopPropagation()
-      closeSourceManager(true)
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => {
-      window.cancelAnimationFrame(focusFrame)
-      window.removeEventListener('keydown', onKeyDown)
-    }
+    return () => window.cancelAnimationFrame(focusFrame)
   }, [closeSourceManager, focusReading, settings?.layoutMode, settings?.workspaceCollapsed, sourceManagerOpen])
 
   useEffect(() => {
@@ -601,17 +585,7 @@ export default function App(): React.JSX.Element {
       const items = readerSecondaryActionsRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), select:not(:disabled)')
       Array.from(items ?? []).find((item) => item.getClientRects().length > 0)?.focus()
     })
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      setReaderMoreOpen(false)
-      window.requestAnimationFrame(() => readerMoreButtonRef.current?.focus())
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => {
-      window.cancelAnimationFrame(focusFrame)
-      window.removeEventListener('keydown', onKeyDown)
-    }
+    return () => window.cancelAnimationFrame(focusFrame)
   }, [readerMoreOpen])
 
   useEffect(() => {
@@ -621,18 +595,13 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     const closeContextMenu = (): void => setContextMenu(null)
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') closeContextMenu()
-    }
     window.addEventListener('pointerdown', closeContextMenu)
     window.addEventListener('blur', closeContextMenu)
     window.addEventListener('resize', closeContextMenu)
-    window.addEventListener('keydown', onKeyDown)
     return () => {
       window.removeEventListener('pointerdown', closeContextMenu)
       window.removeEventListener('blur', closeContextMenu)
       window.removeEventListener('resize', closeContextMenu)
-      window.removeEventListener('keydown', onKeyDown)
     }
   }, [])
 
@@ -2694,6 +2663,52 @@ export default function App(): React.JSX.Element {
       const interactiveTarget = Boolean(target?.closest('input, textarea, select, button, a, [contenteditable="true"]'))
       const typingTarget = Boolean(target?.closest('input, textarea, select, [contenteditable="true"]'))
 
+      if (event.key === 'Escape') {
+        if (!shouldHandleEscape(event)) return
+        const layer = topmostEscapeLayer()
+        if (layer) {
+          // Consume before invoking a close callback: a synchronous unmount or a
+          // cancelled confirmation must never pass the same Escape to the page.
+          consumeEscape(event)
+          if (layer.matches('.source-switcher-popover')) closeSourceSwitcher(true)
+          else if (layer.matches('.source-manager-overlay')) closeSourceManager(true)
+          else if (layer.matches('.desktop-context-menu')) setContextMenu(null)
+          else if (layer.matches('.subscription-menu')) {
+            setSubscriptionMenuOpen(false)
+            window.requestAnimationFrame(() => focusVisibleElement('.subscription-trigger'))
+          } else if (layer.matches('.reader-secondary-actions')) {
+            setReaderMoreOpen(false)
+            window.requestAnimationFrame(() => readerMoreButtonRef.current?.focus())
+          } else {
+            // Dedicated close buttons keep their own busy/disabled and discard rules.
+            const close = layer.querySelector<HTMLButtonElement>('button[data-escape-close], button.dialog-close')
+            if (close && !close.disabled) close.click()
+            window.requestAnimationFrame(() => {
+              if (document.activeElement === document.body || !document.activeElement?.isConnected) {
+                focusVisibleElement('.reader-back-button, .settings-button')
+              }
+            })
+          }
+          return
+        }
+        // Native select/datalist popups consume Escape before it reaches the DOM.
+        // An expanded custom combobox still owns it even if its popup is elsewhere.
+        if (target?.closest('[role="combobox"][aria-expanded="true"]')) return
+        if (settingsOpen || sourceCatalogOpen) {
+          consumeEscape(event)
+          if (!pageEscapeHandlerRef.current?.()) returnFromReaderPage()
+          return
+        }
+        if (readerSearchOpen) {
+          consumeEscape(event)
+          closeReaderSearch()
+        } else if (readerAiPanel.detailView === 'chat-search') {
+          consumeEscape(event)
+          setReaderAiPanel((current) => closeReaderAiPanelDetail(current))
+        }
+        return
+      }
+
       if ((event.ctrlKey || event.metaKey) && event.shiftKey && key === 'f' && !globalSearchOpen && !settingsOpen && !sourceCatalogOpen && !originalViewState.open && !document.querySelector('[role="dialog"]')) {
         if (interactiveTarget) return
         event.preventDefault()
@@ -2757,18 +2772,6 @@ export default function App(): React.JSX.Element {
         event.preventDefault()
         targetSearchInput.focus()
         targetSearchInput.select()
-        return
-      }
-      if (event.key === 'Escape' && readerSearchOpen) {
-        setReaderSearchOpen(false)
-        setReaderSearchQuery('')
-        setReaderSearchCount(0)
-        setReaderSearchIndex(0)
-        return
-      }
-      if (event.key === 'Escape' && readerAiPanel.detailView === 'chat-search') {
-        event.preventDefault()
-        setReaderAiPanel((current) => closeReaderAiPanelDetail(current))
         return
       }
       // Focus Reading 是全局布局快捷键；按钮/链接持焦点时仍可触发，只在真实输入控件中避让。
@@ -2844,7 +2847,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [aiSummaryPlacement, chatConversation?.id, focusReading, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerAiPanel.detailView, readerAiPanel.open, readerAiPanel.view, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settings?.layoutMode, settings?.workspaceCollapsed, settingsOpen, sourceCatalogOpen, sourceManagerOpen, sourceSwitcherOpen, subscriptionMenuOpen, toggleFocusReading, toggleReaderAiAssistant, visibleArticles])
+  }, [aiSummaryPlacement, chatConversation?.id, focusReading, closeReaderSearch, closeSourceManager, closeSourceSwitcher, globalSearchOpen, nextArticle, openGlobalSearch, originalUrl, originalViewState.open, previousArticle, readerAiPanel.detailView, readerAiPanel.open, readerAiPanel.view, readerSearchOpen, selectedArticle, selectedArticleId, settings?.aiSummaryPanelSize, settings?.layoutMode, settings?.workspaceCollapsed, settingsOpen, settingsUnsaved, t, sourceCatalogOpen, sourceManagerOpen, sourceSwitcherOpen, subscriptionMenuOpen, toggleFocusReading, toggleReaderAiAssistant, visibleArticles])
 
   const openAddSource = (): void => {
     if (sourceSubscriptionPendingRef.current) return
@@ -3266,6 +3269,7 @@ export default function App(): React.JSX.Element {
       articleQuery={articleQuery}
       filterQuery={debouncedArticleQuery}
       visibleArticles={visibleArticles}
+      thumbnailArticles={scopedArticles}
       feeds={feeds}
       selectedArticleId={selectedArticleId}
       uiFontScale={settings?.uiFontScale ?? 100}
@@ -3687,6 +3691,13 @@ export default function App(): React.JSX.Element {
   return (
     <main
       className={`app-shell ${twoPaneLayout ? 'two-pane-layout' : 'three-pane-layout'} ${focusReading ? 'focus-reading' : ''} ${!twoPaneLayout && adaptiveSourceHidden ? 'adaptive-source-hidden' : ''} ${!twoPaneLayout && compactLayout ? 'compact-layout' : ''} ${effectiveWorkspaceCollapsed ? 'workspace-pane-collapsed' : ''} ${effectiveSourcePaneCollapsed ? 'source-pane-collapsed' : ''} ${effectiveArticlePaneCollapsed ? 'article-pane-collapsed' : ''}`}
+      onKeyDownCapture={(event) => {
+        if (event.key === 'Escape' && (event.repeat || isImeComposing(event.nativeEvent))) {
+          // Let the input method handle its own default action, but do not let a
+          // child or global handler interpret composition/repeat as navigation.
+          event.stopPropagation()
+        }
+      }}
       style={readerStyle}
       data-window-chrome={appInfo?.platform === 'win32' ? 'overlay' : 'native'}
       data-viewport-width={viewportWidth}
@@ -3865,10 +3876,7 @@ export default function App(): React.JSX.Element {
               className={`reader-back-button ${settingsOpen ? 'settings-back-button' : 'source-catalog-back-button'}`}
               aria-label={settingsOpen ? t('closeSettings') : t('back')}
               title={settingsOpen ? t('closeSettings') : t('back')}
-              onClick={() => {
-                if (settingsOpen) closeSettingsIfAllowed()
-                else setSourceCatalogOpen(false)
-              }}
+              onClick={returnFromReaderPage}
             >
               <ArrowLeft size={17} aria-hidden="true" /><span>{t('back')}</span>
             </button>
@@ -4095,12 +4103,13 @@ export default function App(): React.JSX.Element {
               initialPage={settingsInitialPage}
               onChange={(patch) => void updateDesktopSettings(patch)}
               onUnsavedChange={setSettingsUnsaved}
+              onEscapeHandlerChange={registerPageEscapeHandler}
               onConfigurationRestored={() => void handleConfigurationRestored()}
               onAccountChanged={() => void handleAccountChanged()}
             />
           </>
         ) : sourceCatalogOpen ? (
-          <SourceDiscoveryPanel onSubscribe={(feed)=>void subscribeCatalogFeed(feed)}/>
+          <SourceDiscoveryPanel onSubscribe={(feed)=>void subscribeCatalogFeed(feed)} onEscapeHandlerChange={registerPageEscapeHandler}/>
         ) : selectedArticle ? (
           <div className={`reader-composite ${readerAiPanelDocked ? `summary-docked summary-${aiSummaryPlacement}` : ''} ${readerAiPanelVisualExit ? 'reader-ai-exiting' : ''}`}>
           <div
@@ -4315,7 +4324,6 @@ export default function App(): React.JSX.Element {
                 }}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') void submitSource()
-                  if (event.key === 'Escape') closeAddSource()
                 }}
               />
             </label>
@@ -4693,6 +4701,7 @@ export default function App(): React.JSX.Element {
               ref={adaptiveSourceOverlayCloseRef}
               type="button"
               className="icon-button adaptive-source-overlay-close"
+              data-escape-close
               aria-label={t('close')}
               title={t('close')}
               onClick={() => { setAdaptiveSourceOverlayOpen(false); setSubscriptionMenuOpen(false) }}

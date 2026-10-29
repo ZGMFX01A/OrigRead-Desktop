@@ -1,4 +1,4 @@
-import { act, type ComponentProps } from 'react'
+import { act, useCallback, useRef, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { parseHTML } from 'linkedom'
@@ -15,6 +15,8 @@ vi.mock('./ListTranslationControls', () => ({
 }))
 import { ArticleListPane } from './ArticleListPane'
 import { ArticleThumbnail, ArticleThumbnailFailureCache } from './ArticleThumbnail'
+import { useArticleListWindow } from './useArticleListWindow'
+import { captureArticleListAnchor } from './article-list-window'
 
 const translationState = {
   items: new Map<string, ListTranslationItem>(),
@@ -156,7 +158,7 @@ describe('thumbnail failures', () => {
 
   it('keeps a stable failed placeholder across virtual remounts and retries only after the failure is cleared', async () => {
     const { root, container, window } = mount()
-    const failures = new ArticleThumbnailFailureCache()
+    const failures = new ArticleThumbnailFailureCache(['https://cdn.example/broken.jpg'])
     const thumbnail = <ArticleThumbnail url="https://cdn.example/broken.jpg" failures={failures} />
     await act(() => root.render(thumbnail))
     await act(() => { container.querySelector('img')!.dispatchEvent(new window.Event('error')) })
@@ -171,7 +173,7 @@ describe('thumbnail failures', () => {
 
   it('shares failure state by URL and allows a changed URL immediately', async () => {
     const { root, container, window } = mount()
-    const failures = new ArticleThumbnailFailureCache()
+    const failures = new ArticleThumbnailFailureCache(['https://cdn.example/shared.jpg', 'https://cdn.example/new.jpg'])
     await act(() => root.render(<>
       <ArticleThumbnail url="https://cdn.example/shared.jpg" failures={failures} />
       <ArticleThumbnail url="https://cdn.example/shared.jpg" failures={failures} />
@@ -183,14 +185,110 @@ describe('thumbnail failures', () => {
     expect(container.querySelector('img')?.getAttribute('src')).toBe('https://cdn.example/new.jpg')
   })
 
-  it('retains only the most recent 200 failed URLs and leaves a new source cache empty', () => {
-    const failures = new ArticleThumbnailFailureCache()
-    for (let index = 0; index < 200; index++) failures.remember('https://cdn.example/' + index)
-    failures.remember('https://cdn.example/0')
-    failures.remember('https://cdn.example/200')
-    expect(failures.has('https://cdn.example/0')).toBe(true)
-    expect(failures.has('https://cdn.example/1')).toBe(false)
-    expect(failures.has('https://cdn.example/200')).toBe(true)
-    expect(new ArticleThumbnailFailureCache().has('https://cdn.example/0')).toBe(false)
+})
+
+describe('article list geometry commits', () => {
+  function harness() {
+    const environment = parseHTML('<html><body><div id="root"></div></body></html>')
+    vi.stubGlobal('window', environment)
+    vi.stubGlobal('document', environment.document)
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    const callbacks = new Set<() => void>()
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: () => void) {}
+      observe() { callbacks.add(this.callback) }
+      disconnect() { callbacks.delete(this.callback) }
+    })
+    let nextFrame = 0
+    const frames = new Map<number, FrameRequestCallback>()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++nextFrame, callback); return nextFrame })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id) })
+    const geometry = { width: 320, height: 600, top: 0, scrollHeight: 12_018, widthReads: 0 }
+    const articles = Array.from({ length: 100 }, (_, index) => article(index))
+    let virtual!: ReturnType<typeof useArticleListWindow>
+    let element!: HTMLDivElement
+    function Probe({ tick = 0, scope = 'scope', layoutKey = '100', selectedId = null }: {
+      tick?: number; scope?: string; layoutKey?: string; selectedId?: string | null
+    }) {
+      const ref = useRef<HTMLDivElement | null>(null)
+      virtual = useArticleListWindow(articles, scope, ref, selectedId, { key: layoutKey })
+      const bind = useCallback((node: HTMLDivElement | null) => {
+        ref.current = node
+        if (!node) return
+        element = node
+        Object.defineProperties(node, {
+          clientWidth: { configurable: true, get: () => { geometry.widthReads++; return geometry.width } },
+          clientHeight: { configurable: true, get: () => geometry.height },
+          scrollHeight: { configurable: true, get: () => geometry.scrollHeight },
+          scrollTop: { configurable: true, get: () => geometry.top, set: (value: number) => {
+            geometry.top = Math.max(0, Math.min(value, geometry.scrollHeight - geometry.height))
+          } }
+        })
+      }, [])
+      return <div ref={bind} data-tick={tick}>{virtual.start}:{virtual.end}</div>
+    }
+    const root = createRoot(environment.document.getElementById('root')!)
+    roots.add(root)
+    const render = async (props: ComponentProps<typeof Probe> = {}) => { await act(() => root.render(<Probe {...props} />)) }
+    const flushFrames = async () => {
+      for (let count = 0; frames.size && count < 20; count++) {
+        const batch = [...frames.values()]
+        frames.clear()
+        await act(() => { batch.forEach(callback => callback(performance.now())) })
+      }
+      expect(frames.size).toBe(0)
+    }
+    return { render, geometry, articles, flushFrames, frames,
+      resize: async () => { await act(() => { callbacks.forEach(callback => callback()) }) },
+      scroll: async (top: number) => {
+        geometry.top = top
+        await act(() => { element.dispatchEvent(new environment.Event('scroll')) })
+      },
+      current: () => virtual
+    }
+  }
+
+  it('skips geometry reads for unrelated renders and ordinary scroll commits but still reacts to layout/selection/scope changes', async () => {
+    const state = harness()
+    await state.render()
+    const initialReads = state.geometry.widthReads
+    await state.render({ tick: 1 })
+    expect(state.geometry.widthReads).toBe(initialReads)
+    await state.scroll(500)
+    const eventReads = state.geometry.widthReads
+    await state.flushFrames()
+    expect(state.geometry.widthReads).toBe(eventReads)
+    const anchor = captureArticleListAnchor(state.articles.map(article => article.id), state.current().offsets, state.geometry.top)
+    await state.render({ tick: 2, layoutKey: '150' })
+    expect(state.geometry.widthReads).toBeGreaterThan(eventReads)
+    expect(captureArticleListAnchor(state.articles.map(article => article.id), state.current().offsets, state.geometry.top)).toEqual(anchor)
+    state.geometry.width = 480
+    await state.resize()
+    expect(captureArticleListAnchor(state.articles.map(article => article.id), state.current().offsets, state.geometry.top)).toEqual(anchor)
+    await state.render({ layoutKey: '150', selectedId: 'article-80' })
+    expect(state.geometry.top).toBeGreaterThan(8000)
+    await state.render({ layoutKey: '150', selectedId: 'article-80', scope: 'other-source' })
+    expect(state.geometry.top).toBe(0)
+  })
+
+  it('lets a later DOM scroll win over a queued measured anchor even before a scroll event arrives', async () => {
+    const state = harness()
+    await state.render()
+    await state.scroll(500)
+    await state.flushFrames()
+    state.current().measure('article-0', 160)
+    const frame = [...state.frames.values()][0]!
+    expect(frame).toBeTypeOf('function')
+    state.frames.clear()
+    await act(() => {
+      frame(performance.now())
+      state.geometry.top = 5000
+    })
+    expect(state.geometry.top).toBe(5000)
+    expect(state.current().start).toBeLessThanOrEqual(state.current().first)
+    expect(state.current().first).toBeGreaterThan(30)
+    const reads = state.geometry.widthReads
+    await state.render({ tick: 1 })
+    expect(state.geometry.widthReads).toBe(reads)
   })
 })

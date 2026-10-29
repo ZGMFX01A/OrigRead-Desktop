@@ -89,7 +89,7 @@ The reader lets you mark articles read, star them, move between articles, and se
 
 In **Settings → General**, choose **UI text size** at **100%, 110%, 125%, or 150%** to enlarge text in the source sidebar, article list, settings, and menus. The reader's article font size remains a separate setting. Your choice is saved and included in configuration backups.
 
-Enable **Show article thumbnails** in the same section to show available article images beside the preview. It is off by default. Articles without a valid image keep the text layout; unavailable images keep a stable placeholder. Image URLs already supplied by the source are used without downloading full articles for the list.
+Enable **Show article thumbnails** in the same section to show available article images beside the preview. It is off by default. Articles without a valid image keep the text layout; unavailable images keep a stable placeholder and can be retried by refreshing the source. Within the same source scope, search, read-status filters, and scrolling do not retry failed images. Image requests pause while offline. Image URLs already supplied by the source are used without downloading full articles for the list.
 
 When the source pane is narrow or UI text is larger, branding contracts to the available space. The tagline and Add label are hidden when needed, while Discover and Add remain accessible as icon buttons with hover labels.
 
@@ -246,6 +246,7 @@ Use Ctrl on Windows / Linux and Cmd on macOS.
 | `Ctrl/Cmd + Shift + K` | Open the source switcher in the two-pane layout with the workspace visible |
 | `,` / `.` | Cycle the open AI panel's placement |
 | `-` / `+` | Resize the open AI panel |
+| `Esc` | Dismiss the current overlay or search state first; otherwise return from Settings or Discover sources to reading |
 
 Reading shortcuts yield to text entry, dialogs, and settings where the current interface needs those keys.
 

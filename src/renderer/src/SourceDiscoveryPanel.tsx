@@ -1,21 +1,32 @@
 import { Check, Compass, Search, Rss } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { FeedCatalogEntry, FeedCatalogSnapshot } from '../../shared/source-catalog'
 import { localizedSourceCategory, secondarySourceCategory } from '../../shared/source-catalog'
 import { FeedCatalogIndex } from '../../shared/feed-catalog-index'
+import type { PageEscapeHandler } from './escape-navigation'
 
 interface SourceDiscoveryPanelProps {
   onSubscribe(feed: FeedCatalogEntry): void
+  onEscapeHandlerChange?(handler: PageEscapeHandler | null): void
 }
 
-export function SourceDiscoveryPanel({ onSubscribe }: SourceDiscoveryPanelProps): React.JSX.Element {
+export function SourceDiscoveryPanel({ onSubscribe, onEscapeHandlerChange }: SourceDiscoveryPanelProps): React.JSX.Element {
   const { t, i18n } = useTranslation()
   const [catalog, setCatalog] = useState<FeedCatalogSnapshot | null>(null)
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<string>('')
   const [error, setError] = useState('')
   const locale = i18n.resolvedLanguage?.startsWith('zh') ? 'zh-CN' : 'en-US'
+
+  useLayoutEffect(() => {
+    onEscapeHandlerChange?.(() => {
+      if (query.length === 0) return false
+      setQuery('')
+      return true
+    })
+    return () => onEscapeHandlerChange?.(null)
+  }, [onEscapeHandlerChange, query])
 
   useEffect(() => {
     void window.origread.getSourceCatalog().then(setCatalog).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))

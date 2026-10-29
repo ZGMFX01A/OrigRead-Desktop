@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { join } from 'node:path'
 import { _electron, expect, test as base, type Page } from '@playwright/test'
 import type { OrigReadDesktopApi } from '../../src/shared/contracts'
@@ -190,4 +191,265 @@ test('命中设置后手动滚动，返回搜索再退出不会重放旧定位',
       await expect(search).toBeFocused()
     }
   })
+})
+
+
+async function setReaderLayout(page: Page, layoutMode: 'two-pane' | 'three-pane', width = 1180): Promise<void> {
+  await page.evaluate(async layout => {
+    await window.origread.updateSettings({
+      layoutMode: layout, workspaceCollapsed: false, sourcePaneCollapsed: false, articlePaneCollapsed: false
+    })
+  }, layoutMode)
+  await page.reload()
+  await page.setViewportSize({ width, height: 740 })
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', layoutMode)
+}
+
+test('Escape 先清空设置查询，再从普通输入返回，且长按和输入法不会跨层', async ({ userDataDir }) => {
+  await withSettings(userDataDir, async page => {
+    const search = page.locator('.settings-search-input')
+    await search.fill('Answer language')
+    await page.locator('[data-settings-search-id="aiOutputLanguage"]').click()
+    const input = page.locator('[data-setting-anchor="aiOutputLanguage"] input')
+    await expect(input).toBeVisible()
+
+    // The toolbar is outside SettingsPanel. Its Escape must still clear that
+    // page's retained query before any page navigation is attempted.
+    await page.locator('.settings-back-button').focus()
+    await page.keyboard.down('Escape')
+    await expect(search).toHaveValue('')
+    await expect(page.locator('.settings-layout')).toBeVisible()
+    await page.keyboard.down('Escape')
+    await expect(page.locator('.settings-layout')).toBeVisible()
+    await page.keyboard.up('Escape')
+
+    await input.focus()
+    await input.dispatchEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true })
+    await expect(page.locator('.settings-layout')).toBeVisible()
+    await input.dispatchEvent('keydown', { key: 'Escape', keyCode: 229, bubbles: true })
+    await expect(page.locator('.settings-layout')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.settings-layout')).toHaveCount(0)
+    await expect(page.locator('.settings-button')).toBeFocused()
+    await page.keyboard.press('Enter')
+    await expect(page.locator('.settings-layout')).toBeVisible()
+  })
+})
+
+test('Escape 依次关闭设置帮助弹窗、清空查询、返回阅读，焦点回到原入口', async ({ userDataDir }) => {
+  await withSettings(userDataDir, async page => {
+    const search = page.locator('.settings-search-input')
+    await search.fill('user guide')
+    await page.locator('[data-settings-search-id="userGuide"]').click()
+    const guide = page.locator('[data-setting-anchor="userGuide"] button')
+    await guide.click()
+    await expect(page.locator('.rule-modal')).toBeVisible()
+    // Even if focus is moved outside the dialog, its visible layer owns Escape.
+    await page.locator('.settings-back-button').focus()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.rule-modal')).toHaveCount(0)
+    await expect(page.locator('.settings-layout')).toBeVisible()
+    await expect(search).toHaveValue('user guide')
+    await expect(guide).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(search).toHaveValue('')
+    await expect(page.locator('.settings-layout')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.settings-layout')).toHaveCount(0)
+  })
+})
+
+test('Escape 返回设置继续确认未保存草稿，取消保留输入，接受才退出', async ({ userDataDir }) => {
+  await withSettings(userDataDir, async page => {
+    const search = page.locator('.settings-search-input')
+    await search.fill('instructions')
+    await page.locator('[data-settings-search-id="customInstructions"]').click()
+    const editor = page.locator('.llm-custom-instructions-editor textarea')
+    const draft = 'Keep the unsaved Escape navigation draft.'
+    await editor.fill(draft)
+    await expect(page.locator('.llm-custom-instructions-editor button')).toBeEnabled()
+
+    let confirmations = 0
+    const dismiss = async (dialog: import('@playwright/test').Dialog): Promise<void> => {
+      confirmations += 1
+      await dialog.dismiss()
+    }
+    page.on('dialog', dismiss)
+    await page.keyboard.press('Escape')
+    await expect(search).toHaveValue('')
+    expect(confirmations).toBe(0)
+    await page.keyboard.press('Escape')
+    await expect.poll(() => confirmations).toBe(1)
+    await expect(editor).toHaveValue(draft)
+    await expect(page.locator('.settings-layout')).toBeVisible()
+    await expect(editor).toBeFocused()
+
+    page.off('dialog', dismiss)
+    page.once('dialog', dialog => { void dialog.accept() })
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.settings-layout')).toHaveCount(0)
+    expect(await page.evaluate(async () => (await window.origread.getLlmCustomizationSettings()).customInstructions))
+      .not.toBe(draft)
+  })
+})
+
+test('发现来源 Escape 先关闭原生选项再清空搜索，下一次返回并恢复发现按钮焦点', async ({ userDataDir }) => {
+  await withSettings(userDataDir, async page => {
+    await setReaderLayout(page, 'two-pane')
+    const discover = page.locator('.source-discovery-button:visible')
+    await discover.click()
+    await expect(page.locator('.source-discovery-page')).toBeVisible()
+    const search = page.locator('.source-discovery-search input')
+    await search.fill('read')
+
+    await page.locator('.source-discovery-category select').focus()
+    await page.keyboard.press('Space')
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.source-discovery-page')).toBeVisible()
+    await expect(search).toHaveValue('read')
+
+    await page.locator('.source-catalog-back-button').focus()
+    await page.keyboard.press('Escape')
+    await expect(search).toHaveValue('')
+    await expect(page.locator('.source-discovery-page')).toBeVisible()
+    await search.focus()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.source-discovery-page')).toHaveCount(0)
+    await expect(discover).toBeFocused()
+  })
+})
+
+test('设置上方订阅菜单和添加弹窗各消费一次 Escape，不穿透页面搜索', async ({ userDataDir }) => {
+  await withSettings(userDataDir, async page => {
+    await setReaderLayout(page, 'two-pane')
+    await page.locator('.settings-button').click()
+    const search = page.locator('.settings-search-input')
+    await search.fill('font')
+    const trigger = page.locator('.subscription-trigger:visible')
+    await trigger.click()
+    await expect(page.locator('.subscription-menu')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.subscription-menu')).toHaveCount(0)
+    await expect(search).toHaveValue('font')
+    await expect(page.locator('.settings-layout')).toBeVisible()
+
+    await trigger.click()
+    await page.locator('.subscription-menu [role="menuitem"]').first().click()
+    const dialog = page.locator('[aria-labelledby="add-source-title"]')
+    await expect(dialog).toBeVisible()
+    await dialog.locator('.dialog-field input').first().focus()
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await expect(search).toHaveValue('font')
+    await expect(page.locator('.settings-layout')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(search).toHaveValue('')
+    await expect(page.locator('.settings-layout')).toBeVisible()
+  })
+})
+
+test('规则模型下拉在焦点移出后仍先消费 Escape，父规则窗继续保留输入', async ({ userDataDir }) => {
+  await withSettings(userDataDir, async page => {
+    await page.evaluate(async () => {
+      const before = new Set((await window.origread.getAiSettings()).providers.map(provider => provider.id))
+      const settings = await window.origread.addAiProvider()
+      const provider = settings.providers.find(item => !before.has(item.id))
+      if (!provider) throw new Error('Missing isolated test provider')
+      await window.origread.updateAiProvider({
+        id: provider.id, name: 'Escape test provider', enabled: true,
+        defaultModel: 'escape-model', models: ['escape-model', 'escape-second']
+      })
+      await window.origread.updateAiSettings({ defaultProviderId: provider.id })
+    })
+    await page.locator('.settings-nav-button[aria-label="Website parsing rules"]').click()
+    await page.getByRole('button', { name: /Generate website rule with AI/ }).click()
+    const dialog = page.locator('.rule-modal')
+    await expect(dialog).toBeVisible()
+    const url = dialog.locator('.rule-dialog-field input').first()
+    await url.fill('https://example.invalid/escape-fixture')
+    const trigger = dialog.locator('.ai-rule-model-control button')
+    await trigger.click()
+    await expect(page.locator('.ai-rule-model-menu')).toBeVisible()
+    await url.focus()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.ai-rule-model-menu')).toHaveCount(0)
+    await expect(dialog).toBeVisible()
+    await expect(url).toHaveValue('https://example.invalid/escape-fixture')
+    await expect(trigger).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await expect(page.locator('.settings-layout')).toBeVisible()
+  })
+})
+
+test('Escape 按视觉堆叠先关抽屉上方右键菜单及管理层上方订阅菜单', async ({ userDataDir }) => {
+  await withSettings(userDataDir, async page => {
+    await setReaderLayout(page, 'three-pane', 1020)
+    await page.locator('.collapsed-pane-restore').click()
+    const overlay = page.locator('.adaptive-source-overlay')
+    await expect(overlay).toBeVisible()
+    await overlay.locator('.source-item').first().click({ button: 'right' })
+    await expect(page.locator('.desktop-context-menu')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.desktop-context-menu')).toHaveCount(0)
+    await expect(overlay).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(overlay).toHaveCount(0)
+
+    await setReaderLayout(page, 'two-pane')
+    await page.locator('.source-switcher-trigger').click()
+    await page.locator('.source-switcher-manage').click()
+    await expect(page.locator('.source-manager-overlay')).toBeVisible()
+    await page.locator('.subscription-trigger:visible').click()
+    await expect(page.locator('.subscription-menu')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.subscription-menu')).toHaveCount(0)
+    await expect(page.locator('.source-manager-overlay')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.source-manager-overlay')).toHaveCount(0)
+  })
+})
+
+test('Escape 从设置返回同一原文页面，不重新请求网页且恢复键盘焦点', async ({ userDataDir }) => {
+  let originalRequests = 0
+  const server = createServer((request, response) => {
+    if (request.url === '/original') originalRequests += 1
+    response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+    response.end('<!doctype html><title>Escape original fixture</title><p>Original page stays open.</p>')
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('Missing local fixture port')
+  const url = `http://127.0.0.1:${address.port}/original`
+  try {
+    await withSettings(userDataDir, async page => {
+      await page.locator('.settings-back-button').click()
+      await page.evaluate(async originalUrl => {
+        const bounds = document.querySelector('.reader-stage')!.getBoundingClientRect()
+        await window.origread.openOriginalArticle(originalUrl, {
+          x: Math.round(bounds.x), y: Math.round(bounds.y),
+          width: Math.round(bounds.width), height: Math.round(bounds.height)
+        })
+      }, url)
+      await expect(page.locator('.reader-toolbar')).toHaveAttribute('data-toolbar-mode', 'original')
+      await expect.poll(() => page.evaluate(async () => (await window.origread.getOriginalArticleState()).title))
+        .toBe('Escape original fixture')
+      expect(originalRequests).toBe(1)
+      await page.locator('.settings-button').click()
+      await expect(page.locator('.settings-layout')).toBeVisible()
+      expect(await page.evaluate(async () => (await window.origread.getOriginalArticleState()).open)).toBe(true)
+      await page.locator('.settings-search-input').focus()
+      await page.keyboard.press('Escape')
+      await expect(page.locator('.settings-layout')).toHaveCount(0)
+      await expect(page.locator('.reader-toolbar')).toHaveAttribute('data-toolbar-mode', 'original')
+      await expect(page.locator('.settings-button')).toBeFocused()
+      const state = await page.evaluate(() => window.origread.getOriginalArticleState())
+      expect(state.open).toBe(true)
+      expect(state.url).toBe(url)
+      expect(originalRequests).toBe(1)
+    })
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
 })

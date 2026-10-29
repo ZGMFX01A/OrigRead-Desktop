@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowRight, ArrowUp, BookOpenText, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleAlert, Clock3, Copy, DatabaseBackup, FileJson2, Filter, Globe2, Languages, Link2, ListChecks, MessageSquareText, Pencil, Plus, RefreshCw, Settings2, Trash2, Upload, Download, CircleHelp, Sparkles, FileText, Search, RadioTower, RotateCcw, X, Eye, EyeOff, Save, ExternalLink, Monitor, Smartphone, Keyboard, MessageSquareWarning, UserRound } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AiProviderProfile, AiSettings } from '../../shared/ai'
 import type { AppInfo } from '../../shared/contracts'
@@ -30,6 +30,7 @@ import type {
 } from '../../shared/mcp'
 
 import { SettingsSearchResults, SettingsSearchToolbar } from './SettingsSearch'
+import { consumeEscape, shouldHandleEscape, topmostEscapeLayer, type PageEscapeHandler } from './escape-navigation'
 import { searchSettings, type AiSettingsView, type SettingsPage, type SettingsSearchItem, type SettingsSearchRequest } from './settings-search'
 export type { SettingsPage } from './settings-search'
 const SETTINGS_PAGE_ORDER: SettingsPage[] = ['general', 'accounts', 'ai', 'translation', 'filters', 'jsonRules', 'websiteRules', 'rsshub', 'backup', 'about', 'update']
@@ -48,9 +49,10 @@ interface SettingsPanelProps {
   onConfigurationRestored?(): void
   onAccountChanged?(): void
   onUnsavedChange?(dirty: boolean): void
+  onEscapeHandlerChange?(handler: PageEscapeHandler | null): void
 }
 
-export function SettingsPanel({ settings, appInfo, syncState, initialPage = 'general', onChange, onConfigurationRestored, onAccountChanged, onUnsavedChange }: SettingsPanelProps): React.JSX.Element {
+export function SettingsPanel({ settings, appInfo, syncState, initialPage = 'general', onChange, onConfigurationRestored, onAccountChanged, onUnsavedChange, onEscapeHandlerChange }: SettingsPanelProps): React.JSX.Element {
   const { t, i18n } = useTranslation()
   const [page, setPage] = useState<SettingsPage>(initialPage)
   const [pageDirection, setPageDirection] = useState<'forward' | 'backward'>('forward')
@@ -117,6 +119,17 @@ export function SettingsPanel({ settings, appInfo, syncState, initialPage = 'gen
     setSearchQuery('')
     setSearchOpen(false)
   }
+  useLayoutEffect(() => {
+    onEscapeHandlerChange?.(() => {
+      if (searchQuery.length === 0) return false
+      clearSearch()
+      if (showResults) window.requestAnimationFrame(() => {
+        document.querySelector<HTMLInputElement>('.settings-search-input')?.focus({ preventScroll: true })
+      })
+      return true
+    })
+    return () => onEscapeHandlerChange?.(null)
+  }, [onEscapeHandlerChange, searchQuery, showResults])
   useEffect(() => {
     if (scroller.current) scroller.current.scrollTop = showResults ? resultsScroll.current : pageScroll.current
   }, [showResults, searchQuery])
@@ -167,19 +180,7 @@ export function SettingsPanel({ settings, appInfo, syncState, initialPage = 'gen
     }
   }, [showResults, searchRequest])
 
-  return <div className="settings-layout" onKeyDown={event => {
-    if (event.key !== 'Escape' || event.nativeEvent.isComposing
-      || (event.target instanceof Element && event.target.closest('[role="dialog"]'))) return
-    if (showResults) {
-      event.preventDefault()
-      event.stopPropagation()
-      clearSearch()
-    } else if (searchQuery.trim()) {
-      event.preventDefault()
-      event.stopPropagation()
-      openSearch()
-    }
-  }}>
+  return <div className="settings-layout">
     <aside className="settings-nav">
       <div className="settings-nav-title"><Settings2 size={18}/><span>{t('settings')}</span></div>
       <div className="settings-nav-items">
@@ -1404,9 +1405,24 @@ function AiRuleStep({active,number,label}:{active:boolean;number:string;label:st
 function AiRuleMetric({value,label}:{value:string;label:string}){return <div><strong>{value}</strong><span>{label}</span></div>}
 function AiRuleModelPicker({provider,value,disabled,onChange}:{provider:AiProviderProfile;value:string;disabled:boolean;onChange:(value:string)=>void}){
   const {t}=useTranslation();const models=useMemo(()=>Array.from(new Set([provider.defaultModel,...provider.models].map((value)=>value.trim()).filter(Boolean))),[provider]);const[open,setOpen]=useState(false);const[custom,setCustom]=useState(false);const[query,setQuery]=useState('')
+  const trigger=useRef<HTMLButtonElement>(null)
+  const menu=useRef<HTMLDivElement>(null)
   useEffect(()=>{setOpen(false);setCustom(false);setQuery('')},[provider.id])
+  useEffect(()=>{
+    if(!open||custom)return
+    const closeMenu=(event:KeyboardEvent):void=>{
+      if(!shouldHandleEscape(event)||topmostEscapeLayer()!==menu.current)return
+      consumeEscape(event)
+      setOpen(false)
+      setQuery('')
+      window.requestAnimationFrame(()=>trigger.current?.focus({preventScroll:true}))
+    }
+    // This also covers focus moved to another field in the same rule dialog.
+    document.addEventListener('keydown',closeMenu)
+    return()=>document.removeEventListener('keydown',closeMenu)
+  },[open,custom])
   const filtered=models.filter((model)=>!query.trim()||model.toLowerCase().includes(query.trim().toLowerCase()))
-  return <div className="ai-rule-model-picker"><div className="ai-rule-model-control"><Search size={14}/><input value={custom?query:value} readOnly={!custom} disabled={disabled} placeholder={t('aiRuleModelSelectHint')} onFocus={()=>{if(!custom){setQuery('');setOpen(true)}}} onChange={(e)=>{setQuery(e.target.value);onChange(e.target.value)}}/><button type="button" disabled={disabled} onClick={()=>{if(custom){setCustom(false);setQuery('')}else{setQuery('');setOpen(true)}}}>{custom?<ChevronUp size={14}/>:<ChevronDown size={14}/>}</button></div>{open&&!custom&&<div className="ai-rule-model-menu"><label><Search size={13}/><input autoFocus value={query} placeholder={t('aiRuleSearchModel')} onChange={(e)=>setQuery(e.target.value)}/></label><div className="ai-rule-model-options">{filtered.length>0?filtered.map((model)=><button type="button" key={model} className={model===value?'selected':''} onClick={()=>{onChange(model);setOpen(false);setQuery('')}}><span>{model}</span>{model===provider.defaultModel&&<em>{t('aiRuleDefault')}</em>}{model===value&&<CheckCircle2 size={14}/>}</button>):<span className="ai-rule-no-match">{t('aiRuleNoModelMatch')}</span>}</div><button type="button" className="ai-rule-custom-model" onClick={()=>{setCustom(true);setQuery(value);setOpen(false)}}>{t('aiRuleUseCustomModel')}</button></div>}<small>{custom?t('aiRuleModelCustomHint'):t('aiRuleModelChoices',{count:models.length})}</small></div>
+  return <div className="ai-rule-model-picker"><div className="ai-rule-model-control"><Search size={14}/><input value={custom?query:value} readOnly={!custom} disabled={disabled} placeholder={t('aiRuleModelSelectHint')} onFocus={()=>{if(!custom){setQuery('');setOpen(true)}}} onChange={(e)=>{setQuery(e.target.value);onChange(e.target.value)}}/><button ref={trigger} type="button" disabled={disabled} aria-label={t('aiRuleModelSelectHint')} aria-expanded={open&&!custom} onClick={()=>{if(custom){setCustom(false);setQuery('')}else{setQuery('');setOpen(true)}}}>{custom?<ChevronUp size={14}/>:<ChevronDown size={14}/>}</button></div>{open&&!custom&&<div ref={menu} className="ai-rule-model-menu"><label><Search size={13}/><input autoFocus value={query} placeholder={t('aiRuleSearchModel')} onChange={(e)=>setQuery(e.target.value)}/></label><div className="ai-rule-model-options">{filtered.length>0?filtered.map((model)=><button type="button" key={model} className={model===value?'selected':''} onClick={()=>{onChange(model);setOpen(false);setQuery('')}}><span>{model}</span>{model===provider.defaultModel&&<em>{t('aiRuleDefault')}</em>}{model===value&&<CheckCircle2 size={14}/>}</button>):<span className="ai-rule-no-match">{t('aiRuleNoModelMatch')}</span>}</div><button type="button" className="ai-rule-custom-model" onClick={()=>{setCustom(true);setQuery(value);setOpen(false)}}>{t('aiRuleUseCustomModel')}</button></div>}<small>{custom?t('aiRuleModelCustomHint'):t('aiRuleModelChoices',{count:models.length})}</small></div>
 }
 function AiRuleProgressPanel({progress,busy}:{progress:AiRuleGenerationProgress;busy:boolean}){const{t}=useTranslation();const stages:AiRuleGenerationProgress['stage'][]=['PREPARING','FETCHING_SOURCE','ANALYZING_SOURCE','GENERATING_CANDIDATE','VALIDATING_CANDIDATE','REPAIRING_CANDIDATE','FETCHING_CONTENT','GENERATING_CONTENT','VALIDATING_CONTENT','COMPLETED'];const index=Math.max(0,stages.indexOf(progress.stage));const failed=progress.stage==='FAILED';return <div className={`ai-rule-progress-panel ${failed?'failed':''}`} role="status"><div className="ai-rule-progress-heading">{failed?<CircleAlert size={16}/>:progress.stage==='COMPLETED'?<CheckCircle2 size={16}/>:<Sparkles size={16}/>}<div><strong>{t(aiRuleProgressLabelKey(progress.stage))}</strong><span>{progress.attempt>1?t('aiRuleAttempt',{count:progress.attempt}):t('aiRuleProgressHint')}</span></div>{busy&&<RefreshCw size={14} className="spinning"/>}</div><div className="ai-rule-progress-track"><span style={{width:`${failed?100:Math.max(8,((index+1)/stages.length)*100)}%`}}/></div><div className="ai-rule-progress-stages">{stages.map((stage,stageIndex)=><span className={stageIndex<=index?'done':''} key={stage}>{stageIndex<index?'✓':stageIndex===index?'●':'○'} {t(aiRuleProgressLabelKey(stage))}</span>)}</div>{progress.detail&&<small>{progress.detail}</small>}</div>}
 
@@ -1465,7 +1481,29 @@ function SecretKeyEditor({value,savedValue,visible,onChange,onToggle,onSave,disa
 function summaryLengthDescriptionKey(length:AiSettings['summaryLength']):string{return length==='BRIEF'?'summaryBriefDescription':length==='DETAILED'?'summaryDetailedDescription':'summaryStandardDescription'}
 function RuleActionRow({icon,title,description,disabled=false,unavailable=false,onClick}:{icon:React.ReactNode;title:string;description?:string;disabled?:boolean;unavailable?:boolean;onClick?:()=>void}){if(onClick)return <button type="button" className={`settings-action-row interactive ${unavailable?'disabled':''}`} data-unavailable={unavailable||undefined} disabled={disabled} onClick={onClick}><div className="settings-action-icon">{icon}</div><div><strong>{title}</strong>{description&&<span>{description}</span>}</div></button>;return <div className={`settings-action-row ${disabled||unavailable?'disabled':''}`}><div className="settings-action-icon">{icon}</div><div><strong>{title}</strong>{description&&<span>{description}</span>}</div></div>}
 function SettingsActionRow({icon,title,description,onClick,disabled=false,searchId}:{icon:React.ReactNode;title:string;description:string;onClick:()=>void;disabled?:boolean;searchId?:string}){return <button type="button" className="settings-action-row interactive" data-setting-anchor={searchId} disabled={disabled} onClick={onClick}><div className="settings-action-icon">{icon}</div><div><strong>{title}</strong><span>{description}</span></div></button>}
-function RuleModal({title,description,wide=false,onClose,children}:{title:string;description?:string;wide?:boolean;onClose:()=>void;children:React.ReactNode}){return <div className="rule-modal-backdrop" role="presentation" onMouseDown={(e)=>{if(e.target===e.currentTarget)onClose()}}><section className={`rule-modal ${wide?'wide':''}`} role="dialog" aria-modal="true"><header><div><h2>{title}</h2>{description&&<p>{description}</p>}</div><button type="button" className="icon-button" onClick={onClose}><X size={17}/></button></header><div className="rule-modal-body">{children}</div></section></div>}
+function RuleModal({title,description,wide=false,onClose,children}:{title:string;description?:string;wide?:boolean;onClose:()=>void;children:React.ReactNode}):React.JSX.Element{
+  const {t}=useTranslation()
+  const dialog=useRef<HTMLElement>(null)
+  const returnFocus=useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null)
+  useEffect(()=>{
+    const element=dialog.current
+    if(element&&!element.contains(document.activeElement)){
+      element.querySelector<HTMLButtonElement>('button[data-escape-close]')?.focus({preventScroll:true})
+    }
+    return()=>{
+      const previous=returnFocus.current
+      window.requestAnimationFrame(()=>{
+        if(previous?.isConnected&&previous.getClientRects().length>0)previous.focus({preventScroll:true})
+      })
+    }
+  },[])
+  return <div className="rule-modal-backdrop" role="presentation" onMouseDown={(e)=>{if(e.target===e.currentTarget)onClose()}}>
+    <section ref={dialog} className={`rule-modal ${wide?'wide':''}`} role="dialog" aria-modal="true" aria-label={title}>
+      <header><div><h2>{title}</h2>{description&&<p>{description}</p>}</div><button type="button" className="icon-button" data-escape-close aria-label={t('close')} onClick={onClose}><X size={17}/></button></header>
+      <div className="rule-modal-body">{children}</div>
+    </section>
+  </div>
+}
 function MarkdownContent({text}:{text:string}){
   const lines=text.replace(/\r\n/g,'\n').split('\n');const blocks:React.ReactNode[]=[];let index=0
   while(index<lines.length){

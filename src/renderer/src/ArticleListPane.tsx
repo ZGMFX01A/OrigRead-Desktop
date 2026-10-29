@@ -3,11 +3,12 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type Re
 import { useTranslation } from 'react-i18next'
 import type { ArticleRecord, FeedRecord } from '../../shared/library'
 import { resolveArticleImageUrl } from '../../shared/article-image-url'
-import { ArticleThumbnail, ArticleThumbnailFailureCache } from './ArticleThumbnail'
+import { ArticleThumbnail, useArticleThumbnailFailures, type ArticleThumbnailFailureCache } from './ArticleThumbnail'
 import { FeedIcon, type ArticleScope, type Destination } from './SourceSidebar'
 import { ListTranslationButton, ListTranslationStatus, useListTranslation } from './ListTranslationControls'
 import type { ListTranslationItem } from '../../shared/translation'
 import { useArticleListWindow } from './useArticleListWindow'
+import { articleListEstimatedRowHeight } from './article-list-window'
 
 interface ArticleListPaneProps {
   accountId?: number | null
@@ -23,6 +24,7 @@ interface ArticleListPaneProps {
   articleQuery: string
   filterQuery?: string
   visibleArticles: ArticleRecord[]
+  thumbnailArticles?: readonly ArticleRecord[]
   feeds: FeedRecord[]
   selectedArticleId: string | null
   articleListError: string | null
@@ -64,6 +66,7 @@ export const ArticleListPane = memo(function ArticleListPane({
   articleQuery,
   filterQuery = articleQuery,
   visibleArticles,
+  thumbnailArticles = visibleArticles,
   feeds,
   selectedArticleId,
   articleListError,
@@ -99,17 +102,30 @@ export const ArticleListPane = memo(function ArticleListPane({
   const listAccountId = accountId ?? activeScopeFeed?.accountId ?? feeds[0]?.accountId ?? visibleArticles[0]?.accountId ?? ''
   const listScope = `${listAccountId}:${articleListMotionKey}:${filterQuery}`
   const thumbnailScope = `${listAccountId}:${articleScopeKey}`
-  const thumbnailFailures = useMemo(() => new ArticleThumbnailFailureCache(), [thumbnailScope])
+  const thumbnailFailures = useArticleThumbnailFailures(thumbnailScope, thumbnailArticles, feeds, refreshing)
   const fontScale = Number.isFinite(uiFontScale) && uiFontScale > 0 ? uiFontScale : 100
+  const feedsById = useMemo(() => new Map(feeds.map(feed => [feed.id, feed])), [feeds])
+  const thumbnailUrls = useMemo(() => {
+    const urls = new Map<string, string>()
+    if (!showArticleThumbnails) return urls
+    for (const article of visibleArticles) {
+      const feed = feedsById.get(article.feedId)
+      const url = resolveArticleImageUrl(article.imageUrl, {
+        articleUrl: article.url, sourcePageUrl: feed?.sourcePageUrl, feedUrl: feed?.url
+      })
+      if (url) urls.set(article.id, url)
+    }
+    return urls
+  }, [showArticleThumbnails, visibleArticles, feedsById])
+  const textEstimate = articleListEstimatedRowHeight(fontScale, false)
+  const thumbnailEstimate = articleListEstimatedRowHeight(fontScale, true)
+  const estimateRowHeight = useCallback((article: ArticleRecord) =>
+    thumbnailUrls.has(article.id) ? thumbnailEstimate : textEstimate, [thumbnailUrls, thumbnailEstimate, textEstimate])
   const virtual = useArticleListWindow(visibleArticles, listScope, listRef, selectedArticleId, {
-    key: `${fontScale}:${showArticleThumbnails}`,
-    estimatedRowHeight: Math.max(Math.round(118 * fontScale / 100), showArticleThumbnails ? 80 : 0)
+    key: `${fontScale}:${showArticleThumbnails}`, estimatedRowHeight: textEstimate, estimateRowHeight
   })
   const translation = useListTranslation(listScope, visibleArticles, virtual.first)
-  const feedsById = useMemo(() => new Map(feeds.map(feed => [feed.id, feed])), [feeds])
   const articlesById = useMemo(() => new Map(visibleArticles.map(article => [article.id, article])), [visibleArticles])
-  const refresh = useCallback(() => { thumbnailFailures.clear(); onRefresh() }, [thumbnailFailures, onRefresh])
-  useEffect(() => { if (refreshing) thumbnailFailures.clear() }, [refreshing, thumbnailFailures])
   const select = useCallback((article: ArticleRecord) => {
     translation.controller.stop()
     onSelectArticle(article)
@@ -224,7 +240,7 @@ export const ArticleListPane = memo(function ArticleListPane({
               aria-label={activeScopeFeed ? t('refresh') : t('refreshAll')}
               title={activeScopeFeed ? t('reloadSourceArticles') : t('refreshAll')}
               disabled={refreshDisabled}
-              onClick={refresh}
+              onClick={onRefresh}
             >
               <RefreshCw size={16} className={refreshing ? 'spinning' : ''} />
             </button>
@@ -241,9 +257,7 @@ export const ArticleListPane = memo(function ArticleListPane({
             {visibleArticles.slice(virtual.start, virtual.end).map((article) => {
               const translated = translation.item(article)
               const feed = feedsById.get(article.feedId)
-              const thumbnailUrl = showArticleThumbnails ? resolveArticleImageUrl(article.imageUrl, {
-                articleUrl: article.url, sourcePageUrl: feed?.sourcePageUrl, feedUrl: feed?.url
-              }) : null
+              const thumbnailUrl = thumbnailUrls.get(article.id) ?? null
               return <ArticleListRow key={article.id} article={article} translated={translated} bilingual={bilingual}
                 selected={selectedArticleId === article.id} feedName={feed?.name ?? ''}
                 thumbnailUrl={thumbnailUrl} thumbnailFailures={thumbnailFailures}

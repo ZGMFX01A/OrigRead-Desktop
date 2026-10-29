@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import type { ArticleRecord } from '../../shared/library'
 import { ArticleListMeasurements } from './article-list-measurements'
-import { articleListAtEnd, articleListEndScrollTop, articleListOffsets, articleListScrollChanged, articleListWindow, articleSelectionScrollTop, captureArticleListAnchor, restoreArticleListAnchor, type ArticleListAnchor } from './article-list-window'
+import { articleListAtEnd, articleListEndScrollTop, articleListOffsets, articleListOverscan, articleListScrollChanged, articleListWindow, articleSelectionScrollTop, captureArticleListAnchor, restoreArticleListAnchor, type ArticleListAnchor } from './article-list-window'
 
 // Matches .list-content padding-top; offsets describe the rows inside that padding.
 const LIST_PADDING_TOP = 4
@@ -11,6 +11,7 @@ const EMPTY_IDS: ReadonlySet<string> = new Set()
 export interface ArticleListWindowLayout {
   key: string
   estimatedRowHeight?: number
+  estimateRowHeight?: (article: ArticleRecord) => number
 }
 
 interface PendingAnchor {
@@ -30,10 +31,13 @@ export function useArticleListWindow(
   const requestedEstimate = layout?.estimatedRowHeight ?? 118
   const estimatedRowHeight = Number.isFinite(requestedEstimate) && requestedEstimate > 0 ? requestedEstimate : 118
   const [width, setWidth] = useState(0)
-  const currentLayout = { scope, key, width, estimatedRowHeight }
+  const estimateRowHeight = layout?.estimateRowHeight
+  const currentLayout = useMemo(() => ({ scope, key, width, estimatedRowHeight }), [scope, key, width, estimatedRowHeight])
   const [measurements] = useState(() => new ArticleListMeasurements(currentLayout))
   const [revision, setRevision] = useState(0)
   const [viewport, setViewport] = useState({ top: 0, height: 600 })
+  const [scrollVelocity, setScrollVelocity] = useState(0)
+  const scrollMotion = useRef({ top: 0, time: 0, velocity: 0 })
   const viewportRef = useRef(viewport)
   const widthRef = useRef(0)
   const mounted = useRef(true)
@@ -59,8 +63,9 @@ export function useArticleListWindow(
   const orderChanged = ids !== committed.current.ids
     && (ids.length !== committed.current.ids.length || ids.some((id, index) => id !== committed.current.ids[index]))
   const offsets = useMemo(
-    () => articleListOffsets(ids, change ? EMPTY_HEIGHTS : measurements.heights, estimatedRowHeight, invalidIds),
-    [ids, revision, scope, key, width, estimatedRowHeight, invalidIds, change, measurements]
+    () => articleListOffsets(ids, change ? EMPTY_HEIGHTS : measurements.heights,
+      estimateRowHeight ? index => estimateRowHeight(articles[index]!) : estimatedRowHeight, invalidIds),
+    [ids, articles, revision, scope, key, width, estimatedRowHeight, estimateRowHeight, invalidIds, change, measurements]
   )
   const pending = pendingAnchor.current
   const anchorScrollTop = pending?.scope === scope && pending.generation === measurements.generation
@@ -74,6 +79,7 @@ export function useArticleListWindow(
       : (change === 'layout' || invalidIds.size > 0 || orderChanged) && committed.current.scope === scope
         ? captureArticleListAnchor(committed.current.ids, committed.current.offsets, viewportRef.current.top, LIST_PADDING_TOP)
         : null
+  const restorationScrollTop = anchor ? anchorScrollTop : null
   // Render the correct window before committing new spacers, not a window at obsolete pixels.
   const top = change === 'scope' ? 0 : atEnd ? articleListEndScrollTop(offsets, viewport.height, LIST_PADDING_TOP)
     : anchor ? restoreArticleListAnchor(ids, offsets, anchor, LIST_PADDING_TOP) : viewport.top
@@ -125,13 +131,14 @@ export function useArticleListWindow(
   }, [measurements, generation, listRef])
 
   useLayoutEffect(() => {
+    const { scope, key, width, estimatedRowHeight } = currentLayout
     const element = listRef.current
     const actualWidth = element ? Math.round(element.clientWidth) : 0
     const widthChanged = actualWidth > 0 && actualWidth !== width
     // scrollTop can be written after the measurement rAF but before its React commit,
     // even before the browser dispatches a scroll event. Never replay that older intent.
-    const scrollChanged = Boolean(element && anchor
-      && articleListScrollChanged(anchorScrollTop, element.scrollTop, element.clientHeight, element.scrollHeight))
+    const scrollChanged = Boolean(element && anchor && restorationScrollTop !== null
+      && articleListScrollChanged(restorationScrollTop, element.scrollTop, element.clientHeight, element.scrollHeight))
     const beforeResize = widthChanged && change !== 'scope' && !scrollChanged
       ? anchor ?? captureArticleListAnchor(committed.current.ids, committed.current.offsets, viewportRef.current.top, LIST_PADDING_TOP)
       : null
@@ -150,6 +157,8 @@ export function useArticleListWindow(
     committed.current = { scope, ids, idSet, offsets }
 
     if (configured === 'scope') {
+      scrollMotion.current = { top: 0, time: 0, velocity: 0 }
+      setScrollVelocity(0)
       pendingSelection.current = null
       pendingAnchor.current = null
       if (element) element.scrollTop = 0
@@ -186,7 +195,8 @@ export function useArticleListWindow(
         scrollTop: element?.scrollTop ?? viewportRef.current.top, atEnd: keepEnd, endLayout } : null
     }
     updateViewport()
-  })
+  }, [listRef, currentLayout, change, anchor, restorationScrollTop, atEnd, invalidIds, measurements,
+    cancelMeasurementFrame, idSet, articles, ids, offsets, selectedId, updateViewport, viewport.height])
 
   useLayoutEffect(() => {
     const element = listRef.current
@@ -206,8 +216,18 @@ export function useArticleListWindow(
       // A later user scroll away from the tail wins over a queued measurement correction.
       if (pendingAnchor.current?.atEnd && !articleListAtEnd(element.scrollTop, element.clientHeight, element.scrollHeight)) pendingAnchor.current = null
       if (element.clientWidth > 0 && Math.round(element.clientWidth) !== widthRef.current) { resize(); return }
-      viewportRef.current = { top: element.scrollTop, height: element.clientHeight }
-      if (scrollFrame === null) scrollFrame = requestAnimationFrame(() => { scrollFrame = null; updateViewport() })
+      const top = element.scrollTop
+      const now = performance.now()
+      const previous = scrollMotion.current
+      const elapsed = now - previous.time
+      const velocity = previous.time > 0 && elapsed < 160 ? (top - previous.top) / Math.max(8, elapsed) : 0
+      scrollMotion.current = { top, time: now, velocity }
+      viewportRef.current = { top, height: element.clientHeight }
+      if (scrollFrame === null) scrollFrame = requestAnimationFrame(() => {
+        scrollFrame = null
+        setScrollVelocity(scrollMotion.current.velocity)
+        updateViewport()
+      })
     }
     const cancelPendingSelection = () => {
       pendingSelection.current = null
@@ -234,5 +254,6 @@ export function useArticleListWindow(
     return () => { mounted.current = false; cancelMeasurementFrame() }
   }, [cancelMeasurementFrame])
 
-  return { ...articleListWindow(offsets, Math.max(0, top - LIST_PADDING_TOP), viewport.height), offsets, measure, invalidateMeasurements }
+  return { ...articleListWindow(offsets, Math.max(0, top - LIST_PADDING_TOP), viewport.height,
+    articleListOverscan(viewport.height, scrollVelocity)), offsets, measure, invalidateMeasurements }
 }

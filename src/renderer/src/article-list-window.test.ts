@@ -1,21 +1,71 @@
 import { describe, expect, it } from 'vitest'
-import { articleAtOffset, articleListAtEnd, articleListEndScrollTop, articleListOffsets, articleListScrollChanged, articleListWindow, articleSelectionScrollTop, captureArticleListAnchor, restoreArticleListAnchor } from './article-list-window'
+import { articleAtOffset, articleListAtEnd, articleListEndScrollTop, articleListOffsets, articleListOverscan, articleListEstimatedRowHeight, articleListScrollChanged, articleListWindow, articleSelectionScrollTop, captureArticleListAnchor, restoreArticleListAnchor } from './article-list-window'
 
 describe('variable height article window', () => {
+  it.each([
+    { scale: 100, thumbnail: false, measured: 109.4375 },
+    { scale: 100, thumbnail: true, measured: 139 },
+    { scale: 150, thumbnail: false, measured: 148.1667 },
+    { scale: 150, thumbnail: true, measured: 162.5 }
+  ])('estimates the sampled two-line card geometry without scaling fixed padding: %j', ({ scale, thumbnail, measured }) => {
+    const height = articleListEstimatedRowHeight(scale, thumbnail)
+    expect(height).toBeGreaterThanOrEqual(measured)
+    expect(height).toBeLessThan(measured + 3)
+  })
+
+  it('keeps mixed image/text estimates per row and prefers actual measurements', () => {
+    const estimate = (index: number) => articleListEstimatedRowHeight(100, index === 1)
+    expect(articleListOffsets(['text', 'image', 'measured'], new Map([['measured', 92]]), estimate)).toEqual([0, 111, 251, 343])
+    expect(articleListOffsets(['a', 'b'], new Map(), index => index ? NaN : 0)).toEqual([0, 118, 236])
+    expect(articleListEstimatedRowHeight(NaN, true)).toBe(articleListEstimatedRowHeight(100, true))
+  })
+
+  it('uses viewport-sized pixel buffers and gives recent motion bounded extra coverage ahead', () => {
+    expect(articleListOverscan(600)).toEqual({ before: 900, after: 900 })
+    expect(articleListOverscan(600, 100)).toEqual({ before: 900, after: 1800 })
+    expect(articleListOverscan(600, -100)).toEqual({ before: 1800, after: 900 })
+    expect(articleListOverscan(1200, 1_000_000)).toEqual({ before: 1800, after: 3600 })
+  })
+
+  it('shares one DOM budget across both directions while preserving the full visible range', () => {
+    const ids = Array.from({ length: 10_000 }, (_, index) => String(index))
+    const offsets = articleListOffsets(ids, new Map(), index => [83, 128, 162][index % 3]!)
+    for (const top of [0, 20_000, 500_000, offsets.at(-1)! - 800]) {
+      for (const velocity of [0, 100, -100]) {
+        const window = articleListWindow(offsets, top, 800, articleListOverscan(800, velocity))
+        expect(window.start).toBeLessThanOrEqual(articleAtOffset(offsets, top))
+        expect(window.end).toBeGreaterThan(articleAtOffset(offsets, top + 800))
+        expect(window.end - window.start).toBeLessThan(40)
+      }
+    }
+    const forward = articleListWindow(offsets, 20_000, 800, articleListOverscan(800, 100))
+    const backward = articleListWindow(offsets, 20_000, 800, articleListOverscan(800, -100))
+    expect(forward.end).toBeGreaterThan(backward.end)
+    expect(backward.start).toBeLessThan(forward.start)
+  })
+
+  it('never crops visible rows when an unusually tall viewport needs more than the normal DOM budget', () => {
+    const offsets = articleListOffsets(Array.from({ length: 1000 }, (_, index) => String(index)), new Map(), 20)
+    const window = articleListWindow(offsets, 1000, 1200, articleListOverscan(1200, 100))
+    expect(window.start).toBe(50)
+    expect(window.end).toBe(111)
+    expect(window.end - window.start).toBe(61)
+  })
+
   it('uses actual row heights and includes rows that intersect viewport edges', () => {
     const offsets = articleListOffsets(['a', 'b', 'c', 'd'], new Map([['a', 60], ['b', 200], ['c', 90], ['d', 50]]))
     expect(offsets).toEqual([0, 60, 260, 350, 400])
     expect(articleAtOffset(offsets, 59)).toBe(0)
     expect(articleAtOffset(offsets, 60)).toBe(1)
-    expect(articleListWindow(offsets, 70, 200, 0)).toEqual({ first: 1, start: 1, end: 3 })
-    expect(articleListWindow(offsets, 399, 600, 0)).toEqual({ first: 3, start: 3, end: 4 })
+    expect(articleListWindow(offsets, 70, 200, { before: 0, after: 0 })).toEqual({ first: 1, start: 1, end: 3 })
+    expect(articleListWindow(offsets, 399, 600, { before: 0, after: 0 })).toEqual({ first: 3, start: 3, end: 4 })
   })
 
   it('bounds work at the middle and end of a 10,000 article list', () => {
     const offsets = articleListOffsets(Array.from({ length: 10_000 }, (_, index) => String(index)), new Map())
     for (const top of [0, 590_000, 1_179_500]) {
       const window = articleListWindow(offsets, top, 600)
-      expect(window.end - window.start).toBeLessThan(18)
+      expect(window.end - window.start).toBeLessThan(40)
       expect(offsets[window.first + 1]).toBeGreaterThan(top)
     }
     expect(articleListWindow([0], 0, 600)).toEqual({ first: 0, start: 0, end: 0 })
