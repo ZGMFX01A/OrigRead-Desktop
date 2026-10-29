@@ -1,0 +1,82 @@
+name: Verify Desktop
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Electron runtime suite
+        run: npx playwright test
+      - name: Upload runtime failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-desktop-windows-x64-test-results
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  macos:
+    name: macOS arm64
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Electron runtime suite
+        run: npx playwright test
+      - name: Upload runtime failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-desktop-macos-arm64-test-results
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  linux:
+    name: Ubuntu x64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Install Electron runtime dependencies
+        run: npx playwright install-deps
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Electron runtime suite under Xvfb
+        run: xvfb-run -a npx playwright test
+      - name: Upload runtime failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-desktop-linux-x64-test-results
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore

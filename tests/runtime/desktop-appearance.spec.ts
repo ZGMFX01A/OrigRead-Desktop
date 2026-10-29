@@ -12,7 +12,10 @@ const test = base.extend<{ userDataDir: string }>({
   }
 })
 
-async function withDesktop(userDataDir: string, inspect: (page: Page) => Promise<void>): Promise<void> {
+type ContentSize = { width: number; height: number }
+type ResizeDesktop = (size: ContentSize) => Promise<void>
+
+async function withDesktop(userDataDir: string, inspect: (page: Page, resize: ResizeDesktop) => Promise<void>): Promise<void> {
   const inheritedEnv = Object.fromEntries(Object.entries(process.env)
     .filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
   const app = await _electron.launch({
@@ -25,8 +28,25 @@ async function withDesktop(userDataDir: string, inspect: (page: Page) => Promise
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))
     await expect(page.locator('.app-shell')).toBeVisible()
-    await page.setViewportSize({ width: 1920, height: 1080 })
-    await inspect(page)
+    const nativeWindow = await app.browserWindow(page)
+    // Resize after ready-to-show; a small CI display can otherwise replace the
+    // requested bounds while showing the native window. Do not emulate a larger
+    // renderer viewport over a smaller native window.
+    await expect.poll(() => nativeWindow.evaluate(window => window.isVisible())).toBe(true)
+    if (await nativeWindow.evaluate(window => window.isMaximized())) {
+      await nativeWindow.evaluate(window => window.unmaximize())
+      await expect.poll(() => nativeWindow.evaluate(window => window.isMaximized())).toBe(false)
+    }
+    const resize: ResizeDesktop = async size => {
+      await nativeWindow.evaluate((window, size) => window.setContentSize(size.width, size.height), size)
+      await expect.poll(() => nativeWindow.evaluate(window => {
+        const { width, height } = window.getContentBounds()
+        return { width, height }
+      })).toEqual(size)
+      await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight }))).toEqual(size)
+    }
+    await resize({ width: 1920, height: 1080 })
+    await inspect(page, resize)
     expect(errors).toEqual([])
   } finally { await app.close() }
 }
@@ -153,15 +173,32 @@ async function anchor(list: Locator) {
 }
 
 async function expectAnchor(page: Page, list: Locator, expected: { id: string; offset: number }): Promise<void> {
-  await expect.poll(async () => {
-    const actual = await anchor(list)
-    return { id: actual.id, offsetDifference: Math.abs(actual.offset - expected.offset) <= 2 ? 0 : actual.offset - expected.offset }
-  }).toEqual({ id: expected.id, offsetDifference: 0 })
-  // Assert after another measurement batch as well, not just at a transient restored frame.
-  await frames(page, 6)
-  const actual = await anchor(list)
-  expect(actual.id).toBe(expected.id)
-  expect(Math.abs(actual.offset - expected.offset)).toBeLessThanOrEqual(2)
+  const retainedPosition = () => list.evaluate((element, expected) => {
+    const edge = element.getBoundingClientRect().top
+    const wrapper = [...element.querySelectorAll<HTMLElement>('.article-virtual-row')]
+      .find(item => item.querySelector<HTMLElement>('[data-article-id]')?.dataset.articleId === expected.id)
+    if (!wrapper) return null
+    const rect = wrapper.getBoundingClientRect()
+    const difference = rect.top - edge - expected.offset
+    return { id: expected.id, offsetDifference: Math.abs(difference) <= 2 ? 0 : difference,
+      visible: rect.bottom > edge && rect.top < edge + element.clientHeight }
+  }, expected)
+  const retained = { id: expected.id, offsetDifference: 0, visible: true }
+  // Fractional row heights and integer scrollTop can leave a subpixel sliver of
+  // the preceding row at the edge. Verify the original article and its position,
+  // rather than selecting a different first-intersecting row after the change.
+  try {
+    await expect.poll(retainedPosition).toEqual(retained)
+    // Assert after another measurement batch as well, not just a restored frame.
+    await frames(page, 6)
+    expect(await retainedPosition()).toEqual(retained)
+  } catch (error) {
+    console.log('ARTICLE_LIST_ANCHOR_FAILURE ' + JSON.stringify({
+      expected, retained: await retainedPosition(), firstIntersecting: await anchor(list),
+      viewport: await page.evaluate(() => ({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio }))
+    }))
+    throw error
+  }
   const layout = await list.evaluate(element => {
     const rows = [...element.querySelectorAll('.article-virtual-row')].map(item => item.getBoundingClientRect())
     return { count: rows.length, contiguous: rows.every((rect, index) =>
@@ -228,7 +265,7 @@ test('界面字号即时生效、独立于正文，搜索和body portal继承且
       // Persist a second layout/theme as well, then verify in a fresh Electron process.
       await page.evaluate(() => window.origread.updateSettings({ theme: 'dark', layoutMode: 'two-pane' }))
     })
-    await withDesktop(userDataDir, async page => {
+    await withDesktop(userDataDir, async (page, resize) => {
       await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
       await expect(page.locator('.app-shell')).toHaveAttribute('data-layout-mode', 'two-pane')
       const settings = await page.evaluate(() => window.origread.getSettings())
@@ -239,12 +276,12 @@ test('界面字号即时生效、独立于正文，搜索和body portal继承且
       await expect(page.locator('.source-switcher-copy strong').first()).toBeVisible()
       expect(await fontSize(page.locator('.source-switcher-copy strong').first())).toBe(17.25)
       await page.keyboard.press('Escape')
-      await page.setViewportSize({ width: 920, height: 760 })
+      await resize({ width: 960, height: 760 })
       await page.locator('.settings-button').click()
       await expect(page.locator('.ui-font-scale-select')).toBeInViewport()
       await page.screenshot({ path: 'test-results/desktop-appearance-narrow-150.png' })
       await page.locator('.settings-back-button').click()
-      await page.setViewportSize({ width: 2560, height: 1440 })
+      await resize({ width: 2560, height: 1440 })
       await page.screenshot({ path: 'test-results/desktop-appearance-two-pane-dark-2k.png' })
     })
   } finally { await fixture.close() }
@@ -325,6 +362,7 @@ test('1200条列表在字号、图片、宽度和双语变化后保留中部锚�
       let position = await anchor(list)
       await page.locator('.ui-font-scale-select').selectOption('150')
       await expect.poll(() => page.evaluate(async () => (await window.origread.getSettings()).uiFontScale)).toBe(150)
+      await expect.poll(() => fontSize(row(page, position.id).locator('.article-title-copy strong').first())).toBe(18.75)
       await expectAnchor(page, list, position)
       position = await anchor(list)
       await page.locator('[data-setting-anchor="showArticleThumbnails"] .setting-switch').click()

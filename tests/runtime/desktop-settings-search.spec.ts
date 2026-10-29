@@ -293,7 +293,7 @@ test('Escape 返回设置继续确认未保存草稿，取消保留输入，接�
   })
 })
 
-test('发现来源 Escape 先关闭原生选项再清空搜索，下一次返回并恢复发现按钮焦点', async ({ userDataDir }) => {
+test('发现来源分类控件与 Escape 分层退出保持搜索及返回焦点', async ({ userDataDir }) => {
   await withSettings(userDataDir, async page => {
     await setReaderLayout(page, 'two-pane')
     const discover = page.locator('.source-discovery-button:visible')
@@ -302,13 +302,24 @@ test('发现来源 Escape 先关闭原生选项再清空搜索，下一次返回
     const search = page.locator('.source-discovery-search input')
     await search.fill('read')
 
-    await page.locator('.source-discovery-category select').focus()
-    await page.keyboard.press('Space')
-    await page.keyboard.press('Escape')
+    const category = page.locator('.source-discovery-category select')
+    await category.focus()
+    if (process.platform === 'darwin') {
+      // AppKit's open select popup is outside CDP keyboard control and can block
+      // dispatchKeyEvent. Exercise selection with Playwright's supported API,
+      // then test Escape on the focused, closed control below.
+      await expect.poll(() => category.locator('option').count()).toBeGreaterThan(1)
+      const [value] = await category.selectOption({ index: 1 })
+      await expect(category).toHaveValue(value!)
+    } else {
+      // Windows/Linux additionally exercise dismissal of the native popup.
+      await page.keyboard.press('Space')
+      await page.keyboard.press('Escape')
+    }
     await expect(page.locator('.source-discovery-page')).toBeVisible()
     await expect(search).toHaveValue('read')
 
-    await page.locator('.source-catalog-back-button').focus()
+    await category.focus()
     await page.keyboard.press('Escape')
     await expect(search).toHaveValue('')
     await expect(page.locator('.source-discovery-page')).toBeVisible()

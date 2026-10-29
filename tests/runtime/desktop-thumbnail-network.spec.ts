@@ -153,7 +153,14 @@ test('Reader与缩略图不伪造Referer，独立原文页保留正常来源', a
       await row.click()
       await expect.poll(() => page.locator('.article-body img')
         .evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0)
-      await page.locator('.original-button').click()
+      // Small CI displays can move Original into More even after requesting a large viewport.
+      const toolbar = page.locator('.reader-toolbar')
+      const original = toolbar.getByRole('button', { name: 'Original', exact: true })
+      if (!await original.isVisible()) {
+        await toolbar.locator('.reader-more-button').click()
+        await expect(toolbar.locator('#reader-secondary-actions')).toBeVisible()
+      }
+      await original.click()
       await expect.poll(() => fixture.referrers.find(item => item.path === '/original.svg')?.status).toBe(200)
       expect(fixture.referrers.filter(item => item.path.startsWith('/no-referrer.svg'))).toEqual(
         expect.arrayContaining([

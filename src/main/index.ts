@@ -256,6 +256,8 @@ function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1440,
     height: 900,
+    // macOS CI has a small display; isolated E2E windows must honor requested test sizes.
+    enableLargerThanScreen: !app.isPackaged && Boolean(process.env.ORIGREAD_E2E_USER_DATA_DIR),
     minWidth: 960,
     minHeight: 640,
     show: false,

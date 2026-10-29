@@ -12,7 +12,13 @@ const test = base.extend<{ userDataDir: string }>({
   }
 })
 
-interface FrameSample { top: number; topGap: number; bottomGap: number; mounted: number; dt: number }
+interface FrameSample {
+  top: number; topGap: number; bottomGap: number; mounted: number; dt: number
+  clientHeight: number; scrollHeight: number
+  firstId: string | null; lastId: string | null
+  firstTop: number | null; lastBottom: number | null
+  topSpacer: number; bottomSpacer: number
+}
 interface CoverageProbe { active: boolean; samples: FrameSample[] }
 type ProbeWindow = Window & typeof globalThis & { articleListCoverage?: CoverageProbe }
 
@@ -28,9 +34,22 @@ async function withDesktop(userDataDir: string, inspect: (page: Page) => Promise
     const page = await app.firstWindow()
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))
-    const nativeWindow = await app.browserWindow(page)
-    await nativeWindow.evaluate(window => window.setContentSize(1600, 1000))
     await expect(page.locator('.app-shell')).toBeVisible()
+    const nativeWindow = await app.browserWindow(page)
+    // Showing a native window on a small CI display can change its bounds.
+    // Establish and verify the intended viewport after ready-to-show instead.
+    await expect.poll(() => nativeWindow.evaluate(window => window.isVisible())).toBe(true)
+    if (await nativeWindow.evaluate(window => window.isMaximized())) {
+      await nativeWindow.evaluate(window => window.unmaximize())
+      await expect.poll(() => nativeWindow.evaluate(window => window.isMaximized())).toBe(false)
+    }
+    await nativeWindow.evaluate(window => window.setContentSize(1600, 1000))
+    await expect.poll(() => nativeWindow.evaluate(window => {
+      const { width, height } = window.getContentBounds()
+      return { width, height }
+    })).toEqual({ width: 1600, height: 1000 })
+    await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
+      .toEqual({ width: 1600, height: 1000 })
     await inspect(page)
     expect(errors).toEqual([])
   } finally { await app.close() }
@@ -82,17 +101,27 @@ async function beginCoverage(list: Locator): Promise<void> {
     const host = window as ProbeWindow
     const probe: CoverageProbe = { active: true, samples: [] }
     host.articleListCoverage = probe
+    const style = getComputedStyle(element)
+    const paddingTop = Number.parseFloat(style.paddingTop)
+    const paddingBottom = Number.parseFloat(style.paddingBottom)
     let previous = performance.now()
     const tick = (now: number): void => {
       if (!probe.active) return
       const rect = element.getBoundingClientRect()
       const rows = element.querySelectorAll<HTMLElement>('.article-virtual-row')
       const first = rows[0]?.getBoundingClientRect(), last = rows[rows.length - 1]?.getBoundingClientRect()
-      // The scrolling list intentionally includes 4px top and 14px bottom padding.
-      const top = rect.top + Math.max(0, 4 - element.scrollTop)
-      const bottom = rect.bottom - Math.max(0, 14 - (element.scrollHeight - element.scrollTop - element.clientHeight))
+      // Account only for padding that is actually inside the viewport, including
+      // partially scrolled padding. Missing virtual rows still count as gaps.
+      const top = rect.top + Math.max(0, paddingTop - element.scrollTop)
+      const bottom = rect.bottom - Math.max(0, paddingBottom - (element.scrollHeight - element.scrollTop - element.clientHeight))
       probe.samples.push({
         top: element.scrollTop, mounted: rows.length, dt: now - previous,
+        clientHeight: element.clientHeight, scrollHeight: element.scrollHeight,
+        firstId: rows[0]?.querySelector<HTMLElement>('[data-article-id]')?.dataset.articleId ?? null,
+        lastId: rows[rows.length - 1]?.querySelector<HTMLElement>('[data-article-id]')?.dataset.articleId ?? null,
+        firstTop: first ? first.top - rect.top : null, lastBottom: last ? last.bottom - rect.top : null,
+        topSpacer: element.firstElementChild?.getBoundingClientRect().height ?? 0,
+        bottomSpacer: element.lastElementChild?.getBoundingClientRect().height ?? 0,
         topGap: first ? Math.max(0, first.top - top) : rect.height,
         bottomGap: last ? Math.max(0, bottom - last.bottom) : rect.height
       })
@@ -163,7 +192,9 @@ test('连续加速与反向滚轮逐帧覆盖可视区，并保持少于40个虚
               body: JSON.stringify(record, null, 2), contentType: 'application/json'
             })
             console.log('ARTICLE_LIST_SCROLL ' + JSON.stringify({ uiFontScale, showArticleThumbnails,
-              frames: coverage.frames, uncoveredFrames: coverage.uncoveredFrames, maxUncoveredPx: coverage.maxUncoveredPx, maxMounted: coverage.maxMounted }))
+              viewport: record.viewport, frames: coverage.frames, uncoveredFrames: coverage.uncoveredFrames,
+              maxUncoveredPx: coverage.maxUncoveredPx, maxMounted: coverage.maxMounted,
+              uncoveredSamples: coverage.samples.filter(sample => Math.max(sample.topGap, sample.bottomGap) > 1) }))
             expect(coverage.frames).toBeGreaterThan(WHEEL_DELTAS.length)
             expect(coverage.lastTop - coverage.firstTop).toBeGreaterThan(1000)
             expect(coverage.maxMounted).toBeLessThan(40)

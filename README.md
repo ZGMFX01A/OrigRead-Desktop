@@ -139,6 +139,10 @@ npm run package:linux
 
 See [package.json](package.json) and [electron-builder.yml](electron-builder.yml) for build scripts and package settings.
 
+For a GitHub release, explicitly push a version tag in the existing `vX.Y.Z` format. The [Build Desktop workflow](.github/workflows/build-desktop.yml) runs only for `v*` tag pushes; ordinary branch pushes and pull requests do not start it, and there is no manual dispatch entry. It applies the tag version, runs the Windows, macOS, and Linux checks, builds the installers, and publishes the release after all three platform jobs succeed.
+
+For checks without a release, run [Verify Desktop](.github/workflows/verify-desktop.yml) manually from GitHub Actions. It installs dependencies and runs type checks, unit tests, the app build, and the complete Electron runtime suite on the same three platforms, without packaging installers or publishing a release. Ordinary branch pushes and pull requests do not start either workflow. Failed jobs in both workflows upload available `test-results` diagnostics as platform-specific artifacts retained for seven days.
+
 </details>
 
 ## Project relationship and license

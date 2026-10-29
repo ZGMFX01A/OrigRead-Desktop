@@ -130,6 +130,10 @@ npm run package:linux
 
 构建脚本与安装包配置见 [package.json](package.json) 和 [electron-builder.yml](electron-builder.yml)。
 
+发布 GitHub Release 时，需明确推送遵循现有 `vX.Y.Z` 格式的版本 tag。[Build Desktop 工作流](.github/workflows/build-desktop.yml) 仅由 `v*` tag 推送触发；普通分支推送和 Pull Request 不会启动该流程，也不提供手动触发入口。工作流会应用 tag 版本号，执行 Windows、macOS、Linux 的验证与安装包构建，并在三个平台任务全部成功后发布 Release。
+
+如需单独验证，可在 GitHub Actions 中手动运行 [Verify Desktop](.github/workflows/verify-desktop.yml)。它会在相同的三个平台安装依赖，执行类型检查、单元测试、应用构建和完整 Electron 运行测试，不打包安装程序，也不发布 Release。普通分支推送和 Pull Request 均不会启动这两个工作流。两个工作流的失败任务都会上传已生成的 `test-results` 诊断文件，按平台分别保存七天。
+
 </details>
 
 ## 项目关系与许可证

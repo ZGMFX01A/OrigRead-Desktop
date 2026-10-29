@@ -38,9 +38,15 @@ async function withDesktop(userDataDir: string, inspect: (desktop: Desktop) => P
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))
     const window = await app.browserWindow(page)
-    await window.evaluate(window => window.setContentSize(1440, 900))
     await expect(page.locator('.app-shell')).toBeVisible()
     try {
+      await expect.poll(() => window.evaluate(window => window.isVisible())).toBe(true)
+      await window.evaluate(window => window.setContentSize(1440, 900))
+      await expect.poll(() => window.evaluate(window => window.getContentSize()))
+        .toEqual([1440, 900])
+      await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight })),
+        { message: 'The native test window must provide the requested layout viewport' })
+        .toEqual({ width: 1440, height: 900 })
       await inspect({ app, page, window })
       expect(errors).toEqual([])
     } catch (error) {
