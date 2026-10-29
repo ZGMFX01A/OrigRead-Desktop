@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { LibraryRepository } from '../database/library-repository'
 import type { FeedRecord, GroupRecord } from '../../shared/library'
+import { findGroupByName, normalizeGroupName } from '../../shared/group-name'
 import type { OpmlImportResult } from '../../shared/opml'
 import { sourceUrlComparisonKey } from '../../shared/source-url-normalizer'
 import { parseOpml, type ParsedFeed } from './opml-document'
@@ -19,9 +20,9 @@ export class OpmlService {
     const newGroups: GroupRecord[] = []
     const groups = new Map(parsed.groups.map((sourceGroup) => {
       const existing = sourceGroup.isDefault ? defaultGroup
-        : [...existingGroups, ...newGroups].find((group) => !group.isDefault && group.name === sourceGroup.name)
+        : findGroupByName([...existingGroups, ...newGroups], sourceGroup.name)
       const group = existing ?? {
-        id: 'group-' + randomUUID(), accountId, name: sourceGroup.name,
+        id: 'group-' + randomUUID(), accountId, name: normalizeGroupName(sourceGroup.name),
         sortOrder: existingGroups.length + newGroups.length, isDefault: false
       }
       if (!existing) newGroups.push(group)

@@ -14,6 +14,7 @@ import { backupTargetToTranslationTarget } from '../../shared/configuration-back
 import { normalizeRssHubRoutePath } from '../sources/rsshub/rsshub-input'
 import type { RssHubSubscriptionDescriptor } from '../../shared/rsshub'
 import type { FeedRecord, SourceType } from '../../shared/library'
+import { findGroupByName, normalizeGroupName } from '../../shared/group-name'
 import type { TranslationProviderType } from '../../shared/translation'
 import { TRANSLATION_PROVIDER_TYPES } from '../../shared/translation'
 import { decryptConfigurationSecrets,encryptConfigurationSecrets } from './configuration-backup-crypto'
@@ -232,7 +233,7 @@ export class ConfigurationBackupService {
 
   private restoreSubscriptions(backup:ConfigurationBackup):{feedIdMap:Map<string,string>;groupsAdded:number;feedsAdded:number;feedsUpdated:number}{
     const existingGroups=this.library.listGroups();const groupMap=new Map<string,string>();let groupsAdded=0;const defaultGroupId=this.library.getCurrentDefaultGroup().id
-    for(const source of backup.subscriptions.groups){if(source.isDefault){groupMap.set(source.id,defaultGroupId);continue}let target=existingGroups.find((group)=>group.name===source.name);if(!target){target={id:`group-${randomUUID()}`,name:source.name,sortOrder:existingGroups.length+groupsAdded+1,isDefault:false};this.library.upsertGroup(target);existingGroups.push(target);groupsAdded++}groupMap.set(source.id,target.id)}
+    for(const source of backup.subscriptions.groups){if(source.isDefault){groupMap.set(source.id,defaultGroupId);continue}let target=findGroupByName(existingGroups,source.name);if(!target){target={id:`group-${randomUUID()}`,name:normalizeGroupName(source.name),sortOrder:existingGroups.length+groupsAdded+1,isDefault:false};this.library.upsertGroup(target);existingGroups.push(target);groupsAdded++}groupMap.set(source.id,target.id)}
     const feedIdMap=new Map<string,string>();let feedsAdded=0,feedsUpdated=0
     for(const source of backup.subscriptions.feeds){const existing=this.library.findFeedByUrl(source.url.trim());const now=Date.now();const feed:FeedRecord=existing?{...existing,name:source.name,icon:source.icon,groupId:groupMap.get(source.groupId)??defaultGroupId,isNotification:source.isNotification,isFullContent:source.isFullContent,isBrowser:source.isBrowser,sourceType:fromAndroidSourceType(source.sourceType),updatedAt:now}:{id:`feed-${randomUUID()}`,name:source.name,url:source.url.trim(),sourcePageUrl:source.url.trim(),icon:source.icon,groupId:groupMap.get(source.groupId)??defaultGroupId,isNotification:source.isNotification,isFullContent:source.isFullContent,isBrowser:source.isBrowser,sourceType:fromAndroidSourceType(source.sourceType),dynamicRendering:false,createdAt:now,updatedAt:now};this.library.upsertFeed(feed);feedIdMap.set(source.id,feed.id);existing?feedsUpdated++:feedsAdded++}
     return{feedIdMap,groupsAdded,feedsAdded,feedsUpdated}

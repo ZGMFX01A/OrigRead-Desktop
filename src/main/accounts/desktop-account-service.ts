@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { AccountConnectionTestResult, AccountCreateInput, AccountPatch, AccountRecord, AccountSnapshot } from '../../shared/account'
 import type { FeedRecord, GroupRecord } from '../../shared/library'
+import { findGroupByName, normalizeGroupName } from '../../shared/group-name'
 import type { DiscoveredRssFeed } from '../../shared/rss'
 import type { SourceSyncBatchResult } from '../../shared/source-sync'
 import { LibraryRepository } from '../database/library-repository'
@@ -85,12 +86,16 @@ export class DesktopAccountService {
   }
 
   async addGroup(name:string,destFeedId?:string):Promise<GroupRecord>{
-    if(this.current().type==='local'){
-      const groups=this.library.listGroups()
-      const group:GroupRecord={id:randomUUID(),accountId:this.current().id,name:name.trim(),sortOrder:Math.max(-1,...groups.map((item)=>item.sortOrder))+1,isDefault:false}
+    const account=this.current()
+    const normalized=normalizeGroupName(name)
+    if(account.type==='local'){
+      const groups=this.library.listGroupsForAccount(account.id)
+      const existing=findGroupByName(groups,normalized)
+      if(existing)return existing
+      const group:GroupRecord={id:randomUUID(),accountId:account.id,name:normalized,sortOrder:Math.max(-1,...groups.map((item)=>item.sortOrder))+1,isDefault:false}
       this.library.upsertGroup(group);return group
     }
-    return this.services.remote.addGroup(name,destFeedId)
+    return this.services.remote.addGroup(normalized,destFeedId)
   }
 
   async updateFeed(feedId:string,patch:{name?:string;url?:string;groupId?:string;isNotification?:boolean;isFullContent?:boolean;isBrowser?:boolean}):Promise<FeedRecord>{

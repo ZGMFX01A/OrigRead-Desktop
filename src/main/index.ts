@@ -490,10 +490,7 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (!accountService || !libraryRepository) throw new Error('Account service is not ready')
     const normalizedName = validateText(name, 'groupName', 200).trim()
-    const groups = libraryRepository.listGroups()
-    if (!groups.some((group) => group.name === normalizedName)) {
-      await accountService.addGroup(normalizedName)
-    }
+    await accountService.addGroup(normalizedName)
     return libraryRepository.listGroups()
   })
   ipcMain.handle(IPC_CHANNELS.updateFeedSettings, async (event, feedId: unknown, patch: unknown) => {

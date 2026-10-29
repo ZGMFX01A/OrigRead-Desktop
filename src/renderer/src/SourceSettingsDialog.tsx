@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ArticleFilterRule, ArticleFilterRuleType } from '../../shared/filter-rules'
 import type { FeedRecord, GroupRecord } from '../../shared/library'
+import { findGroupByName } from '../../shared/group-name'
 import { JsonSourceSettingsPanel } from './JsonSourceSettingsPanel'
 import { WebsiteSourceSettingsPanel } from './WebsiteSourceSettingsPanel'
 
@@ -77,7 +78,7 @@ export function SourceSettingsDialog({ feed, onClose, onChanged }: Props): React
     try {
       const next = await window.origread.addGroup(newGroupName.trim())
       setGroups(next)
-      const created = next.find((item) => item.name === newGroupName.trim())
+      const created = findGroupByName(next, newGroupName)
       if (created) setGroupId(created.id)
       setNewGroupName('')
     } catch (reason) {

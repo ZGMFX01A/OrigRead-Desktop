@@ -38,8 +38,9 @@ function collect(outline: XmlElement, context: { group: ParsedGroup; path: strin
     return { groups: children.flatMap((child) => child.groups), feeds: [feed, ...children.flatMap((child) => child.feeds)] }
   }
   const isDefault = readBoolean(outline.getAttribute('isDefault'))
-  const path = isDefault ? [] : [...context.path, outlineName(outline)]
-  const group = isDefault ? { key: DEFAULT_GROUP_KEY, name: 'Default', isDefault: true }
+  const name = outlineName(outline).trim()
+  const path = isDefault ? [] : name ? [...context.path, name] : context.path
+  const group = isDefault || path.length === 0 ? { key: DEFAULT_GROUP_KEY, name: 'Default', isDefault: true }
     : { key: 'group:' + path.join(' / '), name: path.join(' / '), isDefault: false }
   const children = outlines(outline).map((child) => collect(child, { group, path }))
   return { groups: [group, ...children.flatMap((child) => child.groups)], feeds: children.flatMap((child) => child.feeds) }

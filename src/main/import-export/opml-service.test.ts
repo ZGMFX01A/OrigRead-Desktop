@@ -5,6 +5,24 @@ import { DEFAULT_GROUP_ID } from '../database/migrations'
 import { OpmlService } from './opml-service'
 
 describe('OpmlService', () => {
+  it('reuses the default and normalized group paths across repeated imports', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const service = new OpmlService(repository)
+    const input = `<opml><body>
+      <outline text=" Default "><outline text="A" xmlUrl="https://example.com/a.xml" /></outline>
+      <outline text=" Tech "><outline text=" Java "><outline text="B" xmlUrl="https://example.com/b.xml" /></outline></outline>
+      <outline text="Tech"><outline text="Java"><outline text="C" xmlUrl="https://example.com/c.xml" /></outline></outline>
+    </body></opml>`
+    expect(service.importFromString(input)).toEqual({ groupsAdded: 2, feedsAdded: 3, feedsSkipped: 0 })
+    expect(repository.listGroups().map(group => group.name)).toEqual(['Default', 'Tech', 'Tech / Java'])
+    expect(repository.findFeedByUrl('https://example.com/a.xml')?.groupId).toBe(DEFAULT_GROUP_ID)
+    expect(repository.findFeedByUrl('https://example.com/b.xml')?.groupId)
+      .toBe(repository.findFeedByUrl('https://example.com/c.xml')?.groupId)
+    expect(service.importFromString(input)).toEqual({ groupsAdded: 0, feedsAdded: 0, feedsSkipped: 3 })
+    database.close()
+  })
+
   it('imports top-level feeds into default group, creates groups, keeps OrigRead flags and skips duplicate URLs', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)

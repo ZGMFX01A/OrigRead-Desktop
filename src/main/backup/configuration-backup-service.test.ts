@@ -14,6 +14,29 @@ const dirs: string[] = []
 afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })))
 
 describe('ConfigurationBackupService Android v1 compatibility', () => {
+  it('merges normalized group names and remaps feeds on repeated restores', () => {
+    const fixture = createFixture()
+    const backup = JSON.parse(fixture.backup.exportBackup('')) as ConfigurationBackup
+    backup.subscriptions.groups.push(
+      { id: 'tech-a', name: ' Tech ', isDefault: false },
+      { id: 'tech-b', name: 'Tech', isDefault: false },
+      { id: 'default-alias', name: ' Default ', isDefault: false }
+    )
+    const base = backup.subscriptions.feeds[0]!
+    backup.subscriptions.feeds.push(
+      { ...base, id: 'a', name: 'A', url: 'https://example.com/a.xml', groupId: 'tech-a' },
+      { ...base, id: 'b', name: 'B', url: 'https://example.com/b.xml', groupId: 'tech-b' },
+      { ...base, id: 'c', name: 'C', url: 'https://example.com/c.xml', groupId: 'default-alias' }
+    )
+    expect(fixture.backup.restoreBackup(JSON.stringify(backup))).toMatchObject({ groupsAdded: 1 })
+    expect(fixture.library.listGroups().map(group => group.name)).toEqual(['Default', 'Tech'])
+    expect(fixture.library.findFeedByUrl('https://example.com/a.xml')?.groupId)
+      .toBe(fixture.library.findFeedByUrl('https://example.com/b.xml')?.groupId)
+    expect(fixture.library.findFeedByUrl('https://example.com/c.xml')?.groupId).toBe(DEFAULT_GROUP_ID)
+    expect(fixture.backup.restoreBackup(JSON.stringify(backup))).toMatchObject({ groupsAdded: 0, feedsAdded: 0 })
+    fixture.database.close()
+  })
+
   it('restores legacy mappings even when the new descriptor map is empty or partial', () => {
     const fixture = createFixture()
     const backup = androidBackup(fixture)

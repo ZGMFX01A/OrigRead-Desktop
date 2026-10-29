@@ -74,7 +74,7 @@ function saveCatalog(context: SyncContext, state: SyncState): Catalog {
       let group=defaultGroup
       if(category?.id){
         const categoryId=categoryRemoteId(category.id)
-        group={id:remoteDbId(account.id,categoryId),accountId:account.id,name:category.label??categoryId,sortOrder:0,isDefault:false}
+        group={id:remoteDbId(account.id,`user/-/label/${categoryId}`),accountId:account.id,name:category.label??categoryId,sortOrder:0,isDefault:false}
         remoteGroups.set(group.id,group)
       }
       const remoteFeedId=feedRemoteId(subscription.id)
@@ -87,8 +87,26 @@ function saveCatalog(context: SyncContext, state: SyncState): Catalog {
         isBrowser:false,dynamicRendering:false,createdAt:now,updatedAt:now
       })
     }
-    for(const group of remoteGroups.values())library.upsertGroup(group)
-    for(const feed of remoteFeeds)library.upsertFeed(feed)
+    library.transaction(() => {
+      const existingGroups = library.listGroupsForAccount(account.id)
+      for (const group of remoteGroups.values()) library.upsertGroup(group)
+      // 旧版同步组缺少 label 命名空间；仅迁移可明确识别的旧身份，不按显示名称合并远端组。
+      for (const group of remoteGroups.values()) {
+        if (group.isDefault) continue
+        const categoryId = categoryRemoteId(remoteId(group.id))
+        // 这类旧 ID 可能属于另一个完整 label，不能推测其身份并迁移来源。
+        if (categoryId.startsWith('user/')) continue
+        const legacyId = remoteDbId(account.id, categoryId)
+        if (remoteGroups.has(legacyId)) continue
+        const legacy = existingGroups.find(item => item.id === legacyId && !item.isDefault)
+        if (!legacy) continue
+        for (const feed of library.listFeedsForAccount(account.id)) {
+          if (feed.groupId === legacy.id) library.upsertFeed({ ...feed, groupId: group.id })
+        }
+        library.deleteGroupForAccountIfNoStarred(account.id, legacy.id)
+      }
+      for (const feed of remoteFeeds) library.upsertFeed(feed)
+    })
 
   return { remoteGroups, remoteFeeds }
 }

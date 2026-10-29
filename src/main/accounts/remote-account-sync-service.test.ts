@@ -7,6 +7,129 @@ import { RemoteAccountSyncService } from './remote-account-sync-service'
 import { STREAM_READ, type AccountFetch } from './remote-account-api'
 
 describe('RemoteAccountSyncService Android parity', () => {
+  it.each(['google_reader', 'fresh_rss'] as const)('keeps one canonical group when %s sync fails after saving the catalog', async (type) => {
+    const fixture = createFixture()
+    const account = fixture.accounts.add({ type, serverUrl: 'https://reader.example/', username: 'u', password: 'p' })
+    const fetcher = googleFixtureFetch()
+    const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, async (input, init) => {
+      const url = String(input)
+      if (url.includes('/subscription/edit')) return new Response('OK')
+      if (url.includes('/stream/items/contents')) return new Response('article fetch failed', { status: 500 })
+      return fetcher(input, init)
+    })
+    const created = await service.addGroup(' Tech ')
+    expect(created.id).toBe(remoteDbId(account.id, 'user/-/label/Tech'))
+    await expect(service.sync(account.id)).rejects.toThrow('article fetch failed')
+    expect(fixture.library.listGroups().filter(group => group.name === 'Tech')).toEqual([expect.objectContaining({ id: created.id })])
+    fixture.database.close()
+  })
+
+  it('reuses existing remote groups without another remote write', async () => {
+    const fixture = createFixture()
+    const account = fixture.accounts.add({ type: 'google_reader', serverUrl: 'https://reader.example/', username: 'u', password: 'p' })
+    const existing = { id: remoteDbId(account.id, 'Tech'), accountId: account.id, name: ' Tech ', sortOrder: 1, isDefault: false }
+    fixture.library.upsertGroup(existing)
+    const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, async () => { throw new Error('unexpected remote write') })
+    expect((await service.addGroup('Tech')).id).toBe(existing.id)
+    expect((await service.addGroup(' Default ')).isDefault).toBe(true)
+    await expect(service.addGroup(' ')).rejects.toThrow('分组名称不能为空')
+    fixture.database.close()
+  })
+
+  it.each(['origread_app_default_group', 'user/-/label/Tech'])('keeps literal remote name %s separate from internal and other category IDs', async (name) => {
+    const fixture = createFixture()
+    const account = fixture.accounts.add({ type: 'google_reader', serverUrl: 'https://reader.example/', username: 'u', password: 'p' })
+    const fetcher = googleFixtureFetch()
+    const edits: URLSearchParams[] = []
+    const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, (input, init) => {
+      const url = String(input)
+      if (url.includes('/subscription/edit')) {
+        edits.push(new URLSearchParams(String(init?.body)))
+        return Promise.resolve(new Response('OK'))
+      }
+      if (url.includes('/subscription/list')) return Promise.resolve(json({ subscriptions: [
+        { id: 'feed/a', title: 'A', url: 'https://example.com/a.xml', categories: [{ id: `user/-/label/${name}`, label: name }] },
+        { id: 'feed/b', title: 'B', url: 'https://example.com/b.xml', categories: [{ id: 'user/-/label/Tech', label: 'Tech' }] }
+      ] }))
+      if (url.includes('/stream/items/contents')) return Promise.resolve(new Response('article fetch failed', { status: 500 }))
+      return fetcher(input, init)
+    })
+    const created = await service.addGroup(name)
+    const defaultGroup = fixture.library.getDefaultGroupForAccount(account.id)!
+    expect(defaultGroup).not.toBeNull()
+    expect(created.id).not.toBe(defaultGroup.id)
+    expect(edits[0]?.get('a')).toBe(`user/-/label/${name}`)
+    await expect(service.sync(account.id)).rejects.toThrow('article fetch failed')
+    expect(fixture.library.getDefaultGroupForAccount(account.id)).toEqual(defaultGroup)
+    expect(fixture.library.listGroups().filter(group => group.name === name)).toHaveLength(1)
+    expect(fixture.library.getFeedById(remoteDbId(account.id, 'a'))?.groupId).toBe(created.id)
+    expect(fixture.library.getFeedById(remoteDbId(account.id, 'b'))?.groupId).not.toBe(created.id)
+    await service.updateFeed(remoteDbId(account.id, 'b'), { groupId: created.id })
+    expect(edits.at(-1)?.get('a')).toBe(`user/-/label/${name}`)
+    fixture.database.close()
+  })
+
+  it('repairs legacy category IDs before an article fetch failure and preserves starred orphan feeds', async () => {
+    const fixture = createFixture()
+    const account = fixture.accounts.add({ type: 'google_reader', serverUrl: 'https://reader.example/', username: 'u', password: 'p' })
+    const legacyId = remoteDbId(account.id, 'Tech')
+    fixture.library.upsertGroup({ id: legacyId, accountId: account.id, name: 'Tech', sortOrder: 1, isDefault: false })
+    const orphan = feedRecord(remoteDbId(account.id, 'orphan'), account.id, legacyId, 'https://example.com/orphan.xml')
+    fixture.library.upsertFeed(orphan)
+    fixture.library.upsertArticle({ id: remoteDbId(account.id, '999'), accountId: account.id, feedId: orphan.id, title: 'Keep', url: 'https://example.com/999', author: null,
+      publishedAt: 1, description: '', contentHtml: '<p>Keep</p>', fullContentHtml: null, imageUrl: null, isUnread: false, isStarred: true, createdAt: 1, updatedAt: 1 })
+    const fetcher = googleFixtureFetch()
+    const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, (input, init) =>
+      String(input).includes('/stream/items/contents') ? Promise.resolve(new Response('article fetch failed', { status: 500 })) : fetcher(input, init))
+    await expect(service.sync(account.id)).rejects.toThrow('article fetch failed')
+    expect(fixture.library.listGroups().filter(group => group.name === 'Tech')).toEqual([expect.objectContaining({ id: remoteDbId(account.id, 'user/-/label/Tech') })])
+    expect(fixture.library.getFeedById(orphan.id)?.groupId).toBe(remoteDbId(account.id, 'user/-/label/Tech'))
+    expect(fixture.library.getArticleById(remoteDbId(account.id, '999'))).toMatchObject({ isUnread: false, isStarred: true, contentHtml: '<p>Keep</p>' })
+    fixture.database.close()
+  })
+
+  it('keeps distinct remote category IDs even when the server uses the same display name', async () => {
+    const fixture = createFixture()
+    const account = fixture.accounts.add({ type: 'google_reader', serverUrl: 'https://reader.example/', username: 'u', password: 'p' })
+    const fetcher = googleFixtureFetch()
+    const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, (input, init) => {
+      if (String(input).includes('/subscription/list')) return Promise.resolve(json({ subscriptions: [
+        { id: 'feed/a', title: 'A', url: 'https://example.com/a.xml', categories: [{ id: 'user/-/label/Tech', label: 'Same' }] },
+        { id: 'feed/b', title: 'B', url: 'https://example.com/b.xml', categories: [{ id: 'user/-/label/Other', label: 'Same' }] }
+      ] }))
+      if (String(input).includes('/stream/items/ids')) return Promise.resolve(json({ itemRefs: [] }))
+      return fetcher(input, init)
+    })
+    await service.sync(account.id)
+    expect(fixture.library.listGroups().filter(group => group.name === 'Same').map(group => group.id).sort())
+      .toEqual([remoteDbId(account.id, 'user/-/label/Other'), remoteDbId(account.id, 'user/-/label/Tech')])
+    expect(fixture.library.getFeedById(remoteDbId(account.id, 'a'))?.groupId).toBe(remoteDbId(account.id, 'user/-/label/Tech'))
+    expect(fixture.library.getFeedById(remoteDbId(account.id, 'b'))?.groupId).toBe(remoteDbId(account.id, 'user/-/label/Other'))
+    fixture.database.close()
+  })
+
+  it('rolls back legacy group remapping if the catalog cannot be saved', async () => {
+    const fixture = createFixture()
+    const account = fixture.accounts.add({ type: 'google_reader', serverUrl: 'https://reader.example/', username: 'u', password: 'p' })
+    const legacyId = remoteDbId(account.id, 'Tech')
+    fixture.library.upsertGroup({ id: legacyId, accountId: account.id, name: 'Tech', sortOrder: 1, isDefault: false })
+    const orphan = feedRecord(remoteDbId(account.id, 'orphan'), account.id, legacyId, 'https://example.com/orphan.xml')
+    fixture.library.upsertFeed(orphan)
+    const fetcher = googleFixtureFetch()
+    const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, (input, init) => {
+      if (String(input).includes('/subscription/list')) return Promise.resolve(json({ subscriptions: ['a', 'b'].map(id => ({
+        id: `feed/${id}`, title: id, url: 'https://example.com/duplicate.xml', categories: [{ id: 'user/-/label/Tech', label: 'Tech' }]
+      })) }))
+      return fetcher(input, init)
+    })
+    await expect(service.sync(account.id)).rejects.toThrow('UNIQUE')
+    expect(fixture.library.listGroups().some(group => group.id === legacyId)).toBe(true)
+    expect(fixture.library.listGroups().some(group => group.id === remoteDbId(account.id, 'user/-/label/Tech'))).toBe(false)
+    expect(fixture.library.getFeedById(orphan.id)?.groupId).toBe(legacyId)
+    expect(fixture.library.listFeeds().map(feed => feed.id)).toEqual([orphan.id])
+    fixture.database.close()
+  })
+
   it('syncs Google Reader subscriptions/items and treats remote unread/starred snapshots as truth', async () => {
     const fixture=createFixture()
     const account=fixture.accounts.add({type:'google_reader',serverUrl:'https://reader.example/',username:'u',password:'p'})

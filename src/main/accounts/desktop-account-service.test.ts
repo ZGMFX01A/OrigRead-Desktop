@@ -6,6 +6,30 @@ import { AccountRepository } from './account-repository'
 import { DesktopAccountService } from './desktop-account-service'
 
 describe('DesktopAccountService Android parity', () => {
+  it('reuses normalized names and the default group within the current local account', async () => {
+    const fixture = createFixture(true)
+    const first = await fixture.service.addGroup(' Tech ')
+    const repeated = await fixture.service.addGroup('Tech')
+    expect(repeated.id).toBe(first.id)
+    expect(first.name).toBe('Tech')
+    expect((await fixture.service.addGroup(' Default ')).isDefault).toBe(true)
+    expect(fixture.library.listGroups()).toHaveLength(2)
+    await expect(fixture.service.addGroup('   ')).rejects.toThrow('分组名称不能为空')
+    const other = fixture.accounts.add({ type: 'local', name: 'Other' })
+    const separate = await fixture.service.addGroup('Tech')
+    expect(separate.accountId).toBe(other.id)
+    expect(separate.id).not.toBe(first.id)
+    fixture.database.close()
+  })
+
+  it('reuses legacy names with surrounding whitespace', async () => {
+    const fixture = createFixture(true)
+    fixture.library.upsertGroup({ id: 'legacy', accountId: 1, name: ' Tech ', sortOrder: 1, isDefault: false })
+    expect((await fixture.service.addGroup('Tech')).id).toBe('legacy')
+    expect(fixture.library.listGroups()).toHaveLength(2)
+    fixture.database.close()
+  })
+
   it('rolls back the inserted account and restores the previous account when credential validation fails', async () => {
     const fixture = createFixture(false)
     const originalId = fixture.accounts.currentId()

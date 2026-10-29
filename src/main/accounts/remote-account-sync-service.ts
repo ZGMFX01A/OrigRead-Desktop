@@ -2,12 +2,13 @@ import { feverItemToArticle, decodeHtml } from './remote-article-records'
 import { syncGoogleReaderAccount } from './google-reader-account-sync'
 import type { AccountRecord } from '../../shared/account'
 import type { ArticleRecord, FeedRecord, GroupRecord } from '../../shared/library'
+import { findGroupByName, normalizeGroupName } from '../../shared/group-name'
 import type { DiscoveredRssFeed } from '../../shared/rss'
 import { defaultGroupId } from '../database/migrations'
 import { LibraryRepository } from '../database/library-repository'
 import { AccountRepository, remoteDbId, remoteId } from './account-repository'
 import {
-  categoryRemoteId, feedRemoteId, FeverApi, type FeverFeedsGroups,
+  feedRemoteId, FeverApi, type FeverFeedsGroups,
   GoogleReaderApi,  STREAM_READ, STREAM_STARRED,
   type AccountFetch
 } from './remote-account-api'
@@ -71,10 +72,17 @@ export class RemoteAccountSyncService {
     const account=this.accounts.current()
     if(account.type==='local')throw new Error('Local 账户应使用本地分组服务')
     if(account.type==='fever')throw new Error('Fever 账户不支持在客户端新建分组')
-    const normalized=name.trim()
-    if(!normalized)throw new Error('分组名称不能为空')
-    await this.googleApi(account).subscriptionEdit({feedId:destFeedId?remoteId(destFeedId):undefined,destCategoryId:normalized})
-    const group:GroupRecord={id:remoteDbId(account.id,`user/-/label/${normalized}`),accountId:account.id,name:normalized,sortOrder:this.library.listGroupsForAccount(account.id).length,isDefault:false}
+    const normalized=normalizeGroupName(name)
+    this.ensureDefaultGroup(account.id)
+    const existing=findGroupByName(this.library.listGroupsForAccount(account.id),normalized)
+    if(existing){
+      if(destFeedId)await this.updateFeed(destFeedId,{groupId:existing.id})
+      return existing
+    }
+    // 名称始终作为 label 文本处理；完整命名空间同时避开客户端合成默认组的 ID。
+    const categoryStreamId=`user/-/label/${normalized}`
+    await this.googleApi(account).subscriptionEdit({feedId:destFeedId?remoteId(destFeedId):undefined,destCategoryId:categoryStreamId})
+    const group:GroupRecord={id:remoteDbId(account.id,categoryStreamId),accountId:account.id,name:normalized,sortOrder:this.library.listGroupsForAccount(account.id).length,isDefault:false}
     this.library.upsertGroup(group)
     return group
   }
@@ -218,7 +226,8 @@ function mergeFeverGroupMapping(...groups:Array<FeverFeedsGroups[]|undefined>):M
 }
 function googleReaderCategoryId(accountId:number,groupId:string):string|undefined{
   if(groupId===defaultGroupId(accountId))return undefined
-  return categoryRemoteId(remoteId(groupId))
+  const categoryId=remoteId(groupId)
+  return categoryId.startsWith('user/')?categoryId:`user/-/label/${categoryId}`
 }
 function splitIds(value:string):string[]{return value.split(',').map((item)=>item.trim()).filter(Boolean)}
 function required(value:string|null,label:string):string{if(!value)throw new Error(`${label}不能为空`);return value}
