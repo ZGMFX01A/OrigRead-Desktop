@@ -91,6 +91,10 @@ In **Settings → General**, choose **UI text size** at **100%, 110%, 125%, or 1
 
 Enable **Show article thumbnails** in the same section to show available article images beside the preview. It is off by default. Articles without a valid image keep the text layout; unavailable images keep a stable placeholder. Image URLs already supplied by the source are used without downloading full articles for the list.
 
+When the source pane is narrow or UI text is larger, branding contracts to the available space. The tagline and Add label are hidden when needed, while Discover and Add remain accessible as icon buttons with hover labels.
+
+On Windows, window controls share the existing top toolbar. Drag the branding area, article scope title, or an empty part of the reader toolbar to move the window. Native minimize, maximize, and close controls remain at the top right. Reader actions move into More when toolbar space is limited.
+
 Keep the article and AI side by side. Use the panel's placement control to dock it on the left or right, and drag its edge to resize it. Enter focus reading when you want more room for the article. See [keyboard shortcuts](#keyboard-shortcuts) for common controls.
 
 ---

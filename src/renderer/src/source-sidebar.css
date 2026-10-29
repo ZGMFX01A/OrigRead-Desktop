@@ -1,0 +1,89 @@
+/* The pane has one content column. Input and list intrinsic widths must not
+   enlarge an implicit auto track beyond the user's selected pane width. */
+.source-pane,
+.workspace-pane {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Keep source actions reachable without reducing the chosen UI text size.
+   The existing Source / Workspace pane is the query container. */
+.brand-row.source-brand-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  gap: 8px;
+}
+
+.source-brand-header .brand-lockup {
+  width: 100%;
+  min-width: 0;
+  gap: 8px;
+}
+
+.source-brand-header .source-brand-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.source-brand-header .brand-logo,
+.source-brand-header .brand-actions > *,
+.source-brand-header .brand-actions svg {
+  flex: 0 0 auto;
+}
+
+.source-brand-header .brand-name {
+  line-height: 1.2;
+}
+
+.source-brand-header .brand-tagline {
+  line-height: 1.3;
+}
+
+.source-brand-header .brand-actions {
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.source-brand-header .source-discovery-button,
+.source-brand-header .subscription-trigger {
+  flex: 0 0 auto;
+  min-width: 34px;
+  min-height: 34px;
+}
+
+/* em follows the pane's inherited UI font scale, including at fixed pane widths. */
+@container (max-width: 18em) {
+  .brand-row.source-brand-header {
+    padding-inline: 12px 10px;
+  }
+
+  .source-brand-header .brand-tagline,
+  .source-brand-header .subscription-trigger-label,
+  .source-brand-header .subscription-trigger-label + svg {
+    display: none;
+  }
+
+  .source-brand-header .subscription-trigger {
+    width: 34px;
+    padding: 0;
+  }
+}
+
+/* Leave room for the source overlay's close button as well as the pane edge. */
+.source-brand-header .subscription-menu {
+  width: max-content;
+  min-width: min(190px, calc(100cqi - 54px));
+  max-width: calc(100cqi - 54px);
+}
+
+.source-brand-header .subscription-menu button {
+  min-width: 0;
+  padding-block: 6px;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.source-brand-header .subscription-menu button > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

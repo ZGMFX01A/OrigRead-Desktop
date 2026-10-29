@@ -1825,61 +1825,6 @@ button { color: inherit; }
 
 @container reader-pane (max-width: 649px) {
   .reader-toolbar { padding-inline: 8px; }
-  .reader-title { max-width: min(42%, 180px); }
-  .reader-fixed-actions { padding-left: 5px; }
-  .reader-secondary-actions {
-    display: none;
-    position: absolute;
-    top: 48px;
-    right: 47px;
-    z-index: 32;
-    width: min(238px, calc(100% - 24px));
-    max-height: min(420px, calc(100vh - 86px));
-    overflow-y: auto;
-    padding: 7px;
-    border: 1px solid var(--border);
-    border-radius: 11px;
-    background: color-mix(in srgb,var(--surface) 98%,transparent);
-    box-shadow: 0 14px 34px rgba(31,32,39,.16);
-  }
-  .reader-secondary-actions.open { display: grid; gap: 3px; }
-  .reader-secondary-actions.open { transform-origin: top right; animation: motion-surface-enter-down var(--motion-duration-normal) var(--motion-ease-enter) both; }
-  .reader-secondary-actions button,
-  .reader-secondary-actions .icon-button {
-    width: 100% !important;
-    min-height: 34px;
-    justify-content: flex-start !important;
-    gap: 9px;
-    padding: 0 9px !important;
-    text-align: left;
-  }
-  .reader-secondary-actions button span { display: inline; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .reader-actions .reader-more-button { display: inline-flex; }
-  .reader-actions .reader-more-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 31;
-    width: auto !important;
-    height: auto !important;
-    padding: 0 !important;
-    border: 0;
-    border-radius: 0;
-    background: transparent !important;
-  }
-  .reader-voice-control {
-    position: static;
-    width: 100%;
-    height: auto;
-    display: grid;
-    grid-template-columns: auto minmax(0,1fr);
-    align-items: center;
-    gap: 8px;
-    padding: 6px 7px 7px 9px;
-    border-radius: 8px;
-  }
-  .reader-voice-compact { width: auto; height: auto; display: inline-flex; align-items: center; gap: 8px; color: #686a74; font-size: calc(11px * var(--ui-font-scale, 1)); font-weight: 600; }
-  .reader-voice-compact > span { display: inline; }
-  .reader-voice-select { position: static; grid-column: 1 / -1; width: 100%; max-width: none; height: 30px; opacity: 1; cursor: pointer; }
 }
 .reader-tool-notice { max-width: var(--reader-content-width); margin: 22px auto -8px; padding: 10px 10px 10px 12px; border: 1px solid #ddd9f4; border-radius: 11px; background: #f7f5ff; color: #545160; display: flex; align-items: center; gap: 10px; font-size: calc(11px * var(--ui-font-scale, 1)); line-height: 1.5; }
 .reader-tool-notice-copy { flex: 1; min-width: 0; }

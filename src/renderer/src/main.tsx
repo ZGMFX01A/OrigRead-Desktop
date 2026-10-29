@@ -4,6 +4,7 @@ import type { OrigReadDesktopApi } from '../../shared/contracts'
 import App from './App'
 import './i18n'
 import './styles.css'
+import './window-chrome.css'
 
 const rootElement = document.getElementById('root')
 

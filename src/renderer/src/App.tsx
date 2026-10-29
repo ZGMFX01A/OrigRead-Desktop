@@ -105,6 +105,7 @@ import {
 import { SourceBrandHeader, SourceSidebar, type ArticleScope, type Destination } from './SourceSidebar'
 import { ArticleListPane } from './ArticleListPane'
 import { useStableActions } from './useStableActions'
+import { useWindowChrome } from './useWindowChrome'
 import { ElapsedTime } from './useElapsedSeconds'
 import { useDebouncedValue } from './useDebouncedValue'
 import { PaneDivider } from './PaneDivider'
@@ -324,6 +325,7 @@ export default function App(): React.JSX.Element {
   }
   const [originalViewState, setOriginalViewState] = useState<OriginalArticleViewState>(closedOriginalState())
   const readerPaneRef = useRef<HTMLElement>(null)
+  const readerToolbarRef = useRef<HTMLElement>(null)
   const readerStageRef = useRef<HTMLDivElement>(null)
   const readerContentRef = useRef<HTMLDivElement>(null)
   const readerSearchInputRef = useRef<HTMLInputElement>(null)
@@ -353,6 +355,7 @@ export default function App(): React.JSX.Element {
   const sourceManagerCloseRef = useRef<HTMLButtonElement>(null)
   const readerMoreButtonRef = useRef<HTMLButtonElement>(null)
   const readerSecondaryActionsRef = useRef<HTMLDivElement>(null)
+  const readerToolbarDensity = useWindowChrome(appInfo?.platform, readerToolbarRef)
   const selectedArticleIdRef = useRef<string | null>(null)
   const sourceDiscoveryRequestIdRef = useRef<string | null>(null)
   const sourceSubscriptionPendingRef = useRef(false)
@@ -595,9 +598,8 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     if (!readerMoreOpen) return
     const focusFrame = window.requestAnimationFrame(() => {
-      readerSecondaryActionsRef.current
-        ?.querySelector<HTMLElement>('button:not(:disabled), select:not(:disabled)')
-        ?.focus()
+      const items = readerSecondaryActionsRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), select:not(:disabled)')
+      Array.from(items ?? []).find((item) => item.getClientRects().length > 0)?.focus()
     })
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return
@@ -613,15 +615,9 @@ export default function App(): React.JSX.Element {
   }, [readerMoreOpen])
 
   useEffect(() => {
-    const readerPane = readerPaneRef.current
-    if (!readerPane || typeof ResizeObserver === 'undefined') return
-    // More 只属于 <650px 的 Reader 容器；Pane resize / 布局切换变宽后立即清掉临时菜单状态。
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry && entry.contentRect.width >= 650) setReaderMoreOpen(false)
-    })
-    observer.observe(readerPane)
-    return () => observer.disconnect()
-  }, [])
+    // Density is based on usable toolbar width, including native caption insets.
+    if (readerToolbarDensity === 'wide') setReaderMoreOpen(false)
+  }, [readerToolbarDensity])
 
   useEffect(() => {
     const closeContextMenu = (): void => setContextMenu(null)
@@ -3692,6 +3688,7 @@ export default function App(): React.JSX.Element {
     <main
       className={`app-shell ${twoPaneLayout ? 'two-pane-layout' : 'three-pane-layout'} ${focusReading ? 'focus-reading' : ''} ${!twoPaneLayout && adaptiveSourceHidden ? 'adaptive-source-hidden' : ''} ${!twoPaneLayout && compactLayout ? 'compact-layout' : ''} ${effectiveWorkspaceCollapsed ? 'workspace-pane-collapsed' : ''} ${effectiveSourcePaneCollapsed ? 'source-pane-collapsed' : ''} ${effectiveArticlePaneCollapsed ? 'article-pane-collapsed' : ''}`}
       style={readerStyle}
+      data-window-chrome={appInfo?.platform === 'win32' ? 'overlay' : 'native'}
       data-viewport-width={viewportWidth}
       data-layout-mode={layoutMode}
       data-source-switcher-open={sourceSwitcherOpen ? 'true' : 'false'}
@@ -3856,7 +3853,12 @@ export default function App(): React.JSX.Element {
       )}
 
       <section className="reader-pane" ref={readerPaneRef}>
-        <header className="reader-toolbar">
+        <header
+          className="reader-toolbar"
+          ref={readerToolbarRef}
+          data-toolbar-density={readerToolbarDensity}
+          data-toolbar-mode={settingsOpen ? 'settings' : sourceCatalogOpen ? 'catalog' : originalViewState.open ? 'original' : 'reader'}
+        >
           {(settingsOpen || sourceCatalogOpen || originalViewState.open) && (
             <div className="reader-title">
               {settingsOpen ? t('settings') : sourceCatalogOpen ? t('sourceDiscoveryTitle') : (originalViewState.title || t('original'))}
@@ -3866,7 +3868,7 @@ export default function App(): React.JSX.Element {
             {!settingsOpen && !sourceCatalogOpen && (
               <button
                 type="button"
-                className={`icon-button focus-reading-button ${focusReading ? 'active' : ''}`}
+                className={`icon-button focus-reading-button ${focusReading ? 'active' : ''} ${!originalViewState.open ? 'reader-toolbar-optional' : ''}`}
                 aria-label={focusReading ? t('exitFocusReading') : t('focusReading')}
                 title={`${focusReading ? t('exitFocusReading') : t('focusReading')} ([)`}
                 onClick={toggleFocusReading}
@@ -3952,7 +3954,7 @@ export default function App(): React.JSX.Element {
                     <ChevronDown size={13}/>
                   </button>
                 </div>
-                <button type="button" className={`icon-button ${selectedArticle?.isStarred ? 'active' : ''}`} disabled={!selectedArticle} title={selectedArticle?.isStarred?t('unstar'):t('starArticle')} aria-label={selectedArticle?.isStarred?t('unstar'):t('starArticle')} onClick={()=>selectedArticle&&toggleStarred(selectedArticle)}><Star size={16} fill={selectedArticle?.isStarred?'currentColor':'none'}/></button>
+                <button type="button" className={`icon-button reader-toolbar-optional ${selectedArticle?.isStarred ? 'active' : ''}`} disabled={!selectedArticle} title={selectedArticle?.isStarred?t('unstar'):t('starArticle')} aria-label={selectedArticle?.isStarred?t('unstar'):t('starArticle')} onClick={()=>selectedArticle&&toggleStarred(selectedArticle)}><Star size={16} fill={selectedArticle?.isStarred?'currentColor':'none'}/></button>
                 {readerMoreOpen && (
                   <button
                     type="button"
@@ -4005,10 +4007,41 @@ export default function App(): React.JSX.Element {
                   >
                     <Share2 size={17} /><span>{t('share')}</span>
                   </button>
+                  <button
+                    type="button"
+                    className="icon-button reader-toolbar-overflow-only"
+                    title={focusReading ? t('exitFocusReading') : t('focusReading')}
+                    aria-label={focusReading ? t('exitFocusReading') : t('focusReading')}
+                    onClick={() => { setReaderMoreOpen(false); toggleFocusReading() }}
+                  >
+                    {focusReading ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+                    <span>{focusReading ? t('exitFocusReading') : t('focusReading')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button reader-toolbar-overflow-only"
+                    disabled={!selectedArticle}
+                    title={selectedArticle?.isStarred ? t('unstar') : t('starArticle')}
+                    aria-label={selectedArticle?.isStarred ? t('unstar') : t('starArticle')}
+                    onClick={() => { setReaderMoreOpen(false); if (selectedArticle) toggleStarred(selectedArticle) }}
+                  >
+                    <Star size={16} fill={selectedArticle?.isStarred ? 'currentColor' : 'none'} />
+                    <span>{selectedArticle?.isStarred ? t('unstar') : t('starArticle')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button reader-toolbar-overflow-only"
+                    disabled={!originalUrl}
+                    title={t('original')}
+                    aria-label={t('original')}
+                    onClick={() => { setReaderMoreOpen(false); void showOriginalArticle() }}
+                  >
+                    <SquareArrowOutUpRight size={17} /><span>{t('original')}</span>
+                  </button>
                 </div>
                 <button
                   type="button"
-                  className="icon-button original-button"
+                  className="icon-button original-button reader-toolbar-optional"
                   disabled={!originalUrl}
                   onClick={() => void showOriginalArticle()}
                   title={t('original')}

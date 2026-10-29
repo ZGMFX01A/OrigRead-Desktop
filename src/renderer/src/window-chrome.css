@@ -1,0 +1,189 @@
+/* Windows controls share the existing 56px toolbar. Fullscreen removes their inset. */
+.reader-pane {
+  /* Keep the single content track inside its pane when a toolbar has long text or fixed actions. */
+  grid-template-columns: minmax(0, 1fr);
+}
+.reader-toolbar {
+  min-width: 0;
+}
+html[data-window-chrome='overlay'] {
+  --window-controls-right: max(0px, calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 138px))));
+}
+html[data-window-chrome='overlay'][data-window-controls-visible='false'] {
+  --window-controls-right: 0px;
+}
+html[data-window-chrome='overlay'] .reader-toolbar {
+  padding-right: calc(var(--window-controls-right, 0px) + 12px);
+  background: #ffffff;
+}
+html[data-window-chrome='overlay'][data-theme='dark'] .reader-toolbar {
+  background: #202228;
+}
+
+/* Only persistent headers are native drag regions; overlays retain normal pointer input. */
+html[data-window-chrome='overlay'] .reader-toolbar,
+html[data-window-chrome='overlay'] .app-shell > .source-pane > .brand-row,
+html[data-window-chrome='overlay'] .app-shell > .workspace-pane > .brand-row,
+html[data-window-chrome='overlay'] .app-shell.three-pane-layout > .article-pane > .article-scope-bar {
+  -webkit-app-region: drag;
+  app-region: drag;
+  user-select: none;
+}
+.reader-toolbar .reader-actions button {
+  flex-shrink: 0;
+}
+.reader-toolbar .reader-fixed-actions > button {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+}
+.reader-toolbar .reader-toolbar-overflow-only {
+  display: none;
+}
+
+/* Density uses the header's measured content width, after native controls and padding. */
+.reader-toolbar:is([data-toolbar-density='compact'], [data-toolbar-density='tight']) .reader-title {
+  max-width: min(42%, 180px);
+}
+.reader-toolbar:is([data-toolbar-density='compact'], [data-toolbar-density='tight']) .reader-fixed-actions {
+  padding-left: 5px;
+}
+.reader-toolbar:is([data-toolbar-density='compact'], [data-toolbar-density='tight']) .reader-secondary-actions {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  right: calc(var(--window-controls-right, 0px) + 12px);
+  z-index: 32;
+  width: min(260px, calc(100% - var(--window-controls-right, 0px) - 24px));
+  max-height: min(420px, calc(100vh - 86px));
+  overflow-y: auto;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--surface) 98%, transparent);
+  box-shadow: 0 14px 34px rgba(31,32,39,.16);
+}
+.reader-toolbar:is([data-toolbar-density='compact'], [data-toolbar-density='tight']) .reader-secondary-actions.open {
+  display: grid;
+  gap: 3px;
+  transform-origin: top right;
+  animation: motion-surface-enter-down var(--motion-duration-normal) var(--motion-ease-enter) both;
+}
+.reader-toolbar:is([data-toolbar-density='compact'], [data-toolbar-density='tight']) .reader-secondary-actions button,
+.reader-toolbar:is([data-toolbar-density='compact'], [data-toolbar-density='tight']) .reader-secondary-actions .icon-button {
+  width: 100% !important;
+  min-height: 34px;
+  justify-content: flex-start !important;
+  gap: 9px;
+  padding: 0 9px !important;
+  text-align: left;
+}
+.reader-toolbar:is([data-toolbar-density='compact'], [data-toolbar-density='tight']) .reader-secondary-actions button span {
+  display: inline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reader-toolbar:is([data-toolbar-density='compact'], [data-toolbar-density='tight']) .reader-actions .reader-more-button {
+  display: inline-flex;
+}
+.reader-toolbar:is([data-toolbar-density='compact'], [data-toolbar-density='tight']) .reader-actions .reader-more-backdrop {
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 31;
+  width: auto !important;
+  height: auto !important;
+  padding: 0 !important;
+  border: 0;
+  border-radius: 0;
+  background: transparent !important;
+}
+.reader-toolbar:is([data-toolbar-density='compact'], [data-toolbar-density='tight']) .reader-voice-control {
+  position: static;
+  width: 100%;
+  height: auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 7px 7px 9px;
+  border-radius: 8px;
+}
+.reader-toolbar:is([data-toolbar-density='compact'], [data-toolbar-density='tight']) .reader-voice-compact {
+  width: auto;
+  height: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #686a74;
+  font-size: calc(11px * var(--ui-font-scale, 1));
+  font-weight: 600;
+}
+[data-theme='dark'] .reader-toolbar:is([data-toolbar-density='compact'], [data-toolbar-density='tight']) .reader-voice-compact {
+  color: #b0b4be;
+}
+.reader-toolbar:is([data-toolbar-density='compact'], [data-toolbar-density='tight']) .reader-voice-compact > span {
+  display: inline;
+}
+.reader-toolbar:is([data-toolbar-density='compact'], [data-toolbar-density='tight']) .reader-voice-select {
+  position: static;
+  grid-column: 1 / -1;
+  width: 100%;
+  max-width: none;
+  height: 30px;
+  opacity: 1;
+  cursor: pointer;
+}
+.reader-toolbar[data-toolbar-density='tight'] .reader-actions > .reader-toolbar-optional {
+  display: none;
+}
+.reader-toolbar[data-toolbar-density='tight'] .reader-secondary-actions .reader-toolbar-overflow-only {
+  display: inline-flex;
+}
+
+/* Original pages are native views, so their navigation stays inline rather than in a DOM menu. */
+.reader-toolbar[data-toolbar-density='tight'][data-toolbar-mode='original'] {
+  gap: 2px;
+}
+.reader-toolbar[data-toolbar-density='tight'][data-toolbar-mode='original'] .reader-actions {
+  flex: 1 0 auto;
+  gap: 2px;
+}
+.reader-toolbar[data-toolbar-density='tight'][data-toolbar-mode='original'] .reader-actions > button {
+  width: 30px;
+  height: 32px;
+}
+.reader-toolbar[data-toolbar-density='tight'][data-toolbar-mode='original'] .reader-title {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* Start at html so body portals receive the same native hit-test exclusions. */
+html[data-window-chrome='overlay'] :is(
+  button, input, textarea, select, option, label, a, summary,
+  [role='button'], [role='link'], [role='textbox'], [role='combobox'],
+  [role='menuitem'], [role='option'], [role='tab'], [role='slider'],
+  [role='checkbox'], [role='switch'], [role='radio'], [role='separator'],
+  [contenteditable]:not([contenteditable='false']), [data-window-no-drag]
+) {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+html[data-window-chrome='overlay'] :is(
+  [role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox'], [popover],
+  [role='status'], [role='alert'], [role='tooltip'],
+  .reader-secondary-actions, .reader-voice-control,
+  [class*='-popover'], [class*='-menu'], [class*='-dialog'],
+  [class*='-modal'], [class*='-backdrop'], [class*='-overlay']
+),
+html[data-window-chrome='overlay'] :is(
+  [role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox'], [popover],
+  [role='status'], [role='alert'], [role='tooltip'],
+  .reader-secondary-actions, .reader-voice-control,
+  [class*='-popover'], [class*='-menu'], [class*='-dialog'],
+  [class*='-modal'], [class*='-backdrop'], [class*='-overlay']
+) * {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}

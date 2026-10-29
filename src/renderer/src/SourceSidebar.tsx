@@ -3,6 +3,7 @@ import { memo, useEffect, useState, type MouseEvent, type RefObject } from 'reac
 import { useTranslation } from 'react-i18next'
 import type { FeedArticleStats, FeedRecord, GroupRecord } from '../../shared/library'
 import { useStableActions } from './useStableActions'
+import './source-sidebar.css'
 
 export type ArticleScope =
   | { kind: 'all' }
@@ -75,12 +76,12 @@ export function SourceBrandHeader({
 }: SourceBrandHeaderProps): React.JSX.Element {
   const { t } = useTranslation()
   return (
-    <header className="brand-row">
+    <header className="brand-row source-brand-header">
       <div className="brand-lockup">
         <img className="brand-logo" src="./logo.png" alt="" />
-        <div>
-          <div className="brand-name">{t('brand')}</div>
-          <div className="brand-tagline">{t('tagline')}</div>
+        <div className="source-brand-copy">
+          <div className="brand-name" title={t('brand')}>{t('brand')}</div>
+          <div className="brand-tagline" title={t('tagline')}>{t('tagline')}</div>
         </div>
       </div>
       <div className="brand-actions">

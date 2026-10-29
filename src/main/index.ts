@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, Notification, powerMonitor, shell, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, Notification, powerMonitor, shell, type IpcMainInvokeEvent } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -10,6 +10,7 @@ import { DesktopDatabase } from './database/database'
 import { LibraryRepository } from './database/library-repository'
 import { SettingsRepository } from './database/settings-repository'
 import { normalizeDesktopSettingsPatch } from '../shared/settings'
+import { bindMainWindowChrome, mainWindowChromeOptions, type MainWindowChrome } from './window-chrome'
 import { RssSubscriptionService } from './sources/rss/rss-subscription-service'
 import { RssDiscoveryService } from './sources/rss/rss-discovery-service'
 import { BestIconFinder, extractIconDomain } from './sources/rss/best-icon-finder'
@@ -135,6 +136,7 @@ function validateOriginalNavigationAction(value: unknown): OriginalNavigationAct
   throw new TypeError('Unsupported original article navigation action')
 }
 let mainWindow: BrowserWindow | null = null
+let mainWindowChrome: MainWindowChrome | null = null
 let desktopDatabase: DesktopDatabase | null = null
 let libraryRepository: LibraryRepository | null = null
 let settingsRepository: SettingsRepository | null = null
@@ -260,6 +262,7 @@ function createMainWindow(): BrowserWindow {
     title: localizedAppName(),
     backgroundColor: '#f5f5f7',
     icon: join(__dirname, '../../resources/icon.png'),
+    ...mainWindowChromeOptions(process.platform, settingsRepository?.current().theme ?? 'system', nativeTheme.shouldUseDarkColors),
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
       nodeIntegration: false,
@@ -270,6 +273,9 @@ function createMainWindow(): BrowserWindow {
     }
   })
   mainWindow = window
+  mainWindowChrome?.dispose()
+  const chrome = bindMainWindowChrome(window, nativeTheme, () => settingsRepository?.current().theme ?? 'system', process.platform)
+  mainWindowChrome = chrome
   // Renderer 本身加载本地 UI，但正文中的远程图片/媒体仍属于普通网页资源请求。
   // 统一使用 Desktop Chrome UA，避免这些子资源继续暴露 Electron 默认 UA。
   window.webContents.setUserAgent(DESKTOP_BROWSER_USER_AGENT)
@@ -312,6 +318,7 @@ function createMainWindow(): BrowserWindow {
   window.once('ready-to-show', () => window.show())
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
+    if (mainWindowChrome === chrome) mainWindowChrome = null
     originalArticleViewController?.dispose()
     originalArticleViewController = null
   })
@@ -543,6 +550,7 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (!settingsRepository) throw new Error('OrigRead settings are not ready')
     const next = settingsRepository.update(normalizeDesktopSettingsPatch(patch))
+    mainWindowChrome?.refresh()
     periodicSyncScheduler?.reconfigure()
     return next
   })
@@ -1734,6 +1742,7 @@ function registerIpcHandlers(): void {
       // 恢复的来源和账户配置必须仍属于开始操作时的目标账户。
       if (accountService.current().id !== targetAccountId) throw new Error('账户已切换，请重新恢复配置')
       const restoreResult=configurationBackupService.restoreBackup(content,password===undefined?'':validateOptionalText(password,'password',1_024))
+      mainWindowChrome?.refresh()
       await Promise.allSettled([mcpRemoteClientManager?.disconnectAll(),mcpLocalClientManager?.disconnectAll()])
       mcpToolCatalogService?.invalidateAll()
       mcpToolRuntimeBridge?.sync()
