@@ -18,7 +18,7 @@ describe('main window chrome', () => {
   it('keeps native window controls on Windows and leaves other platforms unchanged', () => {
     expect(mainWindowChromeOptions('win32', 'system', true)).toEqual({
       titleBarStyle: 'hidden',
-      titleBarOverlay: { height: 56, color: '#202228', symbolColor: '#eceef4' }
+      titleBarOverlay: { height: 56, color: '#262830', symbolColor: '#eceef4' }
     })
     for (const platform of ['darwin', 'linux'] as const) {
       expect(mainWindowChromeOptions(platform, 'dark', true)).toEqual({})
@@ -34,29 +34,29 @@ describe('main window chrome', () => {
   it('updates native controls when the operating system theme changes', () => {
     const { window, theme, chrome } = fixture()
     theme.emit('updated')
-    expect(window.setTitleBarOverlay).toHaveBeenLastCalledWith({ height: 56, color: '#ffffff', symbolColor: '#202126' })
+    expect(window.setTitleBarOverlay).toHaveBeenLastCalledWith({ height: 56, color: '#f8f8fa', symbolColor: '#202126' })
     theme.shouldUseDarkColors = true
     theme.emit('updated')
-    expect(window.setTitleBarOverlay).toHaveBeenLastCalledWith({ height: 56, color: '#202228', symbolColor: '#eceef4' })
+    expect(window.setTitleBarOverlay).toHaveBeenLastCalledWith({ height: 56, color: '#262830', symbolColor: '#eceef4' })
     chrome.dispose()
   })
 
   it('honors explicit preferences and rereads restored settings without changing the system theme', () => {
     const { window, theme, chrome, setPreference } = fixture('dark')
     chrome.refresh()
-    expect(window.setTitleBarOverlay).toHaveBeenLastCalledWith({ height: 56, color: '#202228', symbolColor: '#eceef4' })
+    expect(window.setTitleBarOverlay).toHaveBeenLastCalledWith({ height: 56, color: '#262830', symbolColor: '#eceef4' })
     expect(theme.shouldUseDarkColors).toBe(false)
 
     theme.shouldUseDarkColors = true
     setPreference('light')
     chrome.refresh()
-    expect(window.setTitleBarOverlay).toHaveBeenLastCalledWith({ height: 56, color: '#ffffff', symbolColor: '#202126' })
+    expect(window.setTitleBarOverlay).toHaveBeenLastCalledWith({ height: 56, color: '#f8f8fa', symbolColor: '#202126' })
     theme.emit('updated')
-    expect(window.setTitleBarOverlay).toHaveBeenLastCalledWith({ height: 56, color: '#ffffff', symbolColor: '#202126' })
+    expect(window.setTitleBarOverlay).toHaveBeenLastCalledWith({ height: 56, color: '#f8f8fa', symbolColor: '#202126' })
 
     setPreference('system')
     chrome.refresh()
-    expect(window.setTitleBarOverlay).toHaveBeenLastCalledWith({ height: 56, color: '#202228', symbolColor: '#eceef4' })
+    expect(window.setTitleBarOverlay).toHaveBeenLastCalledWith({ height: 56, color: '#262830', symbolColor: '#eceef4' })
     chrome.dispose()
   })
 

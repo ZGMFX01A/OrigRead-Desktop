@@ -3859,12 +3859,26 @@ export default function App(): React.JSX.Element {
           data-toolbar-density={readerToolbarDensity}
           data-toolbar-mode={settingsOpen ? 'settings' : sourceCatalogOpen ? 'catalog' : originalViewState.open ? 'original' : 'reader'}
         >
+          {(settingsOpen || sourceCatalogOpen) && (
+            <button
+              type="button"
+              className={`reader-back-button ${settingsOpen ? 'settings-back-button' : 'source-catalog-back-button'}`}
+              aria-label={settingsOpen ? t('closeSettings') : t('back')}
+              title={settingsOpen ? t('closeSettings') : t('back')}
+              onClick={() => {
+                if (settingsOpen) closeSettingsIfAllowed()
+                else setSourceCatalogOpen(false)
+              }}
+            >
+              <ArrowLeft size={17} aria-hidden="true" /><span>{t('back')}</span>
+            </button>
+          )}
           {(settingsOpen || sourceCatalogOpen || originalViewState.open) && (
-            <div className="reader-title">
+            <div className={`reader-title${settingsOpen || sourceCatalogOpen ? ' reader-page-title' : ''}`}>
               {settingsOpen ? t('settings') : sourceCatalogOpen ? t('sourceDiscoveryTitle') : (originalViewState.title || t('original'))}
             </div>
           )}
-          <div className="reader-actions">
+          {!settingsOpen && !sourceCatalogOpen && <div className="reader-actions">
             {!settingsOpen && !sourceCatalogOpen && (
               <button
                 type="button"
@@ -3876,15 +3890,7 @@ export default function App(): React.JSX.Element {
                 {focusReading ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
               </button>
             )}
-            {settingsOpen ? (
-              <button type="button" className="settings-close-button" aria-label={t('closeSettings')} title={t('closeSettings')} onClick={() => { closeSettingsIfAllowed() }}>
-                <X size={17} /><span>{t('closeSettings')}</span>
-              </button>
-            ) : sourceCatalogOpen ? (
-              <button type="button" className="settings-close-button" aria-label={t('back')} title={t('back')} onClick={() => setSourceCatalogOpen(false)}>
-                <X size={17} /><span>{t('back')}</span>
-              </button>
-            ) : originalViewState.open ? (
+            {originalViewState.open ? (
               <>
                 <button type="button" className="icon-button" disabled={!originalViewState.canGoBack} aria-label={t('back')} title={t('back')} onClick={() => void navigateOriginalArticle('back')}>
                   <ArrowLeft size={17} />
@@ -4063,7 +4069,7 @@ export default function App(): React.JSX.Element {
                 </button>
               </>
             )}
-          </div>
+          </div>}
           {!settingsOpen && !sourceCatalogOpen && (
             <div className="reader-fixed-actions">
               <button type="button" className="icon-button settings-button" aria-label={t('settings')} title={t('settings')} onClick={() => void showSettings()}>

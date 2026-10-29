@@ -13,11 +13,29 @@ html[data-window-chrome='overlay'][data-window-controls-visible='false'] {
   --window-controls-right: 0px;
 }
 html[data-window-chrome='overlay'] .reader-toolbar {
+  --window-controls-divider: #d3d5de;
   padding-right: calc(var(--window-controls-right, 0px) + 12px);
   background: #ffffff;
 }
 html[data-window-chrome='overlay'][data-theme='dark'] .reader-toolbar {
+  --window-controls-divider: #454852;
   background: #202228;
+}
+
+/* Native controls paint above the DOM. Draw the group edge just outside their safe area. */
+html[data-window-chrome='overlay'] .reader-toolbar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: -1px;
+  right: var(--window-controls-right, 0px);
+  width: 1px;
+  box-sizing: border-box;
+  border-left: 1px solid var(--window-controls-divider);
+  pointer-events: none;
+}
+html[data-window-chrome='overlay'][data-window-controls-visible='false'] .reader-toolbar::after {
+  content: none;
 }
 
 /* Only persistent headers are native drag regions; overlays retain normal pointer input. */

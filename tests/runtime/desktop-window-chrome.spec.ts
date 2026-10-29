@@ -141,7 +141,7 @@ async function exerciseBrandHeader(page: Page, layout: 'three-pane' | 'two-pane'
   // Prove both the pointer path and the keyboard path still execute their original actions.
   await discovery.click()
   await expect(page.locator('.reader-toolbar .reader-title')).toHaveText((await discovery.getAttribute('aria-label'))!)
-  await page.locator('.reader-toolbar .settings-close-button').click()
+  await page.locator('.reader-toolbar .source-catalog-back-button').click()
   await subscription.focus()
   await expect(subscription).toBeFocused()
   await subscription.press('Enter')
@@ -272,10 +272,31 @@ async function expectOverlayGeometry(page: Page, visible: boolean | null = true)
   expect(Math.abs(geometry.shellTop)).toBeLessThanOrEqual(1)
   expect(Math.abs(geometry.toolbarTop)).toBeLessThanOrEqual(1)
   if (geometry.brandTop !== null) expect(Math.abs(geometry.brandTop)).toBeLessThanOrEqual(1)
+  await expect(page.locator('html')).toHaveAttribute('data-window-controls-visible', String(geometry.visible))
+  const divider = await page.locator('.reader-toolbar').evaluate(toolbar => {
+    const style = getComputedStyle(toolbar, '::after')
+    return { content: style.content, right: Number.parseFloat(style.right), width: Number.parseFloat(style.width),
+      borderWidth: Number.parseFloat(style.borderLeftWidth), borderStyle: style.borderLeftStyle, borderColor: style.borderLeftColor,
+      boxSizing: style.boxSizing, pointerEvents: style.pointerEvents, viewportWidth: innerWidth,
+      theme: document.documentElement.dataset.theme, toolbarBackground: getComputedStyle(toolbar).backgroundColor }
+  })
+  expect(divider.toolbarBackground).toBe(divider.theme === 'dark' ? 'rgb(32, 34, 40)' : 'rgb(255, 255, 255)')
   if (geometry.visible) {
+    expect(divider.content).not.toBe('none')
+    expect(divider.width).toBe(1)
+    // Chromium quantizes the CSS border to device pixels at fractional display scaling.
+    expect(divider.borderWidth).toBeGreaterThan(0)
+    expect(divider.borderWidth).toBeLessThanOrEqual(1)
+    expect(divider.borderStyle).toBe('solid')
+    expect(divider.borderColor).toBe(divider.theme === 'dark' ? 'rgb(69, 72, 82)' : 'rgb(211, 213, 222)')
+    expect(divider.boxSizing).toBe('border-box')
+    expect(divider.pointerEvents).toBe('none')
+    expect(divider.right).toBeCloseTo(divider.viewportWidth - geometry.area!.x - geometry.area!.width, 0)
     expect(geometry.area!.height).toBeCloseTo(56, 0)
     expect(geometry.area!.width).toBeGreaterThan(0)
     expect(geometry.toolbarHeight).toBeGreaterThanOrEqual(geometry.area!.height)
+  } else {
+    expect(divider.content).toBe('none')
   }
 }
 
@@ -327,7 +348,7 @@ test('集成标题栏在浅深色、最大化和全屏往返时不新增全局�
 })
 
 /** Query only this isolated Electron HWND; never move the real desktop cursor or send a click. */
-async function nativeHitTests(desktop: Desktop, points: Point[]): Promise<number[]> {
+async function nativeHitTests(desktop: Desktop, points: Point[], screenshotPath?: string): Promise<number[]> {
   const native = await desktop.window.evaluate(window => {
     const handle = window.getNativeWindowHandle()
     return { handle: handle.length === 8 ? handle.readBigUInt64LE().toString() : String(handle.readUInt32LE()),
@@ -338,13 +359,16 @@ async function nativeHitTests(desktop: Desktop, points: Point[]): Promise<number
     points.map(point => ({ x: Math.round(native.content.x + point.x), y: Math.round(native.content.y + point.y) })))
   const calls = physical.map(point => '[OrigReadChromeHitTest]::At(' + native.handle + ', ' + point.x + ', ' + point.y + ')').join('; ')
   const script = [
-    "Add-Type -TypeDefinition @'",
+    screenshotPath ? "Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'" : "Add-Type -TypeDefinition @'",
     'using System;',
     'using System.Runtime.InteropServices;',
     'public static class OrigReadChromeHitTest {',
     '  [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SendMessageTimeout(IntPtr h, uint m, UIntPtr w, IntPtr l, uint f, uint t, out UIntPtr r);',
     '  [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);',
     '  [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);',
+    '  [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }',
+    '  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT rect);',
+    '  [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);',
     '  public static int At(long handle, int x, int y) {',
     '    IntPtr h = new IntPtr(handle); if (!IsWindow(h)) throw new Exception("Test window is unavailable");',
     '    IntPtr previousDpi = SetThreadDpiAwarenessContext(new IntPtr(-4));',
@@ -356,16 +380,41 @@ async function nativeHitTests(desktop: Desktop, points: Point[]): Promise<number
     '      return unchecked((int)result.ToUInt64());',
     '    } finally { SetThreadDpiAwarenessContext(previousDpi); }',
     '  }',
+    ...(screenshotPath ? [
+    '  public static bool Capture(long handle, string path) {',
+    '    IntPtr h = new IntPtr(handle), previousDpi = SetThreadDpiAwarenessContext(new IntPtr(-4));',
+    '    if (previousDpi == IntPtr.Zero) return false;',
+    '    try {',
+    '      RECT rect; if (!IsWindow(h) || !GetWindowRect(h, out rect)) return false;',
+    '      using (var bitmap = new System.Drawing.Bitmap(rect.Right - rect.Left, rect.Bottom - rect.Top)) {',
+    '        using (var graphics = System.Drawing.Graphics.FromImage(bitmap)) {',
+    '          IntPtr dc = graphics.GetHdc();',
+    '          try { if (!PrintWindow(h, dc, 2)) return false; } finally { graphics.ReleaseHdc(dc); }',
+    '        }',
+    '        bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png);',
+    '      }',
+    '      return true;',
+    '    } finally { SetThreadDpiAwarenessContext(previousDpi); }',
+    '  }',
+    ] : []),
     '}',
     "'@",
     '$probeResults = @(' + calls + ')',
-    'ConvertTo-Json -InputObject @($probeResults) -Compress'
+    '$captureSucceeded = ' + (screenshotPath ? "[OrigReadChromeHitTest]::Capture(" + native.handle + ", '" + screenshotPath.replaceAll("'", "''") + "')" : '$null'),
+    '@{ hits = @($probeResults); captured = $captureSucceeded } | ConvertTo-Json -Compress'
   ].join('\n')
-  const result = await runFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
-    { timeout: 15_000, windowsHide: true, maxBuffer: 100_000 })
-  const hits = JSON.parse(result.stdout.trim()) as number[]
-  console.log('WINDOW_CHROME_NATIVE_COORDINATES ' + JSON.stringify({ physical, hits }))
-  return hits
+  try {
+    const result = await runFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+      { timeout: screenshotPath ? 5_000 : 15_000, windowsHide: true, maxBuffer: 100_000 })
+    const { hits, captured } = JSON.parse(result.stdout.trim()) as { hits: number[]; captured: boolean | null }
+    console.log('WINDOW_CHROME_NATIVE_COORDINATES ' + JSON.stringify({ physical, hits, ...(screenshotPath ? { screenshotPath, captured } : {}) }))
+    return hits
+  } catch (error) {
+    if (!screenshotPath) throw error
+    // A compositor that cannot print its window must not bypass the required native hit test.
+    console.warn('WINDOW_CHROME_NATIVE_CAPTURE_UNAVAILABLE ' + screenshotPath)
+    return nativeHitTests(desktop, points)
+  }
 }
 
 async function center(locator: Locator): Promise<Point> {
@@ -428,6 +477,17 @@ test('Windows原生命中测试区分标题拖拽、应用按钮与系统窗口�
     await expect(dialog).toBeVisible()
     expect(await nativeHitTests(desktop, [await center(dialog.locator('input').first()), await center(dialog.locator('.dialog-close'))])).toEqual([1, 1])
     await dialog.locator('.dialog-close').click()
+    for (const theme of ['light', 'dark'] as const) {
+      await configure(page, { language: 'zh', theme })
+      await page.locator('.settings-button').click()
+      const back = page.locator('.settings-back-button')
+      await expect(back).toBeVisible()
+      // PrintWindow receives only this test's HWND; it never copies the desktop or another application.
+      const screenshot = join(process.cwd(), 'test-results', 'desktop-window-chrome-settings-native-' + theme + '.png')
+      expect(await nativeHitTests(desktop, [await center(back)], screenshot)).toEqual([1])
+      await back.click()
+      await expect(page.locator('.settings-layout')).toHaveCount(0)
+    }
   })
 })
 
@@ -471,6 +531,76 @@ async function expectOriginalBounds(desktop: Desktop, url: string): Promise<numb
   await expectOverlayGeometry(desktop.page, null)
   return (await originalViews(desktop, url))[0]!.id
 }
+
+test('设置以标题左侧返回恢复文章，150%中英文窄布局不会混淆原生关窗', async ({ userDataDir }) => {
+  test.skip(process.platform !== 'win32', 'This regression targets the Windows native overlay')
+  test.setTimeout(90_000)
+  const fixture = await originalFixture()
+  try {
+    await withDesktop(userDataDir, async desktop => {
+      const { page, window: nativeWindow } = desktop
+      await page.evaluate(url => window.origread.addRssSource(url), fixture.baseUrl + '/feed')
+      const windowId = await nativeWindow.evaluate(window => window.id)
+      for (const language of ['en', 'zh'] as const) {
+        for (const theme of ['light', 'dark'] as const) {
+          for (const layoutMode of ['three-pane', 'two-pane'] as const) {
+            await test.step(language + '/' + theme + '/' + layoutMode, async () => {
+              await nativeWindow.evaluate(window => window.setContentSize(1440, 900))
+              await configure(page, { language, theme, uiFontScale: 150, layoutMode,
+                sourcePaneWidth: SOURCE_PANE_WIDTH_MAX, articlePaneWidth: ARTICLE_PANE_WIDTH_MAX,
+                workspaceWidth: WORKSPACE_PANE_WIDTH_MAX, sourcePaneCollapsed: false, articlePaneCollapsed: false, workspaceCollapsed: false })
+              await nativeWindow.evaluate((window, threePane) => {
+                if (threePane) window.setContentSize(1200, 800)
+                else window.setSize(960, 800)
+              }, layoutMode === 'three-pane')
+              await frames(page)
+              if (layoutMode === 'three-pane') {
+                expect(await page.evaluate(() => innerWidth)).toBeGreaterThanOrEqual(1200)
+                await expect(page.locator('.source-pane')).toBeVisible()
+              } else {
+                const width = (await nativeWindow.evaluate(window => window.getBounds())).width
+                expect(width).toBeGreaterThanOrEqual(960)
+                expect(width).toBeLessThanOrEqual(961)
+              }
+              const article = page.locator('.article-item', { hasText: 'Chrome bounds article' })
+              await article.click()
+              const selectedId = await article.getAttribute('data-article-id')
+              await expect(page.locator('.article-body')).toContainText('Cached reader body.')
+              await page.locator('.settings-button').click()
+              await expect(page.locator('.settings-layout')).toBeVisible()
+              const back = page.locator('.settings-back-button')
+              await expect(back).toHaveAttribute('aria-label', language === 'zh' ? '返回阅读' : 'Back to reader')
+              await expect(back.locator('span')).toHaveText(language === 'zh' ? '返回' : 'Back')
+              await expect(back.locator('.lucide-arrow-left')).toHaveCount(1)
+              await expectUnclippedControl(back, '.reader-pane')
+              const placement = await back.evaluate(button => {
+                const toolbar = button.parentElement!, title = toolbar.querySelector('.reader-title')!
+                return { first: toolbar.firstElementChild === button,
+                  beforeTitle: button.getBoundingClientRect().right <= title.getBoundingClientRect().left + 0.5 }
+              })
+              expect(placement).toEqual({ first: true, beforeTitle: true })
+              await expect(page.locator('.reader-toolbar .reader-actions')).toHaveCount(0)
+              await expect(page.locator('.reader-toolbar .lucide-x, .reader-toolbar .settings-close-button')).toHaveCount(0)
+              await expectReaderControls(page)
+              await page.screenshot({ path: 'test-results/desktop-window-chrome-settings-' + language + '-' + theme + '-' + layoutMode + '-150.png' })
+              if (language === 'zh') {
+                await back.focus()
+                await expect(back).toBeFocused()
+                await back.press('Enter')
+              } else await back.click()
+              expect(page.isClosed()).toBe(false)
+              expect(await nativeWindow.evaluate(window => ({ id: window.id, destroyed: window.isDestroyed() })))
+                .toEqual({ id: windowId, destroyed: false })
+              await expect(page.locator('.settings-layout')).toHaveCount(0)
+              await expect(page.locator('.article-item.selected')).toHaveAttribute('data-article-id', selectedId!)
+              await expect(page.locator('.article-body')).toContainText('Cached reader body.')
+            })
+          }
+        }
+      }
+    })
+  } finally { await fixture.close() }
+})
 
 test('原文WebContentsView在新标题栏、缩放、最大化和设置遮罩下始终对齐reader-stage', async ({ userDataDir }) => {
   test.skip(process.platform !== 'win32', 'This regression targets the Windows native overlay')
@@ -517,8 +647,8 @@ test('原文WebContentsView在新标题栏、缩放、最大化和设置遮罩�
       await page.locator('.settings-button').click()
       await expect(page.locator('.settings-layout')).toBeVisible()
       await expect.poll(() => originalViews(desktop, fixture.baseUrl + '/article')).toEqual([])
-      await expect(page.locator('.settings-close-button')).toBeVisible()
-      await page.locator('.settings-close-button').click()
+      await expect(page.locator('.settings-back-button')).toBeVisible()
+      await page.locator('.settings-back-button').click()
       expect(await expectOriginalBounds(desktop, fixture.baseUrl + '/article')).toBe(originalId)
       await page.locator('.reader-mode-button').click()
       await expect.poll(() => originalViews(desktop, fixture.baseUrl + '/article')).toEqual([])

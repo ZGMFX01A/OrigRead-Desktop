@@ -62,7 +62,8 @@ function overlayForTheme(theme: ThemePreference, systemDark: boolean): Parameter
   const dark = theme === 'dark' || (theme === 'system' && systemDark)
   return {
     height: WINDOW_CONTROLS_OVERLAY_HEIGHT,
-    color: dark ? '#202228' : '#ffffff',
+    // A muted surface distinguishes the native window controls from app actions.
+    color: dark ? '#262830' : '#f8f8fa',
     symbolColor: dark ? '#eceef4' : '#202126'
   }
 }
