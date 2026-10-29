@@ -21,10 +21,41 @@ describe('variable height article window', () => {
   })
 
   it('uses viewport-sized pixel buffers and gives recent motion bounded extra coverage ahead', () => {
-    expect(articleListOverscan(600)).toEqual({ before: 900, after: 900 })
-    expect(articleListOverscan(600, 100)).toEqual({ before: 900, after: 1800 })
-    expect(articleListOverscan(600, -100)).toEqual({ before: 1800, after: 900 })
-    expect(articleListOverscan(1200, 1_000_000)).toEqual({ before: 1800, after: 3600 })
+    expect(articleListOverscan(600)).toEqual({ before: 1200, after: 1200 })
+    expect(articleListOverscan(600, 100)).toEqual({ before: 1200, after: 1800 })
+    expect(articleListOverscan(600, -100)).toEqual({ before: 1800, after: 1200 })
+    expect(articleListOverscan(1200, 1_000_000)).toEqual({ before: 2400, after: 3600 })
+  })
+
+  it.each([
+    { platform: 'Windows', extraHeight: 2, viewportHeight: 802, scrollTop: 1650, measuredCount: 28 },
+    { platform: 'macOS', extraHeight: 0, viewportHeight: 807, scrollTop: 4950, measuredCount: 55 }
+  ])('covers the next 1200px wheel step while boundary rows await measurement: CI $platform', ({
+    extraHeight, viewportHeight, scrollTop, measuredCount
+  }) => {
+    // Verify Desktop run 40830758700: 150% text rows repeat every 12 fixture items.
+    // Unknown rows still use 150px. The new boundary row is already shorter in the
+    // DOM before ResizeObserver and its rAF can commit that height to the offsets.
+    const rowHeights = [124.328125, 120.90625, 120.90625, 147.15625, 98.078125, 120.90625,
+      147.15625, 120.90625, 98.078125, 147.15625, 120.90625, 120.90625]
+    const ids = Array.from({ length: 1200 }, (_, index) => String(index))
+    const actualHeight = (index: number) => rowHeights[index % rowHeights.length]! + extraHeight
+    const measured = new Map(ids.slice(0, measuredCount).map((id, index) => [id, actualHeight(index)]))
+    const offsets = articleListOffsets(ids, measured, 150)
+    const actualOffsets = articleListOffsets(ids, new Map(), actualHeight)
+    // On 60Hz CI the input arrives about once per 50ms. Its average velocity
+    // alone does not predict the whole discrete 1200px movement before repaint.
+    const wheelDelta = 1200
+    const overscan = articleListOverscan(viewportHeight, wheelDelta / 50)
+    const window = articleListWindow(offsets, scrollTop - 4, viewportHeight, overscan)
+    expect(window.end - window.start).toBeLessThan(40)
+    expect(actualOffsets[window.end]! + 4).toBeGreaterThanOrEqual(scrollTop + wheelDelta + viewportHeight)
+
+    // A reversal must also be covered by the already mounted trailing buffer;
+    // it cannot depend on receiving a new scroll event and re-rendering first.
+    const forwardWindow = articleListWindow(offsets, scrollTop + wheelDelta - 4, viewportHeight, overscan)
+    expect(forwardWindow.end - forwardWindow.start).toBeLessThan(40)
+    expect(actualOffsets[forwardWindow.start]! + 4).toBeLessThanOrEqual(scrollTop)
   })
 
   it('shares one DOM budget across both directions while preserving the full visible range', () => {

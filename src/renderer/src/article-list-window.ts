@@ -44,7 +44,10 @@ export interface ArticleListOverscan { before: number; after: number }
 export function articleListOverscan(viewportHeight: number, velocity = 0): ArticleListOverscan {
   const height = Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 600
   const speed = Number.isFinite(velocity) ? velocity : 0
-  const base = height * 1.5
+  // New rows can be shorter than their estimates before their measurements commit.
+  // Keep two viewports of baseline coverage so a discrete wheel step does not use
+  // up the entire physical buffer while the average-velocity estimate is smaller.
+  const base = height * 2
   const ahead = Math.min(height * 3, Math.max(base, Math.abs(speed) * 48))
   return { before: speed < 0 ? ahead : base, after: speed > 0 ? ahead : base }
 }
