@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DesktopDatabase } from './database'
 import { SettingsRepository } from './settings-repository'
-import { DEFAULT_DESKTOP_SETTINGS } from '../../shared/settings'
+import { DEFAULT_DESKTOP_SETTINGS, UI_FONT_SCALE_OPTIONS } from '../../shared/settings'
 
 describe('SettingsRepository', () => {
   it('returns defaults and persists validated settings', () => {
@@ -139,5 +139,60 @@ describe('SettingsRepository', () => {
     expect(() => repository.update({ autoCheckUpdates: 'yes' } as never)).toThrow(TypeError)
     database.close()
   })
+  it.each(UI_FONT_SCALE_OPTIONS)('persists UI font scale %i and independent thumbnail visibility', (uiFontScale) => {
+    const database = new DesktopDatabase(':memory:')
+    try {
+      const repository = new SettingsRepository(database.connection)
+      repository.update({ readerFontSize: 19, sourcePaneWidth: 300, articlePaneWidth: 440 })
+      repository.update({ uiFontScale, showArticleThumbnails: true })
+
+      const reloaded = new SettingsRepository(database.connection)
+      expect(reloaded.current()).toMatchObject({
+        uiFontScale, showArticleThumbnails: true,
+        readerFontSize: 19, sourcePaneWidth: 300, articlePaneWidth: 440
+      })
+      reloaded.update({ showArticleThumbnails: false })
+      expect(repository.current()).toMatchObject({ uiFontScale, showArticleThumbnails: false, readerFontSize: 19 })
+    } finally {
+      database.close()
+    }
+  })
+
+  it.each([
+    {},
+    { uiFontScale: '125', showArticleThumbnails: 'true' },
+    { uiFontScale: 200, showArticleThumbnails: 1 },
+    { uiFontScale: null, showArticleThumbnails: null }
+  ])('uses appearance defaults when stored settings are old or malformed: %j', (appearance) => {
+    const database = new DesktopDatabase(':memory:')
+    try {
+      database.connection.prepare('INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)')
+        .run('desktop.settings', JSON.stringify({ ...appearance, readerFontSize: 21 }), Date.now())
+      expect(new SettingsRepository(database.connection).current()).toMatchObject({
+        uiFontScale: 100, showArticleThumbnails: false, readerFontSize: 21
+      })
+    } finally {
+      database.close()
+    }
+  })
+
+  it.each([
+    { uiFontScale: '125' }, { uiFontScale: null }, { uiFontScale: undefined },
+    { uiFontScale: 105 }, { uiFontScale: 0 }, { uiFontScale: -100 },
+    { uiFontScale: Number.NaN }, { uiFontScale: Number.POSITIVE_INFINITY },
+    { showArticleThumbnails: 'true' }, { showArticleThumbnails: 1 },
+    { showArticleThumbnails: null }, { showArticleThumbnails: undefined }
+  ])('rejects malformed appearance patch %# without changing saved settings', (invalidPatch) => {
+    const database = new DesktopDatabase(':memory:')
+    try {
+      const repository = new SettingsRepository(database.connection)
+      const before = repository.update({ uiFontScale: 125, showArticleThumbnails: true, theme: 'light' })
+      expect(() => repository.update({ theme: 'dark', ...invalidPatch } as never)).toThrow(TypeError)
+      expect(new SettingsRepository(database.connection).current()).toEqual(before)
+    } finally {
+      database.close()
+    }
+  })
+
 })
 

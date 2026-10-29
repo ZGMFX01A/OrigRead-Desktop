@@ -10,7 +10,7 @@
 .list-translation-main:hover:not(:disabled), .list-translation-options:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
 .list-translation-main:disabled, .list-translation-options:disabled { opacity: .4; cursor: default; }
 .list-translation-main:focus-visible, .list-translation-options:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.list-translation-status { display: flex; align-items: center; gap: 6px; width: fit-content; max-width: 100%; box-sizing: border-box; margin: 2px 0 5px 4px; padding: 5px 9px; border-radius: 8px; background: var(--accent-soft); color: var(--text); font-size: 11px; line-height: 1.45; }
+.list-translation-status { display: flex; align-items: center; gap: 6px; width: fit-content; max-width: 100%; box-sizing: border-box; margin: 2px 0 5px 4px; padding: 5px 9px; border-radius: 8px; background: var(--accent-soft); color: var(--text); font-size: calc(11px * var(--ui-font-scale, 1)); line-height: 1.45; }
 .list-translation-status span { min-width: 0; overflow-wrap: anywhere; }
 .list-translation-status.error { color: #a74343; }
 [data-theme='dark'] .list-translation-status.error { color: #ffaaaa; }

@@ -10,6 +10,9 @@ export type DesktopLayoutMode = 'two-pane' | 'three-pane'
 export const SYNC_INTERVAL_OPTIONS = [0, 15, 30, 60, 120, 180, 360, 720, 1440] as const
 export type SyncIntervalMinutes = typeof SYNC_INTERVAL_OPTIONS[number]
 
+export const UI_FONT_SCALE_OPTIONS = [100, 110, 125, 150] as const
+export type UiFontScale = typeof UI_FONT_SCALE_OPTIONS[number]
+
 /** Source Pane 的持久化宽度边界，后续拖拽与 Settings normalize 共用同一组约束。 */
 export const SOURCE_PANE_WIDTH_MIN = 220
 export const SOURCE_PANE_WIDTH_MAX = 320
@@ -26,6 +29,8 @@ export const READER_AI_PANEL_WIDTH_MAX = 640
 export interface DesktopSettings {
   language: DesktopLanguagePreference
   theme: ThemePreference
+  uiFontScale: UiFontScale
+  showArticleThumbnails: boolean
   layoutMode: DesktopLayoutMode
   workspaceCollapsed: boolean
   workspaceWidth: number
@@ -57,6 +62,8 @@ export type DesktopSettingsPatch = Partial<DesktopSettings>
 export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   language: 'system',
   theme: 'system',
+  uiFontScale: 100,
+  showArticleThumbnails: false,
   layoutMode: 'three-pane',
   workspaceCollapsed: false,
   workspaceWidth: 420,
@@ -88,6 +95,8 @@ export function normalizeDesktopSettings(value: unknown): DesktopSettings {
   return {
     language: normalizeLanguage(input.language),
     theme: normalizeTheme(input.theme),
+    uiFontScale: isUiFontScale(input.uiFontScale) ? input.uiFontScale : DEFAULT_DESKTOP_SETTINGS.uiFontScale,
+    showArticleThumbnails: input.showArticleThumbnails === true,
     layoutMode: normalizeLayoutMode(input.layoutMode),
     workspaceCollapsed: input.workspaceCollapsed === true,
     workspaceWidth: normalizeWorkspaceWidth(input.workspaceWidth),
@@ -121,6 +130,14 @@ export function normalizeDesktopSettingsPatch(value: unknown): DesktopSettingsPa
   const patch: DesktopSettingsPatch = {}
   if ('language' in value) patch.language = normalizeLanguage(value.language)
   if ('theme' in value) patch.theme = normalizeTheme(value.theme)
+  if ('uiFontScale' in value) {
+    if (!isUiFontScale(value.uiFontScale)) throw new TypeError('uiFontScale must be 100, 110, 125, or 150')
+    patch.uiFontScale = value.uiFontScale
+  }
+  if ('showArticleThumbnails' in value) {
+    if (typeof value.showArticleThumbnails !== 'boolean') throw new TypeError('showArticleThumbnails must be a boolean')
+    patch.showArticleThumbnails = value.showArticleThumbnails
+  }
   if ('layoutMode' in value) {
     if (value.layoutMode !== 'two-pane' && value.layoutMode !== 'three-pane') {
       throw new TypeError('layoutMode must be two-pane or three-pane')
@@ -277,6 +294,10 @@ function normalizeStringSetting(value: unknown, fallback: string, maxLength: num
 
 function normalizeSyncInterval(value: unknown): SyncIntervalMinutes {
   return isSyncInterval(value) ? value : DEFAULT_DESKTOP_SETTINGS.syncIntervalMinutes
+}
+
+export function isUiFontScale(value: unknown): value is UiFontScale {
+  return typeof value === 'number' && UI_FONT_SCALE_OPTIONS.includes(value as UiFontScale)
 }
 
 function isSyncInterval(value: unknown): value is SyncIntervalMinutes {

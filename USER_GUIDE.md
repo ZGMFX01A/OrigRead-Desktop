@@ -87,6 +87,10 @@ If the source supplies a few lines, try full text first. Open the original if ex
 
 The reader lets you mark articles read, star them, move between articles, and search the text. Adjust the font, size, line height, background, and reading width in appearance settings, or import a local font.
 
+In **Settings → General**, choose **UI text size** at **100%, 110%, 125%, or 150%** to enlarge text in the source sidebar, article list, settings, and menus. The reader's article font size remains a separate setting. Your choice is saved and included in configuration backups.
+
+Enable **Show article thumbnails** in the same section to show available article images beside the preview. It is off by default. Articles without a valid image keep the text layout; unavailable images keep a stable placeholder. Image URLs already supplied by the source are used without downloading full articles for the list.
+
 Keep the article and AI side by side. Use the panel's placement control to dock it on the left or right, and drag its edge to resize it. Enter focus reading when you want more room for the article. See [keyboard shortcuts](#keyboard-shortcuts) for common controls.
 
 ---

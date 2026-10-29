@@ -2,6 +2,8 @@ import { ChevronDown, Inbox, Plus, RefreshCw, Rss, Search, SearchX, Star, X } fr
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ArticleRecord, FeedRecord } from '../../shared/library'
+import { resolveArticleImageUrl } from '../../shared/article-image-url'
+import { ArticleThumbnail, ArticleThumbnailFailureCache } from './ArticleThumbnail'
 import { FeedIcon, type ArticleScope, type Destination } from './SourceSidebar'
 import { ListTranslationButton, ListTranslationStatus, useListTranslation } from './ListTranslationControls'
 import type { ListTranslationItem } from '../../shared/translation'
@@ -9,6 +11,8 @@ import { useArticleListWindow } from './useArticleListWindow'
 
 interface ArticleListPaneProps {
   accountId?: number | null
+  uiFontScale?: number
+  showArticleThumbnails?: boolean
   destination: Destination
   articleScope: ArticleScope
   activeScopeFeed: FeedRecord | null
@@ -48,6 +52,8 @@ interface ArticleListPaneProps {
  */
 export const ArticleListPane = memo(function ArticleListPane({
   accountId,
+  uiFontScale = 100,
+  showArticleThumbnails = false,
   destination,
   articleScope,
   activeScopeFeed,
@@ -90,15 +96,45 @@ export const ArticleListPane = memo(function ArticleListPane({
   const articleScopeKey = articleScope.kind === 'all' ? 'all' : `${articleScope.kind}:${articleScope.id}`
   const articleListMotionKey = `${articleScopeKey}:${destination}`
   const listRef = useRef<HTMLDivElement>(null)
-  const listScope = `${accountId ?? activeScopeFeed?.accountId ?? feeds[0]?.accountId ?? visibleArticles[0]?.accountId ?? ''}:${articleListMotionKey}:${filterQuery}`
-  const virtual = useArticleListWindow(visibleArticles, listScope, listRef, selectedArticleId)
+  const listAccountId = accountId ?? activeScopeFeed?.accountId ?? feeds[0]?.accountId ?? visibleArticles[0]?.accountId ?? ''
+  const listScope = `${listAccountId}:${articleListMotionKey}:${filterQuery}`
+  const thumbnailScope = `${listAccountId}:${articleScopeKey}`
+  const thumbnailFailures = useMemo(() => new ArticleThumbnailFailureCache(), [thumbnailScope])
+  const fontScale = Number.isFinite(uiFontScale) && uiFontScale > 0 ? uiFontScale : 100
+  const virtual = useArticleListWindow(visibleArticles, listScope, listRef, selectedArticleId, {
+    key: `${fontScale}:${showArticleThumbnails}`,
+    estimatedRowHeight: Math.max(Math.round(118 * fontScale / 100), showArticleThumbnails ? 80 : 0)
+  })
   const translation = useListTranslation(listScope, visibleArticles, virtual.first)
-  const feedNames = useMemo(() => new Map(feeds.map(feed => [feed.id, feed.name])), [feeds])
+  const feedsById = useMemo(() => new Map(feeds.map(feed => [feed.id, feed])), [feeds])
+  const articlesById = useMemo(() => new Map(visibleArticles.map(article => [article.id, article])), [visibleArticles])
+  const refresh = useCallback(() => { thumbnailFailures.clear(); onRefresh() }, [thumbnailFailures, onRefresh])
+  useEffect(() => { if (refreshing) thumbnailFailures.clear() }, [refreshing, thumbnailFailures])
   const select = useCallback((article: ArticleRecord) => {
     translation.controller.stop()
     onSelectArticle(article)
   }, [translation.controller, onSelectArticle])
   const bilingual = translation.state.settings?.displayMode === 'BILINGUAL'
+  const previousTranslationLayout = useRef<{ scope: string; bilingual: boolean; signatures: Map<string, string> } | null>(null)
+  useLayoutEffect(() => {
+    const signatures = new Map<string, string>()
+    // Only cached translations are inspected on progress, not the complete article list.
+    for (const id of translation.state.items.keys()) {
+      const article = articlesById.get(id)
+      const item = article ? translation.item(article) : null
+      if (item) signatures.set(id, JSON.stringify([item.translatedTitle, item.translatedDescription]))
+    }
+    const previous = previousTranslationLayout.current
+    previousTranslationLayout.current = { scope: listScope, bilingual, signatures }
+    if (!previous || previous.scope !== listScope) return
+    if (previous.bilingual !== bilingual) {
+      virtual.invalidateMeasurements()
+      return
+    }
+    const changed = new Set([...previous.signatures.keys(), ...signatures.keys()])
+    const ids = [...changed].filter(id => previous.signatures.get(id) !== signatures.get(id))
+    if (ids.length > 0) virtual.invalidateMeasurements(ids)
+  }, [listScope, bilingual, articlesById, translation.state.items, translation.state.settings?.targetLanguage, virtual.invalidateMeasurements])
   // Keyboard/next-article navigation also leaves the screening task, not only mouse clicks.
   useEffect(() => { translation.controller.stop() }, [translation.controller, selectedArticleId])
 
@@ -188,7 +224,7 @@ export const ArticleListPane = memo(function ArticleListPane({
               aria-label={activeScopeFeed ? t('refresh') : t('refreshAll')}
               title={activeScopeFeed ? t('reloadSourceArticles') : t('refreshAll')}
               disabled={refreshDisabled}
-              onClick={onRefresh}
+              onClick={refresh}
             >
               <RefreshCw size={16} className={refreshing ? 'spinning' : ''} />
             </button>
@@ -204,8 +240,13 @@ export const ArticleListPane = memo(function ArticleListPane({
             <div aria-hidden="true" style={{ height: virtual.offsets[virtual.start] }} />
             {visibleArticles.slice(virtual.start, virtual.end).map((article) => {
               const translated = translation.item(article)
+              const feed = feedsById.get(article.feedId)
+              const thumbnailUrl = showArticleThumbnails ? resolveArticleImageUrl(article.imageUrl, {
+                articleUrl: article.url, sourcePageUrl: feed?.sourcePageUrl, feedUrl: feed?.url
+              }) : null
               return <ArticleListRow key={article.id} article={article} translated={translated} bilingual={bilingual}
-                selected={selectedArticleId === article.id} feedName={feedNames.get(article.feedId) ?? ''}
+                selected={selectedArticleId === article.id} feedName={feed?.name ?? ''}
+                thumbnailUrl={thumbnailUrl} thumbnailFailures={thumbnailFailures}
                 onMeasure={virtual.measure} onSelect={select} onToggleStarred={onToggleStarred} onContextMenu={onArticleContextMenu} />
             })}
             <div aria-hidden="true" style={{ height: virtual.offsets[visibleArticles.length]! - virtual.offsets[virtual.end]! }} />
@@ -235,8 +276,9 @@ export const ArticleListPane = memo(function ArticleListPane({
   )
 })
 
-const ArticleListRow = memo(function ArticleListRow({ article, translated, bilingual, selected, feedName, onMeasure, onSelect, onToggleStarred, onContextMenu }: {
+const ArticleListRow = memo(function ArticleListRow({ article, translated, bilingual, selected, feedName, thumbnailUrl, thumbnailFailures, onMeasure, onSelect, onToggleStarred, onContextMenu }: {
   article: ArticleRecord; translated: ListTranslationItem | null; bilingual: boolean; selected: boolean; feedName: string
+  thumbnailUrl: string | null; thumbnailFailures: ArticleThumbnailFailureCache
   onMeasure(id: string, height: number): void
   onSelect(article: ArticleRecord): void
   onToggleStarred(article: ArticleRecord): void
@@ -254,6 +296,11 @@ const ArticleListRow = memo(function ArticleListRow({ article, translated, bilin
     observer.observe(element)
     return () => observer.disconnect()
   }, [article.id, onMeasure])
+  const preview = <>
+    <p dir="auto">{(translated && !bilingual ? translated.translatedDescription : article.description) || t('sourcePreviewUnavailable')}</p>
+    {translated && bilingual && translated.translatedDescription && translated.translatedDescription !== article.description &&
+      <p className="article-preview-translation" dir="auto">{translated.translatedDescription}</p>}
+  </>
   return <div ref={ref} className="article-virtual-row">
     <article className={`article-item ${article.isUnread ? 'unread' : 'read'} ${selected ? 'selected' : ''}`}
       data-article-id={article.id} data-feed-id={article.feedId} tabIndex={0} role="button"
@@ -276,9 +323,10 @@ const ArticleListRow = memo(function ArticleListRow({ article, translated, bilin
           <Star size={15} fill={article.isStarred ? 'currentColor' : 'none'} />
         </button>
       </div>
-      <p dir="auto">{(translated && !bilingual ? translated.translatedDescription : article.description) || t('sourcePreviewUnavailable')}</p>
-      {translated && bilingual && translated.translatedDescription && translated.translatedDescription !== article.description &&
-        <p className="article-preview-translation" dir="auto">{translated.translatedDescription}</p>}
+      {thumbnailUrl ? <div className="article-preview-with-thumbnail">
+        <div className="article-preview-copy">{preview}</div>
+        <ArticleThumbnail url={thumbnailUrl} failures={thumbnailFailures} />
+      </div> : preview}
       <div className="article-meta"><span>{feedName}</span><span>{article.isUnread ? t('unreadStatus') : t('readStatus')}</span></div>
     </article>
   </div>

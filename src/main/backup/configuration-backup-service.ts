@@ -18,7 +18,7 @@ import type { TranslationProviderType } from '../../shared/translation'
 import { TRANSLATION_PROVIDER_TYPES } from '../../shared/translation'
 import { decryptConfigurationSecrets,encryptConfigurationSecrets } from './configuration-backup-crypto'
 import type { AccountRepository } from '../accounts/account-repository'
-import { DEFAULT_DESKTOP_SETTINGS, normalizeAiSummaryPlacement } from '../../shared/settings'
+import { DEFAULT_DESKTOP_SETTINGS, isUiFontScale, normalizeAiSummaryPlacement } from '../../shared/settings'
 import type { LlmSkillRepository } from '../llm/skill-repository'
 import type { LlmQuickMessageRepository } from '../llm/quick-message-repository'
 import type { LlmCustomizationSettingsRepository } from '../llm/customization-settings-repository'
@@ -250,6 +250,8 @@ function toAiBackup(value:ReturnType<AiSettingsRepository['current']>):AiBackup{
 function desktopPreferences(settings:ReturnType<SettingsRepository['current']>):Record<string,unknown>{return{
   'origread.desktop.language':settings.language,
   'origread.desktop.theme':settings.theme,
+  'origread.desktop.uiFontScale':settings.uiFontScale,
+  'origread.desktop.showArticleThumbnails':settings.showArticleThumbnails,
   'origread.desktop.layoutMode':settings.layoutMode,
   'origread.desktop.workspaceCollapsed':settings.workspaceCollapsed,
   'origread.desktop.workspaceWidth':settings.workspaceWidth,
@@ -268,8 +270,10 @@ function desktopPreferences(settings:ReturnType<SettingsRepository['current']>):
 }}
 function readDesktopPreferences(value:Record<string,unknown>|null|undefined):Partial<ReturnType<SettingsRepository['current']>>{
   if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('备份中的 preferences 必须是 JSON 对象')
-  // 旧备份没有布局/三栏字段时必须回到新版本默认值，不能继承恢复目标机器当前的布局偏好。
+  // 旧备份缺少界面字号、缩略图或布局字段时恢复默认值，不继承目标机器的显示偏好。
   const result:Record<string,unknown>={
+    uiFontScale:DEFAULT_DESKTOP_SETTINGS.uiFontScale,
+    showArticleThumbnails:DEFAULT_DESKTOP_SETTINGS.showArticleThumbnails,
     layoutMode:DEFAULT_DESKTOP_SETTINGS.layoutMode,
     sourcePaneWidth:DEFAULT_DESKTOP_SETTINGS.sourcePaneWidth,
     articlePaneWidth:DEFAULT_DESKTOP_SETTINGS.articlePaneWidth,
@@ -278,6 +282,8 @@ function readDesktopPreferences(value:Record<string,unknown>|null|undefined):Par
   }
   const language=value['origread.desktop.language'];if(language!==undefined){if(language!=='system'&&language!=='zh'&&language!=='en')throw new Error('备份中的 Desktop 语言设置无效');result.language=language}
   const theme=value['origread.desktop.theme'];if(theme!==undefined){if(!['system','light','dark'].includes(String(theme)))throw new Error('备份中的 Desktop 主题设置无效');result.theme=theme}
+  const uiFontScale=value['origread.desktop.uiFontScale'];if(uiFontScale!==undefined){if(!isUiFontScale(uiFontScale))throw new Error('备份中的 Desktop 界面字号设置无效');result.uiFontScale=uiFontScale}
+  const thumbnails=value['origread.desktop.showArticleThumbnails'];if(thumbnails!==undefined){if(typeof thumbnails!=='boolean')throw new Error('备份中的 Desktop 文章缩略图设置类型无效');result.showArticleThumbnails=thumbnails}
   const layoutMode=value['origread.desktop.layoutMode'];if(layoutMode!==undefined){if(layoutMode!=='two-pane'&&layoutMode!=='three-pane')throw new Error('备份中的 Desktop 布局设置无效');result.layoutMode=layoutMode}
   const collapsed=value['origread.desktop.workspaceCollapsed'];if(collapsed!==undefined){if(typeof collapsed!=='boolean')throw new Error('备份中的 Desktop 侧栏设置类型无效');result.workspaceCollapsed=collapsed}
   const sourceCollapsed=value['origread.desktop.sourcePaneCollapsed'];if(sourceCollapsed!==undefined){if(typeof sourceCollapsed!=='boolean')throw new Error('备份中的 Desktop Source Pane 折叠设置类型无效');result.sourcePaneCollapsed=sourceCollapsed}

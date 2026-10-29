@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import type { AiProviderProfile, AiSettings } from '../../shared/ai'
 import type { AppInfo } from '../../shared/contracts'
 import type { ArticleFilterSnapshot, ArticleFilterRuleType } from '../../shared/filter-rules'
-import { SYNC_INTERVAL_OPTIONS, type DesktopSettings, type DesktopSettingsPatch, type SyncIntervalMinutes } from '../../shared/settings'
+import { SYNC_INTERVAL_OPTIONS, UI_FONT_SCALE_OPTIONS, isUiFontScale, type DesktopSettings, type DesktopSettingsPatch, type SyncIntervalMinutes } from '../../shared/settings'
 import type { SyncRuntimeState } from '../../shared/sync-runtime'
 import type { TranslationProviderSettings, TranslationProviderType, TranslationSettings } from '../../shared/translation'
 import type { WebsiteRule } from '../../shared/website'
@@ -237,6 +237,7 @@ function GeneralSettings({settings,onChange}:{settings:DesktopSettings;onChange:
     <SettingsSection icon={<Globe2 size={17}/>} title={t('settingsGeneral')}>
       <SettingRow searchId="language" title={t('language')} description={t('languageDescription')}><select aria-label={t('language')} className="language-select" value={settings.language} onChange={(e)=>onChange({language:e.target.value as DesktopSettings['language']})}><option value="system">{t('languageSystem')}</option><option value="zh">简体中文</option><option value="en">English</option></select></SettingRow>
       <SettingRow searchId="appearanceTheme" title={t('appearanceTheme')} description={t('appearanceThemeDescription')}><select aria-label={t('appearanceTheme')} className="theme-select" value={settings.theme} onChange={(e)=>onChange({theme:e.target.value as DesktopSettings['theme']})}><option value="system">{t('themeSystem')}</option><option value="light">{t('themeLight')}</option><option value="dark">{t('themeDark')}</option></select></SettingRow>
+      <SettingRow searchId="uiFontScale" title={t('uiFontScale')} description={t('uiFontScaleDescription')}><select aria-label={t('uiFontScale')} className="ui-font-scale-select" value={settings.uiFontScale} onChange={(e)=>{const scale=Number(e.target.value);if(isUiFontScale(scale))onChange({uiFontScale:scale})}}>{UI_FONT_SCALE_OPTIONS.map((scale)=><option key={scale} value={scale}>{t(`uiFontScale${scale}`)}</option>)}</select></SettingRow>
       <SettingRow className="layout-mode-setting-row" searchId="layoutMode" title={t('layoutMode')} description={t('layoutModeDescription')}>
         <div className="layout-mode-segmented" role="group" aria-label={t('layoutMode')}>
           {([
@@ -257,6 +258,7 @@ function GeneralSettings({settings,onChange}:{settings:DesktopSettings;onChange:
           ))}
         </div>
       </SettingRow>
+      <SettingRow searchId="showArticleThumbnails" title={t('showArticleThumbnails')} description={t('showArticleThumbnailsDescription')}><Toggle ariaLabel={t('showArticleThumbnails')} checked={settings.showArticleThumbnails} onChange={(showArticleThumbnails)=>onChange({showArticleThumbnails})}/></SettingRow>
     </SettingsSection>
     <SettingsSection icon={<BookOpenText size={17}/>} title={t('settingsReading')}>
       <SettingRow searchId="readerFont" title={t('readerFont')} description={t('readerFontDescription')}><div className="reader-font-setting"><select aria-label={t('readerFont')} className="reader-font-select" value={settings.readerFontId} onChange={(e)=>onChange({readerFontId:e.target.value})}>{BUILTIN_READER_FONTS.map((font)=><option key={font.id} value={font.id}>{t(font.nameKey)}</option>)}{customFonts.map((font)=><option key={font.id} value={font.id}>{font.name}</option>)}</select><button type="button" className="mini-action" onClick={()=>void importFont()}><Upload size={13}/>{t('importFont')}</button>{settings.readerFontId.startsWith('custom:')&&<button type="button" className="mini-action danger" onClick={()=>void deleteSelectedFont()}><Trash2 size={13}/>{t('delete')}</button>}</div>{fontStatus&&<div className="setting-inline-status">{fontStatus}</div>}</SettingRow>
@@ -1453,7 +1455,7 @@ function RuleFileActions({kind,onDone}:{kind:'website'|'json'|'filter';onDone:(s
 
 function providerName(type:TranslationProviderType):string{return{ML_KIT:'',MICROSOFT:'Microsoft Translator',DEEPL:'DeepL',GOOGLE_CLOUD:'Google Cloud Translation',DLX:'DeepLX / DLX'}[type]}
 function translationProviderDescriptionKey(type:TranslationProviderType):string{return{ML_KIT:'',MICROSOFT:'translationProviderMicrosoftDescription',DEEPL:'translationProviderDeepLDescription',GOOGLE_CLOUD:'translationProviderGoogleCloudDescription',DLX:'translationProviderDlxDescription'}[type]}
-function SettingsNavButton({active,icon,label,onClick}:{active:boolean;icon:React.ReactNode;label:string;onClick:()=>void}){return <button className={`settings-nav-button ${active?'active':''}`} onClick={onClick}>{icon}<span>{label}</span></button>}
+function SettingsNavButton({active,icon,label,onClick}:{active:boolean;icon:React.ReactNode;label:string;onClick:()=>void}){return <button className={`settings-nav-button ${active?'active':''}`} title={label} aria-label={label} onClick={onClick}>{icon}<span>{label}</span></button>}
 function PageIntro({icon,title,description}:{icon:React.ReactNode;title:string;description:string}){return <div className="settings-intro"><div className="settings-intro-icon">{icon}</div><div><h1>{title}</h1><p>{description}</p></div></div>}
 function SettingsSection({icon,title,children,searchId}:{icon:React.ReactNode;title:string;children:React.ReactNode;searchId?:string}){return <section className="settings-section" data-setting-anchor={searchId} tabIndex={searchId?-1:undefined}><div className="settings-section-title">{icon}<span>{title}</span></div><div className="settings-card">{children}</div></section>}
 function SettingRow({title,description,children,className='',searchId}:{title:string;description:string;children:React.ReactNode;className?:string;searchId?:string}){return <div className={`setting-row ${className}`.trim()} data-setting-anchor={searchId} tabIndex={searchId?-1:undefined}><div className="setting-copy"><strong>{title}</strong><span>{description}</span></div><div className="setting-control">{children}</div></div>}

@@ -4,6 +4,7 @@ import { resolveDesktopLanguage } from '../../shared/locale'
 import { withSourceRepairMessages } from './source-repair-messages'
 import { withListTranslationMessages } from './list-translation-messages'
 import { withSettingsSearchMessages } from './settings-search-messages'
+import { withAppearanceMessages } from './appearance-messages'
 
 const resources = {
   zh: {
@@ -8030,7 +8031,7 @@ const resources = {
 const initialLanguage = resolveDesktopLanguage(navigator.language)
 
 void i18n.use(initReactI18next).init({
-  resources: withSettingsSearchMessages(withListTranslationMessages(withSourceRepairMessages(resources))),
+  resources: withAppearanceMessages(withSettingsSearchMessages(withListTranslationMessages(withSourceRepairMessages(resources)))),
   lng: initialLanguage,
   fallbackLng: 'en',
   interpolation: { escapeValue: false }

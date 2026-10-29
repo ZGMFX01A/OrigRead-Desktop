@@ -37,7 +37,7 @@ import {
   Volume2,
   X
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AppInfo } from '../../shared/contracts'
 import { resolveDesktopLanguage } from '../../shared/locale'
@@ -676,6 +676,18 @@ export default function App(): React.JSX.Element {
     document.documentElement.dataset.theme = resolvedTheme
     document.documentElement.style.colorScheme = resolvedTheme
   }, [resolvedTheme])
+
+  // Portals (including list translation options) inherit from document.body.
+  // Reader content keeps its independent --reader-font-size on the app shell.
+  useLayoutEffect(() => {
+    const root = document.documentElement
+    const previous = root.style.getPropertyValue('--ui-font-scale')
+    root.style.setProperty('--ui-font-scale', String((settings?.uiFontScale ?? 100) / 100))
+    return () => {
+      if (previous) root.style.setProperty('--ui-font-scale', previous)
+      else root.style.removeProperty('--ui-font-scale')
+    }
+  }, [settings?.uiFontScale])
 
   useEffect(() => {
     selectedArticleIdRef.current = selectedArticleId
@@ -3260,6 +3272,8 @@ export default function App(): React.JSX.Element {
       visibleArticles={visibleArticles}
       feeds={feeds}
       selectedArticleId={selectedArticleId}
+      uiFontScale={settings?.uiFontScale ?? 100}
+      showArticleThumbnails={settings?.showArticleThumbnails ?? false}
       articleListError={articleListError}
       searchInputRef={articleSearchInputRef}
       refreshing={isRefreshingAll || refreshingFeedId === activeScopeFeed?.id}
