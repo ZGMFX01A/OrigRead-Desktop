@@ -127,7 +127,7 @@ describe('SourceSyncService', () => {
     })
   })
 
-  it('never exceeds the Android parity limit of 16 concurrent source refreshes', async () => {
+  it('never exceeds the configured limit of 4 concurrent source refreshes', async () => {
     const repository = createRepository()
     for (let index = 0; index < 24; index += 1) {
       repository.upsertFeed(createFeed(`rss-${index}`, 'rss'))
@@ -152,7 +152,7 @@ describe('SourceSyncService', () => {
     const result = await service.refreshAllSources()
 
     expect(result.successCount).toBe(24)
-    expect(maxActive).toBe(16)
+    expect(maxActive).toBe(4)
   })
 
   it('emits newly inserted articles only for sources with notification enabled', async () => {

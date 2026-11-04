@@ -37,10 +37,29 @@ interface ActiveConnection {
   snapshot: McpConnectionSnapshot
 }
 
+interface PendingRemoteConnection {
+  generation: number
+  fingerprint: string
+  connector: McpRemoteConnector
+  promise: Promise<McpConnectionSnapshot>
+}
+
 export class McpRemoteClientManager {
   private readonly active = new Map<string, ActiveConnection>()
-  private readonly pendingAuthorizations = new Map<string, { connector: McpRemoteConnector; controller: AbortController }>()
+  private readonly pending = new Map<string, PendingRemoteConnection>()
+  private readonly generations = new Map<string, number>()
+  private readonly pendingAuthorizations = new Map<string, { generation: number; connector: McpRemoteConnector; controller: AbortController }>()
   private readonly states = new Map<string, McpConnectionSnapshot>()
+
+  private nextGeneration(serverId: string): number {
+    const next = (this.generations.get(serverId) ?? 0) + 1
+    this.generations.set(serverId, next)
+    return next
+  }
+
+  private currentGeneration(serverId: string): number {
+    return this.generations.get(serverId) ?? 0
+  }
 
   constructor(
     private readonly repository: McpRemoteRepository,
@@ -60,38 +79,117 @@ export class McpRemoteClientManager {
     const server = this.repository.requireConfiguredServer(serverId)
     const fingerprint = serverFingerprint(server)
     const existing = this.active.get(server.id)
-    if (existing?.fingerprint === fingerprint && existing.snapshot.status === 'CONNECTED') return existing.snapshot
-    if (existing) await this.disconnect(server.id)
+    if (existing?.fingerprint === fingerprint && existing.snapshot.status === 'CONNECTED') {
+      return existing.snapshot
+    }
 
+    const ongoing = this.pending.get(server.id)
+    if (ongoing && ongoing.fingerprint === fingerprint) {
+      return ongoing.promise
+    }
+
+    const oldExisting = existing
+    const oldOngoing = ongoing
+    const oldPendingAuth = this.pendingAuthorizations.get(server.id)
+    if (oldExisting) {
+      this.active.delete(server.id)
+    }
+    if (oldOngoing) {
+      this.pending.delete(server.id)
+    }
+    if (oldPendingAuth) {
+      this.pendingAuthorizations.delete(server.id)
+      oldPendingAuth.controller.abort(new DOMException('MCP OAuth authorization superseded', 'AbortError'))
+    }
+
+    const gen = this.nextGeneration(server.id)
     this.setState({ ...disconnectedState(server.id), status: 'CONNECTING', updatedAt: Date.now() })
     const connector = this.connectorFactory(server, { requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS })
-    try {
-      const info = await connector.connect()
-      const snapshot = connectedState(server.id, info)
-      this.active.set(server.id, { fingerprint, connector, snapshot })
-      this.setState(snapshot)
-      return snapshot
-    } catch (error) {
-      await safeClose(connector)
-      this.setErrorState(server.id, error)
-      throw redactErrorForBoundary(error)
-    }
+
+    const connectionPromise = (async () => {
+      try {
+        if (oldExisting) {
+          await safeClose(oldExisting.connector)
+        }
+        if (oldOngoing) {
+          await safeClose(oldOngoing.connector)
+        }
+        if (oldPendingAuth) {
+          await safeClose(oldPendingAuth.connector)
+        }
+        if (this.currentGeneration(server.id) !== gen) {
+          return this.state(server.id)
+        }
+        const info = await connector.connect()
+        if (this.currentGeneration(server.id) !== gen) {
+          await safeClose(connector)
+          return this.state(server.id)
+        }
+        const snapshot = connectedState(server.id, info)
+        this.active.set(server.id, { fingerprint, connector, snapshot })
+        this.setState(snapshot)
+        return snapshot
+      } catch (error) {
+        await safeClose(connector)
+        if (this.currentGeneration(server.id) === gen) {
+          this.setErrorState(server.id, error)
+          throw redactErrorForBoundary(error)
+        }
+        return this.state(server.id)
+      } finally {
+        const cur = this.pending.get(server.id)
+        if (cur?.generation === gen) {
+          this.pending.delete(server.id)
+        }
+      }
+    })()
+
+    this.pending.set(server.id, {
+      generation: gen,
+      fingerprint,
+      connector,
+      promise: connectionPromise
+    })
+
+    return connectionPromise
   }
 
   async authorize(serverId: string, signal?: AbortSignal): Promise<McpConnectionSnapshot> {
     const server = this.repository.requireConfiguredServer(serverId)
     if (server.authMode !== 'OAUTH') throw new Error(`Remote MCP Server 未启用 OAuth：${server.name}`)
-    await this.disconnect(server.id)
+    const oldExisting = this.active.get(server.id)
+    const oldPending = this.pending.get(server.id)
+    const oldPendingAuth = this.pendingAuthorizations.get(server.id)
+    if (oldExisting) this.active.delete(server.id)
+    if (oldPending) this.pending.delete(server.id)
+    if (oldPendingAuth) {
+      this.pendingAuthorizations.delete(server.id)
+      oldPendingAuth.controller.abort(new DOMException('MCP OAuth authorization superseded', 'AbortError'))
+    }
+
     this.repository.clearOAuthAuthorization(server.id)
+    const gen = this.nextGeneration(server.id)
     this.setState({ ...disconnectedState(server.id), status: 'CONNECTING', updatedAt: Date.now() })
     const refreshedServer = this.repository.requireConfiguredServer(server.id)
     const connector = this.connectorFactory(refreshedServer, { requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS })
     if (!connector.authorize) throw new Error('当前 MCP Client 不支持 OAuth 授权')
     const controller = new AbortController()
     const authorizationSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
-    this.pendingAuthorizations.set(server.id, { connector, controller })
+    this.pendingAuthorizations.set(server.id, { generation: gen, connector, controller })
+
     try {
+      if (oldExisting) await safeClose(oldExisting.connector)
+      if (oldPending) await safeClose(oldPending.connector)
+      if (oldPendingAuth) await safeClose(oldPendingAuth.connector)
+      if (this.currentGeneration(server.id) !== gen) {
+        await safeClose(connector)
+        return this.state(server.id)
+      }
       const info = await connector.authorize(authorizationSignal)
+      if (this.currentGeneration(server.id) !== gen) {
+        await safeClose(connector)
+        return this.state(server.id)
+      }
       const snapshot = connectedState(server.id, info)
       const currentServer = this.repository.requireConfiguredServer(server.id)
       this.active.set(server.id, { fingerprint: serverFingerprint(currentServer), connector, snapshot })
@@ -99,30 +197,52 @@ export class McpRemoteClientManager {
       return snapshot
     } catch (error) {
       await safeClose(connector)
-      this.setErrorState(server.id, error)
-      throw redactErrorForBoundary(error)
+      if (this.currentGeneration(server.id) === gen) {
+        this.setErrorState(server.id, error)
+        throw redactErrorForBoundary(error)
+      }
+      if (error instanceof Error && (error.name === 'AbortError' || error.message.includes('cancelled') || error.message.includes('aborted'))) {
+        throw error
+      }
+      return this.state(server.id)
     } finally {
       const pending = this.pendingAuthorizations.get(server.id)
-      if (pending?.connector === connector) this.pendingAuthorizations.delete(server.id)
+      if (pending?.generation === gen) this.pendingAuthorizations.delete(server.id)
     }
   }
 
   async disconnect(serverId: string): Promise<void> {
     const id = serverId.trim()
-    const pending = this.pendingAuthorizations.get(id)
+    const gen = this.nextGeneration(id)
+    const pendingAuth = this.pendingAuthorizations.get(id)
     this.pendingAuthorizations.delete(id)
-    if (pending) {
-      pending.controller.abort(new DOMException('MCP OAuth authorization cancelled', 'AbortError'))
-      await safeClose(pending.connector)
+    if (pendingAuth) {
+      pendingAuth.controller.abort(new DOMException('MCP OAuth authorization cancelled', 'AbortError'))
     }
+    const pendingConn = this.pending.get(id)
+    this.pending.delete(id)
     const existing = this.active.get(id)
     this.active.delete(id)
-    if (existing) await safeClose(existing.connector)
-    this.setState(disconnectedState(id))
+
+    await Promise.allSettled([
+      existing ? safeClose(existing.connector) : Promise.resolve(),
+      pendingConn ? safeClose(pendingConn.connector) : Promise.resolve(),
+      pendingAuth ? safeClose(pendingAuth.connector) : Promise.resolve()
+    ])
+    if (this.currentGeneration(id) === gen) {
+      this.setState(disconnectedState(id))
+    }
   }
 
   async disconnectAll(): Promise<void> {
-    const ids = [...new Set([...this.active.keys(), ...this.pendingAuthorizations.keys()])]
+    const ids = [
+      ...new Set([
+        ...this.active.keys(),
+        ...this.pending.keys(),
+        ...this.pendingAuthorizations.keys(),
+        ...this.repository.current().servers.map((s) => s.id)
+      ])
+    ]
     await Promise.allSettled(ids.map((id) => this.disconnect(id)))
   }
 
@@ -135,7 +255,7 @@ export class McpRemoteClientManager {
     try {
       return await connection.connector.listTools(signal)
     } catch (error) {
-      await this.markConnectionError(serverId, error)
+      await this.markConnectionError(serverId, connection.connector, error)
       throw redactErrorForBoundary(error)
     }
   }
@@ -150,7 +270,7 @@ export class McpRemoteClientManager {
     try {
       return await connection.connector.callTool(name, argumentsValue, signal)
     } catch (error) {
-      await this.markConnectionError(serverId, error)
+      await this.markConnectionError(serverId, connection.connector, error)
       throw redactErrorForBoundary(error)
     }
   }
@@ -188,12 +308,17 @@ export class McpRemoteClientManager {
     return connected
   }
 
-  private async markConnectionError(serverId: string, error: unknown): Promise<void> {
+  private async markConnectionError(serverId: string, targetConnector: McpRemoteConnector, error: unknown): Promise<void> {
     const id = serverId.trim()
     const existing = this.active.get(id)
-    this.active.delete(id)
-    if (existing) await safeClose(existing.connector)
-    this.setErrorState(id, error)
+    if (existing?.connector === targetConnector) {
+      const errorGen = this.nextGeneration(id)
+      this.active.delete(id)
+      await safeClose(existing.connector)
+      if (this.currentGeneration(id) === errorGen && !this.active.has(id)) {
+        this.setErrorState(id, error)
+      }
+    }
   }
 
   private setErrorState(serverId: string, error: unknown): void {
@@ -385,4 +510,3 @@ async function safeClose(connector: McpRemoteConnector): Promise<void> {
 function errorMessage(error: unknown): string {
   return redactSensitiveText(error instanceof Error ? error.message : String(error))
 }
-

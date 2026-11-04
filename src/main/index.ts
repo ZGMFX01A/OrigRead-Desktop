@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, Notification, powerMonitor, shell, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, Notification, powerMonitor, protocol, shell, type IpcMainInvokeEvent } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -175,6 +175,7 @@ let mcpLocalClientManager: McpLocalClientManager | null = null
 let mcpCombinedRuntime: McpCombinedRuntime | null = null
 let mcpToolCatalogService: McpToolCatalogService | null = null
 let mcpToolRuntimeBridge: McpToolRuntimeBridge | null = null
+let activeFullContentRequest: { articleId: string; requestId?: string; senderId: number; controller: AbortController } | null = null
 let activeAiSummaryRequest: { articleId: string; controller: AbortController } | null = null
 let translationSettingsRepository: TranslationSettingsRepository | null = null
 let translationService: TranslationService | null = null
@@ -197,6 +198,19 @@ let manualToolContextService: ManualToolContextService | null = null
 let llmRuntime: LlmRuntime | null = null
 let llmExecutionService: LlmChatExecutionService | null = null
 const llmExecutionRegistry = new LlmExecutionRegistry()
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'origread-font',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true
+    }
+  }
+])
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
@@ -441,6 +455,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.switchAccount, (event, accountId: unknown) => {
     assertTrustedSender(event)
     if (!accountService) throw new Error('Account service is not ready')
+    activeFullContentRequest?.controller.abort()
+    activeFullContentRequest = null
     activeTranslationRequest?.controller.abort()
     stopListTranslationRequests()
     const result = accountService.switchTo(validateAccountId(accountId))
@@ -941,6 +957,11 @@ function registerIpcHandlers(): void {
     if (!periodicSyncScheduler) throw new Error('Periodic sync scheduler is not ready')
     return periodicSyncScheduler.currentState()
   })
+  ipcMain.handle(IPC_CHANNELS.getArticleSummaryById, (event, articleId: unknown) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('Library repository is not ready')
+    return libraryRepository.getArticleSummaryById(validateId(articleId, 'articleId'))
+  })
   ipcMain.handle(IPC_CHANNELS.getReaderContent, (event, articleId: unknown, preferFull?: unknown) => {
     assertTrustedSender(event)
     if (!readerContentService) throw new Error('Reader content service is not ready')
@@ -949,10 +970,67 @@ function registerIpcHandlers(): void {
       preferFull === undefined ? true : validateBoolean(preferFull, 'preferFull')
     )
   })
-  ipcMain.handle(IPC_CHANNELS.fetchFullContent, async (event, articleId: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.fetchFullContent, async (event, articleId: unknown, requestId?: unknown) => {
     assertTrustedSender(event)
     if (!articleFullContentService) throw new Error('Full content service is not ready')
-    return articleFullContentService.readOrFetch(validateId(articleId, 'articleId'), true)
+    const validatedArticleId = validateId(articleId, 'articleId')
+    const validatedRequestId = requestId === undefined || requestId === null ? undefined : validateId(requestId, 'requestId')
+
+    if (activeFullContentRequest && activeFullContentRequest.senderId === event.sender.id) {
+      activeFullContentRequest.controller.abort()
+      activeFullContentRequest = null
+    }
+
+    const controller = new AbortController()
+    const request = {
+      articleId: validatedArticleId,
+      requestId: validatedRequestId,
+      senderId: event.sender.id,
+      controller
+    }
+    activeFullContentRequest = request
+
+    const onSenderDestroyed = (): void => {
+      controller.abort()
+      if (activeFullContentRequest === request) {
+        activeFullContentRequest = null
+      }
+    }
+    if (event.sender.isDestroyed()) {
+      controller.abort()
+      if (activeFullContentRequest === request) {
+        activeFullContentRequest = null
+      }
+      throw new Error('Sender is destroyed')
+    }
+    event.sender.once('destroyed', onSenderDestroyed)
+
+    try {
+      return await articleFullContentService.readOrFetch(validatedArticleId, true, controller.signal)
+    } finally {
+      if (!event.sender.isDestroyed()) {
+        event.sender.removeListener('destroyed', onSenderDestroyed)
+      }
+      if (activeFullContentRequest === request) {
+        activeFullContentRequest = null
+      }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.cancelFullContent, (event, articleId: unknown, requestId?: unknown) => {
+    assertTrustedSender(event)
+    const validatedArticleId = validateId(articleId, 'articleId')
+    const active = activeFullContentRequest
+    if (!active || active.articleId !== validatedArticleId || active.senderId !== event.sender.id) {
+      return false
+    }
+    if (requestId !== undefined && requestId !== null && active.requestId !== undefined && active.requestId !== null) {
+      if (active.requestId !== validateId(requestId, 'requestId')) {
+        return false
+      }
+    }
+    active.controller.abort()
+    activeFullContentRequest = null
+    return true
   })
   ipcMain.handle(IPC_CHANNELS.getAiSettings, (event) => {
     assertTrustedSender(event); if (!aiSettingsRepository) throw new Error('AI settings are not ready'); return aiSettingsRepository.current()
@@ -2304,6 +2382,30 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     process.env.ORIGREAD_UPDATE_API_BASE || 'https://api.github.com'
   )
   readerFontRepository = new ReaderFontRepository(join(app.getPath('userData'), 'reader-fonts'))
+  protocol.handle('origread-font', async (request: Request) => {
+    try {
+      const url = new URL(request.url)
+      if (url.hostname !== 'custom') {
+        return new Response('Forbidden host', { status: 403 })
+      }
+      let fontId: string
+      try {
+        fontId = decodeURIComponent(url.pathname.replace(/^\//, '').trim())
+      } catch {
+        return new Response('Invalid font path', { status: 400 })
+      }
+      if (!fontId || !readerFontRepository) {
+        return new Response('Not found', { status: 404 })
+      }
+      const resolved = readerFontRepository.resolveFontFilePath(fontId)
+      if (!resolved) {
+        return new Response('Font not found', { status: 404 })
+      }
+      return net.fetch(pathToFileURL(resolved.filePath).toString())
+    } catch {
+      return new Response('Internal error', { status: 500 })
+    }
+  })
   const secretStore = new ElectronSecretStore(join(app.getPath('userData'), 'secrets.json'))
   accountRepository = new AccountRepository(desktopDatabase.connection, secretStore)
   const legacySettings = settingsRepository.current()

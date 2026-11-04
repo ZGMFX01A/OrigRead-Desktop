@@ -3,6 +3,7 @@ import type { JsonParsedArticle, JsonRule, JsonSourceProbeResult } from '../../.
 import { extractNextData, extractNuxtData } from './embedded-json-extractor'
 import { JsonArticleParser } from './json-article-parser'
 import { JsonRuleRepository } from './json-rule-repository'
+import { MAX_JSON_RESPONSE_BYTES, readResponseText } from '../../network/safe-response-reader'
 import {
   createWordPressCandidates,
   createWordPressRuleFromEndpoint
@@ -148,7 +149,7 @@ export async function fetchJsonText(url: string, signal?: AbortSignal): Promise<
     }
   })
   if (!response.ok) throw new Error(`JSON API 请求失败：HTTP ${response.status}`)
-  return response.text()
+  return readResponseText(response, MAX_JSON_RESPONSE_BYTES, signal)
 }
 
 function normalizeHttpUrl(value: string): string {

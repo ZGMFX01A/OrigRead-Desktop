@@ -188,5 +188,279 @@ describe('McpRemoteClientManager', () => {
       database.close()
     }
   })
-})
 
+  it('merges concurrent connect calls for the same remote server and creates only one connector', async () => {
+    let created = 0
+    let closed = 0
+    let resolveConnect: (val: any) => void = () => {}
+    const { database, serverId, manager } = setup(() => {
+      created += 1
+      return connector({
+        connect: () => new Promise((resolve) => { resolveConnect = resolve }),
+        close: async () => { closed += 1 }
+      })
+    })
+    try {
+      const p1 = manager.connect(serverId)
+      const p2 = manager.connect(serverId)
+      expect(created).toBe(1)
+
+      await new Promise((r) => setTimeout(r, 0))
+      resolveConnect({ protocolEra: 'MODERN', protocolVersion: '2026-07-28', serverInfo: { name: 'remote', version: '1', title: null } })
+      const [s1, s2] = await Promise.all([p1, p2])
+      expect(s1).toBe(s2)
+      expect(s1.status).toBe('CONNECTED')
+      expect(created).toBe(1)
+      expect(closed).toBe(0)
+    } finally {
+      await manager.disconnectAll()
+      database.close()
+    }
+  })
+
+  it('closes connector and leaves no active connection when disconnected during remote connect', async () => {
+    let heldResource: { id: number } | null = null
+    let closed = 0
+    let resolveConnect: (val: any) => void = () => {}
+    const { database, serverId, manager } = setup(() => connector({
+      connect: () => new Promise((resolve) => {
+        resolveConnect = (val: any) => {
+          heldResource = { id: 1 }
+          resolve(val)
+        }
+      }),
+      close: async () => {
+        heldResource = null
+        closed += 1
+      }
+    }))
+    try {
+      const connectingPromise = manager.connect(serverId)
+      expect(manager.state(serverId).status).toBe('CONNECTING')
+
+      await manager.disconnect(serverId)
+      expect(manager.state(serverId).status).toBe('DISCONNECTED')
+
+      resolveConnect({ protocolEra: 'MODERN', protocolVersion: '2026-07-28', serverInfo: null })
+      await connectingPromise
+
+      expect(heldResource).toBeNull()
+      expect(closed).toBeGreaterThanOrEqual(1)
+      expect(manager.state(serverId).status).toBe('DISCONNECTED')
+    } finally {
+      await manager.disconnectAll()
+      database.close()
+    }
+  })
+
+  it('disconnectAll handles in-flight remote connections properly', async () => {
+    let heldResource: { id: number } | null = null
+    let closed = 0
+    let resolveConnect: (val: any) => void = () => {}
+    const { database, serverId, manager } = setup(() => connector({
+      connect: () => new Promise((resolve) => {
+        resolveConnect = (val: any) => {
+          heldResource = { id: 1 }
+          resolve(val)
+        }
+      }),
+      close: async () => {
+        heldResource = null
+        closed += 1
+      }
+    }))
+    try {
+      const connectingPromise = manager.connect(serverId)
+      await manager.disconnectAll()
+
+      resolveConnect({ protocolEra: 'MODERN', protocolVersion: '2026-07-28', serverInfo: null })
+      await connectingPromise
+
+      expect(heldResource).toBeNull()
+      expect(closed).toBeGreaterThanOrEqual(1)
+      expect(manager.state(serverId).status).toBe('DISCONNECTED')
+    } finally {
+      database.close()
+    }
+  })
+
+  it('prevents stale late-resolving connect from reviving after remote reconfiguration', async () => {
+    let resolveFirst: (val: any) => void = () => {}
+    let closedCount = 0
+    let connectorIndex = 0
+
+    const { database, repository, serverId, manager } = setup(() => {
+      connectorIndex += 1
+      const currentIndex = connectorIndex
+      if (currentIndex === 1) {
+        return connector({
+          connect: () => new Promise((resolve) => { resolveFirst = resolve }),
+          close: async () => { closedCount += 1 }
+        })
+      }
+      return connector({
+        connect: async () => ({ protocolEra: 'MODERN', protocolVersion: 'v2', serverInfo: { name: 'second', version: '2', title: null } }),
+        close: async () => { closedCount += 1 }
+      })
+    })
+
+    try {
+      const firstPromise = manager.connect(serverId)
+      repository.updateServer({ id: serverId, url: 'https://new-url.example.com/mcp' })
+
+      const secondResult = await manager.connect(serverId)
+      expect(secondResult.serverInfo?.name).toBe('second')
+      expect(manager.state(serverId).status).toBe('CONNECTED')
+
+      resolveFirst({ protocolEra: 'MODERN', protocolVersion: 'v1', serverInfo: { name: 'first', version: '1', title: null } })
+      await firstPromise
+
+      expect(closedCount).toBeGreaterThanOrEqual(1)
+      expect(manager.state(serverId).serverInfo?.name).toBe('second')
+    } finally {
+      await manager.disconnectAll()
+      database.close()
+    }
+  })
+
+
+  it('cancels pending OAuth authorization when normal connect or disconnectAll is called', async () => {
+    let observedAbort = false
+    let resolveAuth: (val: any) => void = () => {}
+    const factory: McpRemoteConnectorFactory = () => connector({
+      authorize: (signal) => new Promise((resolve, reject) => {
+        resolveAuth = resolve
+        signal?.addEventListener('abort', () => {
+          observedAbort = true
+          reject(signal.reason)
+        })
+      }),
+      close: async () => {}
+    })
+    const { database, repository, serverId, manager } = setup(factory)
+    try {
+      repository.updateServer({ id: serverId, authMode: 'OAUTH' })
+      const pendingAuth = manager.authorize(serverId)
+      await new Promise((r) => setTimeout(r, 0))
+
+      // 调用 disconnectAll，应当立即中止 OAuth
+      await manager.disconnectAll()
+      await expect(pendingAuth).rejects.toMatchObject({ name: 'AbortError' })
+      expect(observedAbort).toBe(true)
+      expect(manager.state(serverId).status).toBe('DISCONNECTED')
+    } finally {
+      database.close()
+    }
+  })
+
+  it('prevents stale late OAuth authorization from reviving after server reconfigured', async () => {
+    let resolveAuth: (val: any) => void = () => {}
+    let closedCount = 0
+    let connectorIndex = 0
+
+    const { database, repository, serverId, manager } = setup(() => {
+      connectorIndex += 1
+      const idx = connectorIndex
+      if (idx === 1) {
+        return connector({
+          authorize: () => new Promise((resolve) => { resolveAuth = resolve }),
+          close: async () => { closedCount += 1 }
+        })
+      }
+      return connector({
+        connect: async () => ({ protocolEra: 'MODERN', protocolVersion: 'v2', serverInfo: { name: 'new-conn', version: '2', title: null } }),
+        close: async () => { closedCount += 1 }
+      })
+    })
+
+    try {
+      repository.updateServer({ id: serverId, authMode: 'OAUTH' })
+      const authPromise = manager.authorize(serverId)
+
+      // 修改配置
+      repository.updateServer({ id: serverId, authMode: 'NONE', url: 'https://other.example.com/mcp' })
+      const newConnect = await manager.connect(serverId)
+      expect(newConnect.serverInfo?.name).toBe('new-conn')
+      expect(manager.state(serverId).status).toBe('CONNECTED')
+
+      // 迟到的 OAuth 完成
+      resolveAuth({ protocolEra: 'MODERN', protocolVersion: 'v1', serverInfo: { name: 'stale-oauth', version: '1', title: null } })
+      await authPromise
+
+      // 验证迟到 connector 被关闭，且没有覆盖新连接
+      expect(closedCount).toBeGreaterThanOrEqual(1)
+      expect(manager.state(serverId).serverInfo?.name).toBe('new-conn')
+    } finally {
+      await manager.disconnectAll()
+      database.close()
+    }
+  })
+
+
+  it('prevents delayed safeClose during markConnectionError from overwriting newer connection', async () => {
+    let connectorIndex = 0
+    let resolveOldClose: () => void = () => {}
+    let newClosed = 0
+
+    const { database, serverId, manager } = setup(() => {
+      connectorIndex += 1
+      if (connectorIndex === 1) {
+        return connector({
+          connect: async () => ({
+            protocolEra: 'MODERN',
+            protocolVersion: '2026-07-28',
+            serverInfo: { name: 'old-remote', version: '1', title: null }
+          }),
+          callTool: async () => {
+            throw new Error('old remote tool failure')
+          },
+          close: () => new Promise<void>((resolve) => {
+            resolveOldClose = resolve
+          })
+        })
+      }
+      return connector({
+        connect: async () => ({
+          protocolEra: 'MODERN',
+          protocolVersion: '2026-07-28',
+          serverInfo: { name: 'new-remote', version: '2', title: null }
+        }),
+        callTool: async () => ({ content: [{ type: 'text', text: 'new remote success' }] }),
+        close: async () => {
+          newClosed += 1
+        }
+      })
+    })
+
+    try {
+      // 1. 先连接 old
+      const firstConn = await manager.connect(serverId)
+      expect(firstConn.serverInfo?.name).toBe('old-remote')
+      expect(manager.state(serverId).status).toBe('CONNECTED')
+
+      // 2. 触发 old 调用失败，进入 markConnectionError，使 old.close 挂起
+      const oldCallPromise = manager.callTool(serverId, 'read', {})
+      await new Promise((resolve) => setTimeout(resolve, 20))
+
+      // 3. 在此期间 connect new 并等待 CONNECTED
+      const newConn = await manager.connect(serverId)
+      expect(newConn.serverInfo?.name).toBe('new-remote')
+      expect(manager.state(serverId).status).toBe('CONNECTED')
+      expect(manager.state(serverId).serverInfo?.name).toBe('new-remote')
+
+      // 4. 再释放 old.close
+      resolveOldClose()
+
+      // 5. 断言 old 调用仍按原错误 reject
+      await expect(oldCallPromise).rejects.toThrow('old remote tool failure')
+
+      // 6. 断言 manager.state/serverInfo 与 active 仍属于 new 且 CONNECTED，new 未被 close
+      expect(manager.state(serverId).status).toBe('CONNECTED')
+      expect(manager.state(serverId).serverInfo?.name).toBe('new-remote')
+      expect(newClosed).toBe(0)
+    } finally {
+      await manager.disconnectAll()
+      database.close()
+    }
+  })
+})

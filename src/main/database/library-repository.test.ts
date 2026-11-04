@@ -32,6 +32,21 @@ describe('LibraryRepository', () => {
         expect(JSON.stringify(summaries).length).toBeLessThan(1_000)
       }
       expect(repository.getArticleById(article.id)).toMatchObject({ contentHtml: article.contentHtml, fullContentHtml: article.fullContentHtml })
+      const summaryById = repository.getArticleSummaryById(article.id)
+      expect(summaryById).toMatchObject({ id: article.id, title: article.title, contentHtml: null, fullContentHtml: null })
+      expect(JSON.stringify(summaryById).length).toBeLessThan(1_000)
+
+      const idsOnly = repository.listArticleIdsByFeedForAccount(1, feed.id)
+      expect(idsOnly).toEqual([article.id])
+
+      const notificationSummaries = repository.listArticleSummariesByFeedForAccount(1, feed.id)
+      expect(notificationSummaries).toHaveLength(1)
+      expect(notificationSummaries[0]).toMatchObject({ id: article.id, contentHtml: null, fullContentHtml: null })
+      expect(JSON.stringify(notificationSummaries).length).toBeLessThan(1_000)
+
+      const cleanupMetadata = repository.listArticleCleanupMetadata(1, feed.id)
+      expect(cleanupMetadata).toEqual([{ id: article.id, url: article.url, isStarred: false }])
+
       expect(repository.listArticlesByFeedForAccount(1, feed.id)[0]?.contentHtml).toBe(article.contentHtml)
     } finally { database.close() }
   })

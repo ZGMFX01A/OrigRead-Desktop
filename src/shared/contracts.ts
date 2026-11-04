@@ -72,6 +72,7 @@ export interface OrigReadDesktopApi extends LlmChatDataApi {
   /** List APIs return metadata with null body fields. Reader loads content through getReaderContent. */
   listArticles(limit?: number): Promise<ArticleRecord[]>
   getArticleById(articleId: string): Promise<ArticleRecord | null>
+  getArticleSummaryById(articleId: string): Promise<ArticleRecord | null>
   searchArticles(query: string, limit?: number): Promise<ArticleSearchResult[]>
   /** Metadata only, including null contentHtml/fullContentHtml. No per-source row limit. */
   listArticlesByFeed(feedId: string): Promise<ArticleRecord[]>
@@ -149,7 +150,8 @@ export interface OrigReadDesktopApi extends LlmChatDataApi {
   getSyncRuntimeState(): Promise<SyncRuntimeState>
   onSyncRuntimeStateChanged(listener: (state: SyncRuntimeState) => void): () => void
   getReaderContent(articleId: string, preferFull?: boolean): Promise<ReaderArticleContent>
-  fetchFullContent(articleId: string): Promise<FullContentFetchResult>
+  fetchFullContent(articleId: string, requestId?: string): Promise<FullContentFetchResult>
+  cancelFullContent(articleId: string, requestId?: string): Promise<boolean>
   getAiSettings(): Promise<AiSettings>
   revealAiApiKey(providerId: string): Promise<string>
   updateAiSettings(patch: AiSettingsPatch): Promise<AiSettings>
@@ -250,6 +252,7 @@ export const IPC_CHANNELS = {
   listGroups: 'library:list-groups',
   listArticles: 'library:list-articles',
   getArticleById: 'library:get-article-by-id',
+  getArticleSummaryById: 'library:get-article-summary-by-id',
   searchArticles: 'library:search-articles',
   listArticlesByFeed: 'library:list-articles-by-feed',
   listArticlesByGroup: 'library:list-articles-by-group',
@@ -327,6 +330,7 @@ export const IPC_CHANNELS = {
   syncRuntimeStateChanged: 'sync:runtime-state-changed',
   getReaderContent: 'reader:get-content',
   fetchFullContent: 'reader:fetch-full-content',
+  cancelFullContent: 'reader:cancel-full-content',
   getAiSettings: 'ai:settings:get',
   revealAiApiKey: 'ai:provider:reveal-api-key',
   updateAiSettings: 'ai:settings:update',

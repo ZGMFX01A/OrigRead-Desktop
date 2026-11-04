@@ -5,6 +5,7 @@ import { toRssFeedItem, safeHostName, optionalWithTimeout, type CustomRssItem } 
 import { BestIconFinder, extractIconDomain, type RssIconFinder } from './best-icon-finder'
 import { DESKTOP_BROWSER_USER_AGENT } from '../../network/user-agent-policy'
 import { decodeHttpText } from '../../network/http-text-decoder'
+import { MAX_RSS_RESPONSE_BYTES, readResponseBytes } from '../../network/safe-response-reader'
 
 export interface RssFetchPayload {
   finalUrl: string
@@ -200,7 +201,7 @@ export async function fetchRssPayload(
   return {
     finalUrl: response.url || url,
     contentType: response.headers.get('content-type'),
-    bytes: new Uint8Array(await response.arrayBuffer()),
+    bytes: await readResponseBytes(response, MAX_RSS_RESPONSE_BYTES, signal),
     etag: response.headers.get('etag'),
     lastModified: response.headers.get('last-modified')
   }

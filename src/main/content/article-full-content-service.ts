@@ -1,5 +1,6 @@
 import { DESKTOP_BROWSER_USER_AGENT } from '../network/user-agent-policy'
 import { decodeHttpText } from '../network/http-text-decoder'
+import { MAX_HTML_RESPONSE_BYTES, readResponseBytes } from '../network/safe-response-reader'
 import type { FullContentFetchResult, FullContentFailureReason } from '../../shared/reader'
 import type { ArticleRecord, FeedRecord } from '../../shared/library'
 import { LibraryRepository } from '../database/library-repository'
@@ -27,7 +28,7 @@ export interface ArticlePagePayload {
   html: string
 }
 
-export type ArticlePageFetcher = (url: string) => Promise<ArticlePagePayload>
+export type ArticlePageFetcher = (url: string, signal?: AbortSignal) => Promise<ArticlePagePayload>
 
 /** 对齐 Android ReaderCacheHelper + RssHelper.parseFullContent；Desktop 使用 articles.full_content_html 作为持久缓存。 */
 export class ArticleFullContentService {
@@ -39,7 +40,7 @@ export class ArticleFullContentService {
   ) {}
 
   /** 网络开始前固定文章和账户，缓存读取故障与网络故障分别报告。 */
-  async readOrFetch(articleId: string, allowDynamicFallback = true): Promise<FullContentFetchResult> {
+  async readOrFetch(articleId: string, allowDynamicFallback = true, signal?: AbortSignal): Promise<FullContentFetchResult> {
     let article: ArticleRecord | null
     try {
       article = this.repository.getArticleById(articleId)
@@ -55,29 +56,37 @@ export class ArticleFullContentService {
     const request = { article, feed }
     if (article.fullContentHtml?.trim()) return this.success(request)
     if (!article.url || !isHttpUrl(article.url)) return this.failure('INVALID_URL')
-    return this.fetchContent(request, allowDynamicFallback)
+    return this.fetchContent(request, allowDynamicFallback, signal)
   }
 
   /** 静态和动态提取共用入口快照，异步返回后只写该文章所属账户。 */
-  private async fetchContent(request: ContentRequest, allowDynamicFallback: boolean): Promise<FullContentFetchResult> {
+  private async fetchContent(request: ContentRequest, allowDynamicFallback: boolean, signal?: AbortSignal): Promise<FullContentFetchResult> {
     const { article } = request
     let payload: ArticlePagePayload
     try {
-      payload = await this.fetcher(article.url!)
+      if (signal?.aborted) return this.failure('NETWORK')
+      payload = await this.fetcher(article.url!, signal)
     } catch (error) {
       // 已知全文错误保留分类，其余抓取异常进入网络失败出口。
       if (error instanceof FullContentError) return this.failure(error.reason)
       return this.failure('NETWORK')
     }
 
+    if (signal?.aborted) return this.failure('NETWORK')
+
     let failureReason: FullContentFailureReason
     if (payload.status >= 200 && payload.status < 300) {
       const extracted = this.extractionService.extract(payload.html, payload.finalUrl, article.title)
-      if (extracted) return this.cacheAndReturn(request, extracted.html)
+      if (extracted) {
+        if (signal?.aborted) return this.failure('NETWORK')
+        return this.cacheAndReturn(request, extracted.html)
+      }
       failureReason = classifyFullContentHtml(payload.html)
     } else {
       failureReason = classifyFullContentHttpStatus(payload.status)
     }
+
+    if (signal?.aborted) return this.failure('NETWORK')
 
     if (allowDynamicFallback) {
       const dynamic = await this.dynamicService.extract({
@@ -85,8 +94,10 @@ export class ArticleFullContentService {
         expectedTitle: article.title,
         staticHtml: payload.html,
         staticFailureReason: failureReason,
-        allowRestrictedFallback: failureReason === 'ACCESS_RESTRICTED'
+        allowRestrictedFallback: failureReason === 'ACCESS_RESTRICTED',
+        signal
       })
+      if (signal?.aborted) return this.failure('NETWORK')
       if (dynamic) return this.cacheAndReturn(request, dynamic.html)
     }
     return this.failure(failureReason)
@@ -120,17 +131,17 @@ export class ArticleFullContentService {
   }
 }
 
-export async function defaultArticlePageFetcher(url: string): Promise<ArticlePagePayload> {
+export async function defaultArticlePageFetcher(url: string, signal?: AbortSignal): Promise<ArticlePagePayload> {
   if (!isHttpUrl(url)) throw new FullContentError('INVALID_URL', '全文地址必须是 HTTP(S) URL')
   const response = await fetch(url, {
     redirect: 'follow',
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: {
       'user-agent': DESKTOP_BROWSER_USER_AGENT,
       accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8'
     }
   })
-  const bytes = new Uint8Array(await response.arrayBuffer())
+  const bytes = await readResponseBytes(response, MAX_HTML_RESPONSE_BYTES, signal)
   const html = decodeHttpText(bytes, response.headers.get('content-type'), 'html').slice(0, MAX_STATIC_HTML_CHARS)
   return { status: response.status, finalUrl: response.url || url, html }
 }

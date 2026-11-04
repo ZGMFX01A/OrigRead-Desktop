@@ -23,7 +23,7 @@ export function prepareRssArticles(repository: LibraryRepository, options: Artic
   const identities = repository.getRssArticleIdentities(feed.id)
   const boundArticleIds = new Set(identities.values())
   // 链接匹配只用于尚未升级的旧文章，已确认的 GUID 不允许被另一个 GUID 共用。
-  const existingByUrl = new Map(repository.listArticlesByFeedForAccount(feed.accountId!, feed.id)
+  const existingByUrl = new Map(repository.listArticleCleanupMetadata(feed.accountId!, feed.id)
     .filter((article) => article.url && !boundArticleIds.has(article.id)).map((article) => [article.url!, article.id]))
   const byId = new Map<string, ArticleRecord>()
   const resolved: RssArticleIdentity[] = []

@@ -15,6 +15,11 @@ const MAX_RENDERED_HTML_CHARS = 750_000
 const VIEWPORT_WIDTH = 1080
 const VIEWPORT_HEIGHT = 1920
 
+/** 全局最多允许 1 个活动的隐藏渲染窗口 */
+export const MAX_ACTIVE_DYNAMIC_WINDOWS = 1
+/** 动态渲染等待队列最大容量，超出直接熔断报错，避免无限积压 Chromium 实例 */
+export const MAX_DYNAMIC_RENDER_QUEUE_SIZE = 8
+
 export class DynamicWebsiteRenderError extends Error {
   constructor(message: string) {
     super(message)
@@ -22,19 +27,99 @@ export class DynamicWebsiteRenderError extends Error {
   }
 }
 
+interface QueuedRenderTask {
+  url: string
+  signal?: AbortSignal
+  resolve: (value: DynamicWebsiteRenderResult) => void
+  reject: (reason?: unknown) => void
+  detachSignalListener?: () => void
+}
+
 /**
  * Electron 平台适配：隐藏 Chromium 只负责执行页面自身 JS 并返回最终 DOM。
- * DOM 返回后仍交给 WebsiteSourceService 的同一 WebsiteRule / 自动 DOM / 健康评分链。
+ * 全局统一限制最多 1 个活动窗口，通过排队与取消机制严格约束隐藏实例与内存开销。
  */
 export class ElectronDynamicWebsiteRenderer implements DynamicWebsiteRenderer {
+  private activeCount = 0
+  private readonly queue: QueuedRenderTask[] = []
+
+  get activeWindowsCount(): number {
+    return this.activeCount
+  }
+
+  get waitingQueueSize(): number {
+    return this.queue.length
+  }
+
   async render(url: string, signal?: AbortSignal): Promise<DynamicWebsiteRenderResult> {
     validateInitialUrl(url)
+    if (signal?.aborted) throw new DynamicWebsiteRenderError('动态页面渲染已取消')
+    if (this.queue.length >= MAX_DYNAMIC_RENDER_QUEUE_SIZE) {
+      throw new DynamicWebsiteRenderError(`动态页面渲染队列已满（最多等待 ${MAX_DYNAMIC_RENDER_QUEUE_SIZE} 个任务），请稍后重试`)
+    }
+
+    return new Promise<DynamicWebsiteRenderResult>((resolve, reject) => {
+      let task: QueuedRenderTask
+
+      const onAbort = (): void => {
+        const index = this.queue.indexOf(task)
+        if (index !== -1) {
+          this.queue.splice(index, 1)
+          task.detachSignalListener?.()
+          reject(new DynamicWebsiteRenderError('动态页面渲染已取消'))
+        }
+      }
+
+      task = {
+        url,
+        signal,
+        resolve,
+        reject,
+        detachSignalListener: () => {
+          if (signal) signal.removeEventListener('abort', onAbort)
+        }
+      }
+
+      if (signal) {
+        signal.addEventListener('abort', onAbort, { once: true })
+      }
+
+      this.queue.push(task)
+      this.processNext()
+    })
+  }
+
+  private processNext(): void {
+    if (this.activeCount >= MAX_ACTIVE_DYNAMIC_WINDOWS || this.queue.length === 0) {
+      return
+    }
+
+    const task = this.queue.shift()!
+    task.detachSignalListener?.()
+
+    if (task.signal?.aborted) {
+      task.reject(new DynamicWebsiteRenderError('动态页面渲染已取消'))
+      this.processNext()
+      return
+    }
+
+    this.activeCount += 1
+    this.executeRender(task.url, task.signal)
+      .then(task.resolve, task.reject)
+      .finally(() => {
+        this.activeCount -= 1
+        this.processNext()
+      })
+  }
+
+  private async executeRender(url: string, signal?: AbortSignal): Promise<DynamicWebsiteRenderResult> {
     if (signal?.aborted) throw new DynamicWebsiteRenderError('动态页面渲染已取消')
     return new Promise<DynamicWebsiteRenderResult>((resolve, reject) => {
       let completed = false
       let settleTimer: NodeJS.Timeout | null = null
       let navigationCount = 0
       let abortHandler: (() => void) | null = null
+
       const window = new BrowserWindow({
         width: VIEWPORT_WIDTH,
         height: VIEWPORT_HEIGHT,
@@ -159,4 +244,3 @@ const CAPTURE_DOM_SCRIPT = `
   return html.length > ${MAX_RENDERED_HTML_CHARS} ? html.substring(0, ${MAX_RENDERED_HTML_CHARS}) : html;
 })()
 `
-

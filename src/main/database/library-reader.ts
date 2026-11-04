@@ -48,6 +48,22 @@ export class SqliteLibraryReader {
     }
   }
 
+  getArticleSummaryById(articleId: string): ArticleRecord | null {
+    return this.getArticleSummaryByIdForAccount(this.library.getCurrentAccountId(), articleId)
+  }
+
+  /** 文章选择、搜索定位和引用导航仅需要元数据摘要，SQL 层投影不查正文列。 */
+  getArticleSummaryByIdForAccount(accountId: number, articleId: string): ArticleRecord | null {
+    const row = this.database.prepare(`
+      SELECT id, account_id, feed_id, title, url, author, published_at, description,
+             NULL AS content_html, NULL AS full_content_html, image_url, is_unread, is_starred,
+             created_at, updated_at
+      FROM articles
+      WHERE account_id = ? AND id = ?
+    `).get(accountId, articleId) as ArticleRow | undefined
+    return row ? toArticleRecord(row) : null
+  }
+
   getArticleById(articleId: string): ArticleRecord | null {
     return this.getArticleByIdForAccount(this.library.getCurrentAccountId(), articleId)
   }
@@ -76,6 +92,25 @@ export class SqliteLibraryReader {
     const rows = this.database.prepare('SELECT id, url, is_starred FROM articles WHERE account_id = ? AND feed_id = ?')
       .all(accountId, feedId) as unknown as Array<{ id: string; url: string | null; is_starred: number }>
     return rows.map((row) => ({ id: row.id, url: row.url, isStarred: row.is_starred === 1 }))
+  }
+
+  /** 仅查询来源文章 ID 列表，用于刷新前对比新文章，避免读取任何正文列。 */
+  listArticleIdsByFeedForAccount(accountId: number, feedId: string): string[] {
+    const rows = this.database.prepare('SELECT id FROM articles WHERE account_id = ? AND feed_id = ?')
+      .all(accountId, feedId) as unknown as Array<{ id: string }>
+    return rows.map((row) => row.id)
+  }
+
+  /** 同步通知仅需新文章元数据摘要，SQL 层投影将正文置 NULL，避免加载海量历史正文。 */
+  listArticleSummariesByFeedForAccount(accountId: number, feedId: string): ArticleRecord[] {
+    return (this.database.prepare(`
+      SELECT id, account_id, feed_id, title, url, author, published_at, description,
+             NULL AS content_html, NULL AS full_content_html, image_url, is_unread, is_starred,
+             created_at, updated_at
+      FROM articles
+      WHERE account_id = ? AND feed_id = ?
+      ORDER BY COALESCE(published_at, created_at) DESC
+    `).all(accountId, feedId) as unknown as ArticleRow[]).map(toArticleRecord)
   }
 
   listArticlesByFeed(feedId: string): ArticleRecord[] {

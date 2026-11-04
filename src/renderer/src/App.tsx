@@ -2441,7 +2441,7 @@ export default function App(): React.JSX.Element {
     setReaderCitationTarget({ requestId, messageId, citation, contextRef })
     if (selectedArticleId === articleId) return
     try {
-      const article = await window.origread.getArticleById(articleId)
+      const article = await window.origread.getArticleSummaryById(articleId)
       if (readerCitationNavigationRevisionRef.current !== requestId) return
       if (!article) {
         openReaderAiSources(messageId, citation.id, true)
@@ -2487,7 +2487,7 @@ export default function App(): React.JSX.Element {
       if (!conversation || !ownerArticleId) return
 
       if (selectedArticleId !== ownerArticleId) {
-        const article = await window.origread.getArticleById(ownerArticleId)
+        const article = await window.origread.getArticleSummaryById(ownerArticleId)
         if (readerCitationReturnRevisionRef.current !== requestId) return
         if (!article) return
         citationArticleNavigationRef.current = ownerArticleId
@@ -2596,14 +2596,15 @@ export default function App(): React.JSX.Element {
     try {
       const existing = articles.find((article) => article.id === result.id)
         ?? scopeArticles?.find((article) => article.id === result.id)
-      const article = existing ?? await window.origread.getArticleById(result.id)
+      const article = existing ?? await window.origread.getArticleSummaryById(result.id)
       if (!article) {
         setGlobalSearchError(t('globalSearchOpenFailed'))
         return
       }
-      if (!existing) setArticles((current) => current.some((item) => item.id === article.id) ? current : [...current, article])
+      const summaryArticle: ArticleRecord = { ...article, contentHtml: null, fullContentHtml: null }
+      if (!existing) setArticles((current) => current.some((item) => item.id === summaryArticle.id) ? current : [...current, summaryArticle])
       closeGlobalSearch()
-      selectArticle(article)
+      selectArticle(summaryArticle)
     } catch (error) {
       setGlobalSearchError(error instanceof Error ? error.message : String(error))
     }

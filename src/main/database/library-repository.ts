@@ -58,12 +58,16 @@ export class LibraryRepository {
   snapshot(accountId = this.getCurrentAccountId()): LibrarySnapshot { return this.reader.snapshot(accountId) }
   setArticleFullContent(articleId: string, html: string | null): void { return this.writer.setArticleFullContent(articleId, html) }
   getArticleById(articleId: string): ArticleRecord | null { return this.reader.getArticleById(articleId) }
+  getArticleSummaryById(articleId: string): ArticleRecord | null { return this.reader.getArticleSummaryById(articleId) }
+  getArticleSummaryByIdForAccount(accountId: number, articleId: string): ArticleRecord | null { return this.reader.getArticleSummaryByIdForAccount(accountId, articleId) }
   getArticleByIdForAccount(accountId: number, articleId: string): ArticleRecord | null { return this.reader.getArticleByIdForAccount(accountId, articleId) }
   getArticleAccountId(articleId: string): number | null { return this.reader.getArticleAccountId(articleId) }
   setArticleFullContentForAccount(accountId: number, articleId: string, html: string | null): number { return this.writer.setArticleFullContentForAccount(accountId, articleId, html) }
   listArticleCleanupMetadata(accountId: number, feedId: string): Array<{ id: string; url: string | null; isStarred: boolean }> { return this.reader.listArticleCleanupMetadata(accountId, feedId) }
   listArticlesByFeed(feedId: string): ArticleRecord[] { return this.reader.listArticlesByFeed(feedId) }
   listArticlesByFeedForAccount(accountId: number, feedId: string): ArticleRecord[] { return this.reader.listArticlesByFeedForAccount(accountId, feedId) }
+  listArticleIdsByFeedForAccount(accountId: number, feedId: string): string[] { return this.reader.listArticleIdsByFeedForAccount(accountId, feedId) }
+  listArticleSummariesByFeedForAccount(accountId: number, feedId: string): ArticleRecord[] { return this.reader.listArticleSummariesByFeedForAccount(accountId, feedId) }
   listArticlesByGroup(groupId: string): ArticleRecord[] { return this.reader.listArticlesByGroup(groupId) }
   listFeedArticleStats(): FeedArticleStats[] { return this.reader.listFeedArticleStats() }
   upsertWebsiteFeedWithArticles(feed: FeedRecord, articles: ArticleRecord[], obsoleteArticleIds: string[]): void {

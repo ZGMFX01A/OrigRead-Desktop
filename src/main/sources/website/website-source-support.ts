@@ -6,6 +6,7 @@ import { javaStringHash, resolveHttpUrl, unsignedHex } from './website-dom'
 
 import { DESKTOP_BROWSER_USER_AGENT } from '../../network/user-agent-policy'
 import { decodeHttpText } from '../../network/http-text-decoder'
+import { MAX_HTML_RESPONSE_BYTES, readResponseBytes } from '../../network/safe-response-reader'
 
 // 沿用当前自动 DOM 的资源上限；失效手动规则不能绕过自动识别的页面限制。
 export const MAX_AUTOMATIC_HTML_CHARS = 750_000
@@ -26,7 +27,7 @@ export async function defaultWebsiteFetcher(url: string, signal?: AbortSignal): 
       accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
     }
   })
-  const bytes = new Uint8Array(await response.arrayBuffer())
+  const bytes = await readResponseBytes(response, MAX_HTML_RESPONSE_BYTES, signal)
   return {
     status: response.status,
     finalUrl: response.url || url,

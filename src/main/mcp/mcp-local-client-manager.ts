@@ -42,9 +42,28 @@ interface ActiveConnection {
   snapshot: McpConnectionSnapshot
 }
 
+interface PendingLocalConnection {
+  generation: number
+  fingerprint: string
+  connector: McpLocalConnector
+  promise: Promise<McpConnectionSnapshot>
+}
+
 export class McpLocalClientManager {
   private readonly active = new Map<string, ActiveConnection>()
+  private readonly pending = new Map<string, PendingLocalConnection>()
+  private readonly generations = new Map<string, number>()
   private readonly states = new Map<string, McpConnectionSnapshot>()
+
+  private nextGeneration(serverId: string): number {
+    const next = (this.generations.get(serverId) ?? 0) + 1
+    this.generations.set(serverId, next)
+    return next
+  }
+
+  private currentGeneration(serverId: string): number {
+    return this.generations.get(serverId) ?? 0
+  }
 
   constructor(
     private readonly repository: McpLocalRepository,
@@ -62,37 +81,107 @@ export class McpLocalClientManager {
 
   async connect(serverId: string): Promise<McpConnectionSnapshot> {
     const server = this.repository.requireConfiguredServer(serverId)
-    await assertWorkingDirectory(server)
     const fingerprint = catalogFingerprint(this.repository, server.id)
-    const existing = this.active.get(server.id)
-    if (existing?.fingerprint === fingerprint && existing.snapshot.status === 'CONNECTED') return existing.snapshot
-    if (existing) await this.disconnect(server.id)
 
+    // 1. 若当前已有活跃且配置完全相同的已连接连接，直接复用
+    const existing = this.active.get(server.id)
+    if (existing?.fingerprint === fingerprint && existing.snapshot.status === 'CONNECTED') {
+      return existing.snapshot
+    }
+
+    // 2. 若当前已有相同 server ID 且相同配置的连接请求正在进行中，合并请求
+    const ongoing = this.pending.get(server.id)
+    if (ongoing && ongoing.fingerprint === fingerprint) {
+      return ongoing.promise
+    }
+
+    // 3. 若配置已变更或需要重连，断开旧 active 或清理旧 pending
+    const oldExisting = existing
+    const oldOngoing = ongoing
+    if (oldExisting) {
+      this.active.delete(server.id)
+    }
+    if (oldOngoing) {
+      this.pending.delete(server.id)
+    }
+
+    const gen = this.nextGeneration(server.id)
     this.setState({ ...disconnectedState(server.id), status: 'CONNECTING', updatedAt: Date.now() })
     const connector = this.connectorFactory(server, { requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS })
-    try {
-      const info = await connector.connect(AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS))
-      const snapshot = connectedState(server.id, info)
-      this.active.set(server.id, { fingerprint, connector, snapshot })
-      this.setState(snapshot)
-      return snapshot
-    } catch (error) {
-      await safeClose(connector)
-      this.setErrorState(server.id, error)
-      throw redactErrorForBoundary(error)
-    }
+
+    const connectionPromise = (async () => {
+      try {
+        if (oldExisting) {
+          await safeClose(oldExisting.connector)
+        }
+        if (oldOngoing) {
+          await safeClose(oldOngoing.connector)
+        }
+        if (this.currentGeneration(server.id) !== gen) {
+          return this.state(server.id)
+        }
+        await assertWorkingDirectory(server)
+        if (this.currentGeneration(server.id) !== gen) {
+          return this.state(server.id)
+        }
+        const info = await connector.connect(AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS))
+        if (this.currentGeneration(server.id) !== gen) {
+          await safeClose(connector)
+          return this.state(server.id)
+        }
+        const snapshot = connectedState(server.id, info)
+        this.active.set(server.id, { fingerprint, connector, snapshot })
+        this.setState(snapshot)
+        return snapshot
+      } catch (error) {
+        await safeClose(connector)
+        if (this.currentGeneration(server.id) === gen) {
+          this.setErrorState(server.id, error)
+          throw redactErrorForBoundary(error)
+        }
+        return this.state(server.id)
+      } finally {
+        const cur = this.pending.get(server.id)
+        if (cur?.generation === gen) {
+          this.pending.delete(server.id)
+        }
+      }
+    })()
+
+    this.pending.set(server.id, {
+      generation: gen,
+      fingerprint,
+      connector,
+      promise: connectionPromise
+    })
+
+    return connectionPromise
   }
 
   async disconnect(serverId: string): Promise<void> {
     const id = serverId.trim()
+    const gen = this.nextGeneration(id)
+    const pending = this.pending.get(id)
+    this.pending.delete(id)
     const existing = this.active.get(id)
     this.active.delete(id)
-    if (existing) await safeClose(existing.connector)
-    this.setState(disconnectedState(id))
+
+    await Promise.allSettled([
+      existing ? safeClose(existing.connector) : Promise.resolve(),
+      pending ? safeClose(pending.connector) : Promise.resolve()
+    ])
+    if (this.currentGeneration(id) === gen) {
+      this.setState(disconnectedState(id))
+    }
   }
 
   async disconnectAll(): Promise<void> {
-    await Promise.allSettled([...this.active.keys()].map((id) => this.disconnect(id)))
+    const allIds = new Set([
+      ...this.active.keys(),
+      ...this.pending.keys(),
+      ...this.repository.current().servers.map((server) => server.id)
+    ])
+    await Promise.allSettled([...allIds].map((id) => this.disconnect(id)))
   }
 
   async invalidate(serverId: string): Promise<void> {
@@ -104,7 +193,7 @@ export class McpLocalClientManager {
     try {
       return await connection.connector.listTools(signal)
     } catch (error) {
-      await this.markConnectionError(serverId, error)
+      await this.markConnectionError(serverId, connection.connector, error)
       throw redactErrorForBoundary(error)
     }
   }
@@ -119,7 +208,7 @@ export class McpLocalClientManager {
     try {
       return await connection.connector.callTool(name, argumentsValue, signal)
     } catch (error) {
-      await this.markConnectionError(serverId, error)
+      await this.markConnectionError(serverId, connection.connector, error)
       throw redactErrorForBoundary(error)
     }
   }
@@ -160,12 +249,17 @@ export class McpLocalClientManager {
     return connected
   }
 
-  private async markConnectionError(serverId: string, error: unknown): Promise<void> {
+  private async markConnectionError(serverId: string, targetConnector: McpLocalConnector, error: unknown): Promise<void> {
     const id = serverId.trim()
     const existing = this.active.get(id)
-    this.active.delete(id)
-    if (existing) await safeClose(existing.connector)
-    this.setErrorState(id, error)
+    if (existing?.connector === targetConnector) {
+      const errorGen = this.nextGeneration(id)
+      this.active.delete(id)
+      await safeClose(existing.connector)
+      if (this.currentGeneration(id) === errorGen && !this.active.has(id)) {
+        this.setErrorState(id, error)
+      }
+    }
   }
 
   private setErrorState(serverId: string, error: unknown): void {

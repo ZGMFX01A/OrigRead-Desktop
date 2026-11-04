@@ -6,7 +6,8 @@ import type { RssSubscriptionService } from './rss/rss-subscription-service'
 import type { WebsiteSubscriptionService } from './website/website-subscription-service'
 
 // 单轮来源同步沿用 16 个并发任务，队列中的每个任务仍绑定起始账户。
-const MAX_CONCURRENT_SYNCS = 16
+// 来源同步由 16 路调整为 4 路并发，控制同时处于活动状态的网络与解析任务；不影响独立的 LLM/MCP 请求策略。
+const MAX_CONCURRENT_SYNCS = 4
 
 export type SourceNewArticlesListener = (feed: FeedRecord, articles: ArticleRecord[]) => void | Promise<void>
 
@@ -67,7 +68,7 @@ export class SourceSyncService {
 
   private async refreshFeed(feed: FeedRecord, fetchedAt: number): Promise<SourceSyncItemResult> {
     const existingArticleIds = feed.isNotification
-      ? new Set(this.repository.listArticlesByFeedForAccount(feed.accountId!, feed.id).map((article) => article.id))
+      ? new Set(this.repository.listArticleIdsByFeedForAccount(feed.accountId!, feed.id))
       : null
     const result = await this.refreshByType(feed, fetchedAt)
 
@@ -77,7 +78,7 @@ export class SourceSyncService {
 
     if (refreshedFeed.isNotification && result.insertedArticles > 0 && existingArticleIds && this.onNewArticles) {
       const inserted = this.repository
-        .listArticlesByFeedForAccount(feed.accountId!, feed.id)
+        .listArticleSummariesByFeedForAccount(feed.accountId!, feed.id)
         .filter((article) => !existingArticleIds.has(article.id))
       if (inserted.length > 0) await this.onNewArticles(refreshedFeed, inserted)
     }

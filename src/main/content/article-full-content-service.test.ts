@@ -86,6 +86,30 @@ describe('ArticleFullContentService', () => {
     expect(repository.getArticleById('article-1')?.fullContentHtml).toBeNull()
     database.close()
   })
+
+  it('aborts and does not commit cache if signal is aborted during fetch', async () => {
+    const { database, repository } = createLibrary()
+    const controller = new AbortController()
+    let fetchCalled = false
+
+    const service = new ArticleFullContentService(
+      repository,
+      createExtractionService(),
+      new DynamicArticleContentService(rendererThatThrows(), createExtractionService()),
+      async (url) => {
+        fetchCalled = true
+        controller.abort()
+        return { status: 200, finalUrl: url, html: '<html><body><article><p>Valid content text that should be cached</p></article></body></html>' }
+      }
+    )
+
+    const result = await service.readOrFetch('article-1', false, controller.signal)
+    expect(result.ok).toBe(false)
+    expect(result.failureReason).toBe('NETWORK')
+    // 验证取消后不得写入离线缓存
+    expect(repository.getArticleById('article-1')?.fullContentHtml).toBeNull()
+    database.close()
+  })
 })
 
 describe('DynamicArticleContentService', () => {
@@ -114,6 +138,52 @@ describe('DynamicArticleContentService', () => {
     const results = await Promise.all(inputs)
     expect(results.every(Boolean)).toBe(true)
     expect(maxActive).toBe(1)
+  })
+
+  it('settles immediately when cancelled in queue without launching renderer', async () => {
+    let rendererCalls = 0
+    let resolveFirst: () => void = () => {}
+    const renderer: DynamicWebsiteRenderer = {
+      async render(url) {
+        rendererCalls += 1
+        return new Promise((resolve) => {
+          resolveFirst = () => resolve({
+            finalUrl: url,
+            html: '<html><body><article><p>Text</p></article></body></html>'
+          })
+        })
+      }
+    }
+    const service = new DynamicArticleContentService(renderer, createExtractionService())
+    const ac1 = new AbortController()
+    const p1 = service.extract({
+      url: 'https://example.com/one',
+      expectedTitle: null,
+      staticHtml: '<div id="app"></div>',
+      staticFailureReason: 'DYNAMIC_CONTENT',
+      signal: ac1.signal
+    })
+
+    const ac2 = new AbortController()
+    const p2 = service.extract({
+      url: 'https://example.com/two-queued',
+      expectedTitle: null,
+      staticHtml: '<div id="app"></div>',
+      staticFailureReason: 'DYNAMIC_CONTENT',
+      signal: ac2.signal
+    })
+
+    // 任务 2 处于排队中，立即取消任务 2
+    ac2.abort()
+    const result2 = await p2
+    expect(result2).toBeNull()
+
+    // 释放任务 1
+    resolveFirst()
+    await p1
+
+    // 验证底层 renderer 只被调用了 1 次（任务 2 在排队阶段取消，绝未进入 renderer）
+    expect(rendererCalls).toBe(1)
   })
 })
 

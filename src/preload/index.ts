@@ -34,6 +34,7 @@ const api: OrigReadDesktopApi = Object.freeze({
   listGroups: () => ipcRenderer.invoke(IPC_CHANNELS.listGroups),
   listArticles: (limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.listArticles, limit),
   getArticleById: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.getArticleById, articleId),
+  getArticleSummaryById: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.getArticleSummaryById, articleId),
   searchArticles: (query: string, limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.searchArticles, query, limit),
   listArticlesByFeed: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.listArticlesByFeed, feedId),
   listArticlesByGroup: (groupId: string) => ipcRenderer.invoke(IPC_CHANNELS.listArticlesByGroup, groupId),
@@ -129,7 +130,8 @@ const api: OrigReadDesktopApi = Object.freeze({
     return () => ipcRenderer.removeListener(IPC_CHANNELS.syncRuntimeStateChanged, wrapped)
   },
   getReaderContent: (articleId: string, preferFull?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.getReaderContent, articleId, preferFull),
-  fetchFullContent: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.fetchFullContent, articleId),
+  fetchFullContent: (articleId: string, requestId?: string) => ipcRenderer.invoke(IPC_CHANNELS.fetchFullContent, articleId, requestId),
+  cancelFullContent: (articleId: string, requestId?: string) => ipcRenderer.invoke(IPC_CHANNELS.cancelFullContent, articleId, requestId),
   getAiSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getAiSettings),
   revealAiApiKey: (providerId: string) => ipcRenderer.invoke(IPC_CHANNELS.revealAiApiKey, providerId),
   updateAiSettings: (patch: AiSettingsPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateAiSettings, patch),
