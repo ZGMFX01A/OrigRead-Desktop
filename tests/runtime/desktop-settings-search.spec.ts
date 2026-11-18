@@ -269,6 +269,17 @@ test('Escape 返回设置继续确认未保存草稿，取消保留输入，接�
     await editor.fill(draft)
     await expect(page.locator('.llm-custom-instructions-editor button')).toBeEnabled()
 
+    // Native confirmation sheets can drop the editor's focus on dismissal.
+    // Keep the real dialog and reproduce that focus loss on every platform.
+    await page.evaluate(() => {
+      const confirm = window.confirm.bind(window)
+      window.confirm = message => {
+        const accepted = confirm(message)
+        if (!accepted && document.activeElement instanceof HTMLElement) document.activeElement.blur()
+        return accepted
+      }
+    })
+
     let confirmations = 0
     const dismiss = async (dialog: import('@playwright/test').Dialog): Promise<void> => {
       confirmations += 1

@@ -52,6 +52,24 @@ async function withDesktop<T>(userDataDir: string, inspect: (session: DesktopSes
     const pageErrors: string[] = []
     page.on('pageerror', (error) => pageErrors.push(error.message))
     await expect(page.locator('.app-shell')).toBeVisible()
+    const nativeWindow = await app.browserWindow(page)
+    // CI displays can shrink the initial window below the sidebar breakpoint.
+    // Size the real window after ready-to-show so native and renderer agree.
+    await expect.poll(() => nativeWindow.evaluate(window => window.isVisible())).toBe(true)
+    if (await nativeWindow.evaluate(window => window.isMaximized())) {
+      await nativeWindow.evaluate(window => window.unmaximize())
+      await expect.poll(() => nativeWindow.evaluate(window => window.isMaximized())).toBe(false)
+    }
+    await nativeWindow.evaluate(window => window.setContentSize(1440, 900))
+    await expect.poll(() => nativeWindow.evaluate(window => {
+      const { width, height } = window.getContentBounds()
+      return { width, height }
+    })).toEqual({ width: 1440, height: 900 })
+    await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
+      .toEqual({ width: 1440, height: 900 })
+    await page.evaluate(() => window.origread.updateSettings({ language: 'en', layoutMode: 'three-pane' }))
+    await page.reload()
+    await expect(page.locator('.source-pane')).toBeVisible()
     return await inspect({ app, page, pageErrors })
   } finally {
     await app.close()

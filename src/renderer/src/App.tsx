@@ -348,7 +348,19 @@ export default function App(): React.JSX.Element {
 
   const closeSettingsIfAllowed = (): boolean => {
     if (!settingsOpen) return true
-    if (settingsUnsaved && !window.confirm(t('customInstructionsDiscardConfirm'))) return false
+    if (settingsUnsaved) {
+      const previousFocus = document.activeElement
+      if (!window.confirm(t('customInstructionsDiscardConfirm'))) {
+        // Native confirmation sheets may drop focus when dismissed on macOS.
+        window.requestAnimationFrame(() => {
+          if (previousFocus instanceof HTMLElement && previousFocus.isConnected && previousFocus.getClientRects().length > 0) {
+            window.focus()
+            previousFocus.focus({ preventScroll: true })
+          }
+        })
+        return false
+      }
+    }
     setSettingsUnsaved(false)
     setSettingsOpen(false)
     return true
