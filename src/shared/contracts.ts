@@ -1,4 +1,4 @@
-import type { ArticleRecord, ArticleSearchResult, FeedArticleStats, FeedRecord, GroupRecord, LibrarySnapshot } from './library'
+import type { ArticleRecord, ArticleSearchResult, FeedArticleStats, FeedRecord, GroupRecord, LibrarySnapshot, RecentArticleRecord } from './library'
 import type { DesktopSettings, DesktopSettingsPatch } from './settings'
 import type { RssSubscriptionResult } from './rss'
 import type { RssHubSettings } from './rsshub'
@@ -39,6 +39,8 @@ import type {
   McpToolCatalogSnapshot
 } from './mcp'
 
+export type { RecentArticleRecord } from './library'
+
 export interface WebsiteSourceRuleSettings {
   feedId: string
   preferredRuleId: string | null
@@ -64,13 +66,19 @@ export interface FeedSettingsPatch {
   isBrowser?: boolean
 }
 
+export interface ArticleListOptions {
+  limit?: number
+  isUnread?: boolean
+}
+
 export interface OrigReadDesktopApi extends LlmChatDataApi {
   getAppInfo(): Promise<AppInfo>
   getLibrarySnapshot(): Promise<LibrarySnapshot>
   listFeeds(): Promise<FeedRecord[]>
   listGroups(): Promise<GroupRecord[]>
   /** List APIs return metadata with null body fields. Reader loads content through getReaderContent. */
-  listArticles(limit?: number): Promise<ArticleRecord[]>
+  listArticles(options?: ArticleListOptions): Promise<ArticleRecord[]>
+  listArticles(limit?: number, options?: ArticleListOptions): Promise<ArticleRecord[]>
   getArticleById(articleId: string): Promise<ArticleRecord | null>
   getArticleSummaryById(articleId: string): Promise<ArticleRecord | null>
   searchArticles(query: string, limit?: number): Promise<ArticleSearchResult[]>
@@ -78,6 +86,9 @@ export interface OrigReadDesktopApi extends LlmChatDataApi {
   listArticlesByFeed(feedId: string): Promise<ArticleRecord[]>
   listArticlesByGroup(groupId: string): Promise<ArticleRecord[]>
   listFeedArticleStats(): Promise<FeedArticleStats[]>
+  recordArticleOpened(articleId: string): Promise<void>
+  listRecentArticles(limit?: number): Promise<RecentArticleRecord[]>
+  clearReadingHistory(): Promise<void>
   setArticleUnread(articleId: string, unread: boolean): Promise<void>
   setArticleStarred(articleId: string, starred: boolean): Promise<void>
   getAccounts(): Promise<AccountSnapshot>
@@ -89,7 +100,9 @@ export interface OrigReadDesktopApi extends LlmChatDataApi {
   clearAccountArticles(accountId: number): Promise<void>
   importAccountClientCertificate(accountId: number, passphrase: string): Promise<AccountRecord | null>
   clearAccountClientCertificate(accountId: number): Promise<AccountRecord>
-  addGroup(name: string): Promise<GroupRecord[]>
+  addGroup(name: string, parentId?: string | null): Promise<GroupRecord[]>
+  renameGroup(groupId: string, name: string): Promise<GroupRecord>
+  moveGroup(groupId: string, parentId?: string | null): Promise<GroupRecord>
   updateFeedSettings(feedId: string, patch: FeedSettingsPatch): Promise<FeedRecord>
   clearFeedArticles(feedId: string): Promise<void>
   deleteFeed(feedId: string): Promise<void>
@@ -146,6 +159,7 @@ export interface OrigReadDesktopApi extends LlmChatDataApi {
   subscribeSource(discoveryId: string, candidateIds: string[]): Promise<SourceSubscriptionResult[]>
   refreshJsonSource(feedId: string): Promise<{ feedId: string; fetchedArticles: number; insertedArticles: number }>
   refreshSource(feedId: string): Promise<SourceSyncItemResult>
+  refreshGroup(groupId: string): Promise<SourceSyncBatchResult>
   refreshAllSources(): Promise<SourceSyncBatchResult>
   getSyncRuntimeState(): Promise<SyncRuntimeState>
   onSyncRuntimeStateChanged(listener: (state: SyncRuntimeState) => void): () => void
@@ -257,6 +271,9 @@ export const IPC_CHANNELS = {
   listArticlesByFeed: 'library:list-articles-by-feed',
   listArticlesByGroup: 'library:list-articles-by-group',
   listFeedArticleStats: 'library:list-feed-article-stats',
+  recordArticleOpened: 'library:record-article-opened',
+  listRecentArticles: 'library:list-recent-articles',
+  clearReadingHistory: 'library:clear-reading-history',
   setArticleUnread: 'library:set-article-unread',
   setArticleStarred: 'library:set-article-starred',
   getAccounts: 'account:list',
@@ -269,6 +286,8 @@ export const IPC_CHANNELS = {
   importAccountClientCertificate: 'account:client-certificate:import',
   clearAccountClientCertificate: 'account:client-certificate:clear',
   addGroup: 'library:add-group',
+  renameGroup: 'library:rename-group',
+  moveGroup: 'library:move-group',
   updateFeedSettings: 'library:feed:update-settings',
   clearFeedArticles: 'library:feed:clear-articles',
   deleteFeed: 'library:feed:delete',
@@ -325,6 +344,7 @@ export const IPC_CHANNELS = {
   subscribeSource: 'source:subscribe',
   refreshJsonSource: 'json:refresh-source',
   refreshSource: 'source:refresh',
+  refreshGroup: 'source:refresh-group',
   refreshAllSources: 'source:refresh-all',
   getSyncRuntimeState: 'sync:get-runtime-state',
   syncRuntimeStateChanged: 'sync:runtime-state-changed',

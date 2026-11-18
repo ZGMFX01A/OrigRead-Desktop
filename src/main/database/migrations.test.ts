@@ -1,6 +1,13 @@
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { applyMigrations, CURRENT_ACCOUNT_SETTING_KEY, CURRENT_SCHEMA_VERSION, DEFAULT_GROUP_ID } from './migrations'
+import { initialMigrations } from './migrations-initial'
+import { accountsMigrations } from './migrations-accounts'
+import { sourcesMigrations } from './migrations-sources'
+import { conversationsMigrations } from './migrations-conversations'
+import { annotationsMigrations } from './migrations-annotations'
+import { subscriptionMigration } from './migration-subscriptions'
+import { readingHistoryMigration } from './migration-reading-history'
 import { ORIGREAD_DESKTOP_RELEASE_FEED_URL } from '../../shared/origread-release'
 
 describe('database migration v2 -> current schema', () => {
@@ -11,7 +18,7 @@ describe('database migration v2 -> current schema', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: CURRENT_SCHEMA_VERSION })
     const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((row) => row.name)
     expect(tables).toEqual(expect.arrayContaining([
-      'accounts', 'groups', 'feeds', 'articles',
+      'accounts', 'groups', 'feeds', 'articles', 'reading_history',
       'llm_conversations', 'llm_conversation_articles', 'llm_messages', 'llm_tool_calls',
       'llm_context_refs', 'llm_evidence_blocks', 'llm_citation_refs',
       'llm_citation_annotations', 'llm_citation_annotation_refs'
@@ -174,11 +181,155 @@ describe('database migration v2 -> current schema', () => {
 
     expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
     expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all())
-      .toEqual([{version:9},{version:10},{version:11},{version:12},{version:13},{version:14}])
+      .toEqual([{version:9},{version:10},{version:11},{version:12},{version:13},{version:14},{version:15},{version:16}])
     const columns = db.prepare("PRAGMA table_info('llm_messages')").all() as Array<{name:string}>
     expect(columns.map((column)=>column.name)).toEqual(expect.arrayContaining([
       'web_search_status','web_search_query','web_search_provider_name','web_search_result_count','web_search_error_message'
     ]))
+    db.close()
+  })
+
+  it('upgrades a v14 database preserving articles and initializing reading_history', () => {
+    const db = new DatabaseSync(':memory:')
+    db.exec('PRAGMA foreign_keys=ON')
+    // First apply through v14 by running up to v14
+    // We can simulate an existing v14 database by running migrations without v15
+    const v14Migrations = [
+      ...initialMigrations,
+      ...accountsMigrations,
+      ...sourcesMigrations,
+      ...conversationsMigrations,
+      ...annotationsMigrations,
+      subscriptionMigration
+    ]
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      ) STRICT;
+    `)
+    for (const m of v14Migrations) {
+      db.exec('BEGIN IMMEDIATE')
+      m.up(db)
+      db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(m.version, Date.now())
+      db.exec('COMMIT')
+    }
+
+    // Insert test data in v14 database
+    db.prepare(`
+      INSERT INTO feeds (id, account_id, group_id, name, url, source_type, created_at, updated_at)
+      VALUES ('feed-1', 1, '${DEFAULT_GROUP_ID}', 'Feed', 'https://example.com/rss', 'rss', 10, 20)
+    `).run()
+    db.prepare(`
+      INSERT INTO articles (id, account_id, feed_id, title, url, description, is_unread, is_starred, created_at, updated_at)
+      VALUES ('art-1', 1, 'feed-1', 'Article 1', 'https://example.com/1', 'Desc', 1, 0, 10, 20)
+    `).run()
+
+    // Now apply full migrations (which should apply v15)
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+
+    // Verify articles are intact
+    expect(db.prepare('SELECT id, title, account_id FROM articles WHERE id = ?').get('art-1')).toEqual({
+      id: 'art-1',
+      title: 'Article 1',
+      account_id: 1
+    })
+
+    // Verify reading_history table exists
+    const historyColumns = (db.prepare("PRAGMA table_info('reading_history')").all() as Array<{ name: string }>).map((c) => c.name)
+    expect(historyColumns).toEqual(['account_id', 'article_id', 'last_opened_at'])
+
+    db.close()
+  })
+
+  it('upgrades an existing v15 database to v16 group hierarchy retaining groups at root level and idempotent', () => {
+    const db = new DatabaseSync(':memory:')
+    db.exec('PRAGMA foreign_keys=ON')
+
+    // Run migrations up to v15
+    const v15Migrations = [
+      ...initialMigrations,
+      ...accountsMigrations,
+      ...sourcesMigrations,
+      ...conversationsMigrations,
+      ...annotationsMigrations,
+      subscriptionMigration,
+      readingHistoryMigration
+    ]
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      ) STRICT;
+    `)
+    for (const m of v15Migrations) {
+      db.exec('BEGIN IMMEDIATE')
+      m.up(db)
+      db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(m.version, Date.now())
+      db.exec('COMMIT')
+    }
+
+    // Insert test groups, feeds, articles and reading history in v15
+    const slashGroupName = 'Tech/Dev/News'
+    db.prepare(`
+      INSERT INTO groups (id, account_id, name, sort_order, is_default)
+      VALUES ('group-slash', 1, ?, 1, 0)
+    `).run(slashGroupName)
+    db.prepare(`
+      INSERT INTO feeds (id, account_id, group_id, name, url, source_type, created_at, updated_at)
+      VALUES ('feed-1', 1, 'group-slash', 'Feed 1', 'https://example.com/rss', 'rss', 10, 20)
+    `).run()
+    db.prepare(`
+      INSERT INTO articles (id, account_id, feed_id, title, url, description, is_unread, is_starred, created_at, updated_at)
+      VALUES ('art-1', 1, 'feed-1', 'Article 1', 'https://example.com/1', 'Desc', 1, 0, 10, 20)
+    `).run()
+    db.prepare(`
+      INSERT INTO reading_history (account_id, article_id, last_opened_at)
+      VALUES (1, 'art-1', 12345)
+    `).run()
+
+    // Apply migrations up to CURRENT_SCHEMA_VERSION (v16)
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+
+    // Verify parent_id column exists on groups
+    const groupColumns = (db.prepare("PRAGMA table_info('groups')").all() as Array<{ name: string }>).map((c) => c.name)
+    expect(groupColumns).toContain('parent_id')
+
+    // Verify existing groups remain at root level (parent_id is null) and name with slash is untouched
+    const groupRow = db.prepare('SELECT id, name, parent_id FROM groups WHERE id = ?').get('group-slash') as {
+      id: string
+      name: string
+      parent_id: string | null
+    }
+    expect(groupRow).toEqual({
+      id: 'group-slash',
+      name: 'Tech/Dev/News',
+      parent_id: null
+    })
+
+    // Verify default group also has parent_id as null
+    const defaultGroupRow = db.prepare('SELECT id, is_default, parent_id FROM groups WHERE is_default = 1').get() as {
+      id: string
+      is_default: number
+      parent_id: string | null
+    }
+    expect(defaultGroupRow.parent_id).toBeNull()
+
+    // Verify articles and reading history remain intact
+    expect(db.prepare('SELECT id, title FROM articles WHERE id = ?').get('art-1')).toEqual({
+      id: 'art-1',
+      title: 'Article 1'
+    })
+    expect(db.prepare('SELECT account_id, article_id, last_opened_at FROM reading_history WHERE article_id = ?').get('art-1')).toEqual({
+      account_id: 1,
+      article_id: 'art-1',
+      last_opened_at: 12345
+    })
+
+    // Verify migrations are idempotent: running again does not throw and returns CURRENT_SCHEMA_VERSION
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+
     db.close()
   })
 })

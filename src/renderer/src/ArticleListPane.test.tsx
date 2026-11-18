@@ -142,6 +142,47 @@ describe('article list thumbnails', () => {
     expect(document.querySelector('.article-preview-translation')?.textContent).toBe('翻译摘要')
     expect(document.querySelectorAll('.article-thumbnail img')).toHaveLength(1)
   })
+
+  it('hides both original and translated summaries when showArticleSummaries is false while preserving titles and thumbnails', () => {
+    translationState.settings = { displayMode: 'BILINGUAL', targetLanguage: 'zh' }
+    translationState.items.set('article-0', {
+      articleId: 'article-0', accountId: 1, feedId: 'feed', title: 'Title 0', description: 'Preview',
+      translatedTitle: '翻译标题', translatedDescription: '翻译摘要', language: 'zh',
+      target: { type: 'traditional', provider: 'MICROSOFT' }, cacheKey: null, expiresAt: Date.now() + 60_000,
+      showTranslation: true, cacheWriteFailed: false
+    })
+
+    // Text-only: no summaries, no <p> tags
+    const textDoc = markup(renderList([article()], { showArticleSummaries: false, showArticleThumbnails: false }))
+    expect(textDoc.querySelectorAll('.article-title-copy strong')).toHaveLength(2)
+    expect(textDoc.querySelector('.article-item p')).toBeNull()
+
+    // With thumbnails: thumbnail remains, summaries hidden
+    const thumbDoc = markup(renderList([article()], { showArticleSummaries: false, showArticleThumbnails: true }))
+    expect(thumbDoc.querySelectorAll('.article-title-copy strong')).toHaveLength(2)
+    expect(thumbDoc.querySelectorAll('.article-preview-copy p')).toHaveLength(0)
+    expect(thumbDoc.querySelector('.article-preview-translation')).toBeNull()
+    expect(thumbDoc.querySelectorAll('.article-thumbnail img')).toHaveLength(1)
+  })
+
+  it('renders publication time with semantic time and datetime when publishedAt is valid', () => {
+    const ts = 1_700_000_000_000
+    const document = markup(renderList([article(0, { publishedAt: ts })]))
+    const meta = document.querySelector('.article-meta')!
+    const time = meta.querySelector('time.article-publish-time')
+    expect(time).not.toBeNull()
+    expect(time?.getAttribute('dateTime') ?? time?.getAttribute('datetime')).toBe(new Date(ts).toISOString())
+    expect(time?.getAttribute('title')).toBeTruthy()
+    expect(time?.textContent).toBeTruthy()
+  })
+
+  it('hides publication time when publishedAt is missing or invalid', () => {
+    const documentNull = markup(renderList([article(0, { publishedAt: null })]))
+    expect(documentNull.querySelector('.article-meta time.article-publish-time')).toBeNull()
+
+    const documentInvalid = markup(renderList([article(0, { publishedAt: Number.NaN })]))
+    expect(documentInvalid.querySelector('.article-meta time.article-publish-time')).toBeNull()
+  })
 })
 
 describe('thumbnail failures', () => {
@@ -291,4 +332,313 @@ describe('article list geometry commits', () => {
     await state.render({ tick: 1 })
     expect(state.geometry.widthReads).toBe(reads)
   })
+})
+
+describe('read destination tab', () => {
+  it('renders read destination tab, computes readCount fallback, and triggers onDestinationChange', async () => {
+    const environment = parseHTML('<!doctype html><html><body><div id="root"></div></body></html>')
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    vi.stubGlobal('window', environment.window)
+    vi.stubGlobal('document', environment.document)
+
+    const onDestinationChange = vi.fn()
+    const root = createRoot(environment.document.getElementById('root')!)
+    roots.add(root)
+
+    await act(async () => {
+      root.render(
+        <ArticleListPane
+          destination="all"
+          articleScope={{ kind: 'all' }}
+          activeScopeFeed={null}
+          scopeLabel="All"
+          scopeArticleCount={10}
+          scopeUnreadCount={3}
+          scopeStarredCount={2}
+          articleQuery=""
+          visibleArticles={[]}
+          feeds={[]}
+          selectedArticleId={null}
+          articleListError={null}
+          searchInputRef={{ current: null }}
+          refreshing={false}
+          refreshDisabled={false}
+          onDestinationChange={onDestinationChange}
+          onClearScope={noop}
+          onArticleQueryChange={noop}
+          onRefresh={noop}
+          onSelectArticle={noop}
+          onToggleStarred={noop}
+          onArticleContextMenu={noop}
+          onAddSource={noop}
+        />
+      )
+    })
+
+    const buttons = Array.from(environment.document.querySelectorAll<HTMLButtonElement>('.article-destination-item'))
+    const readButton = buttons.find((btn) => btn.textContent?.includes('readStatus'))
+    expect(readButton).toBeDefined()
+    expect(readButton?.textContent).toContain('7')
+
+    await act(async () => {
+      readButton?.dispatchEvent(new environment.Event('click', { bubbles: true }))
+    })
+    expect(onDestinationChange).toHaveBeenCalledWith('read')
+  })
+
+  it('marks read destination active with readStatus label and respects scopeReadCount override', () => {
+    const doc = markup(
+      renderList([], {
+        destination: 'read',
+        scopeArticleCount: 15,
+        scopeUnreadCount: 5,
+        scopeReadCount: 8
+      })
+    )
+    const activeBtn = doc.querySelector('.article-destination-item[aria-current="page"]')
+    expect(activeBtn?.textContent).toContain('readStatus')
+    expect(activeBtn?.textContent).toContain('8')
+    expect(doc.querySelector('.article-pane')?.getAttribute('aria-label')).toBe('readStatus')
+  })
+
+  describe('refresh button semantics', () => {
+    it('renders all sources refresh semantics when scope is all', () => {
+      const doc = markup(renderList([], { articleScope: { kind: 'all' }, activeScopeFeed: null }))
+      const btn = doc.querySelector('.refresh-all-button')
+      expect(btn?.getAttribute('aria-label')).toBe('refreshAll')
+      expect(btn?.getAttribute('title')).toBe('refreshAll')
+    })
+
+    it('renders single feed refresh semantics when scope is feed', () => {
+      const doc = markup(renderList([], { articleScope: { kind: 'feed', id: 'feed-1' }, activeScopeFeed: feed() }))
+      const btn = doc.querySelector('.refresh-all-button')
+      expect(btn?.getAttribute('aria-label')).toBe('refresh')
+      expect(btn?.getAttribute('title')).toBe('reloadSourceArticles')
+    })
+
+    it('renders local group refresh semantics for local accounts', () => {
+      const doc = markup(renderList([], {
+        articleScope: { kind: 'group', id: 'group-1' },
+        activeScopeFeed: null,
+        isLocalAccount: true
+      }))
+      const btn = doc.querySelector('.refresh-all-button')
+      expect(btn?.getAttribute('aria-label')).toBe('refreshGroup')
+      expect(btn?.getAttribute('title')).toBe('refreshGroupSources')
+    })
+
+    it('renders remote group refresh semantics for remote accounts', () => {
+      const doc = markup(renderList([], {
+        articleScope: { kind: 'group', id: 'group-1' },
+        activeScopeFeed: null,
+        isLocalAccount: false
+      }))
+      const btn = doc.querySelector('.refresh-all-button')
+      expect(btn?.getAttribute('aria-label')).toBe('refreshRemoteGroup')
+      expect(btn?.getAttribute('title')).toBe('refreshRemoteGroupTooltip')
+    })
+  })
+
+  it('displays articleLoadedCount when visible articles are fewer than destinationCount without search query', () => {
+    const visible = [article(1), article(2)]
+    const doc = markup(
+      renderList(visible, {
+        destination: 'read',
+        scopeArticleCount: 100,
+        scopeUnreadCount: 10,
+        scopeReadCount: 90
+      })
+    )
+    const meta = doc.querySelector('.list-meta span')
+    expect(meta?.textContent).toBe('articleLoadedCount')
+  })
+
+  it('displays articleCount when visible articles equal destinationCount', () => {
+    const visible = [article(1), article(2)]
+    const doc = markup(
+      renderList(visible, {
+        destination: 'read',
+        scopeArticleCount: 10,
+        scopeUnreadCount: 8,
+        scopeReadCount: 2
+      })
+    )
+    const meta = doc.querySelector('.list-meta span')
+    expect(meta?.textContent).toBe('articleCount')
+  })
+
+  describe('recent destination tab and reading history', () => {
+    it('renders recent destination tab, displays scopeRecentCount, and triggers onDestinationChange', async () => {
+      const environment = parseHTML('<!doctype html><html><body><div id="root"></div></body></html>')
+      vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+      vi.stubGlobal('window', environment.window)
+      vi.stubGlobal('document', environment.document)
+      vi.stubGlobal('ResizeObserver', class {
+        observe() {}
+        disconnect() {}
+      })
+
+      const onDestinationChange = vi.fn()
+      const root = createRoot(environment.document.getElementById('root')!)
+      roots.add(root)
+
+      await act(async () => {
+        root.render(
+          <ArticleListPane
+            destination="all"
+            articleScope={{ kind: 'all' }}
+            activeScopeFeed={null}
+            scopeLabel="All"
+            scopeArticleCount={10}
+            scopeUnreadCount={3}
+            scopeStarredCount={2}
+            scopeRecentCount={5}
+            articleQuery=""
+            visibleArticles={[]}
+            feeds={[]}
+            selectedArticleId={null}
+            articleListError={null}
+            searchInputRef={{ current: null }}
+            refreshing={false}
+            refreshDisabled={false}
+            onDestinationChange={onDestinationChange}
+            onClearScope={noop}
+            onArticleQueryChange={noop}
+            onRefresh={noop}
+            onSelectArticle={noop}
+            onToggleStarred={noop}
+            onArticleContextMenu={noop}
+            onAddSource={noop}
+          />
+        )
+      })
+
+      const buttons = Array.from(environment.document.querySelectorAll<HTMLButtonElement>('.article-destination-item'))
+      const recentButton = buttons.find((btn) => btn.textContent?.includes('recentArticles'))
+      expect(recentButton).toBeDefined()
+      expect(recentButton?.getAttribute('data-destination')).toBe('recent')
+      expect(recentButton?.textContent).toContain('5')
+
+      await act(async () => {
+        recentButton?.dispatchEvent(new environment.Event('click', { bubbles: true }))
+      })
+      expect(onDestinationChange).toHaveBeenCalledWith('recent')
+    })
+
+    it('marks recent destination active with recentArticles aria label', () => {
+      const doc = markup(
+        renderList([], {
+          destination: 'recent',
+          scopeRecentCount: 12
+        })
+      )
+      const activeBtn = doc.querySelector('.article-destination-item[aria-current="page"]')
+      expect(activeBtn?.textContent).toContain('recentArticles')
+      expect(activeBtn?.textContent).toContain('12')
+      expect(doc.querySelector('.article-pane')?.getAttribute('aria-label')).toBe('recentArticles')
+    })
+
+    it('shows clear history button only when destination is recent, and triggers onClearHistory', async () => {
+      const environment = parseHTML('<!doctype html><html><body><div id="root"></div></body></html>')
+      vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+      vi.stubGlobal('window', environment.window)
+      vi.stubGlobal('document', environment.document)
+      vi.stubGlobal('ResizeObserver', class {
+        observe() {}
+        disconnect() {}
+      })
+
+      const onClearHistory = vi.fn()
+      const root = createRoot(environment.document.getElementById('root')!)
+      roots.add(root)
+
+      // When destination is all, clear history button should NOT be rendered
+      await act(async () => {
+        root.render(
+          <ArticleListPane
+            destination="all"
+            articleScope={{ kind: 'all' }}
+            activeScopeFeed={null}
+            scopeLabel="All"
+            scopeArticleCount={10}
+            scopeUnreadCount={3}
+            scopeStarredCount={2}
+            scopeRecentCount={5}
+            articleQuery=""
+            visibleArticles={[]}
+            feeds={[]}
+            selectedArticleId={null}
+            articleListError={null}
+            searchInputRef={{ current: null }}
+            refreshing={false}
+            refreshDisabled={false}
+            onDestinationChange={noop}
+            onClearScope={noop}
+            onArticleQueryChange={noop}
+            onRefresh={noop}
+            onSelectArticle={noop}
+            onToggleStarred={noop}
+            onArticleContextMenu={noop}
+            onAddSource={noop}
+            onClearHistory={onClearHistory}
+          />
+        )
+      })
+      expect(environment.document.querySelector('.clear-history-button')).toBeNull()
+
+      // When destination is recent with articles, clear history button should be rendered and clickable
+      await act(async () => {
+        root.render(
+          <ArticleListPane
+            destination="recent"
+            articleScope={{ kind: 'all' }}
+            activeScopeFeed={null}
+            scopeLabel="All"
+            scopeArticleCount={10}
+            scopeUnreadCount={3}
+            scopeStarredCount={2}
+            scopeRecentCount={5}
+            articleQuery=""
+            visibleArticles={[article(1)]}
+            feeds={[]}
+            selectedArticleId={null}
+            articleListError={null}
+            searchInputRef={{ current: null }}
+            refreshing={false}
+            refreshDisabled={false}
+            onDestinationChange={noop}
+            onClearScope={noop}
+            onArticleQueryChange={noop}
+            onRefresh={noop}
+            onSelectArticle={noop}
+            onToggleStarred={noop}
+            onArticleContextMenu={noop}
+            onAddSource={noop}
+            onClearHistory={onClearHistory}
+          />
+        )
+      })
+      const clearBtn = environment.document.querySelector<HTMLButtonElement>('.clear-history-button')
+      expect(clearBtn).not.toBeNull()
+      expect(clearBtn?.disabled).toBe(false)
+
+      await act(async () => {
+        clearBtn?.dispatchEvent(new environment.Event('click', { bubbles: true }))
+      })
+      expect(onClearHistory).toHaveBeenCalledTimes(1)
+    })
+
+    it('renders empty recent state when recent articles list is empty', () => {
+      const doc = markup(
+        renderList([], {
+          destination: 'recent',
+          scopeRecentCount: 0,
+          feeds: [feed()]
+        })
+      )
+      expect(doc.querySelector('.empty-list-state h1')?.textContent).toBe('noRecentArticles')
+      expect(doc.querySelector('.empty-list-state p')?.textContent).toBe('noRecentArticlesDescription')
+    })
+  })
+
 })

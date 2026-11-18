@@ -7,9 +7,20 @@ import { sourcesMigrations } from './migrations-sources'
 import { conversationsMigrations } from './migrations-conversations'
 import { annotationsMigrations } from './migrations-annotations'
 import { subscriptionMigration } from './migration-subscriptions'
+import { readingHistoryMigration } from './migration-reading-history'
+import { groupHierarchyMigration } from './migration-group-hierarchy'
 
-// 历史迁移不可重排；新订阅元数据迁移追加到最后。
-const migrations: Migration[] = [...initialMigrations, ...accountsMigrations, ...sourcesMigrations, ...conversationsMigrations, ...annotationsMigrations, subscriptionMigration]
+// 历史迁移不可重排；新订阅元数据、阅读历史与分组层级迁移追加到最后。
+const migrations: Migration[] = [
+  ...initialMigrations,
+  ...accountsMigrations,
+  ...sourcesMigrations,
+  ...conversationsMigrations,
+  ...annotationsMigrations,
+  subscriptionMigration,
+  readingHistoryMigration,
+  groupHierarchyMigration
+]
 
 export function applyMigrations(database: DatabaseSync): number {
   database.exec(`

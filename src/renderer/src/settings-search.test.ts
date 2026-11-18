@@ -8,6 +8,7 @@ const english: Record<string, string> = {
   readerFont: 'Reading font', readerFontSize: 'Article font size',
   uiFontScale: 'UI text size', uiFontScaleDescription: 'Adjust interface text without changing article text',
   showArticleThumbnails: 'Show article thumbnails', showArticleThumbnailsDescription: 'Show available images in the article list',
+  showArticleSummaries: 'Show article summaries', showArticleSummariesDescription: 'Show summaries in the article list',
   readerFontSizeDescription: 'Choose a comfortable size for article text',
   aiSettingsTitle: 'AI reading', aiTabSearch: 'Web search',
   webSearchProviders: 'Search services'
@@ -72,32 +73,37 @@ describe('desktop settings search', () => {
     expect(searchSettings('界面字号', zh)[0]?.item.anchor).toBe('uiFontScale')
     expect(searchSettings('正文字号', zh)[0]?.item.anchor).toBe('readerFontSize')
     expect(searchSettings('显示文章缩略图', zh)[0]?.item.anchor).toBe('showArticleThumbnails')
+    expect(searchSettings('显示文章摘要', zh)[0]?.item.anchor).toBe('showArticleSummaries')
   })
 
   it.each([
-    ['2K', 'uiFontScale'], ['DPI', 'uiFontScale'], ['UI font size', 'uiFontScale'],
-    ['界面字体', 'uiFontScale'], ['缩略图', 'showArticleThumbnails'], ['article images', 'showArticleThumbnails']
-  ])('finds %s at its actual general settings control', (query, anchor) => {
+    ['2K', 'uiFontScale', 'Settings › General'], ['DPI', 'uiFontScale', 'Settings › General'], ['UI font size', 'uiFontScale', 'Settings › General'],
+    ['界面字体', 'uiFontScale', 'Settings › General'], ['缩略图', 'showArticleThumbnails', 'Settings › General'], ['article images', 'showArticleThumbnails', 'Settings › General'],
+    ['文章摘要', 'showArticleSummaries', 'Settings › General'], ['article summaries', 'showArticleSummaries', 'Settings › General'],
+    ['缩进', 'readerIndentParagraphs', 'Settings › General › Reading'], ['paragraph indent', 'readerIndentParagraphs', 'Settings › General › Reading']
+  ])('finds %s at its actual general settings control', (query, anchor, breadcrumb) => {
     const result = searchSettings(query, t)[0]
     expect(result?.item).toMatchObject({ page: 'general', anchor })
-    expect(result?.breadcrumb).toBe('Settings › General')
+    expect(result?.breadcrumb).toBe(breadcrumb)
   })
 
   it.each([
-    ['zh', '界面字号', '显示文章缩略图'],
-    ['en', 'UI text size', 'Show article thumbnails'],
-    ['es', 'Tamaño del texto de la interfaz', 'Mostrar miniaturas de artículos'],
-    ['pt-BR', 'Tamanho do texto da interface', 'Mostrar miniaturas dos artigos'],
-    ['de', 'Textgröße der Oberfläche', 'Artikelvorschaubilder anzeigen'],
-    ['fr', 'Taille du texte de l’interface', 'Afficher les miniatures des articles'],
-    ['ja', '画面の文字サイズ', '記事のサムネイルを表示']
-  ])('adds localized appearance labels for %s without replacing unrelated text', (language, scaleTitle, thumbnailTitle) => {
+    ['zh', '界面字号', '显示文章缩略图', '显示文章摘要', '段落首行缩进'],
+    ['en', 'UI text size', 'Show article thumbnails', 'Show article summaries', 'Indent paragraphs'],
+    ['es', 'Tamaño del texto de la interfaz', 'Mostrar miniaturas de artículos', 'Mostrar resúmenes de artículos', 'Sangría de párrafos'],
+    ['pt-BR', 'Tamanho do texto da interface', 'Mostrar miniaturas dos artigos', 'Mostrar resumos dos artigos', 'Recuo de parágrafos'],
+    ['de', 'Textgröße der Oberfläche', 'Artikelvorschaubilder anzeigen', 'Artikelzusammenfassungen anzeigen', 'Absatzeinzug'],
+    ['fr', 'Taille du texte de l’interface', 'Afficher les miniatures des articles', 'Afficher les résumés des articles', 'Retrait des paragraphes'],
+    ['ja', '画面の文字サイズ', '記事のサムネイルを表示', '記事の要約を表示', '段落の字下げ']
+  ])('adds localized appearance labels for %s without replacing unrelated text', (language, scaleTitle, thumbnailTitle, summaryTitle, indentTitle) => {
     const resources = withAppearanceMessages({ [language]: { translation: { existing: 'Keep me' } } })
     expect(resources[language]?.translation).toMatchObject({
-      existing: 'Keep me', uiFontScale: scaleTitle, showArticleThumbnails: thumbnailTitle,
+      existing: 'Keep me', uiFontScale: scaleTitle, showArticleThumbnails: thumbnailTitle, showArticleSummaries: summaryTitle,
+      readerIndentParagraphs: indentTitle, readerIndentParagraphsDescription: expect.any(String),
       uiFontScale100: expect.stringContaining('100%'), uiFontScale110: '110%',
       uiFontScale125: '125%', uiFontScale150: '150%',
-      uiFontScaleDescription: expect.any(String), showArticleThumbnailsDescription: expect.any(String)
+      uiFontScaleDescription: expect.any(String), showArticleThumbnailsDescription: expect.any(String),
+      showArticleSummariesDescription: expect.any(String)
     })
   })
 

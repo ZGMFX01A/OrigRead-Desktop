@@ -3,7 +3,14 @@ import type { FeedRecord, GroupRecord } from '../../shared/library'
 import type { LibraryRepository } from '../database/library-repository'
 import type { AccountRepository } from './account-repository'
 import { remoteDbId, remoteId } from './account-repository'
-import { categoryRemoteId, feedRemoteId, googleRemoteItemId, type GoogleReaderApi } from './remote-account-api'
+import {
+  categoryRemoteId,
+  feedRemoteId,
+  googleRemoteItemId,
+  type GoogleReaderApi,
+  type GoogleReaderTag,
+  isTagListUnsupportedError
+} from './remote-account-api'
 import { googleItemToArticle, decodeHtml } from './remote-article-records'
 
 // Google Reader 已读快照仍只覆盖最近一个月，旧文章不能通过未读集合的补集强制改变。
@@ -27,6 +34,7 @@ interface SyncState {
   readonly localStates: ReturnType<LibraryRepository['listArticleStateForAccount']>
   readonly localIds: Set<string>
   readonly subscriptions: Awaited<ReturnType<GoogleReaderApi['getSubscriptionList']>>
+  readonly serverTags: GoogleReaderTag[] | null
   readonly now: number
 }
 interface Catalog { readonly remoteGroups: Map<string, GroupRecord>; readonly remoteFeeds: FeedRecord[] }
@@ -45,11 +53,12 @@ async function fetchSnapshots(context: SyncContext): Promise<SyncState> {
     const { api, account, library } = context
     await api.authenticate()
     const sinceSeconds=Math.floor((Date.now()-READ_SNAPSHOT_WINDOW_MS)/MILLISECONDS_PER_SECOND)
-    const [remoteUnread,remoteStarred,remoteRead,subscriptions]=await Promise.all([
+    const [remoteUnread,remoteStarred,remoteRead,subscriptions,serverTags]=await Promise.all([
       collectIds((c)=>api.getUnreadItemIds(c)),
       collectIds((c)=>api.getStarredItemIds(c)),
       collectIds((c)=>api.getReadItemIds(sinceSeconds,account.type==='fresh_rss',c)),
-      api.getSubscriptionList()
+      api.getSubscriptionList(),
+      fetchServerTagsSafely(api)
     ])
     const unread=new Set(remoteUnread.map(googleRemoteItemId))
     const starred=new Set(remoteStarred.map(googleRemoteItemId))
@@ -57,24 +66,41 @@ async function fetchSnapshots(context: SyncContext): Promise<SyncState> {
     const localStates=library.listArticleStateForAccount(account.id)
     const localIds=new Set(localStates.map((item)=>remoteId(item.id)))
 
-  return { unread, starred, read, localStates, localIds, subscriptions, now: Date.now() }
+  return { unread, starred, read, localStates, localIds, subscriptions, serverTags, now: Date.now() }
+}
+
+async function fetchServerTagsSafely(api: GoogleReaderApi): Promise<GoogleReaderTag[] | null> {
+  try {
+    const result = await api.getTagList()
+    if (!Array.isArray(result.tags)) throw new Error('Google Reader tag/list 返回了无效的 tags 列表')
+    return result.tags
+  } catch (error) {
+    if (isTagListUnsupportedError(error)) {
+      return null
+    }
+    throw error
+  }
 }
 
 /** 目录映射与写入使用同一任务账户和已确认的分组关系。 */
 function saveCatalog(context: SyncContext, state: SyncState): Catalog {
   const { account, library } = context
-  const { subscriptions } = state
+  const { subscriptions, serverTags } = state
     const defaultGroup=context.ensureDefaultGroup()
     const remoteGroups=new Map<string,GroupRecord>([[defaultGroup.id,defaultGroup]])
     const remoteFeeds:FeedRecord[]=[]
     const now=state.now
+    const existingGroups = library.listGroupsForAccount(account.id)
+    const existingMap = new Map(existingGroups.map((g) => [g.id, g]))
     for(const subscription of subscriptions.subscriptions??[]){
       if(!subscription.id)continue
       const category=subscription.categories?.[0]
       let group=defaultGroup
       if(category?.id){
         const categoryId=categoryRemoteId(category.id)
-        group={id:remoteDbId(account.id,`user/-/label/${categoryId}`),accountId:account.id,name:category.label??categoryId,sortOrder:0,isDefault:false}
+        const groupId=remoteDbId(account.id,`user/-/label/${categoryId}`)
+        const existing=existingMap.get(groupId)
+        group={id:groupId,accountId:account.id,name:category.label??categoryId,sortOrder:existing?.sortOrder??0,isDefault:false}
         remoteGroups.set(group.id,group)
       }
       const remoteFeedId=feedRemoteId(subscription.id)
@@ -87,8 +113,27 @@ function saveCatalog(context: SyncContext, state: SyncState): Catalog {
         isBrowser:false,dynamicRendering:false,createdAt:now,updatedAt:now
       })
     }
+    // 服务端真实 label tags 补充权威分组（包含空组），并过滤 state/system 标签
+    if(serverTags){
+      for(const tag of serverTags){
+        if(!tag.id)continue
+        if(!/^user\/[^/]+\/label\/.+$/.test(tag.id))continue
+        const categoryId=categoryRemoteId(tag.id).trim()
+        if(!categoryId)continue
+        const groupId=remoteDbId(account.id,`user/-/label/${categoryId}`)
+        if(!remoteGroups.has(groupId)){
+          const existing=existingMap.get(groupId)
+          remoteGroups.set(groupId,{
+            id:groupId,
+            accountId:account.id,
+            name:categoryId,
+            sortOrder:existing?.sortOrder??0,
+            isDefault:false
+          })
+        }
+      }
+    }
     library.transaction(() => {
-      const existingGroups = library.listGroupsForAccount(account.id)
       for (const group of remoteGroups.values()) library.upsertGroup(group)
       // 旧版同步组缺少 label 命名空间；仅迁移可明确识别的旧身份，不按显示名称合并远端组。
       for (const group of remoteGroups.values()) {

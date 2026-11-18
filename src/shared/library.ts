@@ -6,6 +6,7 @@ export interface GroupRecord {
   name: string
   sortOrder: number
   isDefault: boolean
+  parentId?: string | null
 }
 
 export interface FeedRecord {
@@ -48,6 +49,10 @@ export interface ArticleRecord {
   isStarred: boolean
   createdAt: number
   updatedAt: number
+}
+
+export interface RecentArticleRecord extends ArticleRecord {
+  lastOpenedAt: number
 }
 
 export type ArticleSearchMatchField = 'title' | 'description' | 'content'

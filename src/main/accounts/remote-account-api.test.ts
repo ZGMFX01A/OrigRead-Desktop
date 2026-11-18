@@ -1,8 +1,15 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { FeverApi, GoogleReaderApi, STREAM_READ, STREAM_STARRED, type AccountFetch } from './remote-account-api'
+import { FeverApi, GoogleReaderApi, GoogleReaderHttpError, isTagListUnsupportedError, STREAM_READ, STREAM_STARRED, type AccountFetch } from './remote-account-api'
 
 describe('GoogleReaderApi Android protocol parity', () => {
+  it('uses HTTP status rather than error text to identify unsupported tag-list endpoints', () => {
+    expect(isTagListUnsupportedError(new GoogleReaderHttpError(404, 'unsupported'))).toBe(true)
+    expect(isTagListUnsupportedError(new GoogleReaderHttpError(501, 'unsupported'))).toBe(true)
+    expect(isTagListUnsupportedError(new GoogleReaderHttpError(500, 'Storage not found; upstream 404'))).toBe(false)
+    expect(isTagListUnsupportedError(new Error('Network not found'))).toBe(false)
+  })
+
   it('uses Android ClientLogin fields, GoogleLogin authorization and optional action token', async () => {
     const calls:CapturedCall[]=[]
     const fetcher=mockFetch(calls,(url)=>{
@@ -78,6 +85,20 @@ describe('GoogleReaderApi Android protocol parity', () => {
     const lists=calls.filter((call)=>call.url.includes('/subscription/list'))
     expect(lists[0]?.headers.authorization).toBe('GoogleLogin auth=token-1')
     expect(lists[1]?.headers.authorization).toBe('GoogleLogin auth=token-2')
+  })
+
+  it('fetches tag list with reader/api/0/tag/list?output=json', async () => {
+    const calls: CapturedCall[] = []
+    const api = new GoogleReaderApi('https://reader.example/', 'u', 'p', mockFetch(calls, (url) => {
+      if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+      if (url.endsWith('/reader/api/0/token')) return new Response('action', { status: 200 })
+      if (url.includes('/reader/api/0/tag/list')) return json({ tags: [{ id: 'user/1000/label/Tech' }] })
+      return new Response('missing', { status: 404 })
+    }))
+    const result = await api.getTagList()
+    expect(result).toEqual({ tags: [{ id: 'user/1000/label/Tech' }] })
+    const call = calls.find(c => c.url.includes('/tag/list'))!
+    expect(call.url).toBe('https://reader.example/reader/api/0/tag/list?output=json')
   })
 })
 

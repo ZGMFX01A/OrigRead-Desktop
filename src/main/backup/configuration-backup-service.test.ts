@@ -17,6 +17,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
   it('merges normalized group names and remaps feeds on repeated restores', () => {
     const fixture = createFixture()
     const backup = JSON.parse(fixture.backup.exportBackup('')) as ConfigurationBackup
+    delete (backup as { desktopGroupHierarchy?: unknown }).desktopGroupHierarchy
     backup.subscriptions.groups.push(
       { id: 'tech-a', name: ' Tech ', isDefault: false },
       { id: 'tech-b', name: 'Tech', isDefault: false },

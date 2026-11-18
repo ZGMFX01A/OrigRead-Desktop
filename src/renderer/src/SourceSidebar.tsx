@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronRight, Compass, Download, Inbox, MoreHorizontal, Plus, RefreshCw, Rss, Search, Upload } from 'lucide-react'
-import { memo, useEffect, useState, type MouseEvent, type RefObject } from 'react'
+import { memo, useEffect, useMemo, useState, type MouseEvent, type RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
+import { buildGroupTree, type GroupTreeNode } from '../../shared/group-tree'
 import type { FeedArticleStats, FeedRecord, GroupRecord } from '../../shared/library'
 import { useStableActions } from './useStableActions'
 import './source-sidebar.css'
@@ -11,7 +12,7 @@ export type ArticleScope =
   | { kind: 'feed'; id: string }
 
 /** Article Pane 使用的文章集合过滤状态；与来源范围 ArticleScope 正交。 */
-export type Destination = 'all' | 'unread' | 'starred'
+export type Destination = 'all' | 'unread' | 'starred' | 'read' | 'recent'
 
 interface SourceGroupEntry {
   group: GroupRecord
@@ -24,6 +25,7 @@ interface SourceSidebarProps {
   visibleFeedCount: number
   groupedFeeds: SourceGroupEntry[]
   feedStatsById: ReadonlyMap<string, FeedArticleStats>
+  groupStatsById?: ReadonlyMap<string, { totalFeeds: number; totalUnread: number }>
   allArticleCount: number
   allUnreadCount: number
   collapsedGroupIds: ReadonlySet<string>
@@ -42,6 +44,8 @@ interface SourceSidebarProps {
   onRefreshFeed: (feed: FeedRecord) => void
   onOpenFeedSettings: (feed: FeedRecord) => void
   onFeedContextMenu: (feed: FeedRecord, x: number, y: number) => void
+  onBlankContextMenu?: (x: number, y: number) => void
+  onGroupContextMenu?: (group: GroupRecord, x: number, y: number) => void
   onShowSourceCatalog: () => void
   onToggleSubscriptionMenu: () => void
   onCloseSubscriptionMenu: () => void
@@ -110,6 +114,8 @@ export function SourceBrandHeader({
   )
 }
 
+const NOOP_GROUP_CONTEXT_MENU = (): void => {}
+
 /**
  * Desktop 共用的来源范围内容。
  *
@@ -123,11 +129,38 @@ export function SourceSidebar(props: SourceSidebarProps): React.JSX.Element {
     onSelectGroup: props.onSelectGroup, onToggleGroupCollapsed: props.onToggleGroupCollapsed,
     onSelectFeed: props.onSelectFeed, onRefreshFeed: props.onRefreshFeed,
     onOpenFeedSettings: props.onOpenFeedSettings, onFeedContextMenu: props.onFeedContextMenu,
+    onBlankContextMenu: props.onBlankContextMenu ?? NOOP_GROUP_CONTEXT_MENU,
+    onGroupContextMenu: props.onGroupContextMenu ?? NOOP_GROUP_CONTEXT_MENU,
     onShowSourceCatalog: props.onShowSourceCatalog, onToggleSubscriptionMenu: props.onToggleSubscriptionMenu,
     onCloseSubscriptionMenu: props.onCloseSubscriptionMenu, onAddSource: props.onAddSource,
     onImportOpml: props.onImportOpml, onOpenOpmlExport: props.onOpenOpmlExport
   })
   return <SourceSidebarContent {...props} {...actions} />
+}
+
+type GroupTreeItem = GroupRecord & { feeds: FeedRecord[] }
+
+function getSubtreeStats(
+  node: GroupTreeNode<GroupTreeItem>,
+  feedStats: (feedId: string) => FeedArticleStats
+): { totalFeeds: number; totalUnread: number } {
+  const seenFeedIds = new Set<string>()
+  let totalUnread = 0
+
+  function traverse(current: GroupTreeNode<GroupTreeItem>): void {
+    for (const feed of current.group.feeds) {
+      if (!seenFeedIds.has(feed.id)) {
+        seenFeedIds.add(feed.id)
+        totalUnread += feedStats(feed.id).unread
+      }
+    }
+    for (const child of current.children) {
+      traverse(child)
+    }
+  }
+
+  traverse(node)
+  return { totalFeeds: seenFeedIds.size, totalUnread }
 }
 
 const SourceSidebarContent = memo(function SourceSidebarContent({
@@ -136,6 +169,7 @@ const SourceSidebarContent = memo(function SourceSidebarContent({
   visibleFeedCount,
   groupedFeeds,
   feedStatsById,
+  groupStatsById,
   allArticleCount,
   allUnreadCount,
   collapsedGroupIds,
@@ -154,6 +188,8 @@ const SourceSidebarContent = memo(function SourceSidebarContent({
   onRefreshFeed,
   onOpenFeedSettings,
   onFeedContextMenu,
+  onGroupContextMenu,
+  onBlankContextMenu,
   onShowSourceCatalog,
   onToggleSubscriptionMenu,
   onCloseSubscriptionMenu,
@@ -169,8 +205,141 @@ const SourceSidebarContent = memo(function SourceSidebarContent({
   const feedStats = (feedId: string): FeedArticleStats =>
     feedStatsById.get(feedId) ?? { feedId, total: 0, unread: 0, starred: 0 }
 
+  const groupTree = useMemo(() => {
+    return buildGroupTree(
+      groupedFeeds.map(({ group, feeds }) => ({ ...group, feeds }))
+    )
+  }, [groupedFeeds])
+
+  const renderGroupNode = (node: GroupTreeNode<GroupTreeItem>): React.JSX.Element => {
+    const { group } = node
+    const stats = groupStatsById?.get(group.id) ?? getSubtreeStats(node, feedStats)
+    const { totalFeeds, totalUnread } = stats
+    const collapsed = !sourceSearchActive && collapsedGroupIds.has(group.id)
+
+    return (
+      <section className="source-group-section" key={group.id} data-group-id={group.id} data-group-depth={node.depth}>
+        <div
+          className="source-group-header"
+          onContextMenu={(event) => handleGroupContextMenu(event, group, onGroupContextMenu)}
+        >
+          <button
+            className={`source-group-scope ${articleScope.kind === 'group' && articleScope.id === group.id ? 'selected' : ''}`}
+            type="button"
+            aria-current={articleScope.kind === 'group' && articleScope.id === group.id ? 'true' : undefined}
+            title={group.name}
+            onClick={() => onSelectGroup(group)}
+          >
+            <span className="source-group-name"><strong>{group.name}</strong><small>{t('sourceCount', { count: totalFeeds })}</small></span>
+            <span>{t('unreadCountShort', { count: totalUnread })}</span>
+          </button>
+          <button
+            type="button"
+            className="source-group-menu-button"
+            title={t('groupActions')}
+            aria-label={t('groupActions')}
+            onClick={(event) => {
+              event.stopPropagation()
+              const rect = event.currentTarget.getBoundingClientRect()
+              onGroupContextMenu?.(group, rect.left, rect.bottom + 4)
+            }}
+          >
+            <MoreHorizontal size={13} />
+          </button>
+          <button
+            className="source-group-collapse"
+            type="button"
+            aria-label={t(collapsed ? 'expandSourceGroup' : 'collapseSourceGroup', { name: group.name })}
+            aria-expanded={!collapsed}
+            disabled={sourceSearchActive}
+            onClick={(event) => {
+              event.stopPropagation()
+              onToggleGroupCollapsed(group.id)
+            }}
+          >
+            {collapsed ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}
+          </button>
+        </div>
+        {!collapsed && (
+          <>
+            {group.feeds.length > 0 && (
+              <div className="source-group-items">
+                {group.feeds.map((feed) => (
+                  <article
+                    className={`source-item ${articleScope.kind === 'feed' && articleScope.id === feed.id ? 'selected' : ''}`}
+                    key={feed.id}
+                    tabIndex={0}
+                    role="button"
+                    aria-current={articleScope.kind === 'feed' && articleScope.id === feed.id ? 'true' : undefined}
+                    title={feed.name}
+                    onClick={() => onSelectFeed(feed)}
+                    onContextMenu={(event) => handleFeedContextMenu(event, feed, onFeedContextMenu)}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        onSelectFeed(feed)
+                      }
+                    }}
+                  >
+                    <FeedIcon feed={feed} />
+                    <div className="source-copy">
+                      <strong>{feed.name}</strong>
+                      <span>
+                        <span className="source-type-inline">{feed.sourceType.toUpperCase()}</span>
+                        {t('sourceArticleStats', { total: feedStats(feed.id).total, unread: feedStats(feed.id).unread })}
+                      </span>
+                    </div>
+                    <div className="source-actions">
+                      <button
+                        type="button"
+                        className="source-refresh-button"
+                        title={t('refresh')}
+                        aria-label={t('refresh')}
+                        disabled={refreshingFeedId !== null || isRefreshingAll}
+                        onClick={(event) => { event.stopPropagation(); onRefreshFeed(feed) }}
+                      >
+                        <RefreshCw size={13} className={refreshingFeedId === feed.id ? 'spinning' : ''} />
+                      </button>
+                      <button
+                        type="button"
+                        className="source-settings-button"
+                        title={t('sourceSettings')}
+                        aria-label={t('sourceSettings')}
+                        onClick={(event) => { event.stopPropagation(); onOpenFeedSettings(feed) }}
+                      >
+                        <MoreHorizontal size={14} />
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+            {node.children.length > 0 && (
+              <div
+                className="source-group-children"
+                style={{ paddingLeft: node.depth < 8 ? '10px' : 0 }}
+              >
+                {node.children.map(renderGroupNode)}
+              </div>
+            )}
+          </>
+        )}
+      </section>
+    )
+  }
+
   return (
-    <section className={`source-pane ${showHeader ? '' : 'embedded-source-pane'}`.trim()} aria-label={t('allSources')}>
+    <section className={`source-pane ${showHeader ? '' : 'embedded-source-pane'}`.trim()} aria-label={t('allSources')}
+      onContextMenu={(event) => {
+        const target = event.target as HTMLElement
+        if (target.closest('button, input, textarea, select, a, [role="button"], .brand-row, .list-toolbar, [role="alert"], [role="status"]')) return
+        if (!onBlankContextMenu) return
+        event.preventDefault()
+        event.stopPropagation()
+        onBlankContextMenu(event.clientX, event.clientY)
+      }}
+    >
       {showHeader && (
         <SourceBrandHeader
           subscriptionMenuOpen={subscriptionMenuOpen}
@@ -211,89 +380,7 @@ const SourceSidebarContent = memo(function SourceSidebarContent({
             <span className="scope-unread-count">{t('unreadCountShort', { count: allUnreadCount })}</span>
           </button>
 
-          {groupedFeeds.map(({ group, feeds }) => {
-            const groupUnread = feeds.reduce((sum, feed) => sum + feedStats(feed.id).unread, 0)
-            // 搜索来源时临时展开所有命中分组，避免“搜索到了但被折叠隐藏”的假空结果。
-            // 分组的原始折叠状态仍保留，清空搜索后自动恢复。
-            const collapsed = !sourceSearchActive && collapsedGroupIds.has(group.id)
-            return (
-              <section className="source-group-section" key={group.id}>
-                <div className="source-group-header">
-                  <button
-                    className="source-group-collapse"
-                    type="button"
-                    aria-label={t(collapsed ? 'expandSourceGroup' : 'collapseSourceGroup', { name: group.name })}
-                    aria-expanded={!collapsed}
-                    disabled={sourceSearchActive}
-                    onClick={() => onToggleGroupCollapsed(group.id)}
-                  >
-                    {collapsed ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}
-                  </button>
-                  <button
-                    className={`source-group-scope ${articleScope.kind === 'group' && articleScope.id === group.id ? 'selected' : ''}`}
-                    type="button"
-                    aria-current={articleScope.kind === 'group' && articleScope.id === group.id ? 'true' : undefined}
-                    title={group.name}
-                    onClick={() => onSelectGroup(group)}
-                  >
-                    <span className="source-group-name"><strong>{group.name}</strong><small>{t('sourceCount', { count: feeds.length })}</small></span>
-                    <span>{t('unreadCountShort', { count: groupUnread })}</span>
-                  </button>
-                </div>
-                {!collapsed && <div className="source-group-items">
-                  {feeds.map((feed) => (
-                    <article
-                      className={`source-item ${articleScope.kind === 'feed' && articleScope.id === feed.id ? 'selected' : ''}`}
-                      key={feed.id}
-                      tabIndex={0}
-                      role="button"
-                      aria-current={articleScope.kind === 'feed' && articleScope.id === feed.id ? 'true' : undefined}
-                      title={feed.name}
-                      onClick={() => onSelectFeed(feed)}
-                      onContextMenu={(event) => handleFeedContextMenu(event, feed, onFeedContextMenu)}
-                      onKeyDown={(event) => {
-                        if (event.target !== event.currentTarget) return
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault()
-                          onSelectFeed(feed)
-                        }
-                      }}
-                    >
-                      <FeedIcon feed={feed} />
-                      <div className="source-copy">
-                        <strong>{feed.name}</strong>
-                        <span>
-                          <span className="source-type-inline">{feed.sourceType.toUpperCase()}</span>
-                          {t('sourceArticleStats', { total: feedStats(feed.id).total, unread: feedStats(feed.id).unread })}
-                        </span>
-                      </div>
-                      <div className="source-actions">
-                        <button
-                          type="button"
-                          className="source-refresh-button"
-                          title={t('refresh')}
-                          aria-label={t('refresh')}
-                          disabled={refreshingFeedId !== null || isRefreshingAll}
-                          onClick={(event) => { event.stopPropagation(); onRefreshFeed(feed) }}
-                        >
-                          <RefreshCw size={13} className={refreshingFeedId === feed.id ? 'spinning' : ''} />
-                        </button>
-                        <button
-                          type="button"
-                          className="source-settings-button"
-                          title={t('sourceSettings')}
-                          aria-label={t('sourceSettings')}
-                          onClick={(event) => { event.stopPropagation(); onOpenFeedSettings(feed) }}
-                        >
-                          <MoreHorizontal size={14} />
-                        </button>
-                      </div>
-                    </article>
-                  ))}
-                </div>}
-              </section>
-            )
-          })}
+          {groupTree.map(renderGroupNode)}
         </div>
       </div>
     </section>
@@ -308,6 +395,16 @@ function handleFeedContextMenu(
   event.preventDefault()
   event.stopPropagation()
   onFeedContextMenu(feed, event.clientX, event.clientY)
+}
+
+function handleGroupContextMenu(
+  event: MouseEvent<HTMLElement>,
+  group: GroupRecord,
+  onGroupContextMenu: SourceSidebarProps['onGroupContextMenu']
+): void {
+  event.preventDefault()
+  event.stopPropagation()
+  onGroupContextMenu?.(group, event.clientX, event.clientY)
 }
 
 /** 来源图标在两个左侧 Pane 中共用，失败时稳定回退到 RSS 图标。 */

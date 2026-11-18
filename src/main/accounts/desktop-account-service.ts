@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { AccountConnectionTestResult, AccountCreateInput, AccountPatch, AccountRecord, AccountSnapshot } from '../../shared/account'
 import type { FeedRecord, GroupRecord } from '../../shared/library'
 import { findGroupByName, normalizeGroupName } from '../../shared/group-name'
+import { findSiblingGroupByName, validateGroupParent } from '../../shared/group-tree'
 import type { DiscoveredRssFeed } from '../../shared/rss'
 import type { SourceSyncBatchResult } from '../../shared/source-sync'
 import { LibraryRepository } from '../database/library-repository'
@@ -10,6 +11,12 @@ import { RemoteAccountSyncService } from './remote-account-sync-service'
 
 interface LocalSyncRunner {
   refreshAllSources(fetchedAt?:number, accountId?:number):Promise<SourceSyncBatchResult>
+  refreshGroup?(groupId:string, fetchedAt?:number, accountId?:number):Promise<SourceSyncBatchResult>
+}
+
+export interface CreateGroupOptions {
+  parentId?: string | null
+  destFeedId?: string
 }
 
 export class DesktopAccountService {
@@ -81,21 +88,155 @@ export class DesktopAccountService {
 
   refreshAllSources():Promise<SourceSyncBatchResult>{return this.syncCurrent()}
 
+  async refreshGroup(groupId:string):Promise<SourceSyncBatchResult>{
+    const account=this.current()
+    if(account.type==='local'){
+      if(!this.services.localSync.refreshGroup)throw new Error('当前同步器不支持分组刷新')
+      return this.services.localSync.refreshGroup(groupId,Date.now(),account.id)
+    }
+    return this.syncCurrent()
+  }
+
   async subscribeRss(discovered:DiscoveredRssFeed,groupId?:string):Promise<string>{
     return this.services.remote.subscribeRss(discovered,groupId)
   }
 
-  async addGroup(name:string,destFeedId?:string):Promise<GroupRecord>{
-    const account=this.current()
-    const normalized=normalizeGroupName(name)
-    if(account.type==='local'){
-      const groups=this.library.listGroupsForAccount(account.id)
-      const existing=findGroupByName(groups,normalized)
-      if(existing)return existing
-      const group:GroupRecord={id:randomUUID(),accountId:account.id,name:normalized,sortOrder:Math.max(-1,...groups.map((item)=>item.sortOrder))+1,isDefault:false}
-      this.library.upsertGroup(group);return group
+  async addGroup(name: string, optionsOrDestFeedId?: string | CreateGroupOptions): Promise<GroupRecord> {
+    const account = this.current()
+    const normalized = normalizeGroupName(name)
+    if (normalized.length > 200) {
+      throw new Error('分组名称不能超过 200 个字符')
     }
-    return this.services.remote.addGroup(normalized,destFeedId)
+
+    const options: CreateGroupOptions =
+      typeof optionsOrDestFeedId === 'string'
+        ? { destFeedId: optionsOrDestFeedId }
+        : (optionsOrDestFeedId ?? {})
+
+    const normalizedParentId =
+      typeof options.parentId === 'string' && options.parentId.trim()
+        ? options.parentId.trim()
+        : null
+
+    if (account.type === 'local') {
+      const groups = this.library.listGroupsForAccount(account.id)
+
+      if (normalizedParentId !== null) {
+        const parent = groups.find((g) => g.id === normalizedParentId)
+        if (!parent) {
+          throw new Error('指定的父分组不存在')
+        }
+        if (parent.accountId !== undefined && parent.accountId !== account.id) {
+          throw new Error('父分组必须属于同一账户')
+        }
+        if (parent.isDefault) {
+          throw new Error('默认分组不允许作为父分组')
+        }
+      }
+
+      const existing = findSiblingGroupByName(groups, normalized, normalizedParentId)
+      if (existing) return existing
+
+      const newGroupId = randomUUID()
+      validateGroupParent({
+        groupId: newGroupId,
+        parentId: normalizedParentId,
+        allGroups: groups,
+        isLocalAccount: true,
+        accountId: account.id,
+        isDefault: false,
+        maxDepth: 32
+      })
+
+      const group: GroupRecord = {
+        id: newGroupId,
+        accountId: account.id,
+        name: normalized,
+        sortOrder: Math.max(-1, ...groups.map((item) => item.sortOrder)) + 1,
+        isDefault: false,
+        parentId: normalizedParentId
+      }
+      this.library.upsertGroup(group)
+      return group
+    }
+
+    if (normalizedParentId !== null) {
+      throw new Error('远程账户分组不支持层级结构')
+    }
+    return this.services.remote.addGroup(normalized, options.destFeedId)
+  }
+
+  async renameGroup(groupId: string, name: string): Promise<GroupRecord> {
+    const account = this.current()
+    if (account.type !== 'local') return this.services.remote.renameGroup(groupId, name)
+    const normalized = normalizeGroupName(name)
+    if (normalized.length > 200) throw new Error('分组名称不能超过 200 个字符')
+    const groups = this.library.listGroupsForAccount(account.id)
+    const currentGroup = groups.find((group) => group.id === groupId)
+    if (!currentGroup) throw new Error('分组不存在')
+    const existing = findSiblingGroupByName(groups, normalized, currentGroup.parentId, currentGroup.id)
+    if (existing) throw new Error('分组名称已存在')
+    const updated: GroupRecord = {
+      ...currentGroup,
+      name: normalized
+    }
+    this.library.upsertGroup(updated)
+    return updated
+  }
+
+  async moveGroup(groupId: string, targetParentId?: string | null): Promise<GroupRecord> {
+    const account = this.current()
+    if (account.type !== 'local') {
+      throw new Error('远程账户分组不支持层级结构')
+    }
+
+    const groups = this.library.listGroupsForAccount(account.id)
+    const currentGroup = groups.find((group) => group.id === groupId)
+    if (!currentGroup) throw new Error('分组不存在')
+    if (currentGroup.isDefault) throw new Error('默认分组不允许移动')
+
+    const normalizedParentId =
+      typeof targetParentId === 'string' && targetParentId.trim()
+        ? targetParentId.trim()
+        : null
+
+    if (normalizedParentId !== null) {
+      if (normalizedParentId === currentGroup.id) {
+        throw new Error('分组不能将自身设为父分组')
+      }
+      const parent = groups.find((g) => g.id === normalizedParentId)
+      if (!parent) {
+        throw new Error('指定的父分组不存在')
+      }
+      if (parent.accountId !== undefined && parent.accountId !== account.id) {
+        throw new Error('父分组必须属于同一账户')
+      }
+      if (parent.isDefault) {
+        throw new Error('默认分组不允许作为父分组')
+      }
+    }
+
+    const existingSibling = findSiblingGroupByName(groups, currentGroup.name, normalizedParentId, currentGroup.id)
+    if (existingSibling) {
+      throw new Error('同一层级下已存在同名分组')
+    }
+
+    validateGroupParent({
+      groupId: currentGroup.id,
+      parentId: normalizedParentId,
+      allGroups: groups,
+      isLocalAccount: true,
+      accountId: account.id,
+      isDefault: currentGroup.isDefault,
+      maxDepth: 32
+    })
+
+    const updated: GroupRecord = {
+      ...currentGroup,
+      parentId: normalizedParentId
+    }
+    this.library.upsertGroup(updated)
+    return updated
   }
 
   async updateFeed(feedId:string,patch:{name?:string;url?:string;groupId?:string;isNotification?:boolean;isFullContent?:boolean;isBrowser?:boolean}):Promise<FeedRecord>{

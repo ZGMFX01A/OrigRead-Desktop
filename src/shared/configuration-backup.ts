@@ -29,7 +29,18 @@ export interface ConfigurationBackup {
   llm?: LlmBackup
   webSearch?: WebSearchBackup
   mcp?: McpBackup
+  /** Optional desktop group hierarchy metadata for local accounts. */
+  desktopGroupHierarchy?: DesktopGroupHierarchyBackup
   encryptedSecrets: EncryptedBackupSecrets | null
+}
+
+export interface DesktopGroupHierarchyBackup {
+  version: 1
+  groups: Array<{
+    id: string
+    parentId: string | null
+    name: string
+  }>
 }
 
 export interface LlmBackup {

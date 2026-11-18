@@ -1,14 +1,15 @@
 import type { DatabaseSync } from 'node:sqlite'
-import type { ArticleRecord, FeedRecord, FeedArticleStats, GroupRecord, LibrarySnapshot, ArticleSearchResult } from '../../shared/library'
+import type { ArticleRecord, FeedRecord, FeedArticleStats, GroupRecord, LibrarySnapshot, ArticleSearchResult, RecentArticleRecord } from '../../shared/library'
 import type { JsonRule } from '../../shared/json-source'
 import type { RssHubSubscriptionDescriptor } from '../../shared/rsshub'
 export type { RssHttpCacheRecord, ArticleMetadataRecord } from './library-rows'
 import { SqliteLibraryCatalog } from './library-catalog'
-import { SqliteLibraryReader, type ArticleListScope } from './library-reader'
+import { SqliteLibraryReader, type ArticleListScope, type ArticleListFilterOptions } from './library-reader'
 import { SqliteLibraryWriter } from './library-writer'
 import { SqliteLibrarySearch } from './library-search'
 import { SqliteLibraryMetadata } from './library-metadata'
 import { SqliteLibraryArchive } from './library-archive'
+import { SqliteLibraryReadingHistory } from './library-reading-history'
 import type { RssHttpCacheRecord, ArticleMetadataRecord } from './library-rows'
 import { LibrarySubscriptionMetadata, type RssArticleIdentity } from './library-subscription-metadata'
 import { libraryTransaction } from './library-transaction'
@@ -28,6 +29,7 @@ export class LibraryRepository {
   private readonly search: SqliteLibrarySearch
   private readonly metadata: SqliteLibraryMetadata
   private readonly archive: SqliteLibraryArchive
+  private readonly history: SqliteLibraryReadingHistory
   private readonly subscriptions: LibrarySubscriptionMetadata
 
   constructor(private readonly database: DatabaseSync) {
@@ -37,10 +39,12 @@ export class LibraryRepository {
     this.search = new SqliteLibrarySearch(database, this)
     this.metadata = new SqliteLibraryMetadata(database, this)
     this.archive = new SqliteLibraryArchive(database, this)
+    this.history = new SqliteLibraryReadingHistory(database, this)
     this.subscriptions = new LibrarySubscriptionMetadata(database)
   }
 
   getCurrentAccountId(): number { return this.catalog.getCurrentAccountId() }
+  getAccountType(accountId: number): string | null { return this.catalog.getAccountType(accountId) }
   /** Translation screening reads only titles/previews, never content_html/full_content_html. */
   getTranslationSources(accountId: number, articleIds: string[]): import('../../shared/translation').ListTranslationSource[] {
     const ids = [...new Set(articleIds)].slice(0, 50)
@@ -68,7 +72,7 @@ export class LibraryRepository {
   listArticlesByFeedForAccount(accountId: number, feedId: string): ArticleRecord[] { return this.reader.listArticlesByFeedForAccount(accountId, feedId) }
   listArticleIdsByFeedForAccount(accountId: number, feedId: string): string[] { return this.reader.listArticleIdsByFeedForAccount(accountId, feedId) }
   listArticleSummariesByFeedForAccount(accountId: number, feedId: string): ArticleRecord[] { return this.reader.listArticleSummariesByFeedForAccount(accountId, feedId) }
-  listArticlesByGroup(groupId: string): ArticleRecord[] { return this.reader.listArticlesByGroup(groupId) }
+  listArticlesByGroup(groupId: string, accountId?: number): ArticleRecord[] { return this.reader.listArticlesByGroup(groupId, accountId) }
   listFeedArticleStats(): FeedArticleStats[] { return this.reader.listFeedArticleStats() }
   upsertWebsiteFeedWithArticles(feed: FeedRecord, articles: ArticleRecord[], obsoleteArticleIds: string[]): void {
     this.transaction(() => {
@@ -125,11 +129,11 @@ export class LibraryRepository {
   listFeedsForAccount(accountId: number): FeedRecord[] { return this.catalog.listFeedsForAccount(accountId) }
   upsertFeed(feed: FeedRecord): void { return this.catalog.upsertFeed(feed) }
   upsertArticle(article: ArticleRecord): void { return this.writer.upsertArticle(article) }
-  listArticles(limit = 200): ArticleRecord[] { return this.reader.listArticles(limit) }
-  listArticleSummaries(scope?: ArticleListScope, limit = 200): ArticleRecord[] { return this.reader.listArticleSummaries(scope, limit) }
+  listArticles(limit = 200, options?: ArticleListFilterOptions): ArticleRecord[] { return this.reader.listArticles(limit, options) }
+  listArticleSummaries(scope?: ArticleListScope, limit = 200, options?: ArticleListFilterOptions): ArticleRecord[] { return this.reader.listArticleSummaries(scope, limit, options) }
   listArticleMetadata(limit = 30, titleQuery = ''): ArticleMetadataRecord[] { return this.search.listArticleMetadata(limit, titleQuery) }
   getArticleMetadataById(articleId: string): ArticleMetadataRecord | null { return this.search.getArticleMetadataById(articleId) }
-  listArticlesForAccount(accountId: number, limit = 200): ArticleRecord[] { return this.reader.listArticlesForAccount(accountId, limit) }
+  listArticlesForAccount(accountId: number, limit = 200, options?: ArticleListFilterOptions): ArticleRecord[] { return this.reader.listArticlesForAccount(accountId, limit, options) }
   searchArticles(query: string, limit = 100): ArticleSearchResult[] { return this.search.searchArticles(query, limit) }
   setArticleUnread(articleId: string, unread: boolean): void { return this.writer.setArticleUnread(articleId, unread) }
   setArticleUnreadForAccount(accountId:number, articleId:string, unread:boolean):void { return this.writer.setArticleUnreadForAccount(accountId, articleId, unread) }
@@ -153,4 +157,7 @@ export class LibraryRepository {
   archiveExpiredArticlesForAccount(accountId:number,keepArchivedMillis:number,now=Date.now()):number { return this.archive.archiveExpiredArticlesForAccount(accountId, keepArchivedMillis, now) }
   deleteFeedForAccountIfNoStarred(accountId:number,feedId:string):boolean { return this.catalog.deleteFeedForAccountIfNoStarred(accountId, feedId) }
   deleteGroupForAccountIfNoStarred(accountId:number,groupId:string):boolean { return this.catalog.deleteGroupForAccountIfNoStarred(accountId, groupId) }
+  recordArticleOpened(articleId: string, accountId?: number, openedAt?: number): void { return this.history.recordArticleOpened(articleId, accountId, openedAt) }
+  listRecentArticles(limit?: number, accountId?: number): RecentArticleRecord[] { return this.history.listRecentArticles(limit, accountId) }
+  clearReadingHistory(accountId?: number): void { return this.history.clearReadingHistory(accountId) }
 }

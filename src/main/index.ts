@@ -8,6 +8,7 @@ import { IPC_CHANNELS, type AppInfo, type FeedSettingsPatch } from '../shared/co
 import { resolveBrandName } from '../shared/locale'
 import { DesktopDatabase } from './database/database'
 import { LibraryRepository } from './database/library-repository'
+import { parseArticleListArgs } from './database/article-list-args'
 import { SettingsRepository } from './database/settings-repository'
 import { normalizeDesktopSettingsPatch } from '../shared/settings'
 import { bindMainWindowChrome, mainWindowChromeOptions, type MainWindowChrome } from './window-chrome'
@@ -373,13 +374,11 @@ function registerIpcHandlers(): void {
     if (!libraryRepository) throw new Error('OrigRead database is not ready')
     return libraryRepository.listGroups()
   })
-  ipcMain.handle(IPC_CHANNELS.listArticles, (event, limit?: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.listArticles, (event, arg1?: unknown, arg2?: unknown) => {
     assertTrustedSender(event)
     if (!libraryRepository) throw new Error('OrigRead database is not ready')
-    if (limit !== undefined && (typeof limit !== 'number' || !Number.isFinite(limit))) {
-      throw new TypeError('Article limit must be a finite number')
-    }
-    return libraryRepository.listArticleSummaries({ kind: 'all' }, limit === undefined ? 200 : limit)
+    const { limit, options } = parseArticleListArgs(arg1, arg2)
+    return libraryRepository.listArticleSummaries({ kind: 'all' }, limit === undefined ? 200 : limit, options)
   })
   ipcMain.handle(IPC_CHANNELS.getArticleById, (event, articleId: unknown) => {
     assertTrustedSender(event)
@@ -410,6 +409,24 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (!libraryRepository) throw new Error('OrigRead database is not ready')
     return libraryRepository.listFeedArticleStats()
+  })
+  ipcMain.handle(IPC_CHANNELS.recordArticleOpened, (event, articleId: unknown) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    libraryRepository.recordArticleOpened(validateId(articleId, 'articleId'))
+  })
+  ipcMain.handle(IPC_CHANNELS.listRecentArticles, (event, limit?: unknown) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    if (limit !== undefined && (typeof limit !== 'number' || !Number.isFinite(limit))) {
+      throw new TypeError('Recent articles limit must be a finite number')
+    }
+    return libraryRepository.listRecentArticles(limit)
+  })
+  ipcMain.handle(IPC_CHANNELS.clearReadingHistory, (event) => {
+    assertTrustedSender(event)
+    if (!libraryRepository) throw new Error('OrigRead database is not ready')
+    libraryRepository.clearReadingHistory()
   })
   ipcMain.handle(IPC_CHANNELS.setArticleUnread, async (event, articleId: unknown, unread: unknown) => {
     assertTrustedSender(event)
@@ -502,12 +519,27 @@ function registerIpcHandlers(): void {
     if (!accountRepository) throw new Error('Account repository is not ready')
     return accountRepository.clearClientCertificate(validateAccountId(accountId))
   })
-  ipcMain.handle(IPC_CHANNELS.addGroup, async (event, name: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.addGroup, async (event, name: unknown, parentId?: unknown) => {
     assertTrustedSender(event)
     if (!accountService || !libraryRepository) throw new Error('Account service is not ready')
     const normalizedName = validateText(name, 'groupName', 200).trim()
-    await accountService.addGroup(normalizedName)
+    const normalizedParentId = normalizeOptionalId(parentId, 'parentId')
+    await accountService.addGroup(normalizedName, { parentId: normalizedParentId })
     return libraryRepository.listGroups()
+  })
+  ipcMain.handle(IPC_CHANNELS.renameGroup, async (event, groupId: unknown, name: unknown) => {
+    assertTrustedSender(event)
+    if (!accountService) throw new Error('Account service is not ready')
+    const validGroupId = validateId(groupId, 'groupId')
+    const normalizedName = validateText(name, 'groupName', 200).trim()
+    return accountService.renameGroup(validGroupId, normalizedName)
+  })
+  ipcMain.handle(IPC_CHANNELS.moveGroup, async (event, groupId: unknown, parentId?: unknown) => {
+    assertTrustedSender(event)
+    if (!accountService) throw new Error('Account service is not ready')
+    const validGroupId = validateId(groupId, 'groupId')
+    const normalizedParentId = normalizeOptionalId(parentId, 'parentId')
+    return accountService.moveGroup(validGroupId, normalizedParentId)
   })
   ipcMain.handle(IPC_CHANNELS.updateFeedSettings, async (event, feedId: unknown, patch: unknown) => {
     assertTrustedSender(event)
@@ -945,6 +977,16 @@ function registerIpcHandlers(): void {
     }
     if (!sourceSyncService) throw new Error('Source sync service is not ready')
     return sourceSyncService.refreshSource(id)
+  })
+  ipcMain.handle(IPC_CHANNELS.refreshGroup, async (event, groupId: unknown) => {
+    assertTrustedSender(event)
+    if (!accountService || !libraryRepository) throw new Error('Account service is not ready')
+    const id = validateId(groupId, 'groupId')
+    const currentAccount = accountService.current()
+    const groups = libraryRepository.listGroupsForAccount(currentAccount.id)
+    const exists = groups.some((item) => item.id === id)
+    if (!exists) throw new Error(`分组不存在或不属于当前账户：${id}`)
+    return accountService.refreshGroup(id)
   })
   ipcMain.handle(IPC_CHANNELS.refreshAllSources, async (event) => {
     assertTrustedSender(event)
@@ -1874,6 +1916,19 @@ function validateId(value: unknown, field: string): string {
     throw new TypeError(`${field} must be a non-empty string`)
   }
   return value
+}
+
+function normalizeOptionalId(value: unknown, field: string): string | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string') {
+    throw new TypeError(`${field} must be a string or null`)
+  }
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (trimmed.length > 512) {
+    throw new TypeError(`${field} must not exceed 512 characters`)
+  }
+  return trimmed
 }
 
 function validateOptionalText(value: unknown, field: string, maxLength: number): string {

@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
-import type { ArticleRecord, FeedRecord, GroupRecord, ArticleSearchMatchField, SourceType } from '../../shared/library'
+import type { ArticleRecord, FeedRecord, GroupRecord, ArticleSearchMatchField, RecentArticleRecord, SourceType } from '../../shared/library'
 
 export type PreparedStatement = ReturnType<DatabaseSync['prepare']>
 // 分批执行完整 ID 集合，避免 SQLite 参数数上限；不是文章数量截断。
@@ -27,6 +27,7 @@ export interface GroupRow {
   name: string
   sort_order: number
   is_default: number
+  parent_id?: string | null
 }
 
 export interface FeedRow {
@@ -127,7 +128,8 @@ export function toGroupRecord(row: GroupRow): GroupRecord {
     accountId: row.account_id,
     name: row.name,
     sortOrder: row.sort_order,
-    isDefault: row.is_default === 1
+    isDefault: row.is_default === 1,
+    parentId: row.parent_id ?? null
   }
 }
 
@@ -167,5 +169,16 @@ export function toArticleRecord(row: ArticleRow): ArticleRecord {
     isStarred: row.is_starred === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  }
+}
+
+export interface RecentArticleRow extends ArticleRow {
+  last_opened_at: number | bigint
+}
+
+export function toRecentArticleRecord(row: RecentArticleRow): RecentArticleRecord {
+  return {
+    ...toArticleRecord(row),
+    lastOpenedAt: Number(row.last_opened_at)
   }
 }

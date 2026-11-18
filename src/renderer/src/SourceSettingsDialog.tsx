@@ -1,9 +1,11 @@
+import { formatGroupOperationError } from './group-operation-error'
 import { RefreshCw, Trash2, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ArticleFilterRule, ArticleFilterRuleType } from '../../shared/filter-rules'
 import type { FeedRecord, GroupRecord } from '../../shared/library'
-import { findGroupByName } from '../../shared/group-name'
+import { findSiblingGroupByName } from '../../shared/group-tree'
+import { getGroupRecordDisplayPath } from './group-display-path'
 import { JsonSourceSettingsPanel } from './JsonSourceSettingsPanel'
 import { WebsiteSourceSettingsPanel } from './WebsiteSourceSettingsPanel'
 
@@ -78,11 +80,11 @@ export function SourceSettingsDialog({ feed, onClose, onChanged }: Props): React
     try {
       const next = await window.origread.addGroup(newGroupName.trim())
       setGroups(next)
-      const created = findGroupByName(next, newGroupName)
+      const created = findSiblingGroupByName(next, newGroupName, null)
       if (created) setGroupId(created.id)
       setNewGroupName('')
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      setError(formatGroupOperationError(reason, t))
     } finally {
       setBusy(false)
     }
@@ -135,7 +137,7 @@ export function SourceSettingsDialog({ feed, onClose, onChanged }: Props): React
               <div className="source-section-heading"><div><h3>{t('sourceBasicInfo')}</h3><p>{t('sourceBasicInfoDesc')}</p></div></div>
               <div className="source-settings-grid">
                 <label className="dialog-field"><span>{t('sourceName')}</span><input value={name} onChange={(event)=>setName(event.target.value)} /></label>
-                <label className="dialog-field"><span>{t('sourceGroup')}</span><select value={groupId} onChange={(event)=>setGroupId(event.target.value)}>{groups.map((group)=><option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
+                <label className="dialog-field"><span>{t('sourceGroup')}</span><select value={groupId} onChange={(event)=>setGroupId(event.target.value)}>{groups.map((group)=><option key={group.id} value={group.id}>{getGroupRecordDisplayPath(group, groups, t)}</option>)}</select></label>
                 <label className="dialog-field source-url-field"><span>{t('sourceUrl')}</span><input value={url} readOnly={feed.sourceType === 'json'} onChange={(event)=>setUrl(event.target.value)} />{feed.sourceType === 'json' && <small>{t('jsonSourceRepairDescription')}</small>}</label>
               </div>
               <div className="source-group-create">

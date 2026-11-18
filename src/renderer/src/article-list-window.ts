@@ -3,10 +3,11 @@
  * Windows baseline at 100/150%: metadata is about 12.7/18.7px; 13px × scale leaves a small allowance.
  * The 80×60 thumbnail shares the preview row and does not change the full-width title.
  */
-export function articleListEstimatedRowHeight(fontScale: number, thumbnail: boolean): number {
+export function articleListEstimatedRowHeight(fontScale: number, thumbnail: boolean, showSummary: boolean = true): number {
   const scale = Number.isFinite(fontScale) && fontScale > 0 ? fontScale / 100 : 1
   const title = Math.max(24, 2 * 12.5 * 1.4 * scale)
-  const preview = Math.max(2 * 10.5 * 1.45 * scale, thumbnail ? 60 : 0)
+  const summaryHeight = showSummary ? 2 * 10.5 * 1.45 * scale : 0
+  const preview = Math.max(summaryHeight, thumbnail ? 60 : 0)
   return Math.ceil(32 + title + preview + 13 * scale)
 }
 

@@ -135,6 +135,7 @@ describe('SettingsRepository', () => {
     expect(() => repository.update({ layoutMode: 'invalid' } as never)).toThrow(TypeError)
     expect(() => repository.update({ sourcePaneCollapsed: 'yes' } as never)).toThrow(TypeError)
     expect(() => repository.update({ articlePaneCollapsed: 1 } as never)).toThrow(TypeError)
+    expect(() => repository.update({ readerIndentParagraphs: 'yes' } as never)).toThrow(TypeError)
     expect(() => repository.update({ syncIntervalMinutes: 10 } as never)).toThrow(TypeError)
     expect(() => repository.update({ autoCheckUpdates: 'yes' } as never)).toThrow(TypeError)
     database.close()
@@ -144,15 +145,15 @@ describe('SettingsRepository', () => {
     try {
       const repository = new SettingsRepository(database.connection)
       repository.update({ readerFontSize: 19, sourcePaneWidth: 300, articlePaneWidth: 440 })
-      repository.update({ uiFontScale, showArticleThumbnails: true })
+      repository.update({ uiFontScale, showArticleThumbnails: true, showArticleSummaries: false })
 
       const reloaded = new SettingsRepository(database.connection)
       expect(reloaded.current()).toMatchObject({
-        uiFontScale, showArticleThumbnails: true,
+        uiFontScale, showArticleThumbnails: true, showArticleSummaries: false,
         readerFontSize: 19, sourcePaneWidth: 300, articlePaneWidth: 440
       })
-      reloaded.update({ showArticleThumbnails: false })
-      expect(repository.current()).toMatchObject({ uiFontScale, showArticleThumbnails: false, readerFontSize: 19 })
+      reloaded.update({ showArticleThumbnails: false, showArticleSummaries: true })
+      expect(repository.current()).toMatchObject({ uiFontScale, showArticleThumbnails: false, showArticleSummaries: true, readerFontSize: 19 })
     } finally {
       database.close()
     }
@@ -160,16 +161,16 @@ describe('SettingsRepository', () => {
 
   it.each([
     {},
-    { uiFontScale: '125', showArticleThumbnails: 'true' },
-    { uiFontScale: 200, showArticleThumbnails: 1 },
-    { uiFontScale: null, showArticleThumbnails: null }
+    { uiFontScale: '125', showArticleThumbnails: 'true', showArticleSummaries: 'true', readerIndentParagraphs: 'true' },
+    { uiFontScale: 200, showArticleThumbnails: 1, showArticleSummaries: 1, readerIndentParagraphs: 1 },
+    { uiFontScale: null, showArticleThumbnails: null, showArticleSummaries: null, readerIndentParagraphs: null }
   ])('uses appearance defaults when stored settings are old or malformed: %j', (appearance) => {
     const database = new DesktopDatabase(':memory:')
     try {
       database.connection.prepare('INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)')
         .run('desktop.settings', JSON.stringify({ ...appearance, readerFontSize: 21 }), Date.now())
       expect(new SettingsRepository(database.connection).current()).toMatchObject({
-        uiFontScale: 100, showArticleThumbnails: false, readerFontSize: 21
+        uiFontScale: 100, showArticleThumbnails: false, showArticleSummaries: true, readerIndentParagraphs: false, readerFontSize: 21
       })
     } finally {
       database.close()
@@ -181,12 +182,16 @@ describe('SettingsRepository', () => {
     { uiFontScale: 105 }, { uiFontScale: 0 }, { uiFontScale: -100 },
     { uiFontScale: Number.NaN }, { uiFontScale: Number.POSITIVE_INFINITY },
     { showArticleThumbnails: 'true' }, { showArticleThumbnails: 1 },
-    { showArticleThumbnails: null }, { showArticleThumbnails: undefined }
+    { showArticleThumbnails: null }, { showArticleThumbnails: undefined },
+    { showArticleSummaries: 'true' }, { showArticleSummaries: 1 },
+    { showArticleSummaries: null },
+    { readerIndentParagraphs: 'true' }, { readerIndentParagraphs: 1 },
+    { readerIndentParagraphs: null }
   ])('rejects malformed appearance patch %# without changing saved settings', (invalidPatch) => {
     const database = new DesktopDatabase(':memory:')
     try {
       const repository = new SettingsRepository(database.connection)
-      const before = repository.update({ uiFontScale: 125, showArticleThumbnails: true, theme: 'light' })
+      const before = repository.update({ uiFontScale: 125, showArticleThumbnails: true, readerIndentParagraphs: false, theme: 'light' })
       expect(() => repository.update({ theme: 'dark', ...invalidPatch } as never)).toThrow(TypeError)
       expect(new SettingsRepository(database.connection).current()).toEqual(before)
     } finally {
@@ -194,5 +199,36 @@ describe('SettingsRepository', () => {
     }
   })
 
+  it('persists and round-trips reader paragraph indent setting', () => {
+    const database = new DesktopDatabase(':memory:')
+    try {
+      const repository = new SettingsRepository(database.connection)
+      expect(repository.current().readerIndentParagraphs).toBe(false)
+      repository.update({ readerIndentParagraphs: true })
+      expect(repository.current().readerIndentParagraphs).toBe(true)
+
+      const reloaded = new SettingsRepository(database.connection)
+      expect(reloaded.current().readerIndentParagraphs).toBe(true)
+      reloaded.update({ readerIndentParagraphs: false })
+      expect(repository.current().readerIndentParagraphs).toBe(false)
+    } finally {
+      database.close()
+    }
+  })
+
 })
 
+
+
+describe('explicit desktop language preferences', () => {
+  it.each(['es', 'pt-BR', 'de', 'fr', 'ja'] as const)('persists %s rather than falling back to the system language', language => {
+    const database = new DesktopDatabase(':memory:')
+    try {
+      const repository = new SettingsRepository(database.connection)
+      expect(repository.update({ language }).language).toBe(language)
+      expect(new SettingsRepository(database.connection).current().language).toBe(language)
+    } finally {
+      database.close()
+    }
+  })
+})

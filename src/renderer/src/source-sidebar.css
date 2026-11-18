@@ -87,3 +87,8 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+.source-group-children {
+  display: flex;
+  flex-direction: column;
+}

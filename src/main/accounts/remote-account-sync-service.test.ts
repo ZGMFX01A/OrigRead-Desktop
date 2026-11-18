@@ -24,6 +24,19 @@ describe('RemoteAccountSyncService Android parity', () => {
     fixture.database.close()
   })
 
+  it.each(['google_reader', 'fresh_rss'] as const)('preserves the renamed default group after %s sync without sending a rename request', async (type) => {
+    const fixture = createFixture()
+    const account = fixture.accounts.add({ type, serverUrl: 'https://reader.example/', username: 'u', password: 'p' })
+    const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, googleFixtureFetch())
+    await service.sync(account.id)
+    const group = fixture.library.getDefaultGroupForAccount(account.id)!
+    const noNetworkService = new RemoteAccountSyncService(fixture.accounts, fixture.library, async () => { throw new Error('unexpected network request during local rename') })
+    await expect(noNetworkService.renameGroup(group.id, ' Personal ')).resolves.toMatchObject({ id: group.id, name: 'Personal', isDefault: true })
+    await service.sync(account.id)
+    expect(fixture.library.getDefaultGroupForAccount(account.id)).toMatchObject({ id: group.id, name: 'Personal', isDefault: true })
+    fixture.database.close()
+  })
+
   it('reuses existing remote groups without another remote write', async () => {
     const fixture = createFixture()
     const account = fixture.accounts.add({ type: 'google_reader', serverUrl: 'https://reader.example/', username: 'u', password: 'p' })
@@ -309,6 +322,10 @@ describe('RemoteAccountSyncService Android parity', () => {
     const feed=fixture.library.getFeedByIdForAccount(account.id,remoteDbId(account.id,'7'))
     expect(defaultGroup).toBeDefined()
     expect(feed).toMatchObject({name:'Orphan Feed',groupId:defaultGroup!.id})
+    await service.renameGroup(defaultGroup!.id, 'Personal')
+    await service.sync(account.id)
+    expect(fixture.library.getDefaultGroupForAccount(account.id)).toMatchObject({ id: defaultGroup!.id, name: 'Personal', isDefault: true })
+    expect(fixture.library.getFeedByIdForAccount(account.id, feed!.id)?.groupId).toBe(defaultGroup!.id)
     fixture.database.close()
   })
 
@@ -345,6 +362,635 @@ describe('RemoteAccountSyncService Android parity', () => {
     await expect(service.updateFeed(feed.id,{name:'New'})).rejects.toThrow('Fever 账户不支持在客户端重命名或移动订阅')
     await expect(service.deleteFeed(feed.id)).rejects.toThrow('Fever 账户不支持在客户端删除订阅')
     fixture.database.close()
+  })
+
+  it('reuses inflight sync for the same account, isolates different accounts, and releases on failure', async () => {
+    const fixture = createFixture()
+    const account1 = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://rss1.example', username: 'u1', password: 'p1' })
+    const account2 = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://rss2.example', username: 'u2', password: 'p2' })
+
+    let account1FetchCount = 0
+    let account2FetchCount = 0
+    let deferredResolve: (() => void) | null = null
+    const gatePromise = new Promise<void>((resolve) => { deferredResolve = resolve })
+
+    const customFetch: AccountFetch = async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url.includes('rss1.example')) {
+        account1FetchCount++
+        await gatePromise
+      } else if (url.includes('rss2.example')) {
+        account2FetchCount++
+      }
+      if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+      if (url.includes('/subscription/list')) return json({ subscriptions: [] })
+      if (url.includes('/stream/items/ids')) return json({ itemRefs: [] })
+      return new Response('missing', { status: 404 })
+    }
+
+    const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, customFetch)
+
+    // 同账号并发调用：复用同一 inflight 任务
+    const sync1PromiseA = service.sync(account1.id)
+    const sync1PromiseB = service.sync(account1.id)
+    // 不同账号调用：独立执行不阻塞
+    const sync2Promise = service.sync(account2.id)
+
+    await sync2Promise
+    expect(account2FetchCount).toBeGreaterThan(0)
+    // 此时 account1 仍在 gate 拦截中，ClientLogin 只调用了一次
+    expect(account1FetchCount).toBe(1)
+
+    // 释放 gate，两个 sync1 同时完成
+    deferredResolve!()
+    await Promise.all([sync1PromiseA, sync1PromiseB])
+    // account1 仍然只发起了一套网络请求（共 7 次包含 ClientLogin、subscriptions、stream ids 与 tags），未发生重复同步
+    expect(account1FetchCount).toBe(7)
+
+    // 验证失败释放：当请求抛错时，finally 清理 inflight，后续调用能够重试
+    let shouldFail = true
+    const failingFetch: AccountFetch = async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (shouldFail) throw new Error('network down')
+      if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+      if (url.includes('/subscription/list')) return json({ subscriptions: [] })
+      if (url.includes('/stream/items/ids')) return json({ itemRefs: [] })
+      return new Response('missing', { status: 404 })
+    }
+    const failService = new RemoteAccountSyncService(fixture.accounts, fixture.library, failingFetch)
+
+    await expect(failService.sync(account1.id)).rejects.toThrow('network down')
+
+    // 失败后应已从 inflightSyncs 移除，再次调用会执行新的请求而不是直接返回旧 rejection
+    shouldFail = false
+    await expect(failService.sync(account1.id)).resolves.toBeUndefined()
+
+    fixture.database.close()
+  })
+
+  describe('renameGroup', () => {
+    it('rejects renaming group for Fever accounts or invalid group arguments', async () => {
+      const fixture = createFixture()
+      const feverAccount = fixture.accounts.add({ type: 'fever', serverUrl: 'https://fever.example', username: 'u', password: 'p' })
+      const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, feverFixtureFetch())
+
+      const feverGroup = { id: remoteDbId(feverAccount.id, '5'), accountId: feverAccount.id, name: 'Tech', sortOrder: 0, isDefault: false }
+      fixture.library.upsertGroup(feverGroup)
+
+      await expect(service.renameGroup(feverGroup.id, 'NewTech')).rejects.toThrow('Fever 账户不支持在客户端重命名分组')
+
+      const readerAccount = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://reader.example', username: 'u', password: 'p' })
+      const defaultGroup = { id: remoteDbId(readerAccount.id, 'default'), accountId: readerAccount.id, name: 'Default', sortOrder: 0, isDefault: true }
+      const group1 = { id: remoteDbId(readerAccount.id, 'user/-/label/Tech'), accountId: readerAccount.id, name: 'Tech', sortOrder: 1, isDefault: false }
+      const group2 = { id: remoteDbId(readerAccount.id, 'user/-/label/News'), accountId: readerAccount.id, name: 'News', sortOrder: 2, isDefault: false }
+      fixture.library.upsertGroup(defaultGroup)
+      fixture.library.upsertGroup(group1)
+      fixture.library.upsertGroup(group2)
+
+      const noopFetch: AccountFetch = async () => { throw new Error('should not fetch') }
+      const readerService = new RemoteAccountSyncService(fixture.accounts, fixture.library, noopFetch)
+
+      await expect(readerService.renameGroup(defaultGroup.id, 'NewDefault')).resolves.toMatchObject({ id: defaultGroup.id, name: 'NewDefault', isDefault: true })
+      expect(fixture.library.getDefaultGroupForAccount(readerAccount.id)?.name).toBe('NewDefault')
+      await expect(readerService.renameGroup(group1.id, '')).rejects.toThrow('分组名称不能为空')
+      await expect(readerService.renameGroup(group1.id, '   ')).rejects.toThrow('分组名称不能为空')
+      await expect(readerService.renameGroup(group1.id, 'x'.repeat(201))).rejects.toThrow('分组名称不能超过 200 个字符')
+      await expect(readerService.renameGroup('non-existent', 'NewName')).rejects.toThrow('分组不存在')
+      await expect(readerService.renameGroup(group1.id, 'News')).rejects.toThrow('分组名称已存在')
+
+      // 相同名称直接返回原记录，不发远端请求
+      const unchanged = await readerService.renameGroup(group1.id, ' Tech ')
+      expect(unchanged).toEqual({ ...group1, parentId: null })
+
+      fixture.database.close()
+    })
+
+    it('sends rename-tag protocol request and updates canonical group with new ID and feed mapping', async () => {
+      const fixture = createFixture()
+      const account = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://fresh.example', username: 'u', password: 'p' })
+      const oldGroupId = remoteDbId(account.id, 'user/-/label/Tech')
+      const oldGroup = { id: oldGroupId, accountId: account.id, name: 'Tech', sortOrder: 0, isDefault: false }
+      fixture.library.upsertGroup(oldGroup)
+
+      const feedId = remoteDbId(account.id, 'feed-1')
+      fixture.library.upsertFeed(feedRecord(feedId, account.id, oldGroupId, 'https://example.com/rss'))
+
+      let renameTagCalled = false
+      let renameTagBody = ''
+      const customFetch: AccountFetch = async (input, init) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+        if (url.endsWith('/reader/api/0/token')) return new Response('action-token', { status: 200 })
+        if (url.includes('/reader/api/0/rename-tag')) {
+          renameTagCalled = true
+          renameTagBody = init?.body instanceof URLSearchParams ? init.body.toString() : String(init?.body ?? '')
+          return new Response('OK', { status: 200 })
+        }
+        if (url.includes('/subscription/list')) {
+          return json({
+            subscriptions: [
+              {
+                id: 'feed/feed-1',
+                title: 'feed-1',
+                url: 'https://example.com/rss',
+                categories: [{ id: 'user/1000/label/Technology', label: 'Technology' }]
+              }
+            ]
+          })
+        }
+        if (url.includes('/stream/items/ids')) return json({ itemRefs: [] })
+        return new Response('missing', { status: 404 })
+      }
+
+      const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, customFetch)
+      const renamed = await service.renameGroup(oldGroupId, ' Technology ')
+
+      expect(renameTagCalled).toBe(true)
+      const params = new URLSearchParams(renameTagBody)
+      expect(params.get('s')).toBe('user/-/label/Tech')
+      expect(params.get('dest')).toBe('user/-/label/Technology')
+      expect(params.get('T')).toBe('action-token')
+
+      // 返回服务端权威重构的 canonical 新组，ID 随服务端规范变化
+      expect(renamed.name).toBe('Technology')
+      expect(renamed.id).toBe(remoteDbId(account.id, 'user/-/label/Technology'))
+      expect(renamed.id).not.toBe(oldGroupId)
+
+      // 来源 feed 关联自动迁移到权威新组
+      const updatedFeed = fixture.library.getFeedByIdForAccount(account.id, feedId)
+      expect(updatedFeed?.groupId).toBe(renamed.id)
+
+      // 旧组被清理
+      const remainingGroups = fixture.library.listGroupsForAccount(account.id)
+      expect(remainingGroups.some(g => g.id === oldGroupId)).toBe(false)
+      expect(remainingGroups.some(g => g.id === renamed.id)).toBe(true)
+
+      fixture.database.close()
+    })
+
+    it('does not mutate local state when remote rename-tag API fails', async () => {
+      const fixture = createFixture()
+      const account = fixture.accounts.add({ type: 'google_reader', serverUrl: 'https://reader.example', username: 'u', password: 'p' })
+      const oldGroupId = remoteDbId(account.id, 'user/-/label/Tech')
+      const oldGroup = { id: oldGroupId, accountId: account.id, name: 'Tech', sortOrder: 0, isDefault: false }
+      fixture.library.upsertGroup(oldGroup)
+
+      const customFetch: AccountFetch = async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+        if (url.endsWith('/reader/api/0/token')) return new Response('action-token', { status: 200 })
+        if (url.includes('/reader/api/0/rename-tag')) {
+          return new Response('Remote internal error', { status: 500 })
+        }
+        return new Response('missing', { status: 404 })
+      }
+
+      const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, customFetch)
+      await expect(service.renameGroup(oldGroupId, 'Technology')).rejects.toThrow('Remote internal error')
+
+      // 本地状态未被篡改
+      const localGroups = fixture.library.listGroupsForAccount(account.id)
+      expect(localGroups.find(g => g.id === oldGroupId)?.name).toBe('Tech')
+      expect(localGroups.some(g => g.name === 'Technology')).toBe(false)
+
+      fixture.database.close()
+    })
+
+    it('throws clear error and avoids false success when remote rename succeeds but subsequent sync fails', async () => {
+      const fixture = createFixture()
+      const account = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://fresh.example', username: 'u', password: 'p' })
+      const oldGroupId = remoteDbId(account.id, 'user/-/label/Tech')
+      const oldGroup = { id: oldGroupId, accountId: account.id, name: 'Tech', sortOrder: 0, isDefault: false }
+      fixture.library.upsertGroup(oldGroup)
+
+      let renameCalled = false
+      const customFetch: AccountFetch = async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+        if (url.endsWith('/reader/api/0/token')) return new Response('action-token', { status: 200 })
+        if (url.includes('/reader/api/0/rename-tag')) {
+          renameCalled = true
+          return new Response('OK', { status: 200 })
+        }
+        if (url.includes('/subscription/list')) {
+          return new Response('Catalog fetch timeout', { status: 504 })
+        }
+        return new Response('missing', { status: 404 })
+      }
+
+      const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, customFetch)
+      await expect(service.renameGroup(oldGroupId, 'Technology')).rejects.toThrow('分组重命名远端已成功，但后续同步失败：Catalog fetch timeout')
+      expect(renameCalled).toBe(true)
+
+      // 避免假成功：本地分组未更名
+      const localGroups = fixture.library.listGroupsForAccount(account.id)
+      expect(localGroups.find(g => g.id === oldGroupId)?.name).toBe('Tech')
+      expect(localGroups.some(g => g.name === 'Technology')).toBe(false)
+
+      fixture.database.close()
+    })
+
+    it('refuses to fabricate group when sync succeeds without target group and tag/list lacks target label', async () => {
+      const fixture = createFixture()
+      const account = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://fresh.example', username: 'u', password: 'p' })
+      const oldGroupId = remoteDbId(account.id, 'user/-/label/Tech')
+      const oldGroup = { id: oldGroupId, accountId: account.id, name: 'Tech', sortOrder: 0, isDefault: false }
+      fixture.library.upsertGroup(oldGroup)
+
+      let tagListCalled = false
+      const customFetch: AccountFetch = async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+        if (url.endsWith('/reader/api/0/token')) return new Response('action-token', { status: 200 })
+        if (url.includes('/reader/api/0/rename-tag')) return new Response('OK', { status: 200 })
+        if (url.includes('/subscription/list')) return json({ subscriptions: [] })
+        if (url.includes('/stream/items/ids')) return json({ itemRefs: [] })
+        if (url.includes('/reader/api/0/tag/list')) {
+          tagListCalled = true
+          return json({ tags: [{ id: 'user/1000/state/com.google/reading-list' }, { id: 'user/1000/label/Other' }] })
+        }
+        return new Response('missing', { status: 404 })
+      }
+
+      const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, customFetch)
+      await expect(service.renameGroup(oldGroupId, 'Technology')).rejects.toThrow(/远端已响应成功但无法确认最新分组|分组重命名远端已成功，但后续同步失败/)
+      expect(tagListCalled).toBe(true)
+
+      // 验证未猜测创建任何 Technology 分组
+      const localGroups = fixture.library.listGroupsForAccount(account.id)
+      expect(localGroups.some(g => g.name === 'Technology')).toBe(false)
+      expect(localGroups.some(g => g.id.includes('Technology'))).toBe(false)
+
+      fixture.database.close()
+    })
+
+    it('confirms empty group using authentic canonical label ID returned by tag/list', async () => {
+      const fixture = createFixture()
+      const account = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://fresh.example', username: 'u', password: 'p' })
+      const oldGroupId = remoteDbId(account.id, 'user/-/label/Tech')
+      const oldGroup = { id: oldGroupId, accountId: account.id, name: 'Tech', sortOrder: 3, isDefault: false }
+      fixture.library.upsertGroup(oldGroup)
+
+      let tagListCalled = false
+      const customFetch: AccountFetch = async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+        if (url.endsWith('/reader/api/0/token')) return new Response('action-token', { status: 200 })
+        if (url.includes('/reader/api/0/rename-tag')) return new Response('OK', { status: 200 })
+        if (url.includes('/subscription/list')) return json({ subscriptions: [] })
+        if (url.includes('/stream/items/ids')) return json({ itemRefs: [] })
+        if (url.includes('/reader/api/0/tag/list')) {
+          tagListCalled = true
+          return json({
+            tags: [
+              { id: 'user/1000/state/com.google/reading-list' },
+              { id: 'user/98765/label/Technology' }
+            ]
+          })
+        }
+        return new Response('missing', { status: 404 })
+      }
+
+      const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, customFetch)
+      const renamed = await service.renameGroup(oldGroupId, 'Technology')
+
+      expect(tagListCalled).toBe(true)
+      // 必须使用服务端真实返回的 canonical ID 规则映射
+      expect(renamed.id).toBe(remoteDbId(account.id, 'user/-/label/Technology'))
+      expect(renamed.id).not.toBe(oldGroupId)
+      expect(renamed.name).toBe('Technology')
+      expect(renamed.sortOrder).toBe(3)
+      expect(renamed.isDefault).toBe(false)
+
+      // 空组成功持久化到本地，且旧组被清理
+      const localGroups = fixture.library.listGroupsForAccount(account.id)
+      expect(localGroups.some(g => g.id === oldGroupId)).toBe(false)
+      expect(localGroups.find(g => g.id === renamed.id)?.name).toBe('Technology')
+
+      fixture.database.close()
+    })
+
+    it('throws clear error when tag/list request fails for empty group confirmation', async () => {
+      const fixture = createFixture()
+      const account = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://fresh.example', username: 'u', password: 'p' })
+      const oldGroupId = remoteDbId(account.id, 'user/-/label/Tech')
+      const oldGroup = { id: oldGroupId, accountId: account.id, name: 'Tech', sortOrder: 0, isDefault: false }
+      fixture.library.upsertGroup(oldGroup)
+
+      const customFetch: AccountFetch = async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+        if (url.endsWith('/reader/api/0/token')) return new Response('action-token', { status: 200 })
+        if (url.includes('/reader/api/0/rename-tag')) return new Response('OK', { status: 200 })
+        if (url.includes('/subscription/list')) return json({ subscriptions: [] })
+        if (url.includes('/stream/items/ids')) return json({ itemRefs: [] })
+        if (url.includes('/reader/api/0/tag/list')) return new Response('Server Error', { status: 500 })
+        return new Response('missing', { status: 404 })
+      }
+
+      const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, customFetch)
+      await expect(service.renameGroup(oldGroupId, 'Technology')).rejects.toThrow(/远端已响应成功但无法确认最新分组|分组重命名远端已成功，但后续同步失败/)
+
+      const localGroups = fixture.library.listGroupsForAccount(account.id)
+      expect(localGroups.some(g => g.name === 'Technology')).toBe(false)
+
+      fixture.database.close()
+    })
+
+    it('waits for prior inflight sync before mutation and executes a fresh sync afterwards', async () => {
+      const fixture = createFixture()
+      const account = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://fresh.example', username: 'u', password: 'p' })
+      const oldGroupId = remoteDbId(account.id, 'user/-/label/Tech')
+      const oldGroup = { id: oldGroupId, accountId: account.id, name: 'Tech', sortOrder: 0, isDefault: false }
+      fixture.library.upsertGroup(oldGroup)
+
+      const executionOrder: string[] = []
+      let resolveInitialSync!: () => void
+      const initialSyncGate = new Promise<void>((r) => { resolveInitialSync = r })
+
+      let syncCallCount = 0
+      const customFetch: AccountFetch = async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+        if (url.endsWith('/reader/api/0/token')) return new Response('action-token', { status: 200 })
+        if (url.includes('/subscription/list')) {
+          syncCallCount++
+          if (syncCallCount === 1) {
+            executionOrder.push('sync-1-start')
+            await initialSyncGate
+            executionOrder.push('sync-1-end')
+            return json({ subscriptions: [{ id: 'feed/feed-1', title: 'Feed 1', url: 'https://example.com/rss', categories: [{ id: 'user/-/label/Tech', label: 'Tech' }] }] })
+          } else {
+            executionOrder.push('sync-2-start')
+            executionOrder.push('sync-2-end')
+            return json({ subscriptions: [{ id: 'feed/feed-1', title: 'Feed 1', url: 'https://example.com/rss', categories: [{ id: 'user/-/label/Technology', label: 'Technology' }] }] })
+          }
+        }
+        if (url.includes('/reader/api/0/rename-tag')) {
+          executionOrder.push('rename-tag')
+          return new Response('OK', { status: 200 })
+        }
+        if (url.includes('/stream/items/ids')) return json({ itemRefs: [] })
+        return new Response('missing', { status: 404 })
+      }
+
+      const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, customFetch)
+
+      // 1. 发起初始 sync 并在 gate 中挂起
+      const initialSyncPromise = service.sync(account.id)
+      await new Promise((r) => setTimeout(r, 10))
+      expect(executionOrder).toEqual(['sync-1-start'])
+
+      // 2. 发起 renameGroup：此时旧 sync 仍在进行，rename-tag 必须等待旧 sync 结束后方可调用
+      const renamePromise = service.renameGroup(oldGroupId, 'Technology')
+      await new Promise((r) => setTimeout(r, 10))
+      expect(executionOrder).toEqual(['sync-1-start'])
+
+      // 3. 释放旧 sync
+      resolveInitialSync()
+      await initialSyncPromise
+      const renamed = await renamePromise
+
+      // 4. 验证严格顺序：旧 sync 完结 -> rename-tag 变更 -> 新 sync 权威拉取
+      expect(executionOrder).toEqual([
+        'sync-1-start',
+        'sync-1-end',
+        'rename-tag',
+        'sync-2-start',
+        'sync-2-end'
+      ])
+      expect(renamed.name).toBe('Technology')
+
+      fixture.database.close()
+    })
+
+    it('isolates accounts during rename and prevents cross-account mutation', async () => {
+      const fixture = createFixture()
+      const account1 = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://rss1.example', username: 'u1', password: 'p1' })
+      const account2 = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://rss2.example', username: 'u2', password: 'p2' })
+
+      const group1 = { id: remoteDbId(account1.id, 'user/-/label/Shared'), accountId: account1.id, name: 'Shared', sortOrder: 0, isDefault: false }
+      const group2 = { id: remoteDbId(account2.id, 'user/-/label/Shared'), accountId: account2.id, name: 'Shared', sortOrder: 0, isDefault: false }
+      fixture.library.upsertGroup(group1)
+      fixture.library.upsertGroup(group2)
+
+      const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, async (input) => {
+        const url = String(input)
+        if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+        if (url.endsWith('/reader/api/0/token')) return new Response('action', { status: 200 })
+        if (url.includes('/rename-tag')) return new Response('OK', { status: 200 })
+        if (url.includes('/subscription/list')) {
+          return json({ subscriptions: [{ id: 'feed/f2', title: 'F2', url: 'https://f2.example', categories: [{ id: 'user/-/label/Renamed', label: 'Renamed' }] }] })
+        }
+        if (url.includes('/stream/items/ids')) return json({ itemRefs: [] })
+        return new Response('missing', { status: 404 })
+      })
+
+      // 当前账户为 account2（最后添加的账户）
+      expect(fixture.accounts.currentId()).toBe(account2.id)
+
+      // 尝试重命名 account1 的组：报错分组不存在
+      await expect(service.renameGroup(group1.id, 'Renamed')).rejects.toThrow('分组不存在')
+
+      // 重命名 account2 的组：成功，不影响 account1
+      const renamed2 = await service.renameGroup(group2.id, 'Renamed')
+      expect(renamed2.accountId).toBe(account2.id)
+      expect(renamed2.name).toBe('Renamed')
+
+      // account1 的组未受影响
+      const acc1Groups = fixture.library.listGroupsForAccount(account1.id)
+      expect(acc1Groups.find(g => g.id === group1.id)?.name).toBe('Shared')
+
+      fixture.database.close()
+    })
+  })
+
+  describe('remote catalog sync with tag/list (B1c)', () => {
+    it('preserves empty group after subsequent syncs when confirmed by tag/list', async () => {
+      const fixture = createFixture()
+      const account = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://fresh.example', username: 'u', password: 'p' })
+      const oldGroupId = remoteDbId(account.id, 'user/-/label/Tech')
+      const oldGroup = { id: oldGroupId, accountId: account.id, name: 'Tech', sortOrder: 3, isDefault: false }
+      fixture.library.upsertGroup(oldGroup)
+
+      const customFetch: AccountFetch = async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+        if (url.endsWith('/reader/api/0/token')) return new Response('action-token', { status: 200 })
+        if (url.includes('/reader/api/0/rename-tag')) return new Response('OK', { status: 200 })
+        if (url.includes('/subscription/list')) return json({ subscriptions: [] })
+        if (url.includes('/stream/items/ids')) return json({ itemRefs: [] })
+        if (url.includes('/reader/api/0/tag/list')) {
+          return json({
+            tags: [
+              { id: 'user/1000/state/com.google/reading-list' },
+              { id: 'user/1000/label/Technology' }
+            ]
+          })
+        }
+        return new Response('missing', { status: 404 })
+      }
+
+      const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, customFetch)
+      const renamed = await service.renameGroup(oldGroupId, 'Technology')
+
+      expect(renamed.name).toBe('Technology')
+      expect(renamed.id).toBe(remoteDbId(account.id, 'user/-/label/Technology'))
+      expect(renamed.sortOrder).toBe(3)
+
+      // 关键验证：后续定期或手动 sync 触发后，空组仍然保留在本地数据库中，不会被清理
+      await service.sync(account.id)
+
+      const groupsAfterSync = fixture.library.listGroupsForAccount(account.id)
+      const preservedGroup = groupsAfterSync.find(g => g.name === 'Technology')
+      expect(preservedGroup).toBeDefined()
+      expect(preservedGroup?.id).toBe(remoteDbId(account.id, 'user/-/label/Technology'))
+      expect(preservedGroup?.sortOrder).toBe(3)
+      expect(groupsAfterSync.some(g => g.id === oldGroupId)).toBe(false)
+
+      fixture.database.close()
+    })
+
+    it('cleans up local group when tag is deleted on server and has no subscriptions', async () => {
+      const fixture = createFixture()
+      const account = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://fresh.example', username: 'u', password: 'p' })
+      const emptyGroupId = remoteDbId(account.id, 'user/-/label/DeletedOnServer')
+      fixture.library.upsertGroup({ id: emptyGroupId, accountId: account.id, name: 'DeletedOnServer', sortOrder: 0, isDefault: false })
+
+      // 服务端 tag/list 不再包含 DeletedOnServer（用户在远端已删除该标签），且订阅列表也无此分组
+      const customFetch: AccountFetch = async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+        if (url.endsWith('/reader/api/0/token')) return new Response('action-token', { status: 200 })
+        if (url.includes('/subscription/list')) return json({ subscriptions: [] })
+        if (url.includes('/stream/items/ids')) return json({ itemRefs: [] })
+        if (url.includes('/reader/api/0/tag/list')) {
+          return json({
+            tags: [
+              { id: 'user/1000/state/com.google/reading-list' },
+              { id: 'user/1000/label/ActiveTag' }
+            ]
+          })
+        }
+        return new Response('missing', { status: 404 })
+      }
+
+      const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, customFetch)
+      await service.sync(account.id)
+
+      const groups = fixture.library.listGroupsForAccount(account.id)
+      expect(groups.some(g => g.id === emptyGroupId)).toBe(false)
+      expect(groups.some(g => g.name === 'ActiveTag')).toBe(true)
+
+      fixture.database.close()
+    })
+
+    it('gracefully falls back when service does not implement tag/list (404/501) but throws on auth/server failure', async () => {
+      const fixture = createFixture()
+      const account = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://fresh.example', username: 'u', password: 'p' })
+
+      // 1. 旧服务 404: 同步不失败，基于 subscription.categories 完成目录同步
+      const fetch404: AccountFetch = async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+        if (url.endsWith('/reader/api/0/token')) return new Response('action-token', { status: 200 })
+        if (url.includes('/subscription/list')) {
+          return json({
+            subscriptions: [
+              { id: 'feed/f1', title: 'Feed 1', url: 'https://example.com/f1.xml', categories: [{ id: 'user/-/label/News', label: 'News' }] }
+            ]
+          })
+        }
+        if (url.includes('/stream/items/ids')) return json({ itemRefs: [] })
+        if (url.includes('/reader/api/0/tag/list')) return new Response('Not Implemented', { status: 404 })
+        return new Response('missing', { status: 404 })
+      }
+
+      const service404 = new RemoteAccountSyncService(fixture.accounts, fixture.library, fetch404)
+      await expect(service404.sync(account.id)).resolves.toBeUndefined()
+
+      const groups404 = fixture.library.listGroupsForAccount(account.id)
+      expect(groups404.some(g => g.name === 'News')).toBe(true)
+      expect(fixture.accounts.get(account.id)?.updatedAt).toBeGreaterThan(0)
+
+      // 2. 旧服务 501: 同步不失败，同样优雅降级
+      const fetch501: AccountFetch = async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+        if (url.endsWith('/reader/api/0/token')) return new Response('action-token', { status: 200 })
+        if (url.includes('/subscription/list')) return json({ subscriptions: [] })
+        if (url.includes('/stream/items/ids')) return json({ itemRefs: [] })
+        if (url.includes('/reader/api/0/tag/list')) return new Response('Not Implemented', { status: 501 })
+        return new Response('missing', { status: 404 })
+      }
+      const service501 = new RemoteAccountSyncService(fixture.accounts, fixture.library, fetch501)
+      await expect(service501.sync(account.id)).resolves.toBeUndefined()
+
+      // 3. 避免吞掉 500 或 401 故障伪装成完整目录：必须明确抛错
+      const fetch500: AccountFetch = async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+        if (url.endsWith('/reader/api/0/token')) return new Response('action-token', { status: 200 })
+        if (url.includes('/subscription/list')) return json({ subscriptions: [] })
+        if (url.includes('/stream/items/ids')) return json({ itemRefs: [] })
+        if (url.includes('/reader/api/0/tag/list')) return new Response('Database Down', { status: 500 })
+        return new Response('missing', { status: 404 })
+      }
+      const service500 = new RemoteAccountSyncService(fixture.accounts, fixture.library, fetch500)
+      await expect(service500.sync(account.id)).rejects.toThrow('Database Down')
+
+      fixture.database.close()
+    })
+
+    it('maps authentic namespace IDs, filters state tags, and preserves slashes in label names', async () => {
+      const fixture = createFixture()
+      const account = fixture.accounts.add({ type: 'fresh_rss', serverUrl: 'https://fresh.example', username: 'u', password: 'p' })
+
+      const customFetch: AccountFetch = async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+        if (url.endsWith('/accounts/ClientLogin')) return json({ Auth: 'token' })
+        if (url.endsWith('/reader/api/0/token')) return new Response('action-token', { status: 200 })
+        if (url.includes('/subscription/list')) return json({ subscriptions: [] })
+        if (url.includes('/stream/items/ids')) return json({ itemRefs: [] })
+        if (url.includes('/reader/api/0/tag/list')) {
+          return json({
+            tags: [
+              // 系统/状态标签：必须过滤
+              { id: 'user/987654321/state/com.google/reading-list' },
+              { id: 'user/987654321/state/com.google/starred' },
+              { id: 'user/987654321/state/com.google/read' },
+              { id: 'user/-/state/com.google/broadcast' },
+              // 真实用户标签（带真实数字 ID）
+              { id: 'user/987654321/label/Engineering' },
+              // 带斜杠的真实用户标签：远端保持平面语义，不得拆分
+              { id: 'user/987654321/label/Tech/Backend/Node' }
+            ]
+          })
+        }
+        return new Response('missing', { status: 404 })
+      }
+
+      const service = new RemoteAccountSyncService(fixture.accounts, fixture.library, customFetch)
+      await service.sync(account.id)
+
+      const groups = fixture.library.listGroupsForAccount(account.id)
+      // 验证未包含任何系统状态标签
+      expect(groups.some(g => g.name.includes('reading-list') || g.name.includes('starred') || g.name.includes('broadcast'))).toBe(false)
+
+      // 验证真实命名空间 ID 与名称映射
+      const engGroup = groups.find(g => g.name === 'Engineering')
+      expect(engGroup).toBeDefined()
+      expect(engGroup?.id).toBe(remoteDbId(account.id, 'user/-/label/Engineering'))
+      expect(engGroup?.accountId).toBe(account.id)
+
+      // 验证不拆分名称中的斜杠
+      const slashGroup = groups.find(g => g.name === 'Tech/Backend/Node')
+      expect(slashGroup).toBeDefined()
+      expect(slashGroup?.id).toBe(remoteDbId(account.id, 'user/-/label/Tech/Backend/Node'))
+      expect(slashGroup?.accountId).toBe(account.id)
+
+      fixture.database.close()
+    })
   })
 })
 

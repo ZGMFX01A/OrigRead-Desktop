@@ -8,13 +8,15 @@ import { defaultGroupId } from '../database/migrations'
 import { LibraryRepository } from '../database/library-repository'
 import { AccountRepository, remoteDbId, remoteId } from './account-repository'
 import {
+  categoryRemoteId,
   feedRemoteId, FeverApi, type FeverFeedsGroups,
-  GoogleReaderApi,  STREAM_READ, STREAM_STARRED,
+  GoogleReaderApi, type GoogleReaderTag, STREAM_READ, STREAM_STARRED,
   type AccountFetch
 } from './remote-account-api'
 import { createCertificateAwareAccountFetch } from './account-http-fetch'
 
 export class RemoteAccountSyncService {
+  private readonly inflightSyncs = new Map<number, Promise<void>>()
   constructor(
     private readonly accounts:AccountRepository,
     private readonly library:LibraryRepository,
@@ -35,10 +37,32 @@ export class RemoteAccountSyncService {
     return valid
   }
 
+  async waitForInflightSync(accountId:number):Promise<void>{
+    while(this.inflightSyncs.has(accountId)){
+      try{
+        await this.inflightSyncs.get(accountId)
+      }catch{
+        // 忽略前序同步异常，等待其彻底释放
+      }
+    }
+  }
+
   async sync(accountId:number):Promise<void>{
-    const account=this.requireRemote(accountId)
-    if(account.type==='fever')await this.syncFever(account)
-    else await syncGoogleReaderAccount({ account, api: this.googleApi(account), library: this.library, accounts: this.accounts, ensureDefaultGroup: () => this.ensureDefaultGroup(account.id) })
+    const existing = this.inflightSyncs.get(accountId)
+    if (existing) return existing
+
+    const run = (async () => {
+      const account=this.requireRemote(accountId)
+      if(account.type==='fever')await this.syncFever(account)
+      else await syncGoogleReaderAccount({ account, api: this.googleApi(account), library: this.library, accounts: this.accounts, ensureDefaultGroup: () => this.ensureDefaultGroup(account.id) })
+    })()
+
+    this.inflightSyncs.set(accountId, run)
+    try {
+      await run
+    } finally {
+      this.inflightSyncs.delete(accountId)
+    }
   }
 
   async subscribeRss(discovered:DiscoveredRssFeed,groupId?:string):Promise<string>{
@@ -85,6 +109,86 @@ export class RemoteAccountSyncService {
     const group:GroupRecord={id:remoteDbId(account.id,categoryStreamId),accountId:account.id,name:normalized,sortOrder:this.library.listGroupsForAccount(account.id).length,isDefault:false}
     this.library.upsertGroup(group)
     return group
+  }
+
+  async renameGroup(groupId:string,name:string):Promise<GroupRecord>{
+    const account=this.accounts.current()
+    if(account.type==='local')throw new Error('Local 账户应使用本地分组服务')
+    const normalized=normalizeGroupName(name)
+    if(normalized.length>200)throw new Error('分组名称不能超过 200 个字符')
+    const groups=this.library.listGroupsForAccount(account.id)
+    const currentGroup=groups.find((group)=>group.id===groupId)
+    if(!currentGroup)throw new Error('分组不存在')
+    const existing=findGroupByName(groups.filter((group)=>group.id!==currentGroup.id),normalized)
+    if(existing)throw new Error('分组名称已存在')
+    if(account.type==='fever'&&!currentGroup.isDefault)throw new Error('Fever 账户不支持在客户端重命名分组')
+    if(currentGroup.name===normalized)return currentGroup
+    // The default group is a local fallback, not a server-side category.
+    if(currentGroup.isDefault){
+      const updated={...currentGroup,name:normalized}
+      this.library.upsertGroup(updated)
+      return updated
+    }
+
+    // 等待同账户旧 sync 完结，避免 mutation 前后请求交错
+    await this.waitForInflightSync(account.id)
+
+    const categoryId=googleReaderCategoryId(account.id,currentGroup.id)
+    if(!categoryId)throw new Error('默认分组不允许重命名')
+    await this.googleApi(account).renameTag(categoryId,normalized)
+
+    // 若在 renameTag 往返期间有并发 sync 发起，等待其结束再执行本次权威 fresh sync
+    await this.waitForInflightSync(account.id)
+
+    // 触发全新 sync，不可复用 mutation 前开始的旧 sync
+    try{
+      await this.sync(account.id)
+    }catch(error){
+      const detail=error instanceof Error?error.message:String(error)
+      throw new Error(`分组重命名远端已成功，但后续同步失败：${detail}`)
+    }
+
+    const updatedGroups=this.library.listGroupsForAccount(account.id)
+    let canonical=findGroupByName(updatedGroups,normalized)??updatedGroups.find((g)=>g.name.toLowerCase()===normalized.toLowerCase())
+    if(canonical){
+      if(currentGroup.sortOrder!==canonical.sortOrder){
+        canonical={...canonical,sortOrder:currentGroup.sortOrder}
+        this.library.upsertGroup(canonical)
+      }
+      return canonical
+    }
+
+    // 当组内无订阅（空组）时，catalog 同步无法包含该组；通过 tag/list 获取服务端真实 label tag 证据
+    let tagListResponse:{tags?:GoogleReaderTag[]}
+    try{
+      tagListResponse=await this.googleApi(account).getTagList()
+    }catch{
+      throw new Error('远端已响应成功但无法确认最新分组，请刷新')
+    }
+
+    const labelTags=(tagListResponse.tags??[]).filter(
+      (tag): tag is GoogleReaderTag & { id: string } => typeof tag.id==='string' && /^user\/[^/]+\/label\/.+$/.test(tag.id)
+    )
+    const matchedTag=labelTags.find((tag)=>categoryRemoteId(tag.id).trim()===normalized)
+      ??labelTags.find((tag)=>categoryRemoteId(tag.id).trim().toLowerCase()===normalized.toLowerCase())
+
+    if(!matchedTag){
+      throw new Error('远端已响应成功但无法确认最新分组，请刷新')
+    }
+
+    const canonicalCategoryId=categoryRemoteId(matchedTag.id).trim()
+    const targetGroup:GroupRecord={
+      id:remoteDbId(account.id,`user/-/label/${canonicalCategoryId}`),
+      accountId:account.id,
+      name:canonicalCategoryId,
+      sortOrder:currentGroup.sortOrder,
+      isDefault:false
+    }
+    this.library.upsertGroup(targetGroup)
+    if(currentGroup.id!==targetGroup.id){
+      this.library.deleteGroupForAccountIfNoStarred(account.id,currentGroup.id)
+    }
+    return targetGroup
   }
 
   async updateFeed(feedId:string,patch:{name?:string;url?:string;groupId?:string;isNotification?:boolean;isFullContent?:boolean;isBrowser?:boolean}):Promise<FeedRecord>{

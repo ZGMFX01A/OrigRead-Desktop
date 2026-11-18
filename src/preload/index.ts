@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type FeedSettingsPatch, type OrigReadDesktopApi } from '../shared/contracts'
+import { IPC_CHANNELS, type ArticleListOptions, type FeedSettingsPatch, type OrigReadDesktopApi } from '../shared/contracts'
 import type { DesktopSettingsPatch } from '../shared/settings'
 import type { SyncRuntimeState } from '../shared/sync-runtime'
 import type {
@@ -32,13 +32,17 @@ const api: OrigReadDesktopApi = Object.freeze({
   getLibrarySnapshot: () => ipcRenderer.invoke(IPC_CHANNELS.getLibrarySnapshot),
   listFeeds: () => ipcRenderer.invoke(IPC_CHANNELS.listFeeds),
   listGroups: () => ipcRenderer.invoke(IPC_CHANNELS.listGroups),
-  listArticles: (limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.listArticles, limit),
+  listArticles: (limitOrOptions?: number | ArticleListOptions, options?: ArticleListOptions) =>
+    ipcRenderer.invoke(IPC_CHANNELS.listArticles, limitOrOptions, options),
   getArticleById: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.getArticleById, articleId),
   getArticleSummaryById: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.getArticleSummaryById, articleId),
   searchArticles: (query: string, limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.searchArticles, query, limit),
   listArticlesByFeed: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.listArticlesByFeed, feedId),
   listArticlesByGroup: (groupId: string) => ipcRenderer.invoke(IPC_CHANNELS.listArticlesByGroup, groupId),
   listFeedArticleStats: () => ipcRenderer.invoke(IPC_CHANNELS.listFeedArticleStats),
+  recordArticleOpened: (articleId: string) => ipcRenderer.invoke(IPC_CHANNELS.recordArticleOpened, articleId),
+  listRecentArticles: (limit?: number) => ipcRenderer.invoke(IPC_CHANNELS.listRecentArticles, limit),
+  clearReadingHistory: () => ipcRenderer.invoke(IPC_CHANNELS.clearReadingHistory),
   setArticleUnread: (articleId: string, unread: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.setArticleUnread, articleId, unread),
   setArticleStarred: (articleId: string, starred: boolean) =>
@@ -52,7 +56,9 @@ const api: OrigReadDesktopApi = Object.freeze({
   clearAccountArticles: (accountId: number) => ipcRenderer.invoke(IPC_CHANNELS.clearAccountArticles, accountId),
   importAccountClientCertificate: (accountId: number, passphrase: string) => ipcRenderer.invoke(IPC_CHANNELS.importAccountClientCertificate, accountId, passphrase),
   clearAccountClientCertificate: (accountId: number) => ipcRenderer.invoke(IPC_CHANNELS.clearAccountClientCertificate, accountId),
-  addGroup: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.addGroup, name),
+  addGroup: (name: string, parentId?: string | null) => ipcRenderer.invoke(IPC_CHANNELS.addGroup, name, parentId),
+  renameGroup: (groupId: string, name: string) => ipcRenderer.invoke(IPC_CHANNELS.renameGroup, groupId, name),
+  moveGroup: (groupId: string, parentId?: string | null) => ipcRenderer.invoke(IPC_CHANNELS.moveGroup, groupId, parentId),
   updateFeedSettings: (feedId: string, patch: FeedSettingsPatch) => ipcRenderer.invoke(IPC_CHANNELS.updateFeedSettings, feedId, patch),
   clearFeedArticles: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.clearFeedArticles, feedId),
   deleteFeed: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteFeed, feedId),
@@ -122,6 +128,7 @@ const api: OrigReadDesktopApi = Object.freeze({
     ipcRenderer.invoke(IPC_CHANNELS.subscribeSource, discoveryId, candidateIds),
   refreshJsonSource: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.refreshJsonSource, feedId),
   refreshSource: (feedId: string) => ipcRenderer.invoke(IPC_CHANNELS.refreshSource, feedId),
+  refreshGroup: (groupId: string) => ipcRenderer.invoke(IPC_CHANNELS.refreshGroup, groupId),
   refreshAllSources: () => ipcRenderer.invoke(IPC_CHANNELS.refreshAllSources),
   getSyncRuntimeState: () => ipcRenderer.invoke(IPC_CHANNELS.getSyncRuntimeState),
   onSyncRuntimeStateChanged: (listener: (state: SyncRuntimeState) => void) => {

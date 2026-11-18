@@ -1,3 +1,4 @@
+import { formatGroupOperationError } from './group-operation-error'
 import {
   ArrowLeft,
   ArrowRight,
@@ -10,6 +11,8 @@ import {
   ChevronUp,
   Compass,
   Download,
+  FolderPlus,
+  Rss,
   Maximize2,
   Minimize2,
   MoreHorizontal,
@@ -41,7 +44,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useTranslation } from 'react-i18next'
 import type { AppInfo } from '../../shared/contracts'
 import { resolveDesktopLanguage } from '../../shared/locale'
-import type { ArticleRecord, ArticleSearchResult, FeedArticleStats, FeedRecord, GroupRecord, LibrarySnapshot } from '../../shared/library'
+import type { ArticleRecord, ArticleSearchResult, FeedArticleStats, FeedRecord, GroupRecord, LibrarySnapshot, RecentArticleRecord } from '../../shared/library'
 import {
   ARTICLE_PANE_WIDTH_MAX,
   ARTICLE_PANE_WIDTH_MIN,
@@ -84,6 +87,9 @@ import type { LlmReasoningEffort } from '../../shared/llm'
 import { resolveQuickMessageTemplate, type LlmQuickMessage } from '../../shared/llm-quick-message'
 import type { TranslationDocument, TranslationTarget } from '../../shared/translation'
 import type { FeedCatalogEntry } from '../../shared/source-catalog'
+import type { AccountSnapshot } from '../../shared/account'
+import { CreateGroupDialog, GroupContextMenu, GroupRenameDialog, MoveGroupDialog } from './GroupRenameDialog'
+import { getGroupRecordDisplayPath } from './group-display-path'
 import { SourceDiscoveryPanel } from './SourceDiscoveryPanel'
 import { SourceSettingsDialog } from './SourceSettingsDialog'
 import { useReaderContentRequests } from './useReaderContentRequests'
@@ -115,6 +121,10 @@ import { SourceSwitcherPopover } from './SourceSwitcherPopover'
 import { SourceManagerOverlay } from './SourceManagerOverlay'
 import { THREE_PANE_BREAKPOINT, resolveResponsivePaneLayout } from './responsive-layout'
 import { ReaderAiPanelShell } from './ReaderAiPanel'
+import { formatArticlePublishTime } from './article-publish-time'
+import { useRecentReadingHistory } from './useRecentReadingHistory'
+import { getGroupDescendantIds } from '../../shared/group-tree'
+import { buildSourceSearchViewModel, computeGroupStatsById } from './source-search-viewmodel'
 import {
   directNavigationRefForOccurrence,
   projectReaderAiCitationDisplay,
@@ -156,9 +166,17 @@ function readerAiReasoningEffortLabel(effort: LlmReasoningEffort): string {
               : 'Auto'
 }
 
+function isSameScope(a: ArticleScope, b: ArticleScope): boolean {
+  if (a.kind !== b.kind) return false
+  if (a.kind === 'all') return true
+  return a.id === (b as { id: string }).id
+}
+
 type ContextMenuState =
   | { kind: 'feed'; x: number; y: number; feedId: string }
   | { kind: 'article'; x: number; y: number; articleId: string }
+  | { kind: 'source'; x: number; y: number }
+  | { kind: 'group'; x: number; y: number; groupId: string }
 
 interface ReaderAiSelection {
   articleId: string
@@ -204,6 +222,7 @@ export default function App(): React.JSX.Element {
   const [groups, setGroups] = useState<GroupRecord[]>([])
   const [articles, setArticles] = useState<ArticleRecord[]>([])
   const [scopeArticles, setScopeArticles] = useState<ArticleRecord[] | null>(null)
+  const [readArticles, setReadArticles] = useState<ArticleRecord[] | null>(null)
   const [feedArticleStats, setFeedArticleStats] = useState<FeedArticleStats[]>([])
   const [settings, setSettings] = useState<DesktopSettings | null>(null)
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)
@@ -233,6 +252,7 @@ export default function App(): React.JSX.Element {
   const [sourceDiscoveryStages, setSourceDiscoveryStages] = useState<Partial<Record<SourceDiscoveryStage, SourceDiscoveryProgress['state']>>>({})
   const [sourceDiscoveryStartedAt, setSourceDiscoveryStartedAt] = useState<number | null>(null)
   const [refreshingFeedId, setRefreshingFeedId] = useState<string | null>(null)
+  const [refreshingGroupId, setRefreshingGroupId] = useState<string | null>(null)
   const [isRefreshingAll, setIsRefreshingAll] = useState(false)
   const [readerContent, setReaderContent] = useState<ReaderArticleContent | null>(null)
   const [readerContentLoading, setReaderContentLoading] = useState(false)
@@ -303,6 +323,11 @@ export default function App(): React.JSX.Element {
   const [opmlBusy, setOpmlBusy] = useState(false)
   const [opmlStatus, setOpmlStatus] = useState<string | null>(null)
   const [sourceSettingsFeed, setSourceSettingsFeed] = useState<FeedRecord | null>(null)
+  const [renamingGroup, setRenamingGroup] = useState<GroupRecord | null>(null)
+  const [creatingGroup, setCreatingGroup] = useState(false)
+  const [creatingSubgroupParent, setCreatingSubgroupParent] = useState<GroupRecord | null>(null)
+  const [movingGroup, setMovingGroup] = useState<GroupRecord | null>(null)
+  const [accountSnapshot, setAccountSnapshot] = useState<AccountSnapshot | null>(null)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [aiOptionsOpen, setAiOptionsOpen] = useState(false)
   const [translationTargetOpen, setTranslationTargetOpen] = useState(false)
@@ -370,6 +395,9 @@ export default function App(): React.JSX.Element {
   const readerSecondaryActionsRef = useRef<HTMLDivElement>(null)
   const readerToolbarDensity = useWindowChrome(appInfo?.platform, readerToolbarRef)
   const selectedArticleIdRef = useRef<string | null>(null)
+  const readArticlesRequestIdRef = useRef(0)
+  const destinationRef = useRef<Destination>(destination)
+  destinationRef.current = destination
   const sourceDiscoveryRequestIdRef = useRef<string | null>(null)
   const sourceSubscriptionPendingRef = useRef(false)
   const sourceDialogGenerationRef = useRef(0)
@@ -457,20 +485,68 @@ export default function App(): React.JSX.Element {
     ].slice(0, RECENT_SOURCE_SCOPE_LIMIT))
   }, [])
 
+  const currentAccount = useMemo(() => {
+    if (!accountSnapshot) return null
+    return accountSnapshot.accounts.find((item) => item.id === accountSnapshot.currentAccountId) ?? null
+  }, [accountSnapshot])
+  const currentAccountId = accountSnapshot?.currentAccountId ?? groups[0]?.accountId ?? null
+  const isLocalAccount = currentAccount ? currentAccount.type === 'local' : true
+
+  const {
+    recentArticles,
+    setRecentArticles,
+    recentHistoryError,
+    loadRecent: loadRecentArticles,
+    recordArticleOpenedSafely,
+    clearReadingHistorySafely
+  } = useRecentReadingHistory({
+    currentAccountId,
+    formatErrorMessage: (action, err) => {
+      const detail = err instanceof Error ? err.message : String(err)
+      if (action === 'clear') return `${t('clearReadingHistoryFailed')}: ${detail}`
+      if (action === 'record') return `${t('recordHistoryFailed')}: ${detail}`
+      return `${t('loadReadingHistoryFailed')}: ${detail}`
+    }
+  })
+
+  const liveAccountIdRef = useRef<number | null>(null)
+  const liveScopeRef = useRef<ArticleScope>({ kind: 'all' })
+  const scopeRequestSeqRef = useRef(0)
+  const libraryRequestSeqRef = useRef(0)
+
+  liveAccountIdRef.current = currentAccountId
+  liveScopeRef.current = articleScope
+
   const reloadLibrary = useCallback(async (): Promise<void> => {
-    const [snapshot, loadedFeeds, loadedGroups, loadedArticles, loadedFeedStats] = await Promise.all([
+    const seq = ++libraryRequestSeqRef.current
+    const requestAccountId = liveAccountIdRef.current
+    const isGlobalRead = liveScopeRef.current.kind === 'all' && destinationRef.current === 'read'
+    const requestId = isGlobalRead ? ++readArticlesRequestIdRef.current : 0
+    const [snapshot, loadedFeeds, loadedGroups, loadedArticles, loadedFeedStats, loadedAccountSnapshot, loadedReadArticles] = await Promise.all([
       window.origread.getLibrarySnapshot(),
       window.origread.listFeeds(),
       window.origread.listGroups(),
       window.origread.listArticles(),
-      window.origread.listFeedArticleStats()
+      window.origread.listFeedArticleStats(),
+      window.origread.getAccounts(),
+      isGlobalRead ? window.origread.listArticles({ isUnread: false, limit: 200 }) : Promise.resolve(null)
     ])
+    if (seq !== libraryRequestSeqRef.current) return
+    if (requestAccountId !== null && liveAccountIdRef.current !== requestAccountId && loadedAccountSnapshot.currentAccountId !== liveAccountIdRef.current) {
+      return
+    }
     setLibrarySnapshot(snapshot)
     setFeeds(loadedFeeds)
     setGroups(loadedGroups)
     setArticles(loadedArticles)
     setFeedArticleStats(loadedFeedStats)
-  }, [])
+    setAccountSnapshot(loadedAccountSnapshot)
+    if (isGlobalRead && loadedReadArticles !== null && requestId === readArticlesRequestIdRef.current
+      && liveScopeRef.current.kind === 'all' && destinationRef.current === 'read') {
+      setReadArticles(loadedReadArticles)
+    }
+    void loadRecentArticles(loadedAccountSnapshot.currentAccountId)
+  }, [loadRecentArticles])
 
   const loadArticlesForScope = useCallback(async (scope: ArticleScope): Promise<ArticleRecord[] | null> => {
     if (scope.kind === 'all') return null
@@ -479,25 +555,86 @@ export default function App(): React.JSX.Element {
   }, [])
 
   const reloadCurrentScope = useCallback(async (): Promise<void> => {
-    const loaded = await loadArticlesForScope(articleScope)
-    setScopeArticles(loaded)
-  }, [articleScope, loadArticlesForScope])
+    const targetAccountId = liveAccountIdRef.current
+    const targetScope = liveScopeRef.current
+    const seq = ++scopeRequestSeqRef.current
+    if (targetScope.kind === 'all') {
+      if (liveAccountIdRef.current === targetAccountId && liveScopeRef.current.kind === 'all' && scopeRequestSeqRef.current === seq) {
+        setScopeArticles(null)
+      }
+      if (destinationRef.current === 'read') {
+        const requestId = ++readArticlesRequestIdRef.current
+        const canApply = (): boolean => requestId === readArticlesRequestIdRef.current
+          && liveAccountIdRef.current === targetAccountId && liveScopeRef.current.kind === 'all'
+          && destinationRef.current === 'read'
+        try {
+          const loaded = await window.origread.listArticles({ isUnread: false, limit: 200 })
+          if (canApply()) {
+            setReadArticles(loaded)
+          }
+        } catch (error) {
+          if (canApply()) {
+            setArticleListError(error instanceof Error ? error.message : String(error))
+          }
+        }
+      }
+      return
+    }
+    const loaded = await loadArticlesForScope(targetScope)
+    if (liveAccountIdRef.current === targetAccountId && isSameScope(liveScopeRef.current, targetScope) && scopeRequestSeqRef.current === seq) {
+      setScopeArticles(loaded)
+    }
+  }, [loadArticlesForScope])
 
   useEffect(() => {
     let cancelled = false
-    if (articleScope.kind === 'all') {
+    if (articleScope.kind !== 'all' || destination !== 'read') {
+      return
+    }
+    const requestId = ++readArticlesRequestIdRef.current
+    const accountId = currentAccountId
+    setReadArticles(null)
+    const canApply = (): boolean => !cancelled && requestId === readArticlesRequestIdRef.current
+      && liveAccountIdRef.current === accountId && liveScopeRef.current.kind === 'all'
+      && destinationRef.current === 'read'
+    void window.origread.listArticles({ isUnread: false, limit: 200 })
+      .then((loaded) => {
+        if (canApply()) {
+          setReadArticles(loaded)
+        }
+      })
+      .catch((error) => {
+        if (canApply()) {
+          setArticleListError(error instanceof Error ? error.message : String(error))
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [articleScope.kind, currentAccountId, destination])
+
+  useEffect(() => {
+    let cancelled = false
+    const targetAccountId = liveAccountIdRef.current
+    const targetScope = articleScope
+    const seq = ++scopeRequestSeqRef.current
+    if (targetScope.kind === 'all') {
       setScopeArticles(null)
       setArticleListError(null)
       return
     }
     setScopeArticles([])
     setArticleListError(null)
-    void loadArticlesForScope(articleScope)
+    void loadArticlesForScope(targetScope)
       .then((loaded) => {
-        if (!cancelled) setScopeArticles(loaded)
+        if (!cancelled && liveAccountIdRef.current === targetAccountId && isSameScope(liveScopeRef.current, targetScope) && scopeRequestSeqRef.current === seq) {
+          setScopeArticles(loaded)
+        }
       })
       .catch((error) => {
-        if (!cancelled) setArticleListError(error instanceof Error ? error.message : String(error))
+        if (!cancelled && liveAccountIdRef.current === targetAccountId && isSameScope(liveScopeRef.current, targetScope) && scopeRequestSeqRef.current === seq) {
+          setArticleListError(error instanceof Error ? error.message : String(error))
+        }
       })
     return () => { cancelled = true }
   }, [articleScope, loadArticlesForScope])
@@ -608,6 +745,10 @@ export default function App(): React.JSX.Element {
   const resolvedTheme = settings?.theme === 'dark' ? 'dark' : settings?.theme === 'light' ? 'light' : systemDark ? 'dark' : 'light'
   // Reader 选择必须独立于左侧 Article Scope。当前列表暂时找不到文章时也保留 Reader 自己的文章快照。
   const selectedArticle = selectedArticleRecord?.id === selectedArticleId ? selectedArticleRecord : null
+  const selectedArticlePublishTime = useMemo(
+    () => formatArticlePublishTime(selectedArticle?.publishedAt, i18n?.language),
+    [selectedArticle?.publishedAt, i18n?.language]
+  )
   const selectedFeed = selectedArticle ? feeds.find((feed) => feed.id === selectedArticle.feedId) ?? null : null
   const selectedArticleFeedId = selectedArticle?.feedId ?? null
   const selectedArticleAccountId = selectedArticle?.accountId ?? null
@@ -1273,43 +1414,84 @@ export default function App(): React.JSX.Element {
   const debouncedArticleQuery = useDebouncedValue(articleQuery)
   const normalizedArticleQuery = debouncedArticleQuery.trim().toLocaleLowerCase()
   const normalizedSourceQuery = sourceQuery.trim().toLocaleLowerCase()
-  const scopedArticles = articleScope.kind === 'all' ? articles : (scopeArticles ?? [])
+  const scopedArticles = articleScope.kind === 'all'
+    ? (destination === 'read' ? (readArticles ?? []) : articles)
+    : (scopeArticles ?? [])
+  const scopedRecentArticles = useMemo(() => {
+    if (articleScope.kind === 'all') return recentArticles
+    if (articleScope.kind === 'feed') {
+      return recentArticles.filter((article) => article.feedId === articleScope.id)
+    }
+    const isUngrouped = articleScope.id === '__ungrouped__'
+    const knownGroupIds = new Set(groups.map((g) => g.id))
+    let descendantIds: string[] = []
+    try {
+      descendantIds = getGroupDescendantIds(articleScope.id, groups)
+    } catch {
+      descendantIds = []
+    }
+    const groupIds = new Set([articleScope.id, ...descendantIds])
+    const groupFeedIds = new Set(
+      feeds
+        .filter((feed) =>
+          isUngrouped
+            ? (!knownGroupIds.has(feed.groupId) || feed.groupId === '__ungrouped__')
+            : groupIds.has(feed.groupId)
+        )
+        .map((feed) => feed.id)
+    )
+    return recentArticles.filter((article) => groupFeedIds.has(article.feedId))
+  }, [articleScope, feeds, groups, recentArticles])
   const visibleArticles = useMemo(() => {
+    if (destination === 'recent') {
+      if (!normalizedArticleQuery) return scopedRecentArticles
+      return scopedRecentArticles.filter((article) =>
+        `${article.title} ${article.author ?? ''}`.toLocaleLowerCase().includes(normalizedArticleQuery)
+      )
+    }
     return scopedArticles.filter((article) => {
       if (destination === 'unread' && !article.isUnread) return false
+      if (destination === 'read' && article.isUnread) return false
       if (destination === 'starred' && !article.isStarred) return false
       if (!normalizedArticleQuery) return true
       return `${article.title} ${article.author ?? ''}`.toLocaleLowerCase().includes(normalizedArticleQuery)
     })
-  }, [destination, normalizedArticleQuery, scopedArticles])
-  const visibleFeeds = useMemo(() => {
-    if (!normalizedSourceQuery) return feeds
-    return feeds.filter((feed) => `${feed.name} ${feed.url}`.toLocaleLowerCase().includes(normalizedSourceQuery))
-  }, [feeds, normalizedSourceQuery])
+  }, [destination, normalizedArticleQuery, scopedArticles, scopedRecentArticles])
   const groupedVisibleFeeds = useMemo(() => {
-    const sortedGroups = groups.slice().sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
-    const knownIds = new Set(sortedGroups.map((group) => group.id))
-    const result = sortedGroups
-      .map((group) => ({ group, feeds: visibleFeeds.filter((feed) => feed.groupId === group.id) }))
-      .filter((entry) => entry.feeds.length > 0)
-    const ungrouped = visibleFeeds.filter((feed) => !knownIds.has(feed.groupId))
-    if (ungrouped.length > 0) result.push({ group: { id: '__ungrouped__', name: t('ungroupedSources'), sortOrder: Number.MAX_SAFE_INTEGER, isDefault: false }, feeds: ungrouped })
-    return result
-  }, [groups, t, visibleFeeds])
+    return buildSourceSearchViewModel({
+      groups,
+      feeds,
+      query: sourceQuery,
+      ungroupedGroupName: t('ungroupedSources')
+    })
+  }, [groups, feeds, sourceQuery, t])
+  const visibleFeedCount = useMemo(() => {
+    if (!normalizedSourceQuery) return feeds.length
+    const seen = new Set<string>()
+    for (const entry of groupedVisibleFeeds) {
+      for (const feed of entry.feeds) {
+        seen.add(feed.id)
+      }
+    }
+    return seen.size
+  }, [feeds.length, groupedVisibleFeeds, normalizedSourceQuery])
   const feedStatsById = useMemo(
     () => new Map(feedArticleStats.map((stats) => [stats.feedId, stats])),
     [feedArticleStats]
   )
   const feedStats = (feedId: string): FeedArticleStats =>
     feedStatsById.get(feedId) ?? { feedId, total: 0, unread: 0, starred: 0 }
+  const groupStatsById = useMemo(() => {
+    return computeGroupStatsById(groups, feeds, (feedId) => feedStats(feedId).unread)
+  }, [feeds, groups, feedStatsById])
   const activeScopeFeed = articleScope.kind === 'feed' ? feeds.find((feed) => feed.id === articleScope.id) ?? null : null
   const activeScopeGroup = articleScope.kind === 'group' ? groups.find((group) => group.id === articleScope.id) ?? null : null
-  const scopeLabel = activeScopeFeed?.name ?? activeScopeGroup?.name ?? t('allSources')
+  const scopeLabel = activeScopeFeed?.name ?? (activeScopeGroup ? getGroupRecordDisplayPath(activeScopeGroup, groups, t) : t('allSources'))
   const scopedUnreadCount = articleScope.kind === 'all'
-    ? (librarySnapshot?.unread ?? scopedArticles.filter((article) => article.isUnread).length)
+    ? (librarySnapshot?.unread ?? articles.filter((article) => article.isUnread).length)
     : scopedArticles.filter((article) => article.isUnread).length
   const scopedStarredCount = articleScope.kind === 'all'
-    ? (librarySnapshot?.starred ?? scopedArticles.filter((article) => article.isStarred).length)
+    ? (librarySnapshot?.starred ?? articles.filter((article) => article.isStarred).length)
     : scopedArticles.filter((article) => article.isStarred).length
   const originalUrl = normalizeHttpUrl(selectedArticle?.url)
   const readingSharePreference: ReadingSharePreference = {
@@ -2103,12 +2285,20 @@ export default function App(): React.JSX.Element {
     setSelectedCandidateId(null)
     setSelectedCandidateIds([])
     setSourceError(null)
+    setRenamingGroup(null)
+    setContextMenu(null)
     closeSourceSwitcher(false)
     closeSourceManager(false)
+    setRenamingGroup(null)
+    setCreatingGroup(false)
+    setCreatingSubgroupParent(null)
+    setMovingGroup(null)
     setRecentSourceScopeKeys([])
     // Feed / Group ID 只在当前账户内有效；切换账户必须回到 All，避免旧 Scope 继续引用上一账户数据。
     setArticleScope({ kind: 'all' })
     setScopeArticles(null)
+    setReadArticles(null)
+    readArticlesRequestIdRef.current += 1
     setArticleQuery('')
     setSelectedArticleId(null)
     setReaderContent(null)
@@ -2399,6 +2589,11 @@ export default function App(): React.JSX.Element {
     return true
   }
 
+  const handleClearReadingHistory = useCallback(async (): Promise<void> => {
+    if (!window.confirm(t('clearReadingHistoryConfirm'))) return
+    await clearReadingHistorySafely()
+  }, [clearReadingHistorySafely, t])
+
   const cancelPendingReaderCitationNavigation = (): void => {
     readerCitationNavigationRevisionRef.current += 1
     citationArticleNavigationRef.current = null
@@ -2436,10 +2631,16 @@ export default function App(): React.JSX.Element {
     }
     setReaderAiSourceFocus({ messageId, citationId: citation.id, locationUnavailable: false })
     setReaderMode('article')
-    if (selectedArticleId === articleId && readerMode === 'article' && revealReaderCitationNow(citation)) return
+    if (selectedArticleId === articleId && readerMode === 'article' && revealReaderCitationNow(citation)) {
+      void recordArticleOpenedSafely(articleId)
+      return
+    }
 
     setReaderCitationTarget({ requestId, messageId, citation, contextRef })
-    if (selectedArticleId === articleId) return
+    if (selectedArticleId === articleId) {
+      void recordArticleOpenedSafely(articleId)
+      return
+    }
     try {
       const article = await window.origread.getArticleSummaryById(articleId)
       if (readerCitationNavigationRevisionRef.current !== requestId) return
@@ -2451,6 +2652,7 @@ export default function App(): React.JSX.Element {
       citationArticleNavigationRef.current = articleId
       setSelectedArticleRecord(article)
       setSelectedArticleId(articleId)
+      void recordArticleOpenedSafely(articleId)
     } catch {
       if (readerCitationNavigationRevisionRef.current !== requestId) return
       openReaderAiSources(messageId, citation.id, true)
@@ -2537,6 +2739,8 @@ export default function App(): React.JSX.Element {
     if (article.isUnread) {
       setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isUnread: false } : item))
       setScopeArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isUnread: false } : item) ?? current)
+      setReadArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isUnread: false } : item) ?? current)
+      setRecentArticles((current) => current.map((item) => item.id === article.id ? { ...item, isUnread: false } : item))
       setFeedArticleStats((current) => current.map((stats) => stats.feedId === article.feedId
         ? { ...stats, unread: Math.max(0, stats.unread - 1) }
         : stats))
@@ -2569,6 +2773,7 @@ export default function App(): React.JSX.Element {
       setSelectedArticleId(article.id)
     }
     commitArticleSelection()
+    void recordArticleOpenedSafely(article.id)
   }
 
   const searchCachedArticles = useCallback(async (value: string): Promise<void> => {
@@ -2596,6 +2801,7 @@ export default function App(): React.JSX.Element {
     try {
       const existing = articles.find((article) => article.id === result.id)
         ?? scopeArticles?.find((article) => article.id === result.id)
+        ?? readArticles?.find((article) => article.id === result.id)
       const article = existing ?? await window.origread.getArticleSummaryById(result.id)
       if (!article) {
         setGlobalSearchError(t('globalSearchOpenFailed'))
@@ -2614,6 +2820,8 @@ export default function App(): React.JSX.Element {
     const next = !article.isStarred
     setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isStarred: next } : item))
     setScopeArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isStarred: next } : item) ?? current)
+    setReadArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isStarred: next } : item) ?? current)
+    setRecentArticles((current) => current.map((item) => item.id === article.id ? { ...item, isStarred: next } : item))
     setSelectedArticleRecord((current) => current?.id === article.id ? { ...current, isStarred: next } : current)
     setFeedArticleStats((current) => current.map((stats) => stats.feedId === article.feedId
       ? { ...stats, starred: Math.max(0, stats.starred + (next ? 1 : -1)) }
@@ -2629,6 +2837,14 @@ export default function App(): React.JSX.Element {
     const next = !article.isUnread
     setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isUnread: next } : item))
     setScopeArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isUnread: next } : item) ?? current)
+    setReadArticles((current) => {
+      if (!current) return current
+      if (next) {
+        return current.filter((item) => item.id !== article.id)
+      }
+      return current.map((item) => item.id === article.id ? { ...item, isUnread: false } : item)
+    })
+    setRecentArticles((current) => current.map((item) => item.id === article.id ? { ...item, isUnread: next } : item))
     setSelectedArticleRecord((current) => current?.id === article.id ? { ...current, isUnread: next } : current)
     setFeedArticleStats((current) => current.map((stats) => stats.feedId === article.feedId
       ? { ...stats, unread: Math.max(0, stats.unread + (next ? 1 : -1)) }
@@ -3038,25 +3254,84 @@ export default function App(): React.JSX.Element {
     scopeAfterRefresh?: ArticleScope,
     noticeTarget: 'source' | 'article' = 'source'
   ): Promise<void> => {
-    if (refreshingFeedId || isRefreshingAll) return
+    if (refreshingFeedId || refreshingGroupId || isRefreshingAll) return
     setRefreshingFeedId(feed.id)
     const setRefreshError = noticeTarget === 'article' ? setArticleListError : setSourceError
     setRefreshError(null)
+    const requestAccountId = liveAccountIdRef.current
+    const requestScope = liveScopeRef.current
+    const canShowError = () => liveAccountIdRef.current === requestAccountId
+      && (noticeTarget === 'source' || isSameScope(liveScopeRef.current, requestScope))
     try {
       await window.origread.refreshSource(feed.id)
+      if (liveAccountIdRef.current !== requestAccountId) return
       if (scopeAfterRefresh) {
         const [_, loadedScopeArticles] = await Promise.all([
           reloadLibrary(),
           loadArticlesForScope(scopeAfterRefresh)
         ])
-        setScopeArticles(loadedScopeArticles)
+        if (liveAccountIdRef.current === requestAccountId && isSameScope(liveScopeRef.current, scopeAfterRefresh)) {
+          setScopeArticles(loadedScopeArticles)
+        }
       } else {
-        await Promise.all([reloadLibrary(), reloadCurrentScope()])
+        await reloadLibrary()
+        if (liveAccountIdRef.current === requestAccountId) {
+          await reloadCurrentScope()
+        }
       }
     } catch (error) {
-      setRefreshError(`${t('refreshFailed')}: ${error instanceof Error ? error.message : String(error)}`)
+      if (canShowError()) {
+        setRefreshError(`${t('refreshFailed')}: ${error instanceof Error ? error.message : String(error)}`)
+      }
     } finally {
       setRefreshingFeedId(null)
+    }
+  }
+
+  const refreshGroup = async (
+    group: GroupRecord,
+    scopeAfterRefresh?: ArticleScope,
+    noticeTarget: 'source' | 'article' = 'article'
+  ): Promise<void> => {
+    if (refreshingFeedId || refreshingGroupId || isRefreshingAll) return
+    setRefreshingGroupId(group.id)
+    const setRefreshError = noticeTarget === 'article' ? setArticleListError : setSourceError
+    setRefreshError(null)
+    const requestAccountId = liveAccountIdRef.current
+    const requestScope = liveScopeRef.current
+    const canShowError = () => liveAccountIdRef.current === requestAccountId
+      && (noticeTarget === 'source' || isSameScope(liveScopeRef.current, requestScope))
+    try {
+      const result = await window.origread.refreshGroup(group.id)
+      if (liveAccountIdRef.current !== requestAccountId) return
+      if (scopeAfterRefresh) {
+        const [_, loadedScopeArticles] = await Promise.all([
+          reloadLibrary(),
+          loadArticlesForScope(scopeAfterRefresh)
+        ])
+        if (liveAccountIdRef.current === requestAccountId && isSameScope(liveScopeRef.current, scopeAfterRefresh)) {
+          setScopeArticles(loadedScopeArticles)
+        }
+      } else {
+        await reloadLibrary()
+        if (liveAccountIdRef.current === requestAccountId) {
+          await reloadCurrentScope()
+        }
+      }
+      if (canShowError() && result.failedCount > 0) {
+        const firstFailure = result.results.find((item) => item.status === 'failed')
+        setRefreshError(t('syncPartialFailure', {
+          failed: result.failedCount,
+          total: result.sourceCount,
+          error: formatGroupOperationError(firstFailure?.error ?? t('unknownError'), t)
+        }))
+      }
+    } catch (error) {
+      if (canShowError()) {
+        setRefreshError(`${t('refreshFailed')}: ${formatGroupOperationError(error, t)}`)
+      }
+    } finally {
+      setRefreshingGroupId(null)
     }
   }
 
@@ -3101,18 +3376,26 @@ export default function App(): React.JSX.Element {
       await window.origread.updateFeedSettings(feed.id, { groupId })
       await Promise.all([reloadLibrary(), reloadCurrentScope()])
     } catch (error) {
-      setSourceError(`${t('moveToGroup')}: ${error instanceof Error ? error.message : String(error)}`)
+      setSourceError(`${t('moveToGroup')}: ${formatGroupOperationError(error, t)}`)
     }
   }
 
   const refreshAllSources = async (): Promise<void> => {
-    if (isRefreshingAll || refreshingFeedId || feeds.length === 0) return
+    if (isRefreshingAll || refreshingFeedId || refreshingGroupId || feeds.length === 0) return
     setIsRefreshingAll(true)
     setArticleListError(null)
+    const requestAccountId = liveAccountIdRef.current
+    const requestScope = liveScopeRef.current
+    const canShowError = () => liveAccountIdRef.current === requestAccountId
+      && isSameScope(liveScopeRef.current, requestScope)
     try {
       const result = await window.origread.refreshAllSources()
-      await Promise.all([reloadLibrary(), reloadCurrentScope()])
-      if (result.failedCount > 0) {
+      if (liveAccountIdRef.current !== requestAccountId) return
+      await reloadLibrary()
+      if (liveAccountIdRef.current === requestAccountId) {
+        await reloadCurrentScope()
+      }
+      if (canShowError() && result.failedCount > 0) {
         const firstFailure = result.results.find((item) => item.status === 'failed')
         setArticleListError(t('syncPartialFailure', {
           failed: result.failedCount,
@@ -3121,7 +3404,9 @@ export default function App(): React.JSX.Element {
         }))
       }
     } catch (error) {
-      setArticleListError(`${t('refreshFailed')}: ${error instanceof Error ? error.message : String(error)}`)
+      if (canShowError()) {
+        setArticleListError(`${t('refreshFailed')}: ${error instanceof Error ? error.message : String(error)}`)
+      }
     } finally {
       setIsRefreshingAll(false)
     }
@@ -3208,14 +3493,15 @@ export default function App(): React.JSX.Element {
       <SourceSidebar
         articleScope={articleScope}
         sourceQuery={sourceQuery}
-        visibleFeedCount={visibleFeeds.length}
+        visibleFeedCount={visibleFeedCount}
         groupedFeeds={groupedVisibleFeeds}
         feedStatsById={feedStatsById}
+        groupStatsById={groupStatsById}
         allArticleCount={librarySnapshot?.articles ?? articles.length}
         allUnreadCount={librarySnapshot?.unread ?? articles.filter((article) => article.isUnread).length}
         collapsedGroupIds={collapsedSourceGroupIds}
         refreshingFeedId={refreshingFeedId}
-        isRefreshingAll={isRefreshingAll}
+        isRefreshingAll={isRefreshingAll || refreshingGroupId !== null}
         subscriptionMenuOpen={subscriptionMenuOpen}
         opmlBusy={opmlBusy}
         opmlStatus={opmlStatus}
@@ -3235,6 +3521,8 @@ export default function App(): React.JSX.Element {
         onRefreshFeed={(feed) => void refreshFeed(feed)}
         onOpenFeedSettings={(feed) => { closeSourceView(false); setSourceSettingsFeed(feed) }}
         onFeedContextMenu={(feed, x, y) => setContextMenu({ kind: 'feed', x, y, feedId: feed.id })}
+        onBlankContextMenu={(x, y) => { setSubscriptionMenuOpen(false); setContextMenu({ kind: 'source', x, y }) }}
+        onGroupContextMenu={(group, x, y) => setContextMenu({ kind: 'group', x, y, groupId: group.id })}
         onShowSourceCatalog={() => { closeSourceView(false); void showSourceCatalog() }}
         onToggleSubscriptionMenu={() => setSubscriptionMenuOpen((open) => !open)}
         onCloseSubscriptionMenu={() => setSubscriptionMenuOpen(false)}
@@ -3249,7 +3537,15 @@ export default function App(): React.JSX.Element {
     onOpenTranslationSettings: () => { void showSettings('translation') },
     onDestinationChange: (id: Destination) => { setArticleQuery(''); setDestination(id) },
     onClearScope: () => { setArticleScope({ kind: 'all' }); setArticleQuery('') },
-    onRefresh: () => activeScopeFeed ? void refreshFeed(activeScopeFeed, undefined, 'article') : void refreshAllSources(),
+    onRefresh: () => {
+      if (activeScopeFeed) {
+        void refreshFeed(activeScopeFeed, undefined, 'article')
+      } else if (activeScopeGroup) {
+        void refreshGroup(activeScopeGroup, undefined, 'article')
+      } else {
+        void refreshAllSources()
+      }
+    },
     onSelectArticle: selectArticle,
     onToggleStarred: toggleStarred,
     onArticleContextMenu: (article: ArticleRecord, x: number, y: number) => setContextMenu({ kind: 'article', x, y, articleId: article.id }),
@@ -3263,10 +3559,17 @@ export default function App(): React.JSX.Element {
       destination={destination}
       articleScope={articleScope}
       activeScopeFeed={activeScopeFeed}
+      activeScopeGroup={activeScopeGroup}
+      isLocalAccount={isLocalAccount}
       scopeLabel={scopeLabel}
-      scopeArticleCount={articleScope.kind === 'all' ? (librarySnapshot?.articles ?? scopedArticles.length) : scopedArticles.length}
+      scopeArticleCount={articleScope.kind === 'all' ? (librarySnapshot?.articles ?? articles.length) : scopedArticles.length}
       scopeUnreadCount={scopedUnreadCount}
       scopeStarredCount={scopedStarredCount}
+      scopeReadCount={articleScope.kind === 'all'
+        ? (librarySnapshot ? Math.max(0, librarySnapshot.articles - librarySnapshot.unread) : undefined)
+        : undefined}
+      scopeRecentCount={scopedRecentArticles.length}
+      onClearHistory={handleClearReadingHistory}
       articleQuery={articleQuery}
       filterQuery={debouncedArticleQuery}
       visibleArticles={visibleArticles}
@@ -3275,10 +3578,20 @@ export default function App(): React.JSX.Element {
       selectedArticleId={selectedArticleId}
       uiFontScale={settings?.uiFontScale ?? 100}
       showArticleThumbnails={settings?.showArticleThumbnails ?? false}
-      articleListError={articleListError}
+      showArticleSummaries={settings?.showArticleSummaries ?? true}
+      articleListError={destination === 'recent' ? (recentHistoryError ?? articleListError) : articleListError}
       searchInputRef={articleSearchInputRef}
-      refreshing={isRefreshingAll || refreshingFeedId === activeScopeFeed?.id}
-      refreshDisabled={feeds.length === 0 || isRefreshingAll || refreshingFeedId !== null}
+      refreshing={
+        isRefreshingAll ||
+        (articleScope.kind === 'feed' && refreshingFeedId === activeScopeFeed?.id) ||
+        (articleScope.kind === 'group' && refreshingGroupId === activeScopeGroup?.id)
+      }
+      refreshDisabled={
+        isRefreshingAll ||
+        refreshingFeedId !== null ||
+        refreshingGroupId !== null ||
+        (articleScope.kind === 'feed' ? !activeScopeFeed : articleScope.kind === 'group' ? !activeScopeGroup : feeds.length === 0)
+      }
       onArticleQueryChange={setArticleQuery}
       onChooseSourceScope={onChooseSourceScope}
       sourceSwitcherTriggerRef={onChooseSourceScope ? sourceSwitcherTriggerRef : undefined}
@@ -4116,7 +4429,7 @@ export default function App(): React.JSX.Element {
           <div
             key={selectedArticle.id}
             ref={readerContentRef}
-            className={`reader-content reader-mode-${readerMode} reader-article-surface-motion reader-article-${readerArticleMotionDirection}`}
+            className={`reader-content reader-mode-${readerMode} reader-article-surface-motion reader-article-${readerArticleMotionDirection} ${settings?.readerIndentParagraphs ? 'reader-indent-paragraphs' : ''}`}
             onMouseUp={captureReaderOriginalSelection}
             onKeyUp={captureReaderOriginalSelection}
             onScroll={handleReaderContentScroll}
@@ -4139,7 +4452,15 @@ export default function App(): React.JSX.Element {
               {readerMode === 'translation' && translationDocument?.displayMode === 'BILINGUAL' && translationDocument.translatedTitle.trim() !== selectedArticle.title.trim() && (
                 <div className="article-original-title"><strong>{t('originalTitle')}：</strong>{selectedArticle.title}</div>
               )}
-              <div>{selectedArticle.author ?? ''}</div>
+              <div>
+                {selectedArticle.author?.trim() ? <span>{selectedArticle.author.trim()}</span> : null}
+                {selectedArticle.author?.trim() && selectedArticlePublishTime ? <span> · </span> : null}
+                {selectedArticlePublishTime ? (
+                  <time dateTime={selectedArticlePublishTime.iso} title={selectedArticlePublishTime.full}>
+                    {selectedArticlePublishTime.detail}
+                  </time>
+                ) : null}
+              </div>
             </div>
             {readerToolNotice && (
               <div className="reader-tool-notice" role="status" aria-live="polite">
@@ -4167,7 +4488,7 @@ export default function App(): React.JSX.Element {
                 <SearchableHtml
                   key={`translation:${selectedArticle.id}:${translationDocument.target}:${translationDocument.displayMode}`}
                   html={translationDocument.translatedContent}
-                  className="article-body translated-article-body"
+                  className={`article-body translated-article-body ${settings?.readerIndentParagraphs ? 'indent-paragraphs' : ''}`.trim()}
                   query={readerSearchQuery}
                   activeIndex={readerSearchIndex}
                   onMatchCount={handleReaderSearchCount}
@@ -4183,7 +4504,7 @@ export default function App(): React.JSX.Element {
               <SearchableHtml
                 key={`article:${selectedArticle.id}`}
                 html={readerContent.html}
-                className="article-body"
+                className={`article-body ${settings?.readerIndentParagraphs ? 'indent-paragraphs' : ''}`.trim()}
                 query={readerSearchQuery}
                 activeIndex={readerSearchIndex}
                 onMatchCount={handleReaderSearchCount}
@@ -4611,6 +4932,14 @@ export default function App(): React.JSX.Element {
           left: Math.max(8, Math.min(contextMenu.x, window.innerWidth - 238)),
           top: Math.max(8, Math.min(contextMenu.y, window.innerHeight - 360))
         }
+        if (contextMenu.kind === 'source') {
+          return (
+            <div className="desktop-context-menu" style={{ ...menuStyle, top: Math.max(8, Math.min(contextMenu.y, window.innerHeight - 96)) }} role="menu" onPointerDown={(event) => event.stopPropagation()}>
+              <button type="button" role="menuitem" disabled={opmlBusy} onClick={() => { setContextMenu(null); closeSourceManager(false); setAdaptiveSourceOverlayOpen(false); setCreatingSubgroupParent(null); setCreatingGroup(true) }}><FolderPlus size={14}/><span>{t('addGroup')}</span></button>
+              <button type="button" role="menuitem" disabled={opmlBusy || isAddingSource} onClick={() => { setContextMenu(null); setAdaptiveSourceOverlayOpen(false); openAddSource() }}><Rss size={14}/><span>{t('addSourceTitle')}</span></button>
+            </div>
+          )
+        }
         if (contextMenu.kind === 'feed') {
           const feed = feeds.find((item) => item.id === contextMenu.feedId)
           if (!feed) return null
@@ -4621,15 +4950,48 @@ export default function App(): React.JSX.Element {
               <div className="context-menu-separator" />
               <div className="context-menu-label">{t('moveToGroup')}</div>
               <div className="context-menu-groups">
-                {groups.map((group)=><button key={group.id} type="button" role="menuitemradio" aria-checked={feed.groupId===group.id} className={feed.groupId===group.id?'current':''} onClick={()=>void moveFeedFromMenu(feed,group.id)}><span>{group.name}</span>{feed.groupId===group.id&&<span className="context-menu-check">✓</span>}</button>)}
+                {groups.map((group)=><button key={group.id} type="button" role="menuitemradio" aria-checked={feed.groupId===group.id} className={feed.groupId===group.id?'current':''} onClick={()=>void moveFeedFromMenu(feed,group.id)}><span>{getGroupRecordDisplayPath(group, groups, t)}</span>{feed.groupId===group.id&&<span className="context-menu-check">✓</span>}</button>)}
               </div>
               <div className="context-menu-separator" />
               <button type="button" className="danger" role="menuitem" onClick={()=>void deleteFeedFromMenu(feed)}><Trash2 size={14}/><span>{t('deleteSource')}</span></button>
             </div>
           )
         }
+        if (contextMenu.kind === 'group') {
+          const group = groups.find((item) => item.id === contextMenu.groupId)
+          if (!group) return null
+          return (
+            <GroupContextMenu
+              group={group}
+              isLocalAccount={isLocalAccount}
+              accountType={currentAccount?.type ?? 'local'}
+              style={menuStyle}
+              onClose={() => setContextMenu(null)}
+              onRename={() => {
+                setContextMenu(null)
+                setRenamingGroup(group)
+              }}
+              onCreateSubgroup={() => {
+                setContextMenu(null)
+                setCreatingSubgroupParent(group)
+              }}
+              onMoveGroup={() => {
+                setContextMenu(null)
+                setMovingGroup(group)
+              }}
+              onRefresh={() => {
+                setContextMenu(null)
+                void refreshGroup(group, undefined, 'source')
+              }}
+              refreshing={refreshingGroupId === group.id}
+              refreshDisabled={isRefreshingAll || refreshingFeedId !== null || refreshingGroupId !== null}
+            />
+          )
+        }
         const article = scopedArticles.find((item)=>item.id===contextMenu.articleId)
           ?? articles.find((item)=>item.id===contextMenu.articleId)
+          ?? readArticles?.find((item)=>item.id===contextMenu.articleId)
+          ?? recentArticles.find((item)=>item.id===contextMenu.articleId)
         if (!article) return null
         return (
           <div className="desktop-context-menu" style={menuStyle} role="menu" onPointerDown={(event)=>event.stopPropagation()}>
@@ -4647,6 +5009,126 @@ export default function App(): React.JSX.Element {
             if (!updated && selectedFeed?.id === sourceSettingsFeed.id) setSelectedArticleId(null)
             setSourceSettingsFeed(null)
             void Promise.all([reloadLibrary(), reloadCurrentScope()])
+          }}
+        />
+      )}
+      {renamingGroup && (
+        <GroupRenameDialog
+          key={`${currentAccountId ?? 'local'}:${renamingGroup.id}`}
+          group={renamingGroup}
+          isLocalAccount={isLocalAccount}
+          accountType={currentAccount?.type ?? 'local'}
+          currentAccountId={currentAccountId}
+          onClose={() => setRenamingGroup(null)}
+          onSuccess={async (updated) => {
+            const targetAccountId = currentAccountId
+            if (liveAccountIdRef.current !== targetAccountId) return
+
+            const oldGroupId = renamingGroup.id
+            const newGroupId = updated.id
+            const isTargetScope = articleScope.kind === 'group' && articleScope.id === oldGroupId
+
+            // 1. 若当前正在查看被重命名的分组，迁移至新 ID 作用域
+            if (isTargetScope) {
+              const nextScope: ArticleScope = { kind: 'group', id: newGroupId }
+              liveScopeRef.current = nextScope
+              setArticleScope(nextScope)
+            }
+
+            // 2. 状态映射与折叠状态迁移
+            setGroups((current) => current.map((item) => (item.id === oldGroupId ? updated : item)))
+            if (oldGroupId !== newGroupId) {
+              setCollapsedSourceGroupIds((current) => {
+                if (!current.has(oldGroupId)) return current
+                const next = new Set(current)
+                next.delete(oldGroupId)
+                next.add(newGroupId)
+                return next
+              })
+            }
+            setRenamingGroup(null)
+
+            // 3. 远端重命名成功后重新拉取服务器权威 groups/feeds/scope，旧账户结果不覆盖
+            const isRemote = Boolean(currentAccount && currentAccount.type !== 'local')
+            if (isRemote || oldGroupId !== newGroupId) {
+              try {
+                const nextScope: ArticleScope = isTargetScope ? { kind: 'group', id: newGroupId } : liveScopeRef.current
+                const [_, loadedScopeArticles] = await Promise.all([
+                  reloadLibrary(),
+                  isTargetScope ? loadArticlesForScope(nextScope) : Promise.resolve(null)
+                ])
+                if (liveAccountIdRef.current === targetAccountId && isTargetScope && isSameScope(liveScopeRef.current, nextScope)) {
+                  setScopeArticles(loadedScopeArticles)
+                }
+              } catch (error) {
+                if (liveAccountIdRef.current === targetAccountId) {
+                  setArticleListError(error instanceof Error ? error.message : String(error))
+                }
+              }
+            }
+          }}
+        />
+      )}
+      {(creatingGroup || creatingSubgroupParent) && (
+        <CreateGroupDialog
+          key={`${currentAccountId ?? 'local'}:${creatingSubgroupParent?.id ?? 'root'}`}
+          parentGroup={creatingSubgroupParent}
+          allGroups={groups}
+          currentAccountId={currentAccountId}
+          onClose={() => { setCreatingGroup(false); setCreatingSubgroupParent(null) }}
+          onSuccess={async (parentId) => {
+            const targetAccountId = currentAccountId
+            if (liveAccountIdRef.current !== targetAccountId) return
+
+            if (parentId) {
+              setCollapsedSourceGroupIds((current) => {
+                if (!current.has(parentId)) return current
+                const next = new Set(current)
+                next.delete(parentId)
+                return next
+              })
+            }
+            setCreatingGroup(false)
+            setCreatingSubgroupParent(null)
+
+            try {
+              await Promise.all([reloadLibrary(), reloadCurrentScope()])
+            } catch (error) {
+              if (liveAccountIdRef.current === targetAccountId) {
+                setArticleListError(error instanceof Error ? error.message : String(error))
+              }
+            }
+          }}
+        />
+      )}
+      {movingGroup && (
+        <MoveGroupDialog
+          key={`${currentAccountId ?? 'local'}:${movingGroup.id}`}
+          group={movingGroup}
+          allGroups={groups}
+          currentAccountId={currentAccountId}
+          onClose={() => setMovingGroup(null)}
+          onSuccess={async (targetParentId) => {
+            const targetAccountId = currentAccountId
+            if (liveAccountIdRef.current !== targetAccountId) return
+
+            if (targetParentId) {
+              setCollapsedSourceGroupIds((current) => {
+                if (!current.has(targetParentId)) return current
+                const next = new Set(current)
+                next.delete(targetParentId)
+                return next
+              })
+            }
+            setMovingGroup(null)
+
+            try {
+              await Promise.all([reloadLibrary(), reloadCurrentScope()])
+            } catch (error) {
+              if (liveAccountIdRef.current === targetAccountId) {
+                setArticleListError(error instanceof Error ? error.message : String(error))
+              }
+            }
           }}
         />
       )}

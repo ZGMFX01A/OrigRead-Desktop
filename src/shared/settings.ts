@@ -1,4 +1,4 @@
-import type { DesktopLanguage } from './locale'
+import { isDesktopLanguage, type DesktopLanguage } from './locale'
 
 export type DesktopLanguagePreference = 'system' | DesktopLanguage
 export type AiSummaryPlacement = 'left' | 'right'
@@ -31,6 +31,7 @@ export interface DesktopSettings {
   theme: ThemePreference
   uiFontScale: UiFontScale
   showArticleThumbnails: boolean
+  showArticleSummaries: boolean
   layoutMode: DesktopLayoutMode
   workspaceCollapsed: boolean
   workspaceWidth: number
@@ -42,6 +43,7 @@ export interface DesktopSettings {
   readerFontId: string
   readerLineHeight: number
   readerContentWidth: number
+  readerIndentParagraphs: boolean
   readerBackground: ReaderBackgroundPreference
   readerBackgroundCustom: string
   ttsVoiceURI: string
@@ -64,6 +66,7 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   theme: 'system',
   uiFontScale: 100,
   showArticleThumbnails: false,
+  showArticleSummaries: true,
   layoutMode: 'three-pane',
   workspaceCollapsed: false,
   workspaceWidth: 420,
@@ -75,6 +78,7 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   readerFontId: 'system',
   readerLineHeight: 1.85,
   readerContentWidth: 760,
+  readerIndentParagraphs: false,
   readerBackground: 'theme',
   readerBackgroundCustom: '#eef7ee',
   ttsVoiceURI: '',
@@ -97,6 +101,7 @@ export function normalizeDesktopSettings(value: unknown): DesktopSettings {
     theme: normalizeTheme(input.theme),
     uiFontScale: isUiFontScale(input.uiFontScale) ? input.uiFontScale : DEFAULT_DESKTOP_SETTINGS.uiFontScale,
     showArticleThumbnails: input.showArticleThumbnails === true,
+    showArticleSummaries: typeof input.showArticleSummaries === 'boolean' ? input.showArticleSummaries : DEFAULT_DESKTOP_SETTINGS.showArticleSummaries,
     layoutMode: normalizeLayoutMode(input.layoutMode),
     workspaceCollapsed: input.workspaceCollapsed === true,
     workspaceWidth: normalizeWorkspaceWidth(input.workspaceWidth),
@@ -108,6 +113,7 @@ export function normalizeDesktopSettings(value: unknown): DesktopSettings {
     readerFontId: normalizeStringSetting(input.readerFontId, DEFAULT_DESKTOP_SETTINGS.readerFontId, 500),
     readerLineHeight: normalizeReaderLineHeight(input.readerLineHeight),
     readerContentWidth: normalizeReaderContentWidth(input.readerContentWidth),
+    readerIndentParagraphs: input.readerIndentParagraphs === true,
     readerBackground: normalizeReaderBackground(input.readerBackground),
     readerBackgroundCustom: normalizeHexColor(input.readerBackgroundCustom, DEFAULT_DESKTOP_SETTINGS.readerBackgroundCustom),
     ttsVoiceURI: normalizeStringSetting(input.ttsVoiceURI, '', 2_000),
@@ -137,6 +143,10 @@ export function normalizeDesktopSettingsPatch(value: unknown): DesktopSettingsPa
   if ('showArticleThumbnails' in value) {
     if (typeof value.showArticleThumbnails !== 'boolean') throw new TypeError('showArticleThumbnails must be a boolean')
     patch.showArticleThumbnails = value.showArticleThumbnails
+  }
+  if ('showArticleSummaries' in value) {
+    if (typeof value.showArticleSummaries !== 'boolean') throw new TypeError('showArticleSummaries must be a boolean')
+    patch.showArticleSummaries = value.showArticleSummaries
   }
   if ('layoutMode' in value) {
     if (value.layoutMode !== 'two-pane' && value.layoutMode !== 'three-pane') {
@@ -169,6 +179,12 @@ export function normalizeDesktopSettingsPatch(value: unknown): DesktopSettingsPa
   if ('readerFontId' in value) patch.readerFontId = normalizeStringSetting(value.readerFontId, DEFAULT_DESKTOP_SETTINGS.readerFontId, 500)
   if ('readerLineHeight' in value) patch.readerLineHeight = normalizeReaderLineHeight(value.readerLineHeight)
   if ('readerContentWidth' in value) patch.readerContentWidth = normalizeReaderContentWidth(value.readerContentWidth)
+  if ('readerIndentParagraphs' in value) {
+    if (typeof value.readerIndentParagraphs !== 'boolean') {
+      throw new TypeError('readerIndentParagraphs must be a boolean')
+    }
+    patch.readerIndentParagraphs = value.readerIndentParagraphs
+  }
   if ('readerBackground' in value) patch.readerBackground = normalizeReaderBackground(value.readerBackground)
   if ('readerBackgroundCustom' in value) patch.readerBackgroundCustom = normalizeHexColor(value.readerBackgroundCustom, DEFAULT_DESKTOP_SETTINGS.readerBackgroundCustom)
   if ('ttsVoiceURI' in value) patch.ttsVoiceURI = normalizeStringSetting(value.ttsVoiceURI, '', 2_000)
@@ -212,7 +228,7 @@ export function normalizeDesktopSettingsPatch(value: unknown): DesktopSettingsPa
 }
 
 function normalizeLanguage(value: unknown): DesktopLanguagePreference {
-  return value === 'zh' || value === 'en' || value === 'system' ? value : 'system'
+  return value === 'system' || isDesktopLanguage(value) ? value : 'system'
 }
 
 function normalizeTheme(value: unknown): ThemePreference {

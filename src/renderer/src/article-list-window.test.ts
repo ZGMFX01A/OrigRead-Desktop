@@ -20,6 +20,19 @@ describe('variable height article window', () => {
     expect(articleListEstimatedRowHeight(NaN, true)).toBe(articleListEstimatedRowHeight(100, true))
   })
 
+  it('estimates row height with and without article summaries', () => {
+    expect(articleListEstimatedRowHeight(100, false, true)).toBe(111)
+    expect(articleListEstimatedRowHeight(100, false)).toBe(111)
+    expect(articleListEstimatedRowHeight(100, false, false)).toBe(80)
+    expect(articleListEstimatedRowHeight(100, true, true)).toBe(140)
+    expect(articleListEstimatedRowHeight(100, true, false)).toBe(140)
+
+    expect(articleListEstimatedRowHeight(150, false, true)).toBe(150)
+    expect(articleListEstimatedRowHeight(150, false, false)).toBe(104)
+    expect(articleListEstimatedRowHeight(150, true, true)).toBe(164)
+    expect(articleListEstimatedRowHeight(150, true, false)).toBe(164)
+  })
+
   it('uses viewport-sized pixel buffers and gives recent motion bounded extra coverage ahead', () => {
     expect(articleListOverscan(600)).toEqual({ before: 1200, after: 1200 })
     expect(articleListOverscan(600, 100)).toEqual({ before: 1200, after: 1800 })

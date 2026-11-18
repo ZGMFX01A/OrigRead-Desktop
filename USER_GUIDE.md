@@ -21,10 +21,12 @@ This guide covers the Windows, macOS, and Linux desktop app. Jump to the task yo
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [What to do when a source cannot be added](#what-to-do-when-a-source-cannot-be-added)
 - [Use accounts and sync](#use-accounts-and-sync)
+- [Manage groups and hierarchy](#manage-groups-and-hierarchy)
 - [Rules and filters](#rules-and-filters)
 - [OPML, backup and migration](#opml-backup-and-migration)
 - [Installation and updates](#installation-and-updates)
 - [Troubleshooting](#troubleshooting)
+- [Other platforms](#other-platforms)
 
 ---
 
@@ -85,11 +87,24 @@ If a route matches but offers nothing subscribable, check for a timeout, invalid
 
 If the source supplies a few lines, try full text first. Open the original if extraction is incomplete. The first full-text fetch can take a moment.
 
-The reader lets you mark articles read, star them, move between articles, and search the text. Adjust the font, size, line height, background, and reading width in appearance settings, or import a local font.
+The reader lets you mark articles read, star them, move between articles, and search the text. Adjust the font, size, line height, background, and reading width in appearance settings, or import a local font. In **Settings → General** (under **Reading**), enable **Indent paragraphs** to indent the first line of regular paragraphs by 2em in reader view while preserving layouts for code blocks, quotes, lists, and tables; article titles in the detail pane automatically scale proportionally with body font size for optimal reading comfort.
 
 In **Settings → General**, choose **UI text size** at **100%, 110%, 125%, or 150%** to enlarge text in the source sidebar, article list, settings, and menus. The reader's article font size remains a separate setting. Your choice is saved and included in configuration backups.
 
+Under the **Appearance** section on the same page, **Show article summaries** can be turned off (enabled by default) to hide excerpts and show a compact list with titles, relative publishing dates, and source badges separated by subtle theme-adaptive dividers.
+
 Enable **Show article thumbnails** in the same section to show available article images beside the preview. It is off by default. Articles without a valid image keep the text layout; unavailable images keep a stable placeholder and can be retried by refreshing the source. Within the same source scope, search, read-status filters, and scrolling do not retry failed images. Image requests pause while offline. Image URLs already supplied by the source are used without downloading full articles for the list.
+
+### Difference between "Read" filter and "Recent Reading History"
+
+OrigRead clearly distinguishes between article **Read status** and **Recent Reading History**:
+
+- **Read status**: A persistent flag on each article record. The article list header provides destination tabs in order: **All / Unread / Starred / Read / Recent**. You can toggle read status with the `M` key, mark individual articles read, or batch mark all as read. This status synchronizes bidirectionally with supported remote accounts and drives unread counters. When viewing global read articles under **Read**, the list displays up to the 200 most recently read articles.
+- **Recent Reading History**: An independent local record of articles you actually opened and read on this desktop app, ordered by last opened time (accessible from the **Recent** tab in the article list header):
+  - Marking an article unread does not remove it from Recent history if you previously opened it.
+  - Articles marked read in batch or filtered out without being opened will not appear in Recent history.
+  - Re-opening an article moves it to the top of the Recent list.
+  - History is kept locally and isolated per account (up to 500 recent items). You can click **Clear reading history** (the trash icon in the list toolbar) at any time; this only wipes the local browsing footprint for the current account without altering any article's read, unread, or starred status.
 
 When the source pane is narrow or UI text is larger, branding contracts to the available space. The tagline and Add label are hidden when needed, while Discover and Add remain accessible as icon buttons with hover labels.
 
@@ -103,12 +118,20 @@ Keep the article and AI side by side. Use the panel's placement control to dock 
 
 Connect an OpenAI-compatible service before generating summaries or discussing articles:
 
-1. Open **Settings → AI reading → Model services** and add a service endpoint.
+1. Open **Settings → AI Settings → Model services** and add a service endpoint.
 2. Supply an API key if required, then fetch the model list or enter model names manually.
-3. Choose a default model, test the connection, and save and enable the service.
+3. Choose a default model, test the connection, and enable the service.
 4. In **Reading**, enable AI reading and check the default service, model, output language, and summary depth.
 
 Use the endpoint, key, and model name supplied by the provider. Add several services if needed, and switch temporarily in summary options or the chat composer.
+
+### Local AI service templates and actual models
+
+At the top of **Settings → AI Settings → Model services**, quick-add preset buttons are available for common local inference engines, such as **Ollama** (`http://localhost:11434/v1`) and **LM Studio** (`http://localhost:1234/v1`):
+
+- **Presets configure endpoints**: Clicking a preset button automatically creates a provider with the standard OpenAI-compatible local endpoint and prefilled name. OrigRead **does not download, package, or execute AI models locally**; you must install and run the local inference tool on your computer.
+- **Select or enter models**: Once your local engine is running, click the **Load models** button to query and populate loaded models, or enter a model identifier manually (e.g., `llama3.2`, `qwen2.5`) in the model field. Settings update automatically as you edit.
+- **Connection test**: Click **Test connection** to verify connectivity before use. Configured local services can also be chosen in **Translation settings** for article and list translation.
 
 ### Where settings live
 
@@ -205,6 +228,19 @@ See the [AI, Web Search, Skill, and MCP guide](https://github.com/ZGMFX01A/OrigR
 
 Options include Microsoft Translator, DeepL, Google Cloud Translation, DeepLX / DLX-compatible services, and a configured OpenAI-compatible model. Conventional translation works without AI setup.
 
+### Service requirements and quota details
+
+- **Microsoft Translator**:
+  - Requires creating a Translator resource in Microsoft Azure and entering the generated **API Key**.
+  - **Region requirement**: According to official [Microsoft Translator authentication guidance](https://learn.microsoft.com/en-us/azure/ai-services/translator/text-translation/reference/authentication), multi-service and regional resources require specifying the matching resource region (e.g., `eastasia` or `eastus`), while single-service global resources can leave Region empty.
+  - The default endpoint is `https://api.cognitive.microsofttranslator.com`.
+- **Google Cloud Translation**:
+  - Requires enabling the Cloud Translation API in Google Cloud Console and creating an **API Key**.
+  - The default endpoint is `https://translation.googleapis.com/language/translate/v2`.
+- **API keys and billing**: Users must provide their own API keys for cloud translation services. Free quotas, trial credits, and usage billing are determined solely by the respective cloud service provider; refer to your provider's management console. OrigRead does not provide unmetered or anonymous web translation proxies.
+- **Platform limitation**: Google ML Kit on-device translation is Android-only and has no desktop implementation. Use a cloud translation service or configure a local OpenAI-compatible model on desktop.
+- **Local AI translation**: Local OpenAI-compatible services configured in AI settings (e.g., Ollama, LM Studio) can be chosen directly as translation targets in the reader. Full-text and list translations reuse chunking, cancellation, and local persistent caching.
+
 Long articles are processed in sections, so timing depends on length and the service. Compare difficult expressions with the original. DeepL translation tests and quota checks are separate operations; a failed quota check does not necessarily mean translation is unavailable.
 
 ---
@@ -286,6 +322,32 @@ Subscription management and state synchronization depend on the remote protocol.
 
 ---
 
+## Manage groups and hierarchy
+
+In the source sidebar, groups organize subscriptions with folding, scoped refresh, and context menu actions. Group headers display a folding chevron on the right. Clicking a group name selects its reading scope, while clicking the chevron expands or collapses the group independently.
+
+### Local account group hierarchy
+
+- **Sub-groups and hierarchy**: Local accounts support multi-level group hierarchies. Right-click a group (or open its context menu) and choose **New sub-group** to create a child group under it.
+- **Move groups**: Choose **Move group** from the group menu to change its parent group, or select **Root (No parent group)** to move it back to the top level.
+- **Group scope**: Selecting a parent group aggregates articles from that group and all of its descendant sub-groups.
+- **Rename groups**: Choose **Rename group** to modify a group's name. Renaming preserves the underlying stable group identifier and all subscription memberships.
+- **Default group protection**: The default group (such as "Ungrouped") can be renamed while keeping its default role and sources. It cannot be moved or chosen as a parent group for sub-groups. Default group names for remote accounts are stored locally.
+- **Blank-area context menu**: Right-click an empty area in the leftmost source sidebar to add a group or source.
+- **Literal names without slash splitting**: Group names containing `/` are treated as literal single names and are never automatically split into hierarchy levels.
+- **Group-scoped refresh**: Choose **Refresh group** from the group menu to refresh subscriptions within that group and its sub-groups without triggering a full account refresh.
+
+### Remote account groups and limitations
+
+- **Preserve remote flat semantics**: Remote accounts (such as FreshRSS, Google Reader API, and Fever-compatible services) use flat categories or labels. To ensure consistency with remote servers and other clients, remote accounts strictly maintain flat structures.
+- **No hierarchy operations**: Creating sub-groups and moving groups are not supported for remote accounts.
+- **Rename support and restrictions**:
+  - **Google Reader API & FreshRSS**: Renaming a group updates the category on the remote server and syncs the changes.
+  - **Fever protocol**: The Fever API does not support category renaming; manage categories through your server's web interface.
+- **Remote group refresh**: Selecting **Sync account** from a remote group's menu coordinates with account-level synchronization.
+
+---
+
 ## Rules and filters
 
 ### When to use a parsing rule
@@ -317,7 +379,7 @@ Filtering affects future articles; **it does not delete saved history**. If resu
 
 | What you want to do | Use |
 | --- | --- |
-| Exchange standard subscriptions with another reader | OPML |
+| Exchange standard subscriptions with another reader | OPML (Local accounts) |
 | Move subscriptions, groups, rules, RSSHub, reading preferences, and AI / translation settings | Full configuration backup |
 | Sync reading data supported by a remote service across devices | That service's account sync |
 
@@ -336,6 +398,13 @@ Subscriptions with matching URLs are merged; missing ones are added. Other subsc
 ### Move between Android and desktop
 
 Compatible configuration backups can transfer subscriptions, rules, and settings supported by both apps. This does not automatically synchronize the whole reading library or make every platform setting identical. Retest services after restoring; local model addresses, font files, and local MCP commands may need reconfiguration on another device.
+
+### Hierarchical group backup and flat downgrade compatibility
+
+- **Desktop hierarchy backup**: Configuration backups use `schemaVersion: 1`. On Desktop, backups for local accounts include optional hierarchy metadata (`desktopGroupHierarchy`) storing parent relationships, allowing full hierarchy restoration on Desktop.
+- **Downgrade on older clients**: When importing such backups into OrigRead Android or earlier desktop versions that do not support hierarchy metadata, groups appear as flat groups with escaped full-path names (where `/` becomes `\/` and `\` becomes `\\`). Do not expect older clients to restore or display nested tree hierarchies.
+- **Importing legacy backups**: When importing backups without hierarchy metadata into Desktop, groups are imported as flat groups by their exact names; Desktop does not infer or split slashes into a hierarchy.
+- **OPML nested groups and remote restriction**: For Local accounts, OPML export and import preserve nested sub-groups and empty groups. Remote accounts do not support importing OPML from the client; manage subscriptions directly on your remote service or switch to a Local account.
 
 ---
 

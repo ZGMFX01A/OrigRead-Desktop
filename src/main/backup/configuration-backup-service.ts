@@ -1,3 +1,4 @@
+import { isDesktopLanguage } from '../../shared/locale'
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import type { AiSettingsRepository } from '../ai/ai-settings-repository'
@@ -30,6 +31,7 @@ import type { McpRemoteRepository } from '../mcp/mcp-remote-repository'
 import type { McpLocalRepository } from '../mcp/mcp-local-repository'
 import type { SecretStore } from '../security/secret-store'
 import { exportJsonSubscriptionBackup, validateJsonSubscriptionBackup, restoreJsonSubscriptionBackup } from './json-subscription-backup'
+import { buildGroupPathMap, escapeGroupSegment, validateDesktopGroupHierarchyBackup } from './desktop-group-hierarchy-backup'
 
 export class ConfigurationBackupService {
   constructor(
@@ -56,6 +58,16 @@ export class ConfigurationBackupService {
 
   exportBackup(password=''):string{
     const groups=this.library.listGroups(),feeds=this.library.listFeeds(),settings=this.desktopSettings.current(),translation=this.translation.current(),ai=this.ai.current(),account=this.accounts?.current()
+    const isLocalAccount = !account || account.type === 'local'
+    const groupPathMap = isLocalAccount ? buildGroupPathMap(groups) : null
+    const desktopGroupHierarchy = isLocalAccount ? {
+      version: 1 as const,
+      groups: groups.map((group) => ({
+        id: group.id,
+        parentId: group.parentId ?? null,
+        name: group.name
+      }))
+    } : undefined
     const mcpRemoteSecrets=this.mcpRemote?.exportBackupSecrets()
     const secrets:ConfigurationBackupSecrets={
       translationApiKeys:Object.fromEntries(TRANSLATION_PROVIDER_TYPES.map((type)=>[type,this.translation.getApiKey(type)]).filter(([,value])=>Boolean(value))) as Partial<Record<TranslationProviderType,string>>,
@@ -71,13 +83,25 @@ export class ConfigurationBackupService {
     const backup:ConfigurationBackup={
       schemaVersion:1,appName:'OrigRead',sourceVersion:this.appVersion,createdAtEpochMillis:Date.now(),preferences:desktopPreferences(settings),
       accountSettings:{syncIntervalMinutes:account?.syncIntervalMinutes??settings.syncIntervalMinutes,syncOnStart:account?.syncOnStart??settings.syncOnStart,syncOnlyOnWiFi:account?.syncOnlyOnWiFi??false,syncOnlyWhenCharging:account?.syncOnlyWhenCharging??false,keepArchivedMillis:account?.keepArchivedMillis??2_592_000_000,syncBlockList:account?.syncBlockList??[]},
-      subscriptions:{sourceAccountId:account?.id??1,groups:groups.map((group)=>({id:group.id,name:group.name,isDefault:group.isDefault})),feeds:feeds.map(toBackupFeed)},
+      subscriptions:{
+        sourceAccountId:account?.id??1,
+        groups:groups.map((group)=>({
+          id:group.id,
+          name:groupPathMap ? (groupPathMap.get(group.id) ?? escapeGroupSegment(group.name)) : group.name,
+          isDefault:group.isDefault
+        })),
+        feeds:feeds.map(toBackupFeed)
+      },
       websiteRules:JSON.parse(this.websiteRules.exportRules()),jsonRules:exportJsonSubscriptionBackup(this.library,this.jsonRules),articleFilters:JSON.parse(this.articleFilters.exportRules()),websiteParsePreferences:JSON.parse(this.websitePreferences.exportBackup(new Set(feeds.map((feed)=>feed.id)))),
       rssHub:this.rssHub.current(),rssHubSourceUrls:this.library.listRssHubSourceUrls(),rssHubSubscriptions:this.library.listRssHubDescriptors(),rssHubDescriptors:this.library.listRssHubDescriptors(),translation:toTranslationBackup(translation),ai:toAiBackup(ai),
+      ...(desktopGroupHierarchy ? { desktopGroupHierarchy } : {}),
       ...(this.llmSkills&&this.llmQuickMessages&&this.llmCustomization?{llm:{customization:this.llmCustomization.current(),skills:JSON.parse(this.llmSkills.exportBackupState()),quickMessages:JSON.parse(this.llmQuickMessages.exportBackupState())}}:{}),
       ...(this.webSearch?{webSearch:this.webSearch.exportStoredSettings()}:{}),
       ...(this.mcpRemote&&this.mcpLocal?{mcp:{remote:this.mcpRemote.exportBackupState(),local:this.mcpLocal.exportBackupState()}}:{}),
       encryptedSecrets:includeSecrets&&hasSecrets?encryptConfigurationSecrets(secrets,password):null
+    }
+    if (desktopGroupHierarchy) {
+      validateDesktopGroupHierarchyBackup(desktopGroupHierarchy, backup.subscriptions.groups, { isLocalAccount })
     }
     return JSON.stringify(backup,null,2)
   }
@@ -190,6 +214,8 @@ export class ConfigurationBackupService {
     if(!backup.subscriptions||!Array.isArray(backup.subscriptions.groups)||!Array.isArray(backup.subscriptions.feeds))throw new Error('备份缺少订阅数据')
     const groupIds=new Set<string>();for(const group of backup.subscriptions.groups){if(!group.id?.trim()||!group.name?.trim()||groupIds.has(group.id))throw new Error('备份包含无效或重复分组');groupIds.add(group.id)}
     const feedIds=new Set<string>();for(const feed of backup.subscriptions.feeds){if(!feed.id?.trim()||!feed.name?.trim()||!feed.url?.trim()||feedIds.has(feed.id)||!groupIds.has(feed.groupId))throw new Error(`备份包含无效订阅：${feed.name??''}`);fromAndroidSourceType(feed.sourceType);feedIds.add(feed.id)}
+    const isLocalAccount = !this.accounts || this.accounts.current()?.type === 'local'
+    validateDesktopGroupHierarchyBackup(backup.desktopGroupHierarchy, backup.subscriptions.groups, { isLocalAccount })
     backup.rssHubSubscriptions=validateRssHubDescriptors(backup.rssHubSubscriptions,feedIds)
     backup.rssHubDescriptors=validateRssHubDescriptors(backup.rssHubDescriptors,feedIds)
     if(backup.rssHubSourceUrls!==undefined){
@@ -231,12 +257,123 @@ export class ConfigurationBackupService {
     this.mcpLocal.validateBackupState(value.local,secrets?.mcpLocalEnvironments)
   }
 
-  private restoreSubscriptions(backup:ConfigurationBackup):{feedIdMap:Map<string,string>;groupsAdded:number;feedsAdded:number;feedsUpdated:number}{
-    const existingGroups=this.library.listGroups();const groupMap=new Map<string,string>();let groupsAdded=0;const defaultGroupId=this.library.getCurrentDefaultGroup().id
-    for(const source of backup.subscriptions.groups){if(source.isDefault){groupMap.set(source.id,defaultGroupId);continue}let target=findGroupByName(existingGroups,source.name);if(!target){target={id:`group-${randomUUID()}`,name:normalizeGroupName(source.name),sortOrder:existingGroups.length+groupsAdded+1,isDefault:false};this.library.upsertGroup(target);existingGroups.push(target);groupsAdded++}groupMap.set(source.id,target.id)}
-    const feedIdMap=new Map<string,string>();let feedsAdded=0,feedsUpdated=0
-    for(const source of backup.subscriptions.feeds){const existing=this.library.findFeedByUrl(source.url.trim());const now=Date.now();const feed:FeedRecord=existing?{...existing,name:source.name,icon:source.icon,groupId:groupMap.get(source.groupId)??defaultGroupId,isNotification:source.isNotification,isFullContent:source.isFullContent,isBrowser:source.isBrowser,sourceType:fromAndroidSourceType(source.sourceType),updatedAt:now}:{id:`feed-${randomUUID()}`,name:source.name,url:source.url.trim(),sourcePageUrl:source.url.trim(),icon:source.icon,groupId:groupMap.get(source.groupId)??defaultGroupId,isNotification:source.isNotification,isFullContent:source.isFullContent,isBrowser:source.isBrowser,sourceType:fromAndroidSourceType(source.sourceType),dynamicRendering:false,createdAt:now,updatedAt:now};this.library.upsertFeed(feed);feedIdMap.set(source.id,feed.id);existing?feedsUpdated++:feedsAdded++}
-    return{feedIdMap,groupsAdded,feedsAdded,feedsUpdated}
+  private restoreSubscriptions(backup: ConfigurationBackup): {
+    feedIdMap: Map<string, string>
+    groupsAdded: number
+    feedsAdded: number
+    feedsUpdated: number
+  } {
+    const existingGroups = this.library.listGroups()
+    const groupMap = new Map<string, string>()
+    let groupsAdded = 0
+    const defaultGroupId = this.library.getCurrentDefaultGroup().id
+
+    const isLocalAccount = !this.accounts || this.accounts.current()?.type === 'local'
+    const hierarchy = validateDesktopGroupHierarchyBackup(
+      backup.desktopGroupHierarchy,
+      backup.subscriptions.groups,
+      { isLocalAccount }
+    )
+
+    if (hierarchy) {
+      const defaultName = existingGroups.find(group => group.id === defaultGroupId)?.name.trim()
+      if (hierarchy.orderedGroups.some(group => !group.isDefault && group.parentId === null && group.name.trim() === defaultName)) {
+        throw new Error('备份分组名称与当前账户默认分组冲突，请更改名称后重试')
+      }
+      for (const source of hierarchy.orderedGroups) {
+        if (source.isDefault) {
+          groupMap.set(source.id, defaultGroupId)
+          continue
+        }
+
+        const targetParentId = source.parentId ? (groupMap.get(source.parentId) ?? null) : null
+        const normalizedSourceName = normalizeGroupName(source.name)
+        let target = existingGroups.find(
+          (g) =>
+            !g.isDefault &&
+            (g.parentId ?? null) === targetParentId &&
+            normalizeGroupName(g.name) === normalizedSourceName
+        )
+
+        if (!target) {
+          target = {
+            id: `group-${randomUUID()}`,
+            name: normalizedSourceName,
+            parentId: targetParentId,
+            sortOrder: existingGroups.length + groupsAdded + 1,
+            isDefault: false
+          }
+          this.library.upsertGroup(target)
+          existingGroups.push(target)
+          groupsAdded++
+        }
+
+        groupMap.set(source.id, target.id)
+      }
+    } else {
+      for (const source of backup.subscriptions.groups) {
+        if (source.isDefault) {
+          groupMap.set(source.id, defaultGroupId)
+          continue
+        }
+        const normalizedSourceName = normalizeGroupName(source.name)
+        const rootGroups = existingGroups.filter((g) => g.parentId == null)
+        let target = findGroupByName(rootGroups, source.name)
+        if (!target) {
+          target = {
+            id: `group-${randomUUID()}`,
+            name: normalizedSourceName,
+            parentId: null,
+            sortOrder: existingGroups.length + groupsAdded + 1,
+            isDefault: false
+          }
+          this.library.upsertGroup(target)
+          existingGroups.push(target)
+          groupsAdded++
+        }
+        groupMap.set(source.id, target.id)
+      }
+    }
+
+    const feedIdMap = new Map<string, string>()
+    let feedsAdded = 0,
+      feedsUpdated = 0
+    for (const source of backup.subscriptions.feeds) {
+      const existing = this.library.findFeedByUrl(source.url.trim())
+      const now = Date.now()
+      const targetGroupId = groupMap.get(source.groupId) ?? defaultGroupId
+      const feed: FeedRecord = existing
+        ? {
+            ...existing,
+            name: source.name,
+            icon: source.icon,
+            groupId: targetGroupId,
+            isNotification: source.isNotification,
+            isFullContent: source.isFullContent,
+            isBrowser: source.isBrowser,
+            sourceType: fromAndroidSourceType(source.sourceType),
+            updatedAt: now
+          }
+        : {
+            id: `feed-${randomUUID()}`,
+            name: source.name,
+            url: source.url.trim(),
+            sourcePageUrl: source.url.trim(),
+            icon: source.icon,
+            groupId: targetGroupId,
+            isNotification: source.isNotification,
+            isFullContent: source.isFullContent,
+            isBrowser: source.isBrowser,
+            sourceType: fromAndroidSourceType(source.sourceType),
+            dynamicRendering: false,
+            createdAt: now,
+            updatedAt: now
+          }
+      this.library.upsertFeed(feed)
+      feedIdMap.set(source.id, feed.id)
+      existing ? feedsUpdated++ : feedsAdded++
+    }
+    return { feedIdMap, groupsAdded, feedsAdded, feedsUpdated }
   }
   private restoreTranslation(value:TranslationBackup,keys?:Partial<Record<TranslationProviderType,string>>):void{const fallback=TRANSLATION_PROVIDER_TYPES.includes(value.defaultProvider as TranslationProviderType)?value.defaultProvider as TranslationProviderType:'ML_KIT';this.translation.restore({defaultProvider:fallback,defaultTarget:backupTargetToTranslationTarget(value.defaultTarget,fallback),targetLanguage:value.targetLanguage,displayMode:value.displayMode,providers:TRANSLATION_PROVIDER_TYPES.map((type)=>{const source=value.providers.find((item)=>item.type===type);return{type,enabled:source?.enabled??type==='ML_KIT',endpoint:source?.endpoint??'',region:source?.region??''}})},keys)}
   private restoreAi(value:AiBackup,keys?:Record<string,string>):void{this.ai.restore({enabled:value.enabled,defaultProviderId:value.defaultProviderId,outputLanguage:value.outputLanguage,summaryLength:value.summaryLength,reasoningEffort:value.reasoningEffort??'AUTO',providers:value.providers.map((provider)=>({...provider}))},keys)}
@@ -253,6 +390,7 @@ function desktopPreferences(settings:ReturnType<SettingsRepository['current']>):
   'origread.desktop.theme':settings.theme,
   'origread.desktop.uiFontScale':settings.uiFontScale,
   'origread.desktop.showArticleThumbnails':settings.showArticleThumbnails,
+  'origread.desktop.showArticleSummaries':settings.showArticleSummaries,
   'origread.desktop.layoutMode':settings.layoutMode,
   'origread.desktop.workspaceCollapsed':settings.workspaceCollapsed,
   'origread.desktop.workspaceWidth':settings.workspaceWidth,
@@ -263,6 +401,7 @@ function desktopPreferences(settings:ReturnType<SettingsRepository['current']>):
   'origread.desktop.readerFontSize':settings.readerFontSize,
   'origread.desktop.readerLineHeight':settings.readerLineHeight,
   'origread.desktop.readerContentWidth':settings.readerContentWidth,
+  'origread.desktop.readerIndentParagraphs':settings.readerIndentParagraphs,
   'origread.desktop.readerBackground':settings.readerBackground,
   'origread.desktop.readerBackgroundCustom':settings.readerBackgroundCustom,
   'origread.desktop.aiSummaryPlacement':settings.aiSummaryPlacement,
@@ -275,16 +414,20 @@ function readDesktopPreferences(value:Record<string,unknown>|null|undefined):Par
   const result:Record<string,unknown>={
     uiFontScale:DEFAULT_DESKTOP_SETTINGS.uiFontScale,
     showArticleThumbnails:DEFAULT_DESKTOP_SETTINGS.showArticleThumbnails,
+    showArticleSummaries:DEFAULT_DESKTOP_SETTINGS.showArticleSummaries,
     layoutMode:DEFAULT_DESKTOP_SETTINGS.layoutMode,
     sourcePaneWidth:DEFAULT_DESKTOP_SETTINGS.sourcePaneWidth,
     articlePaneWidth:DEFAULT_DESKTOP_SETTINGS.articlePaneWidth,
     sourcePaneCollapsed:DEFAULT_DESKTOP_SETTINGS.sourcePaneCollapsed,
-    articlePaneCollapsed:DEFAULT_DESKTOP_SETTINGS.articlePaneCollapsed
+    articlePaneCollapsed:DEFAULT_DESKTOP_SETTINGS.articlePaneCollapsed,
+    readerIndentParagraphs:DEFAULT_DESKTOP_SETTINGS.readerIndentParagraphs
   }
-  const language=value['origread.desktop.language'];if(language!==undefined){if(language!=='system'&&language!=='zh'&&language!=='en')throw new Error('备份中的 Desktop 语言设置无效');result.language=language}
+  const language=value['origread.desktop.language'];if(language!==undefined){if(language!=='system'&&!isDesktopLanguage(language))throw new Error('备份中的 Desktop 语言设置无效');result.language=language}
   const theme=value['origread.desktop.theme'];if(theme!==undefined){if(!['system','light','dark'].includes(String(theme)))throw new Error('备份中的 Desktop 主题设置无效');result.theme=theme}
   const uiFontScale=value['origread.desktop.uiFontScale'];if(uiFontScale!==undefined){if(!isUiFontScale(uiFontScale))throw new Error('备份中的 Desktop 界面字号设置无效');result.uiFontScale=uiFontScale}
   const thumbnails=value['origread.desktop.showArticleThumbnails'];if(thumbnails!==undefined){if(typeof thumbnails!=='boolean')throw new Error('备份中的 Desktop 文章缩略图设置类型无效');result.showArticleThumbnails=thumbnails}
+  const summaries=value['origread.desktop.showArticleSummaries'];if(summaries!==undefined){if(typeof summaries!=='boolean')throw new Error('备份中的 Desktop 文章摘要设置类型无效');result.showArticleSummaries=summaries}
+  const indent=value['origread.desktop.readerIndentParagraphs'];if(indent!==undefined){if(typeof indent!=='boolean')throw new Error('备份中的 Desktop 段落缩进设置类型无效');result.readerIndentParagraphs=indent}
   const layoutMode=value['origread.desktop.layoutMode'];if(layoutMode!==undefined){if(layoutMode!=='two-pane'&&layoutMode!=='three-pane')throw new Error('备份中的 Desktop 布局设置无效');result.layoutMode=layoutMode}
   const collapsed=value['origread.desktop.workspaceCollapsed'];if(collapsed!==undefined){if(typeof collapsed!=='boolean')throw new Error('备份中的 Desktop 侧栏设置类型无效');result.workspaceCollapsed=collapsed}
   const sourceCollapsed=value['origread.desktop.sourcePaneCollapsed'];if(sourceCollapsed!==undefined){if(typeof sourceCollapsed!=='boolean')throw new Error('备份中的 Desktop Source Pane 折叠设置类型无效');result.sourcePaneCollapsed=sourceCollapsed}

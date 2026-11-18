@@ -23,6 +23,11 @@ export interface GoogleReaderItem {
   alternate?:Array<{href?:string}>
 }
 
+export interface GoogleReaderTag {
+  id?:string
+  sortid?:string
+}
+
 export class GoogleReaderApi {
   private loginToken:string|null=null
   private actionToken:string|null=null
@@ -52,7 +57,7 @@ export class GoogleReaderApi {
     const text=await response.text()
     if(response.status===400)throw new Error('BadRequest for CL Token')
     if(response.status===401)throw new Error('Unauthorized for CL Token')
-    if(!response.ok)throw new Error(text||`HTTP ${response.status}`)
+    if(!response.ok)throw new GoogleReaderHttpError(response.status,text||`HTTP ${response.status}`)
     let token:string|undefined
     try{token=(JSON.parse(text) as {Auth?:string}).Auth}catch{token=undefined}
     token??=text.split('\n').find((line)=>line.startsWith('Auth='))?.slice(5)
@@ -70,6 +75,7 @@ export class GoogleReaderApi {
 
   async getUserInfo():Promise<{userName?:string}>{return this.getJson('reader/api/0/user-info')}
   async getSubscriptionList():Promise<{subscriptions:GoogleReaderSubscription[]}>{return this.getJson('reader/api/0/subscription/list')}
+  async getTagList():Promise<{tags?:GoogleReaderTag[]}>{return this.getJson('reader/api/0/tag/list')}
 
   async getUnreadItemIds(continuation?:string):Promise<{itemRefs?:Array<{id?:string}>;continuation?:string}>{
     return this.getJson('reader/api/0/stream/items/ids',params([['s',STREAM_ALL],['xt',STREAM_READ],['n','1000'],['c',continuation]]))
@@ -135,7 +141,7 @@ export class GoogleReaderApi {
       const text=await response.text()
       if(response.status===401)throw new UnauthorizedError()
       if(response.status===400)throw new Error('BadRequest')
-      if(!response.ok)throw new Error(text||`HTTP ${response.status}`)
+      if(!response.ok)throw new GoogleReaderHttpError(response.status,text||`HTTP ${response.status}`)
       return text
     })
   }
@@ -196,7 +202,20 @@ export function feedRemoteId(value:string):string{return value.startsWith('feed/
 export function categoryRemoteId(value:string):string{return value.replace(/^user\/[^/]+\/label\//,'')}
 export function categoryStream(value:string):string{return value.startsWith('user/')?value:`user/-/label/${value}`}
 
-class UnauthorizedError extends Error{}
+export class GoogleReaderHttpError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message)
+    this.name = 'GoogleReaderHttpError'
+  }
+}
+
+export function isTagListUnsupportedError(error: unknown): boolean {
+  return error instanceof GoogleReaderHttpError && (error.status === 404 || error.status === 501)
+}
+
+class UnauthorizedError extends Error{
+  readonly status = 401
+}
 function params(entries:Array<[string,string|undefined]>):string{
   const query=new URLSearchParams();for(const [key,value] of entries)if(value!==undefined)query.append(key,value)
   const text=query.toString();return text?`&${text}`:''
@@ -205,6 +224,6 @@ async function parseJsonResponse<T>(response:Response):Promise<T>{
   const text=await response.text()
   if(response.status===401)throw new UnauthorizedError()
   if(response.status===400)throw new Error('BadRequest')
-  if(!response.ok)throw new Error(text||`HTTP ${response.status}`)
+  if(!response.ok)throw new GoogleReaderHttpError(response.status,text||`HTTP ${response.status}`)
   try{return JSON.parse(text) as T}catch{throw new Error(`Google Reader 返回了无效 JSON：${text.slice(0,160)}`)}
 }

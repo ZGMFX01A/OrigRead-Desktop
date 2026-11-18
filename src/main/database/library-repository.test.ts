@@ -51,13 +51,87 @@ describe('LibraryRepository', () => {
     } finally { database.close() }
   })
 
+  it('filters unread status in SQL before applying limit and keeps summaries lightweight with account isolation', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    try {
+      const feed1 = createFeed('feed-1')
+      repository.upsertFeed(feed1)
+
+      database.connection.prepare(
+        "INSERT INTO accounts (id, name, type, sync_interval_minutes, sync_on_start, created_at) VALUES (2, 'Account 2', 'local', 30, 0, 0)"
+      ).run()
+      database.connection.prepare(
+        "INSERT INTO groups (id, account_id, name, sort_order, is_default) VALUES ('group-2', 2, 'Group 2', 0, 1)"
+      ).run()
+      const feed2 = { ...createFeed('feed-2'), accountId: 2, groupId: 'group-2' }
+      repository.upsertFeed(feed2)
+
+      const olderReadArticle = {
+        ...createArticle(feed1.id),
+        id: 'older-read-1',
+        title: 'Older Read Article',
+        isUnread: false,
+        publishedAt: 10_000,
+        contentHtml: '<p>Very large older body</p>'.repeat(500),
+        fullContentHtml: '<p>Full content</p>'.repeat(500)
+      }
+      repository.upsertArticle(olderReadArticle)
+
+      for (let i = 0; i < 205; i++) {
+        repository.upsertArticle({
+          ...createArticle(feed1.id),
+          id: `unread-${i}`,
+          title: `Unread Article ${i}`,
+          isUnread: true,
+          publishedAt: 20_000 + i,
+          contentHtml: '<p>Unread body</p>',
+          fullContentHtml: null
+        })
+      }
+
+      repository.upsertArticle({
+        ...createArticle(feed2.id),
+        id: 'account2-read-1',
+        accountId: 2,
+        title: 'Account 2 Read Article',
+        isUnread: false,
+        publishedAt: 5_000
+      })
+
+      const defaultList = repository.listArticleSummaries({ kind: 'all' }, 200)
+      expect(defaultList).toHaveLength(200)
+      expect(defaultList.some((item) => item.id === olderReadArticle.id)).toBe(false)
+      expect(defaultList.every((item) => item.isUnread)).toBe(true)
+
+      const readSummaries = repository.listArticleSummaries({ kind: 'all' }, 200, { isUnread: false })
+      expect(readSummaries).toHaveLength(1)
+      expect(readSummaries[0]?.id).toBe(olderReadArticle.id)
+      expect(readSummaries[0]?.title).toBe('Older Read Article')
+      expect(readSummaries[0]?.isUnread).toBe(false)
+      expect(readSummaries[0]?.contentHtml).toBeNull()
+      expect(readSummaries[0]?.fullContentHtml).toBeNull()
+
+      expect(readSummaries.some((item) => item.id === 'account2-read-1')).toBe(false)
+
+      const fullReadArticles = repository.listArticles(200, { isUnread: false })
+      expect(fullReadArticles).toHaveLength(1)
+      expect(fullReadArticles[0]?.id).toBe(olderReadArticle.id)
+      expect(fullReadArticles[0]?.contentHtml).toBe(olderReadArticle.contentHtml)
+
+      const unreadSummaries = repository.listArticleSummaries({ kind: 'all' }, 200, { isUnread: true })
+      expect(unreadSummaries).toHaveLength(200)
+      expect(unreadSummaries.every((item) => item.isUnread)).toBe(true)
+    } finally { database.close() }
+  })
+
   it('creates schema and default group', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)
 
     expect(database.schemaVersion).toBe(CURRENT_SCHEMA_VERSION)
     expect(repository.listGroups()).toEqual([
-      { id: DEFAULT_GROUP_ID, accountId: 1, name: 'Default', sortOrder: 0, isDefault: true }
+      { id: DEFAULT_GROUP_ID, accountId: 1, name: 'Default', sortOrder: 0, isDefault: true, parentId: null }
     ])
     expect(repository.snapshot()).toEqual({ groups: 1, feeds: 1, articles: 0, unread: 0, starred: 0 })
     expect(repository.findFeedByUrl(ORIGREAD_DESKTOP_RELEASE_FEED_URL)).toMatchObject({ name: 'OrigRead Desktop Releases', sourceType: 'rss' })
@@ -373,10 +447,10 @@ describe('LibraryRepository', () => {
   })
 })
 
-function createFeed(): FeedRecord {
+function createFeed(id = 'feed-1'): FeedRecord {
   const now = Date.now()
   return {
-    id: 'feed-1',
+    id,
     groupId: DEFAULT_GROUP_ID,
     name: 'Example',
     url: 'https://example.com/feed.xml',

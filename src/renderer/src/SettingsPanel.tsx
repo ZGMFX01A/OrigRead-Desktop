@@ -1,3 +1,4 @@
+import { DESKTOP_LANGUAGES, DESKTOP_LANGUAGE_LABELS } from '../../shared/locale'
 import { ArrowDown, ArrowRight, ArrowUp, BookOpenText, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleAlert, Clock3, Copy, DatabaseBackup, FileJson2, Filter, Globe2, Languages, Link2, ListChecks, MessageSquareText, Pencil, Plus, RefreshCw, Settings2, Trash2, Upload, Download, CircleHelp, Sparkles, FileText, Search, RadioTower, RotateCcw, X, Eye, EyeOff, Save, ExternalLink, Monitor, Smartphone, Keyboard, MessageSquareWarning, UserRound } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -32,6 +33,7 @@ import type {
 import { SettingsSearchResults, SettingsSearchToolbar } from './SettingsSearch'
 import { consumeEscape, shouldHandleEscape, topmostEscapeLayer, type PageEscapeHandler } from './escape-navigation'
 import { searchSettings, type AiSettingsView, type SettingsPage, type SettingsSearchItem, type SettingsSearchRequest } from './settings-search'
+import { LOCAL_AI_PRESETS, getLocalAiPreset, addLocalAiProviderFromPreset } from './local-ai-presets'
 export type { SettingsPage } from './settings-search'
 const SETTINGS_PAGE_ORDER: SettingsPage[] = ['general', 'accounts', 'ai', 'translation', 'filters', 'jsonRules', 'websiteRules', 'rsshub', 'backup', 'about', 'update']
 const INTERNAL_ITHOME_RULE_ID = 'ithome-home'
@@ -212,7 +214,7 @@ export function SettingsPanel({ settings, appInfo, syncState, initialPage = 'gen
           {page==='general' && <GeneralSettings settings={settings} onChange={onChange}/>}
           {page==='accounts' && <AccountsSettingsPage syncState={syncState} onChanged={onAccountChanged}/>}
           {page==='update' && <UpdateSettingsPage settings={settings} appInfo={appInfo} onChange={onChange}/>}
-          {page==='translation' && <TranslationSettingsPage/>}
+          {page==='translation' && <TranslationSettingsPage onOpenAiSettings={()=>navigate('ai')}/>}
           {page==='ai' && <AiSettingsPage onUnsavedChange={setAiUnsaved} hasUnsavedChanges={aiUnsaved} searchRequest={searchRequest}/>}
           {page==='filters' && <ArticleFilterSettingsPage/>}
           {page==='jsonRules' && <JsonRulesSettingsPage/>}
@@ -236,7 +238,7 @@ function GeneralSettings({settings,onChange}:{settings:DesktopSettings;onChange:
   return <>
     <PageIntro icon={<Settings2 size={22}/>} title={t('settingsGeneral')} description={t('settingsDescription')}/>
     <SettingsSection icon={<Globe2 size={17}/>} title={t('settingsGeneral')}>
-      <SettingRow searchId="language" title={t('language')} description={t('languageDescription')}><select aria-label={t('language')} className="language-select" value={settings.language} onChange={(e)=>onChange({language:e.target.value as DesktopSettings['language']})}><option value="system">{t('languageSystem')}</option><option value="zh">简体中文</option><option value="en">English</option></select></SettingRow>
+      <SettingRow searchId="language" title={t('language')} description={t('languageDescription')}><select aria-label={t('language')} className="language-select" value={settings.language} onChange={(e)=>onChange({language:e.target.value as DesktopSettings['language']})}><option value="system">{t('languageSystem')}</option>{DESKTOP_LANGUAGES.map(language => <option key={language} value={language}>{DESKTOP_LANGUAGE_LABELS[language]}</option>)}</select></SettingRow>
       <SettingRow searchId="appearanceTheme" title={t('appearanceTheme')} description={t('appearanceThemeDescription')}><select aria-label={t('appearanceTheme')} className="theme-select" value={settings.theme} onChange={(e)=>onChange({theme:e.target.value as DesktopSettings['theme']})}><option value="system">{t('themeSystem')}</option><option value="light">{t('themeLight')}</option><option value="dark">{t('themeDark')}</option></select></SettingRow>
       <SettingRow searchId="uiFontScale" title={t('uiFontScale')} description={t('uiFontScaleDescription')}><select aria-label={t('uiFontScale')} className="ui-font-scale-select" value={settings.uiFontScale} onChange={(e)=>{const scale=Number(e.target.value);if(isUiFontScale(scale))onChange({uiFontScale:scale})}}>{UI_FONT_SCALE_OPTIONS.map((scale)=><option key={scale} value={scale}>{t(`uiFontScale${scale}`)}</option>)}</select></SettingRow>
       <SettingRow className="layout-mode-setting-row" searchId="layoutMode" title={t('layoutMode')} description={t('layoutModeDescription')}>
@@ -260,6 +262,7 @@ function GeneralSettings({settings,onChange}:{settings:DesktopSettings;onChange:
         </div>
       </SettingRow>
       <SettingRow searchId="showArticleThumbnails" title={t('showArticleThumbnails')} description={t('showArticleThumbnailsDescription')}><Toggle ariaLabel={t('showArticleThumbnails')} checked={settings.showArticleThumbnails} onChange={(showArticleThumbnails)=>onChange({showArticleThumbnails})}/></SettingRow>
+      <SettingRow searchId="showArticleSummaries" title={t('showArticleSummaries')} description={t('showArticleSummariesDescription')}><Toggle ariaLabel={t('showArticleSummaries')} checked={settings.showArticleSummaries} onChange={(showArticleSummaries)=>onChange({showArticleSummaries})}/></SettingRow>
     </SettingsSection>
     <SettingsSection icon={<BookOpenText size={17}/>} title={t('settingsReading')}>
       <SettingRow searchId="readerFont" title={t('readerFont')} description={t('readerFontDescription')}><div className="reader-font-setting"><select aria-label={t('readerFont')} className="reader-font-select" value={settings.readerFontId} onChange={(e)=>onChange({readerFontId:e.target.value})}>{BUILTIN_READER_FONTS.map((font)=><option key={font.id} value={font.id}>{t(font.nameKey)}</option>)}{customFonts.map((font)=><option key={font.id} value={font.id}>{font.name}</option>)}</select><button type="button" className="mini-action" onClick={()=>void importFont()}><Upload size={13}/>{t('importFont')}</button>{settings.readerFontId.startsWith('custom:')&&<button type="button" className="mini-action danger" onClick={()=>void deleteSelectedFont()}><Trash2 size={13}/>{t('delete')}</button>}</div>{fontStatus&&<div className="setting-inline-status">{fontStatus}</div>}</SettingRow>
@@ -270,6 +273,7 @@ function GeneralSettings({settings,onChange}:{settings:DesktopSettings;onChange:
       <SettingRow searchId="readerFontSize" title={t('readerFontSize')} description={t('readerFontSizeDescription')}><select aria-label={t('readerFontSize')} className="reader-font-size-select" value={settings.readerFontSize} onChange={(e)=>onChange({readerFontSize:Number(e.target.value)})}><option value={15}>{t('readerFontSmall')}</option><option value={17}>{t('readerFontStandard')}</option><option value={19}>{t('readerFontLarge')}</option><option value={21}>{t('readerFontExtraLarge')}</option></select></SettingRow>
       <SettingRow searchId="readerLineHeight" title={t('readerLineHeight')} description={t('readerLineHeightDescription')}><select aria-label={t('readerLineHeight')} className="reader-line-height-select" value={settings.readerLineHeight} onChange={(e)=>onChange({readerLineHeight:Number(e.target.value)})}><option value={1.65}>{t('readerCompact')}</option><option value={1.85}>{t('readerStandard')}</option><option value={2.05}>{t('readerRelaxed')}</option></select></SettingRow>
       <SettingRow searchId="readerContentWidth" title={t('readerContentWidth')} description={t('readerContentWidthDescription')}><select aria-label={t('readerContentWidth')} className="reader-content-width-select" value={settings.readerContentWidth} onChange={(e)=>onChange({readerContentWidth:Number(e.target.value)})}><option value={680}>{t('readerWidthNarrow')}</option><option value={760}>{t('readerWidthStandard')}</option><option value={900}>{t('readerWidthWide')}</option></select></SettingRow>
+      <SettingRow searchId="readerIndentParagraphs" title={t('readerIndentParagraphs')} description={t('readerIndentParagraphsDescription')}><Toggle ariaLabel={t('readerIndentParagraphs')} checked={settings.readerIndentParagraphs} onChange={(readerIndentParagraphs)=>onChange({readerIndentParagraphs})}/></SettingRow>
     </SettingsSection>
   </>
 }
@@ -523,6 +527,7 @@ function AiSettingsPage({onUnsavedChange,hasUnsavedChanges,searchRequest}:{onUns
   const [status,setStatus]=useState('')
   const [providerStatus,setProviderStatus]=useState<Record<string,string>>({})
   const [testingProviders,setTestingProviders]=useState<Record<string,boolean>>({})
+  const [addingPreset,setAddingPreset]=useState(false)
 
   useEffect(()=>{
     let cancelled=false
@@ -609,6 +614,21 @@ function AiSettingsPage({onUnsavedChange,hasUnsavedChanges,searchRequest}:{onUns
     const added=next.providers.find((provider)=>!before.has(provider.id))??next.providers.at(-1)??null
     setSelectedProviderId(added?.id??null)
   }
+  const addPresetProvider=async(presetId:string)=>{
+    const preset=getLocalAiPreset(presetId)
+    if(!preset)return
+    setAddingPreset(true)
+    try{
+      const result=await addLocalAiProviderFromPreset(preset,window.origread)
+      setSettings(result.settings)
+      setSelectedProviderId(result.createdProviderId)
+      setProviderStatus((prev)=>({...prev,[result.createdProviderId]:t('localAiPresetNotice')}))
+    }catch(error){
+      setStatus(`${t('localAiCreateFailed')}: ${errorText(error)}`)
+    }finally{
+      setAddingPreset(false)
+    }
+  }
   const removeProvider=async(provider:AiProviderProfile)=>{
     if(!window.confirm(t('aiProviderDeleteConfirm',{name:provider.name})))return
     const next=await window.origread.removeAiProvider(provider.id)
@@ -633,7 +653,7 @@ function AiSettingsPage({onUnsavedChange,hasUnsavedChanges,searchRequest}:{onUns
     {view==='reading'&&<><div className="ai-settings-summary-card"><div className="ai-settings-summary-icon"><Sparkles size={18}/></div><div><span>{t('aiCurrentDefault')}</span><strong>{defaultProvider?`${defaultProvider.name}${defaultProvider.defaultModel?` · ${defaultProvider.defaultModel}`:''}`:t('notConfigured')}</strong></div><button type="button" className="mini-action" onClick={()=>{setSelectedProviderId(defaultProvider?.id??null);changeView('providers')}}>{t('aiManage')}</button></div>
     <SettingsSection icon={<BookOpenText size={17}/>} title={t('aiReadingDefaults')}>
       <SettingRow searchId="aiEnabled" title={t('aiEnabled')} description={t('aiEnabledDescription')}><Toggle ariaLabel={t('aiEnabled')} checked={settings.enabled} onChange={(v)=>void updateGlobal({enabled:v})}/></SettingRow>
-      <SettingRow searchId="aiDefaultModel" title={t('aiDefaultModel')} description={t('aiDefaultModelDescription')}><div className="ai-default-model-picker"><select aria-label={t('aiDefaultProvider')} value={defaultProvider?.id??''} onChange={(e)=>{clearTransientKeys();setSelectedProviderId(e.target.value);void updateGlobal({defaultProviderId:e.target.value})}}>{settings.providers.filter((provider)=>provider.enabled).map((provider)=><option key={provider.id} value={provider.id}>{provider.name}</option>)}</select><select aria-label={t('aiModel')} value={defaultProvider?.defaultModel??''} disabled={!defaultProvider} onChange={(e)=>{if(defaultProvider)void updateProvider(defaultProvider,{defaultModel:e.target.value})}}><option value="">{t('selectModel')}</option>{defaultProvider?.models.map((model)=><option key={model} value={model}>{model}</option>)}</select></div></SettingRow>
+      <SettingRow searchId="aiDefaultModel" title={t('aiDefaultModel')} description={t('aiDefaultModelDescription')}><div className="ai-default-model-picker"><select aria-label={t('aiDefaultProvider')} value={defaultProvider?.id??''} onChange={(e)=>{clearTransientKeys();setSelectedProviderId(e.target.value);void updateGlobal({defaultProviderId:e.target.value})}}>{settings.providers.filter((provider)=>provider.enabled).map((provider)=><option key={provider.id} value={provider.id}>{provider.name}</option>)}</select><select aria-label={t('aiModel')} value={defaultProvider?.defaultModel??''} disabled={!defaultProvider} onChange={(e)=>{if(defaultProvider)void updateProvider(defaultProvider,{defaultModel:e.target.value})}}><option value="">{t('selectModel')}</option>{defaultProvider?.defaultModel&&!defaultProvider.models.includes(defaultProvider.defaultModel)&&<option value={defaultProvider.defaultModel}>{defaultProvider.defaultModel}</option>}{defaultProvider?.models.map((model)=><option key={model} value={model}>{model}</option>)}</select></div></SettingRow>
       <SettingRow searchId="aiOutputLanguage" title={t('aiOutputLanguage')} description={t('aiOutputLanguageDescription')}><input aria-label={t('aiOutputLanguage')} value={settings.outputLanguage} onChange={(e)=>void updateGlobal({outputLanguage:e.target.value})}/></SettingRow>
       <SettingRow searchId="aiSummaryLength" title={t('aiSummaryLength')} description={t('aiSummaryLengthDescription')}><div className="summary-mode-selector compact">{([
         ['BRIEF','summaryModeQuick'],['STANDARD','summaryModeBalanced'],['DETAILED','summaryModeDeep']
@@ -643,7 +663,7 @@ function AiSettingsPage({onUnsavedChange,hasUnsavedChanges,searchRequest}:{onUns
     {view==='behavior'&&<><LlmCustomizationSettingsSections onUnsavedChange={onUnsavedChange}/><RemoteMcpSettingsSection/><LocalMcpSettingsSection/></>}
     {view==='search'&&<WebSearchSettingsSection/>}
     {view==='providers'&&<section className="ai-provider-workspace" data-setting-anchor="aiProviders" tabIndex={-1}>
-      <header className="ai-provider-workspace-head"><div><h2>{t('aiProviders')}</h2><p>{t('aiProvidersDescription')}</p></div><button type="button" className="mini-action icon-only" title={`${t('add')}: ${t('aiProviders')}`} aria-label={`${t('add')}: ${t('aiProviders')}`} onClick={()=>void addProvider()}><Plus size={14}/></button></header>
+      <header className="ai-provider-workspace-head"><div><h2>{t('aiProviders')}</h2><p>{t('aiProvidersDescription')}</p></div><div className="inline-controls">{LOCAL_AI_PRESETS.map((preset)=><button type="button" key={preset.id} className="mini-action" disabled={addingPreset} title={`${t('add')}: ${preset.name} (${preset.endpoint})`} aria-label={`${t('add')}: ${preset.name}`} onClick={()=>void addPresetProvider(preset.id)}><Plus size={13}/><span>{preset.name}</span></button>)}<button type="button" className="mini-action icon-only" title={`${t('add')}: ${t('aiProviders')}`} aria-label={`${t('add')}: ${t('aiProviders')}`} onClick={()=>void addProvider()}><Plus size={14}/></button></div></header>
       <div className="ai-provider-workspace-body">
         <div className="ai-provider-list" role="listbox" aria-label={t('aiProviders')}>
           {settings.providers.map((provider)=><button type="button" role="option" aria-selected={selectedProvider?.id===provider.id} className={`ai-provider-list-item ${selectedProvider?.id===provider.id?'selected':''}`} key={provider.id} onClick={()=>setSelectedProviderId(provider.id)}><span className={`ai-provider-state-dot ${provider.enabled?'enabled':''}`}/><span className="ai-provider-list-copy"><strong>{provider.name}</strong><small>{provider.defaultModel||t('aiNoModelSelected')}</small></span>{settings.defaultProviderId===provider.id&&<span className="ai-provider-default-badge">{t('aiDefaultBadge')}</span>}</button>)}
@@ -653,7 +673,7 @@ function AiSettingsPage({onUnsavedChange,hasUnsavedChanges,searchRequest}:{onUns
           <div className="ai-provider-form">
             <label className="ai-provider-form-field"><span><strong>{t('aiProviderEndpoint')}</strong><small>{t('aiProviderEndpointDescription')}</small></span><input value={provider.endpoint} spellCheck={false} onChange={(e)=>setSettings({...settings,providers:settings.providers.map((item)=>item.id===provider.id?{...item,endpoint:e.target.value}:item)})} onBlur={()=>void updateProvider(provider,{endpoint:settings.providers.find((item)=>item.id===provider.id)!.endpoint})}/></label>
             <label className="ai-provider-form-field"><span><strong>API Key</strong><small>{t('aiProviderKeyDescription')}</small></span><AiSecretKeyEditor value={keys[provider.id]??''} hasStoredValue={provider.hasApiKey} storedLength={provider.apiKeyLength} dirty={dirty} visible={visibleKeys[provider.id]===true} onChange={(value)=>{setKeys((current)=>({...current,[provider.id]:value}));setDirtyKeys((current)=>({...current,[provider.id]:true}))}} onToggle={()=>void toggleKey(provider)} onSave={()=>void saveKey(provider)}/></label>
-            <label className="ai-provider-form-field"><span><strong>{t('aiModel')}</strong><small>{t('aiProviderModelDescription')}</small></span><div className="inline-controls ai-provider-model-row"><select value={provider.defaultModel} onChange={(e)=>void updateProvider(provider,{defaultModel:e.target.value})}><option value="">{t('selectModel')}</option>{provider.models.map((model)=><option key={model} value={model}>{model}</option>)}</select><button type="button" className="mini-action" onClick={async()=>{try{const models=await window.origread.refreshAiModels(provider.id,dirty?keys[provider.id]:undefined);setSettings(await window.origread.getAiSettings());setProviderStatus((value)=>({...value,[provider.id]:t('modelsLoaded',{count:models.length})}))}catch(error){setProviderStatus((value)=>({...value,[provider.id]:errorText(error)}))}}}><RefreshCw size={13}/>{t('loadModels')}</button></div></label>
+            <label className="ai-provider-form-field"><span><strong>{t('aiModel')}</strong><small>{t('aiProviderModelDescription')}</small></span><div className="inline-controls ai-provider-model-row"><input list={`ai-provider-models-${provider.id}`} className="ai-provider-model-input" value={provider.defaultModel} placeholder={t('aiModelPlaceholder')} aria-label={t('aiModel')} onChange={(e)=>{const value=e.target.value;setSettings({...settings,providers:settings.providers.map((item)=>item.id===provider.id?{...item,defaultModel:value}:item)})}} onBlur={()=>{const currentModel=settings.providers.find((item)=>item.id===provider.id)?.defaultModel??'';void updateProvider(provider,{defaultModel:currentModel})}} onKeyDown={(e)=>{if(e.key==='Enter')e.currentTarget.blur()}}/><datalist id={`ai-provider-models-${provider.id}`}>{provider.models.map((model)=><option key={model} value={model}/>)}</datalist><button type="button" className="mini-action" onClick={async()=>{try{const models=await window.origread.refreshAiModels(provider.id,dirty?keys[provider.id]:undefined);setSettings(await window.origread.getAiSettings());setProviderStatus((value)=>({...value,[provider.id]:t('modelsLoaded',{count:models.length})}))}catch(error){setProviderStatus((value)=>({...value,[provider.id]:errorText(error)}))}}}><RefreshCw size={13}/>{t('loadModels')}</button></div></label>
           </div>
           <div className="ai-provider-detail-actions"><button type="button" className="mini-action" disabled={dirty||testing||!provider.enabled} title={dirty?t('saveCredentialFirst'):undefined} onClick={()=>void testProvider(provider.id)}>{testing&&<RefreshCw size={13} className="spinning"/>}{testing?t('connectionTestingShort'):t('testConnection')}</button><span>{provider.hasApiKey?t('aiProviderCredentialReady'):t('aiProviderCredentialMissing')}</span></div>
           {providerStatus[provider.id]&&<StatusText text={providerStatus[provider.id]!}/>}
@@ -1267,7 +1287,7 @@ function LlmCustomizationSettingsSections({onUnsavedChange}:{onUnsavedChange?:(d
   </>
 }
 
-function TranslationSettingsPage():React.JSX.Element{
+function TranslationSettingsPage({onOpenAiSettings}:{onOpenAiSettings?:()=>void}):React.JSX.Element{
   const {t}=useTranslation()
   const [settings,setSettings]=useState<TranslationSettings|null>(null)
   const [targetLanguageDraft,setTargetLanguageDraft]=useState('zh-CN')
@@ -1308,6 +1328,11 @@ function TranslationSettingsPage():React.JSX.Element{
     }catch(error){setProviderStatus((value)=>({...value,[provider.type]:`${t('credentialSaveFailed')}: ${errorText(error)}`}))}
   }
   return <><PageIntro icon={<Languages size={22}/>} title={t('translationSettingsTitle')} description={t('translationSettingsDescription')}/>
+    <div className="translation-ai-notice-card ai-settings-summary-card">
+      <div className="ai-settings-summary-icon"><Bot size={18}/></div>
+      <div><strong>{t('translationAiNoticeTitle')}</strong><span>{t('translationAiNoticeDescription')}</span></div>
+      {onOpenAiSettings&&<button type="button" className="mini-action" onClick={onOpenAiSettings}>{t('translationGoToAiSettings')}</button>}
+    </div>
     <SettingsSection icon={<Languages size={17}/>} title={t('translationGlobal')}>
       <SettingRow searchId="translationTargetLanguage" title={t('translationTargetLanguage')} description={t('translationTargetLanguageDescription')}><input aria-label={t('translationTargetLanguage')} className="translation-target-language-input" value={targetLanguageDraft} onChange={(e)=>setTargetLanguageDraft(e.target.value)} onBlur={()=>void update({targetLanguage:targetLanguageDraft})} onKeyDown={(e)=>{if(e.key==='Enter')e.currentTarget.blur()}}/></SettingRow>
       <SettingRow searchId="translationDisplayMode" title={t('translationDisplayMode')} description={t('translationDisplayModeDescription')}><select aria-label={t('translationDisplayMode')} value={settings.displayMode} onChange={(e)=>void update({displayMode:e.target.value as TranslationSettings['displayMode']})}><option value="TRANSLATED">{t('translatedOnly')}</option><option value="BILINGUAL">{t('bilingual')}</option></select></SettingRow>

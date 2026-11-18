@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import type { FeedRecord, GroupRecord } from '../../shared/library'
 import { sourceUrlComparisonKey } from '../../shared/source-url-normalizer'
+import { validateGroupParent } from '../../shared/group-tree'
 
 import { CURRENT_ACCOUNT_SETTING_KEY, DEFAULT_LOCAL_ACCOUNT_ID } from './migrations'
 
@@ -16,6 +17,13 @@ export class SqliteLibraryCatalog {
       .get(CURRENT_ACCOUNT_SETTING_KEY) as { value: string } | undefined
     const value = Number(row?.value ?? DEFAULT_LOCAL_ACCOUNT_ID)
     return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_LOCAL_ACCOUNT_ID
+  }
+
+  getAccountType(accountId: number): string | null {
+    const row = this.database
+      .prepare('SELECT type FROM accounts WHERE id = ?')
+      .get(accountId) as { type: string } | undefined
+    return row?.type ?? null
   }
 
   getFeedById(feedId: string): FeedRecord | null {
@@ -57,7 +65,7 @@ export class SqliteLibraryCatalog {
 
   listGroupsForAccount(accountId: number): GroupRecord[] {
     return (this.database
-      .prepare('SELECT id, account_id, name, sort_order, is_default FROM groups WHERE account_id = ? ORDER BY sort_order, name')
+      .prepare('SELECT id, account_id, name, sort_order, is_default, parent_id FROM groups WHERE account_id = ? ORDER BY sort_order, name')
       .all(accountId) as unknown as GroupRow[]).map(toGroupRecord)
   }
 
@@ -73,15 +81,89 @@ export class SqliteLibraryCatalog {
   }
 
   upsertGroup(group: GroupRecord): void {
+    const accountId = group.accountId ?? this.getCurrentAccountId()
+    const parentId = group.parentId ?? null
+
+    const accountRow = this.database
+      .prepare('SELECT type FROM accounts WHERE id = ?')
+      .get(accountId) as { type: string } | undefined
+    const isLocal = accountRow ? accountRow.type === 'local' : true
+
+    // 检查已存在的分组
+    const existingGroup = this.database
+      .prepare('SELECT id, account_id, is_default, parent_id FROM groups WHERE id = ?')
+      .get(group.id) as GroupRow | undefined
+
+    if (existingGroup) {
+      // 检查是否有子分组（带孩子）
+      const childCountRow = this.database
+        .prepare('SELECT COUNT(*) as count FROM groups WHERE parent_id = ?')
+        .get(group.id) as { count: number | bigint }
+      const hasChildren = Number(childCountRow.count) > 0
+
+      if (hasChildren) {
+        if (existingGroup.account_id !== accountId) {
+          throw new Error('不能将带有子分组的分组转移到其他账户')
+        }
+        if (group.isDefault) {
+          throw new Error('带有子分组的分组不能设为默认分组')
+        }
+      }
+    }
+
+    if (parentId !== null) {
+      if (!isLocal) {
+        throw new Error('远程账户分组不支持层级结构')
+      }
+      if (group.isDefault) {
+        throw new Error('默认分组不允许设置父分组')
+      }
+      if (parentId === group.id) {
+        throw new Error('分组不能将自身设为父分组')
+      }
+      const parentRow = this.database
+        .prepare('SELECT id, account_id, is_default, parent_id FROM groups WHERE id = ?')
+        .get(parentId) as GroupRow | undefined
+      if (!parentRow) {
+        throw new Error('指定的父分组不存在')
+      }
+      if (parentRow.account_id !== accountId) {
+        throw new Error('父分组必须属于同一账户')
+      }
+      if (parentRow.is_default === 1) {
+        throw new Error('默认分组不允许作为父分组')
+      }
+    }
+
+    // 校验层级合法性：使用与共享纯函数一致的严谨深度（根 depth 1、子树高度有界环检测）与关系校验
+    const allGroups = this.listGroupsForAccount(accountId)
+    validateGroupParent({
+      groupId: group.id,
+      parentId,
+      allGroups,
+      isLocalAccount: isLocal,
+      accountId,
+      isDefault: group.isDefault,
+      maxDepth: 32
+    })
+
     this.database.prepare(`
-      INSERT INTO groups (id, account_id, name, sort_order, is_default)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO groups (id, account_id, name, sort_order, is_default, parent_id)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         account_id = excluded.account_id,
         name = excluded.name,
         sort_order = excluded.sort_order,
-        is_default = excluded.is_default
-    `).run(group.id, group.accountId ?? this.getCurrentAccountId(), group.name, group.sortOrder, toSqlBoolean(group.isDefault))
+        is_default = excluded.is_default,
+        parent_id = excluded.parent_id
+    `).run(
+      group.id,
+      accountId,
+      group.name,
+      group.sortOrder,
+      toSqlBoolean(group.isDefault),
+      parentId
+    )
   }
 
   deleteFeed(feedId: string): void {
@@ -145,6 +227,8 @@ export class SqliteLibraryCatalog {
   deleteAccountData(accountId: number): void {
     this.database.prepare('DELETE FROM articles WHERE account_id = ?').run(accountId)
     this.database.prepare('DELETE FROM feeds WHERE account_id = ?').run(accountId)
+    // 解除同账户内分组之间的 parent_id 自引用外键约束，避免 ON DELETE RESTRICT 阻断整账户删除
+    this.database.prepare('UPDATE groups SET parent_id = NULL WHERE account_id = ?').run(accountId)
     this.database.prepare('DELETE FROM groups WHERE account_id = ?').run(accountId)
   }
 
@@ -160,6 +244,11 @@ export class SqliteLibraryCatalog {
     const row=this.database.prepare(`SELECT COUNT(*) AS count FROM articles a JOIN feeds f ON f.id=a.feed_id WHERE a.account_id=? AND f.group_id=? AND a.is_starred=1`)
       .get(accountId,groupId) as {count:number|bigint}
     if(Number(row.count)>0)return false
+
+    // Remote cleanup only removes leaf groups. Preserve a local subtree intact.
+    if (this.database.prepare('SELECT 1 FROM groups WHERE account_id = ? AND parent_id = ? LIMIT 1')
+      .get(accountId, groupId)) return false
+
     this.database.prepare('DELETE FROM feeds WHERE account_id=? AND group_id=?').run(accountId,groupId)
     this.database.prepare('DELETE FROM groups WHERE account_id=? AND id=?').run(accountId,groupId)
     return true

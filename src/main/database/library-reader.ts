@@ -2,28 +2,62 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { ArticleRecord, FeedArticleStats, LibrarySnapshot } from '../../shared/library'
 
 import type { LibraryRepository } from './library-repository'
+import type { ArticleListFilterOptions } from './article-list-args'
 import { ARTICLE_ID_QUERY_CHUNK_SIZE, ArticleRow, toArticleRecord } from './library-rows'
+import { getGroupDescendantIds } from '../../shared/group-tree'
 
 export type ArticleListScope = { kind: 'all' } | { kind: 'feed' | 'group'; id: string }
+export type { ArticleListFilterOptions } from './article-list-args'
 
 /** 按文章读取职责保留 SQLite 查询；调用方账户由入口显式捕获。 */
 export class SqliteLibraryReader {
   constructor(private readonly database: DatabaseSync, private readonly library: LibraryRepository) {}
 
+  /** 按分组 ID 范围解析组自身及其所有后代分组 ID；验证账户归属防止越权。 */
+  private getGroupScopeIds(accountId: number, groupId: string): string[] {
+    const allGroups = this.library.listGroupsForAccount(accountId)
+    const currentGroup = allGroups.find((g) => g.id === groupId)
+    if (!currentGroup) {
+      return []
+    }
+    const descendantIds = getGroupDescendantIds(groupId, allGroups)
+    return [groupId, ...descendantIds]
+  }
+
   /** Renderer lists never select body columns; full records remain available to sync and Reader. */
-  listArticleSummaries(scope: ArticleListScope = { kind: 'all' }, limit = 200): ArticleRecord[] {
+  listArticleSummaries(
+    scope: ArticleListScope = { kind: 'all' },
+    limit = 200,
+    options?: ArticleListFilterOptions
+  ): ArticleRecord[] {
     const accountId = this.library.getCurrentAccountId()
-    const filter = scope.kind === 'feed' ? 'AND a.feed_id = ?' : scope.kind === 'group' ? 'AND f.group_id = ?' : ''
-    const params = scope.kind === 'all'
-      ? [accountId, Math.min(Math.max(Math.trunc(limit), 1), 1_000)]
-      : [accountId, scope.id]
+    let filter = ''
+    const params: (number | string)[] = [accountId]
+    if (scope.kind === 'feed') {
+      filter = 'AND a.feed_id = ?'
+      params.push(scope.id)
+    } else if (scope.kind === 'group') {
+      const groupScopeIds = this.getGroupScopeIds(accountId, scope.id)
+      if (groupScopeIds.length === 0) {
+        return []
+      }
+      filter = 'AND f.group_id IN (SELECT value FROM json_each(?))'
+      params.push(JSON.stringify(groupScopeIds))
+    }
+    const unreadFilter = options?.isUnread !== undefined ? 'AND a.is_unread = ?' : ''
+    if (options?.isUnread !== undefined) {
+      params.push(options.isUnread ? 1 : 0)
+    }
+    if (scope.kind === 'all') {
+      params.push(Math.min(Math.max(Math.trunc(limit), 1), 1_000))
+    }
     return (this.database.prepare(`
       SELECT a.id, a.account_id, a.feed_id, a.title, a.url, a.author, a.published_at, a.description,
              NULL AS content_html, NULL AS full_content_html, a.image_url, a.is_unread, a.is_starred,
              a.created_at, a.updated_at
       FROM articles a
       ${scope.kind === 'group' ? 'INNER JOIN feeds f ON f.id = a.feed_id AND f.account_id = a.account_id' : ''}
-      WHERE a.account_id = ? ${filter}
+      WHERE a.account_id = ? ${filter} ${unreadFilter}
       ORDER BY COALESCE(a.published_at, a.created_at) DESC
       ${scope.kind === 'all' ? 'LIMIT ?' : ''}
     `).all(...params) as unknown as ArticleRow[]).map(toArticleRecord)
@@ -128,17 +162,20 @@ export class SqliteLibraryReader {
     `).all(accountId, feedId) as unknown as ArticleRow[]).map(toArticleRecord)
   }
 
-  listArticlesByGroup(groupId: string): ArticleRecord[] {
-    const accountId = this.library.getCurrentAccountId()
+  listArticlesByGroup(groupId: string, accountId = this.library.getCurrentAccountId()): ArticleRecord[] {
+    const groupScopeIds = this.getGroupScopeIds(accountId, groupId)
+    if (groupScopeIds.length === 0) {
+      return []
+    }
     return (this.database.prepare(`
       SELECT a.id, a.account_id, a.feed_id, a.title, a.url, a.author, a.published_at, a.description,
              a.content_html, a.full_content_html, a.image_url, a.is_unread, a.is_starred,
              a.created_at, a.updated_at
       FROM articles a
       INNER JOIN feeds f ON f.id = a.feed_id AND f.account_id = a.account_id
-      WHERE a.account_id = ? AND f.group_id = ?
+      WHERE a.account_id = ? AND f.group_id IN (SELECT value FROM json_each(?))
       ORDER BY COALESCE(a.published_at, a.created_at) DESC
-    `).all(accountId, groupId) as unknown as ArticleRow[]).map(toArticleRecord)
+    `).all(accountId, JSON.stringify(groupScopeIds)) as unknown as ArticleRow[]).map(toArticleRecord)
   }
 
   listFeedArticleStats(): FeedArticleStats[] {
@@ -180,21 +217,27 @@ export class SqliteLibraryReader {
     return existing
   }
 
-  listArticles(limit = 200): ArticleRecord[] {
-    return this.listArticlesForAccount(this.library.getCurrentAccountId(), limit)
+  listArticles(limit = 200, options?: ArticleListFilterOptions): ArticleRecord[] {
+    return this.listArticlesForAccount(this.library.getCurrentAccountId(), limit, options)
   }
 
-  listArticlesForAccount(accountId: number, limit = 200): ArticleRecord[] {
+  listArticlesForAccount(accountId: number, limit = 200, options?: ArticleListFilterOptions): ArticleRecord[] {
     const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 1_000)
+    const unreadFilter = options?.isUnread !== undefined ? 'AND is_unread = ?' : ''
+    const params: (number | string)[] = [accountId]
+    if (options?.isUnread !== undefined) {
+      params.push(options.isUnread ? 1 : 0)
+    }
+    params.push(safeLimit)
     return (this.database.prepare(`
       SELECT id, account_id, feed_id, title, url, author, published_at, description,
              content_html, full_content_html, image_url, is_unread, is_starred,
              created_at, updated_at
       FROM articles
-      WHERE account_id = ?
+      WHERE account_id = ? ${unreadFilter}
       ORDER BY COALESCE(published_at, created_at) DESC
       LIMIT ?
-    `).all(accountId, safeLimit) as unknown as ArticleRow[]).map(toArticleRecord)
+    `).all(...params) as unknown as ArticleRow[]).map(toArticleRecord)
   }
 
   listArticleStateForAccount(accountId: number): Array<{ id:string;isUnread:boolean;isStarred:boolean }> {

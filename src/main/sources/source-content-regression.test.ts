@@ -20,7 +20,9 @@ describe('Android 审查问题在桌面 OPML、JSON、网站链路的回归', ()
       </outline></body></opml>`
     expect(service.importFromString(input)).toEqual({ groupsAdded: 2, feedsAdded: 2, feedsSkipped: 1 })
     const first = library.listFeeds().find((feed) => feed.name === 'First')!
-    expect(library.listGroups().find((group) => group.id === first.groupId)?.name).toBe('Tech / Java')
+    const firstGroup = library.listGroups().find((group) => group.id === first.groupId)!
+    expect(firstGroup.name).toBe('Java')
+    expect(library.listGroups().find((group) => group.id === firstGroup.parentId)?.name).toBe('Tech')
     expect(library.listFeeds().find((feed) => feed.name === 'Default feed')?.groupId).toBe(library.getCurrentDefaultGroup().id)
     expect(service.importFromString(input)).toEqual({ groupsAdded: 0, feedsAdded: 0, feedsSkipped: 3 })
   }))
