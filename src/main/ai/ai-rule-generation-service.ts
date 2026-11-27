@@ -1,3 +1,5 @@
+import { MAX_HTML_RESPONSE_BYTES, readResponseText } from '../network/safe-response-reader'
+import { safeFetch, type SafeFetchOptions } from '../network/safe-fetch'
 import { DESKTOP_BROWSER_USER_AGENT } from '../network/user-agent-policy'
 import { randomUUID } from 'node:crypto'
 import * as cheerio from 'cheerio'
@@ -60,7 +62,8 @@ export class AiRuleGenerationService {
     private readonly websiteRules: WebsiteRuleRepository,
     private readonly jsonRules: JsonRuleRepository,
     private readonly jsonParser: JsonArticleParser,
-    private readonly provider = new OpenAiCompatibleProvider()
+    private readonly provider = new OpenAiCompatibleProvider(),
+    private readonly safeFetchOptions: SafeFetchOptions = {}
   ) {}
 
   async generateWebsiteRule(url: string, options: AiRuleGenerationOptions = {}, onProgress: AiRuleProgressListener = () => undefined): Promise<AiGeneratedRulePreview> {
@@ -68,7 +71,7 @@ export class AiRuleGenerationService {
     const runtime = this.runtimeConfig(options)
     onProgress('PREPARING', 1, null)
     onProgress('FETCHING_SOURCE', 1, normalizedUrl)
-    const page = await fetchPage(normalizedUrl)
+    const page = await fetchPage(normalizedUrl, this.safeFetchOptions)
     onProgress('ANALYZING_SOURCE', 1, page.finalUrl)
     const $ = cheerio.load(page.content)
     $('script,style,noscript,svg,iframe,canvas').remove()
@@ -100,7 +103,7 @@ export class AiRuleGenerationService {
     const runtime = this.runtimeConfig(options)
     onProgress('PREPARING', 1, null)
     onProgress('FETCHING_SOURCE', 1, normalizedUrl)
-    const page = await fetchPage(normalizedUrl)
+    const page = await fetchPage(normalizedUrl, this.safeFetchOptions)
     onProgress('ANALYZING_SOURCE', 1, page.finalUrl)
     const detected = detectJsonSource(page.content)
     const sample = detected.json.slice(0, MAX_AI_SOURCE_CHARS)
@@ -216,7 +219,7 @@ export class AiRuleGenerationService {
     const detailSamples: Array<{ title: string; page: FetchedPage }> = []
     for (const article of sameSiteArticles) {
       try {
-        detailSamples.push({ title: article.title, page: await fetchPage(article.link) })
+        detailSamples.push({ title: article.title, page: await fetchPage(article.link, this.safeFetchOptions) })
       } catch (error) {
         onProgress('FETCHING_CONTENT', 1, `详情页抓取失败，已跳过：${errorMessage(error)}`)
       }
@@ -429,17 +432,17 @@ export class AiRuleGenerationService {
   }
 }
 
-async function fetchPage(url: string): Promise<FetchedPage> {
-  const response = await fetch(url, {
+export async function fetchPage(url: string, safeFetchOptions: SafeFetchOptions = {}): Promise<FetchedPage> {
+  const response = await safeFetch(url, {
     headers: {
       'user-agent': DESKTOP_BROWSER_USER_AGENT,
       Accept: 'text/html,application/json;q=0.9,*/*;q=0.8'
     },
     redirect: 'follow',
     signal: AbortSignal.timeout(15_000)
-  })
+  }, safeFetchOptions)
   if (!response.ok) throw new Error(`目标地址请求失败：HTTP ${response.status}`)
-  return { finalUrl: response.url || url, content: await response.text() }
+  return { finalUrl: response.url || url, content: await readResponseText(response, MAX_HTML_RESPONSE_BYTES) }
 }
 
 function errorMessage(error: unknown): string {

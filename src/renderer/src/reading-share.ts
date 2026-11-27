@@ -19,7 +19,8 @@ export const DEFAULT_READING_SHARE_PREFERENCE: ReadingSharePreference = {
 export interface ReadingShareInput {
   title: string
   sourceUrl: string | null
-  bodyHtml: string
+  bodyHtml: string | null
+  bodyFallbackText?: string | null
   translatedHtml: string | null
   translatedDisplayMode?: TranslationDisplayMode
   summaryMarkdown: string | null
@@ -46,10 +47,12 @@ export function buildReadingShareMarkdown(input: ReadingShareInput): string {
   if (hasTranslation) {
     const translated = input.translatedDisplayMode === 'BILINGUAL'
       ? htmlToMarkdown(input.translatedHtml ?? '')
-      : renderBilingualMarkdown(input.bodyHtml, input.translatedHtml ?? '')
+      : renderBilingualMarkdown(input.bodyHtml ?? '', input.translatedHtml ?? '')
     if (translated) sections.push(translated)
-  } else if (input.preference.includeBody && input.bodyHtml.trim()) {
+  } else if (input.preference.includeBody && input.bodyHtml?.trim()) {
     sections.push(htmlToMarkdown(input.bodyHtml))
+  } else if (input.preference.includeBody && input.bodyFallbackText?.trim()) {
+    sections.push(input.bodyFallbackText.trim().split(/\r?\n\s*\r?\n/).map(escapePlainMarkdown).join('\n\n'))
   }
 
   const sourceUrl = input.sourceUrl?.trim() ?? ''
@@ -113,9 +116,8 @@ function htmlToMarkdown(html: string): string {
   return normalizeMarkdown(renderBlockChildren(parseFragment(html).childNodes))
 }
 
-function parseFragment(html: string): HTMLDivElement {
-  const root = document.createElement('div')
-  root.innerHTML = html
+function parseFragment(html: string): HTMLElement {
+  const root = new DOMParser().parseFromString(html, 'text/html').body
   root.querySelectorAll('script, style, noscript, template').forEach((node) => node.remove())
   return root
 }
@@ -223,13 +225,13 @@ function renderInline(node: Node, removeMedia = false): string {
   if (removeMedia && ['img', 'picture', 'video', 'audio', 'source'].includes(tag)) return ''
   if (tag === 'br') return '\n'
   if (tag === 'img') {
-    const source = element.getAttribute('src')?.trim()
+    const source = safeHttpUrl(element.getAttribute('src'))
     if (!source) return ''
     const alt = element.getAttribute('alt')?.trim() || 'image'
     return `![${escapeMarkdownText(alt)}](${source.replaceAll(')', '%29')})`
   }
   if (tag === 'a') {
-    const href = element.getAttribute('href')?.trim()
+    const href = safeHttpUrl(element.getAttribute('href'))
     const text = renderInlineChildren(element, removeMedia).trim() || href || ''
     return href ? `[${text}](${href.replaceAll(')', '%29')})` : text
   }
@@ -287,4 +289,16 @@ function normalizeMarkdown(value: string): string {
     .replace(/\[!\[[^\]]*\]\([^\)\n]+\)\]\([^\)\n]+\)|!\[[^\]]*\]\([^\)\n]+\)/g, '\n\n$&\n\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+}
+
+function safeHttpUrl(value: string | null): string | null {
+  try {
+    const url = new URL(value ?? '')
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null
+  } catch { return null }
+}
+
+function escapePlainMarkdown(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+    .replace(/([\\`*_{}\[\]()#+.!|~>-])/g, '\\$1')
 }

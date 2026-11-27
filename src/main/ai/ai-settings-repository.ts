@@ -179,7 +179,7 @@ function normalizeOutputTokenLimitStyle(value: unknown): AiOutputTokenLimitStyle
   return value === 'MAX_TOKENS' || value === 'MAX_COMPLETION_TOKENS' ? value : 'AUTO'
 }
 
-const REASONING_EFFORTS: readonly LlmReasoningEffort[] = ['AUTO', 'MINIMAL', 'LOW', 'MEDIUM', 'HIGH', 'MAXIMUM']
+const REASONING_EFFORTS: readonly LlmReasoningEffort[] = ['AUTO', 'NONE', 'MINIMAL', 'LOW', 'MEDIUM', 'HIGH', 'XHIGH', 'MAXIMUM']
 
 function normalizeReasoningEffort(value: unknown): LlmReasoningEffort {
   return REASONING_EFFORTS.includes(value as LlmReasoningEffort) ? value as LlmReasoningEffort : 'AUTO'

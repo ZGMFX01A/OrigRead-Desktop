@@ -110,3 +110,42 @@ describe('MCP OAuth provider session', () => {
   })
 })
 
+
+describe('OAuth URL and discovery cache security', () => {
+  it.each(['http://auth.example.com/authorize', 'https://169.254.169.254/authorize', 'https://127.0.0.1/authorize', 'https://user:secret@auth.example.com'])('rejects unsafe browser target %s', async (url) => {
+    const openExternal = vi.fn(async () => {})
+    const provider = await createMcpOAuthProviderSession({ serverId: 'security', clientName: 'test', secrets: new MemorySecretStore(), openExternal })
+    try {
+      provider.setInteractiveAllowed(true)
+      await expect(provider.redirectToAuthorization(new URL(url))).rejects.toThrow()
+      expect(openExternal).not.toHaveBeenCalled()
+    } finally { await provider.close() }
+  })
+  it.each(['http://auth.example.com', 'https://169.254.169.254', 'https://10.0.0.1', 'https://[::ffff:a9fe:a9fe]'])('invalidates poisoned discovery URL %s', async (url) => {
+    const secrets = new MemorySecretStore()
+    const provider = await createMcpOAuthProviderSession({ serverId: 'security', clientName: 'test', secrets, openExternal: async () => {} })
+    try {
+      for (const state of [{ authorizationServerUrl: url }, { authorizationServerMetadata: { token_endpoint: url } }]) {
+        secrets.put(mcpOAuthSecretKey('security', 'discovery'), JSON.stringify(state))
+        expect(provider.discoveryState?.()).toBeUndefined()
+        expect(secrets.get(mcpOAuthSecretKey('security', 'discovery'))).toBe('')
+      }
+      for (const raw of ['broken', '[]', '{"authorizationServerUrl":123}', '{"authorizationServerMetadata":[]}']) {
+        secrets.put(mcpOAuthSecretKey('security', 'discovery'), raw)
+        expect(provider.discoveryState?.()).toBeUndefined()
+        expect(secrets.get(mcpOAuthSecretKey('security', 'discovery'))).toBe('')
+      }
+    } finally { await provider.close() }
+  })
+  it('permits loopback OAuth only for a configured loopback server', async () => {
+    const openExternal = vi.fn(async () => {})
+    const provider = await createMcpOAuthProviderSession({ serverId: 'local', serverUrl: 'http://localhost/mcp', clientName: 'test', secrets: new MemorySecretStore(), openExternal })
+    try {
+      provider.setInteractiveAllowed(true)
+      await provider.redirectToAuthorization(new URL('http://127.0.0.1/authorize'))
+      expect(openExternal).toHaveBeenCalledTimes(1)
+      await expect(provider.redirectToAuthorization(new URL('http://10.0.0.1/authorize'))).rejects.toThrow()
+      await expect(provider.redirectToAuthorization(new URL('https://169.254.169.254/authorize'))).rejects.toThrow()
+    } finally { await provider.close() }
+  })
+})

@@ -1,38 +1,49 @@
 import * as cheerio from 'cheerio'
 import type { AnyNode } from 'domhandler'
 
-const REMOVED_ELEMENTS = 'script, style, noscript, template, iframe, object, embed, form, input, button, nav, footer, aside, base, link, meta, svg, math'
+const REMOVED_ELEMENTS = 'script, style, noscript, template, iframe, object, embed, form, input, button, textarea, select, option, nav, footer, aside, base, link, meta, svg, math, applet, frame, frameset'
+const ALLOWED_ELEMENTS = new Set('article section header main div span p br hr h1 h2 h3 h4 h5 h6 ul ol li dl dt dd blockquote pre code kbd samp var em strong b i u s del ins mark small sub sup cite q abbr time a img picture source video audio figure figcaption table thead tbody tfoot tr th td caption colgroup col details summary'.split(' '))
+const ALLOWED_ATTRIBUTES: Record<string, readonly string[]> = {
+  a: ['href', 'title', 'rel'],
+  img: ['src', 'alt', 'title', 'width', 'height', 'loading', 'srcset', 'sizes'],
+  source: ['src', 'srcset', 'type', 'media'],
+  video: ['src', 'poster', 'controls', 'width', 'height'],
+  audio: ['src', 'poster', 'controls', 'width', 'height'],
+  td: ['colspan', 'rowspan', 'scope'], th: ['colspan', 'rowspan', 'scope'],
+  ol: ['start', 'type', 'reversed'], time: ['datetime'], abbr: ['title'],
+  pre: ['class'], code: ['class']
+}
 const ALLOWED_URL_SCHEMES = new Set(['http:', 'https:'])
 
-/** 对齐 Android ContentHtmlSanitizer：移除可执行/交互节点并补全安全网络 URL。 */
+/** Only article semantics and per-tag safe attributes may cross into the renderer. */
 export function sanitizeContentHtml(html: string, sourceUrl: string): string {
   const $ = cheerio.load(`<body>${html}</body>`, { xml: false })
   const body = $('body')
-
   body.find(REMOVED_ELEMENTS).remove()
   body.find('*').each((_, element) => {
-    const attributes = Object.keys(element.attribs ?? {})
-    for (const attribute of attributes) {
-      if (attribute.toLowerCase().startsWith('on') || attribute.toLowerCase() === 'srcdoc') {
-        $(element).removeAttr(attribute)
-      }
-    }
-  })
-
-  body.find('a[href]').each((_, element) => sanitizeUrlAttribute($, element, 'href', sourceUrl))
-  body.find('img[src], source[src], video[src], audio[src]').each((_, element) =>
-    sanitizeUrlAttribute($, element, 'src', sourceUrl)
-  )
-  body.find('img[data-src], img[data-original]').each((_, element) => {
     const target = $(element)
-    if (!target.attr('src')?.trim()) {
+    if (!ALLOWED_ELEMENTS.has(element.name)) {
+      target.replaceWith(target.contents())
+      return
+    }
+    if (element.name === 'img' && !target.attr('src')?.trim()) {
       const lazySource = target.attr('data-src')?.trim() || target.attr('data-original')?.trim()
       if (lazySource) target.attr('src', lazySource)
     }
-    sanitizeUrlAttribute($, element, 'src', sourceUrl)
+    const allowed = ALLOWED_ATTRIBUTES[element.name] ?? []
+    for (const attribute of Object.keys(element.attribs ?? {})) {
+      if (!allowed.includes(attribute)) target.removeAttr(attribute)
+    }
+    if (target.attr('class') !== undefined) {
+      const classes = target.attr('class')!.split(/\s+/).filter((value) => /^(?:(?:language|lang)-)?[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(value))
+      if (classes.length) target.attr('class', classes.join(' '))
+      else target.removeAttr('class')
+    }
+    for (const attribute of ['href', 'src', 'poster']) {
+      if (target.attr(attribute) !== undefined) sanitizeUrlAttribute($, element, attribute, sourceUrl)
+    }
+    if (target.attr('srcset') !== undefined) sanitizeSrcSet($, element, sourceUrl)
   })
-  body.find('img[srcset], source[srcset]').each((_, element) => sanitizeSrcSet($, element, sourceUrl))
-
   return body.html()?.trim() ?? ''
 }
 
@@ -63,7 +74,7 @@ function sanitizeSrcSet(
       const [rawUrl, descriptor] = item.split(/\s+/, 2)
       if (!rawUrl) return null
       const resolved = resolveAllowedHttpUrl(rawUrl, sourceUrl)
-      if (!resolved) return null
+      if (!resolved || (descriptor && !/^(?:[1-9]\d*w|(?:\d+(?:\.\d+)?|\.\d+)x)$/.test(descriptor))) return null
       return descriptor ? `${resolved} ${descriptor}` : resolved
     })
     .filter((item): item is string => item !== null)

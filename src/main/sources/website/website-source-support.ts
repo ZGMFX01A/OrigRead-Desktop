@@ -1,3 +1,4 @@
+import { safeFetch, type SafeFetchOptions } from '../../network/safe-fetch'
 import * as cheerio from 'cheerio'
 import type { WebsiteFetchPayload } from './website-source-service'
 import type { FeedRecord } from '../../../shared/library'
@@ -18,15 +19,15 @@ export class WebsitePageTooComplexError extends Error {
   }
 }
 
-export async function defaultWebsiteFetcher(url: string, signal?: AbortSignal): Promise<WebsiteFetchPayload> {
-  const response = await fetch(url, {
+export async function defaultWebsiteFetcher(url: string, signal?: AbortSignal, safeFetchOptions: SafeFetchOptions = {}): Promise<WebsiteFetchPayload> {
+  const response = await safeFetch(url, {
     redirect: 'follow',
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8_000)]) : AbortSignal.timeout(8_000),
     headers: {
       'user-agent': DESKTOP_BROWSER_USER_AGENT,
       accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
     }
-  })
+  }, safeFetchOptions)
   const bytes = await readResponseBytes(response, MAX_HTML_RESPONSE_BYTES, signal)
   return {
     status: response.status,

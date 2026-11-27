@@ -1,3 +1,4 @@
+import { escapePromptBoundaryTags } from './prompt-boundary'
 import {
   LLM_CONTEXT_TYPES,
   llmEvidenceRequestIdentity,
@@ -141,7 +142,7 @@ function assertUniqueContextIds(items: readonly LlmContextItem[]): void {
 
 function renderBlock(item: LlmContextItem, maxTokens: number): RenderedBlock | null {
   const header = `[ORIGREAD_CONTEXT type=${item.type} id=${quoteAttribute(item.id)}${item.sourceId ? ` source=${quoteAttribute(item.sourceId)}` : ''}]`
-  const title = item.title ? `\nTitle: ${item.title}` : ''
+  const title = item.title ? `\nTitle: ${escapePromptBoundaryTags(item.title)}` : ''
   const footer = '\n[/ORIGREAD_CONTEXT]'
   const prefix = `${header}${title}\n`
   const fixedTokens = estimateLlmTokens(prefix) + estimateLlmTokens(footer)
@@ -151,7 +152,7 @@ function renderBlock(item: LlmContextItem, maxTokens: number): RenderedBlock | n
     return renderAtomicEvidenceBlocks(item, prefix, footer, maxTokens, fixedTokens)
   }
 
-  const content = item.content.trim()
+  const content = escapePromptBoundaryTags(item.content.trim())
   const renderedContent = takeWithinEstimatedTokenBudget(content, maxTokens - fixedTokens)
   const text = `${prefix}${renderedContent}${footer}`
   return {
@@ -179,7 +180,7 @@ function renderAtomicEvidenceBlocks(
 
   for (const block of blocks) {
     const key = block.stableLocatorKey.trim()
-    const content = block.content.trim()
+    const content = escapePromptBoundaryTags(block.content.trim())
     if (!key || !content) continue
     eligibleBlockCount += 1
     if (seen.has(key)) throw new Error(`Evidence block key 必须唯一：${key}`)
@@ -211,7 +212,7 @@ function hasContextContent(item: LlmContextItem): boolean {
 }
 
 function quoteAttribute(value: string): string {
-  return JSON.stringify(value)
+  return JSON.stringify(escapePromptBoundaryTags(value))
 }
 
 function evidenceReserveTokens(maxTokens: number): number {
@@ -238,7 +239,7 @@ function minimumAtomicEvidenceTokens(item: LlmContextItem): number | null {
   if (evidenceBlocks.length === 0) return null
 
   const header = `[ORIGREAD_CONTEXT type=${item.type} id=${quoteAttribute(item.id)}${item.sourceId ? ` source=${quoteAttribute(item.sourceId)}` : ''}]`
-  const title = item.title ? `\nTitle: ${item.title}` : ''
+  const title = item.title ? `\nTitle: ${escapePromptBoundaryTags(item.title)}` : ''
   const prefix = `${header}${title}\n`
   const footer = '\n[/ORIGREAD_CONTEXT]'
   const fixedTokens = estimateLlmTokens(prefix) + estimateLlmTokens(footer)
@@ -246,7 +247,7 @@ function minimumAtomicEvidenceTokens(item: LlmContextItem): number | null {
 
   for (const block of evidenceBlocks) {
     const requestIdentity = llmEvidenceRequestIdentity(item.id, block.stableLocatorKey.trim())
-    const text = `[ORIGREAD_EVIDENCE id=${quoteAttribute(requestIdentity)}]\n${block.content.trim()}\n[/ORIGREAD_EVIDENCE]`
+    const text = `[ORIGREAD_EVIDENCE id=${quoteAttribute(requestIdentity)}]\n${escapePromptBoundaryTags(block.content.trim())}\n[/ORIGREAD_EVIDENCE]`
     cheapest = Math.min(cheapest, fixedTokens + estimateLlmTokens(text))
   }
   return Number.isFinite(cheapest) ? cheapest : null

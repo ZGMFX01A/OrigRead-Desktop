@@ -1,4 +1,4 @@
-import { parseHTML } from 'linkedom'
+import { DOMParser, parseHTML } from 'linkedom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildReadingShareMarkdown, type ReadingSharePreference } from './reading-share'
 
@@ -11,9 +11,29 @@ const preference: ReadingSharePreference = {
 }
 
 describe('desktop reading share', () => {
+  it('filters non HTTP links and images and escapes fallback text without parsing HTML', () => {
+    const base = { title: '', sourceUrl: null, translatedHtml: null, summaryMarkdown: null,
+      sourceUrlLabel: 'Source', summaryLabel: 'Summary', preference: { ...preference, includeTranslation: false } }
+    const html = buildReadingShareMarkdown({ ...base, bodyHtml: '<p><img src="javascript:evil"><img src="data:image/png,evil"><a href="javascript:evil">label</a><a href="data:text/html,evil">text</a><img src="https://example.com/a.png"></p>' })
+    expect(html).not.toMatch(/javascript:|data:/)
+    expect(html).toContain('label')
+    expect(html).toContain('https://example.com/a.png')
+    const parse = vi.spyOn(DOMParser.prototype, 'parseFromString')
+    const fallback = buildReadingShareMarkdown({ ...base, bodyHtml: null, bodyFallbackText: '<img src=x onerror=evil>\n\n[click](javascript:evil) **text**' })
+    expect(parse).not.toHaveBeenCalled()
+    expect(fallback).toContain('&lt;img src=x onerror=evil&gt;')
+    expect(fallback).toContain('\\[click\\]')
+    parse.mockRestore()
+  })
+
   beforeEach(() => {
     const dom = parseHTML('<!doctype html><html><body></body></html>')
     vi.stubGlobal('document', dom.document)
+    vi.stubGlobal('DOMParser', class {
+      parseFromString(html: string): Document {
+        return new DOMParser().parseFromString(`<!doctype html><html><body>${html}</body></html>`, 'text/html') as unknown as Document
+      }
+    })
     vi.stubGlobal('Node', dom.Node)
   })
 

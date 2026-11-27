@@ -1,3 +1,4 @@
+import { safeFetch, type SafeFetchOptions } from '../../network/safe-fetch'
 import * as cheerio from 'cheerio'
 import Parser from 'rss-parser'
 import type { DiscoveredRssFeed } from '../../../shared/rss'
@@ -172,7 +173,8 @@ export class RssDiscoveryService {
 export async function fetchRssPayload(
   url: string,
   validators: RssRequestValidators = {},
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  safeFetchOptions: SafeFetchOptions = {}
 ): Promise<RssFetchPayload> {
   const headers: Record<string, string> = {
     'user-agent': DESKTOP_BROWSER_USER_AGENT,
@@ -180,11 +182,11 @@ export async function fetchRssPayload(
   }
   if (validators.etag) headers['If-None-Match'] = validators.etag
   if (validators.lastModified) headers['If-Modified-Since'] = validators.lastModified
-  const response = await fetch(url, {
+  const response = await safeFetch(url, {
     redirect: 'follow',
     signal: combineAbortSignals(signal, AbortSignal.timeout(20_000)),
     headers
-  })
+  }, safeFetchOptions)
   if (response.status === 304) {
     return {
       finalUrl: response.url || url,

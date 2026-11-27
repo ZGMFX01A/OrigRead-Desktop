@@ -1,3 +1,4 @@
+import { safeFetch, type SafeFetchOptions } from '../network/safe-fetch'
 import { DESKTOP_BROWSER_USER_AGENT } from '../network/user-agent-policy'
 import { decodeHttpText } from '../network/http-text-decoder'
 import { MAX_HTML_RESPONSE_BYTES, readResponseBytes } from '../network/safe-response-reader'
@@ -131,16 +132,16 @@ export class ArticleFullContentService {
   }
 }
 
-export async function defaultArticlePageFetcher(url: string, signal?: AbortSignal): Promise<ArticlePagePayload> {
+export async function defaultArticlePageFetcher(url: string, signal?: AbortSignal, safeFetchOptions: SafeFetchOptions = {}): Promise<ArticlePagePayload> {
   if (!isHttpUrl(url)) throw new FullContentError('INVALID_URL', '全文地址必须是 HTTP(S) URL')
-  const response = await fetch(url, {
+  const response = await safeFetch(url, {
     redirect: 'follow',
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: {
       'user-agent': DESKTOP_BROWSER_USER_AGENT,
       accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8'
     }
-  })
+  }, safeFetchOptions)
   const bytes = await readResponseBytes(response, MAX_HTML_RESPONSE_BYTES, signal)
   const html = decodeHttpText(bytes, response.headers.get('content-type'), 'html').slice(0, MAX_STATIC_HTML_CHARS)
   return { status: response.status, finalUrl: response.url || url, html }

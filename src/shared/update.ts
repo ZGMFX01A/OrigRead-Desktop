@@ -11,6 +11,7 @@ export interface DesktopReleaseAsset {
   id: number
   name: string
   size: number
+  sha256?: string | null
   downloadUrl: string
 }
 

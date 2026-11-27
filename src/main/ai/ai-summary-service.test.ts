@@ -134,7 +134,7 @@ describe('AiSummaryService', () => {
     expect(prepared).toContain('[content omitted due to input limit]')
   })
 
-  it('reuses the latest successful explicit-provider summary for a later normal open and reports real stages', async () => {
+  it('isolates explicit-provider latest summaries from the configured default and reports real stages', async () => {
     const database = new DesktopDatabase(':memory:')
     databases.push(database)
     const library = new LibraryRepository(database.connection)
@@ -182,8 +182,20 @@ describe('AiSummaryService', () => {
     expect(providerCalls).toBe(1)
 
     const reopened = await service.summarize('article-1')
-    expect(reopened).toMatchObject({ providerId: 'alternate-provider', model: 'alternate-model', length: 'DETAILED', summary: 'alternate summary' })
-    expect(providerCalls).toBe(1)
+    expect(reopened).toMatchObject({ providerId: 'default-provider', model: 'default-model', length: 'STANDARD', summary: 'alternate summary' })
+    expect(providerCalls).toBe(2)
+    config.providers[0]!.defaultModel = 'new-model'
+    await service.summarize('article-1')
+    expect(providerCalls).toBe(3)
+    config.outputLanguage = 'en'
+    await service.summarize('article-1')
+    expect(providerCalls).toBe(4)
+    config.providers[0]!.endpoint = 'https://changed.example/api/v3'
+    await service.summarize('article-1')
+    expect(providerCalls).toBe(5)
+    // Returning to the explicit configuration uses its correctly keyed cache.
+    expect(await service.summarize('article-1', false, { providerId: 'alternate-provider', model: 'alternate-model', length: 'DETAILED' })).toMatchObject({ outputLanguage: 'en', length: 'DETAILED' })
+    expect(providerCalls).toBe(6)
   })
 
   it('applies the fixed Summary Skill and Custom Instructions and isolates cache variants when preferences change', async () => {

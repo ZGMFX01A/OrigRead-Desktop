@@ -1,3 +1,6 @@
+import { readResponseBytes } from '../../network/safe-response-reader'
+export const MAX_ICON_RESPONSE_BYTES = 5 * 1024 * 1024
+import { safeFetch, type SafeFetchOptions } from '../../network/safe-fetch'
 import * as cheerio from 'cheerio'
 import { DESKTOP_BROWSER_USER_AGENT } from '../../network/user-agent-policy'
 
@@ -140,19 +143,19 @@ function distinctLinks(values: IconLink[]): IconLink[] {
   })
 }
 
-async function fetchIconPayload(url: string): Promise<IconFetchPayload> {
-  const response = await fetch(url, {
+export async function fetchIconPayload(url: string, safeFetchOptions: SafeFetchOptions = {}): Promise<IconFetchPayload> {
+  const response = await safeFetch(url, {
     redirect: 'follow',
     signal: AbortSignal.timeout(20_000),
     headers: {
       'user-agent': DESKTOP_BROWSER_USER_AGENT,
       Accept: 'text/html,image/avif,image/webp,image/svg+xml,image/png,image/*,*/*;q=0.8'
     }
-  })
+  }, safeFetchOptions)
   if (!response.ok) throw new Error(`请求失败：HTTP ${response.status}`)
   return {
     finalUrl: response.url || url,
     contentType: response.headers.get('content-type'),
-    bytes: new Uint8Array(await response.arrayBuffer())
+    bytes: await readResponseBytes(response, MAX_ICON_RESPONSE_BYTES)
   }
 }

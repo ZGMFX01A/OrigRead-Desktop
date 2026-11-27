@@ -1,3 +1,4 @@
+import { compileSafeRegex } from '../../security/safe-regex'
 import * as cheerio from 'cheerio'
 import type { AnyNode, Element } from 'domhandler'
 
@@ -100,6 +101,6 @@ export function compileAndroidRegex(pattern: string): RegExp {
     flags = inline[1]!.replace('s', 's')
     source = source.slice(inline[0].length)
   }
-  return new RegExp(source, flags)
+  return compileSafeRegex(source, flags)
 }
 

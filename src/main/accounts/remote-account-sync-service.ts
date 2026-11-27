@@ -9,11 +9,14 @@ import { LibraryRepository } from '../database/library-repository'
 import { AccountRepository, remoteDbId, remoteId } from './account-repository'
 import {
   categoryRemoteId,
-  feedRemoteId, FeverApi, type FeverFeedsGroups,
+  feedRemoteId, FeverApi, type FeverFeedsGroups, type FeverItem,
   GoogleReaderApi, type GoogleReaderTag, STREAM_READ, STREAM_STARRED,
   type AccountFetch
 } from './remote-account-api'
 import { createCertificateAwareAccountFetch } from './account-http-fetch'
+
+const FEVER_PAGE_SIZE = 50
+const MAX_FEVER_PAGES = 1000
 
 export class RemoteAccountSyncService {
   private readonly inflightSyncs = new Map<number, Promise<void>>()
@@ -256,61 +259,83 @@ export class RemoteAccountSyncService {
   private async syncFever(account:AccountRecord):Promise<void>{
     const api=this.feverApi(account)
     const [groupsBody,feedsBody,faviconsBody]=await Promise.all([api.getGroups(),api.getFeeds(),api.getFavicons()])
+    if(!Array.isArray(groupsBody.groups)||!Array.isArray(feedsBody.feeds)||!Array.isArray(faviconsBody.favicons)
+      ||(groupsBody.feeds_groups!==undefined&&!Array.isArray(groupsBody.feeds_groups))
+      ||(feedsBody.feeds_groups!==undefined&&!Array.isArray(feedsBody.feeds_groups)))throw new Error('Fever 目录响应缺少必要字段')
     const now=Date.now()
-    const remoteGroups=(groupsBody.groups??[]).filter((item)=>item.id!==undefined).map((item):GroupRecord=>({
-      id:remoteDbId(account.id,item.id!),accountId:account.id,name:item.title??'Untitled',sortOrder:0,isDefault:false
-    }))
-    const mapping=mergeFeverGroupMapping(groupsBody.feeds_groups,feedsBody.feeds_groups)
-    const icons=new Map((faviconsBody.favicons??[]).map((item)=>[item.id,item.data??null]))
-    let fallbackDefaultGroup:GroupRecord|null=null
-    const remoteFeeds=(feedsBody.feeds??[]).filter((item)=>item.id!==undefined&&item.url).map((item):FeedRecord=>{
-      const groupRemoteId=mapping.get(String(item.id))
-      const groupId=groupRemoteId
-        ? remoteDbId(account.id,groupRemoteId)
-        : (fallbackDefaultGroup??=this.ensureDefaultGroup(account.id)).id
-      return {
-        id:remoteDbId(account.id,item.id!),accountId:account.id,groupId,
-        name:decodeHtml(item.title??'')||'Untitled',url:item.url!,sourcePageUrl:item.site_url??null,
-        sourceType:'rss',icon:item.favicon_id===undefined?null:icons.get(item.favicon_id)??null,
-        isNotification:false,isFullContent:false,isBrowser:false,dynamicRendering:false,createdAt:now,updatedAt:now
-      }
-    })
-    if(fallbackDefaultGroup&&!remoteGroups.some((group)=>group.id===fallbackDefaultGroup!.id))remoteGroups.push(fallbackDefaultGroup)
-    for(const group of remoteGroups)this.library.upsertGroup(group)
-    for(const feed of remoteFeeds)this.library.upsertFeed(feed)
-
+    const fetchedItems:FeverItem[]=[]
     let lastSeen=account.lastArticleId?remoteId(account.lastArticleId):''
+    const seenCursors=new Set<string>(lastSeen?[lastSeen]:[])
+    let pageCount=0
     while(true){
       const body=await api.getItemsSince(lastSeen)
-      const items=body.items??[]
-      if(items.length===0)break
-      for(const item of items){
-        const article=feverItemToArticle(item,account.id,now)
-        if(article){
-          this.library.upsertArticle(article)
-          this.library.setArticleUnreadForAccount(account.id,article.id,article.isUnread)
-          this.library.setArticleStarredForAccount(account.id,article.id,article.isStarred)
-        }
+      if(!Array.isArray(body.items))throw new Error('Fever items 列表缺失')
+      if(body.items.length===0)break
+      fetchedItems.push(...body.items)
+      const next=body.items.at(-1)?.id
+      if(body.items.length>=FEVER_PAGE_SIZE){
+        if(!next||seenCursors.has(String(next))||++pageCount>=MAX_FEVER_PAGES)throw new Error('Fever 分页游标异常，已中止同步')
+        lastSeen=String(next)
+        seenCursors.add(lastSeen)
+      }else{
+        lastSeen=next??lastSeen
+        break
       }
-      const next=items.at(-1)?.id
-      if(!next)break
-      lastSeen=next
-      if(items.length<50)break
     }
-
     const [unreadBody,savedBody]=await Promise.all([api.getUnreadItems(),api.getSavedItems()])
-    const unread=unreadBody.unread_item_ids===undefined?null:new Set(splitIds(unreadBody.unread_item_ids))
-    const saved=savedBody.saved_item_ids===undefined?null:new Set(splitIds(savedBody.saved_item_ids))
-    for(const state of this.library.listArticleStateForAccount(account.id)){
-      const id=remoteId(state.id)
-      this.library.setArticleUnreadForAccount(account.id,state.id,unread?.has(id)??true)
-      this.library.setArticleStarredForAccount(account.id,state.id,saved?.has(id)??false)
-    }
-    const groupIds=new Set(remoteGroups.map((group)=>group.id))
-    for(const group of this.library.listGroupsForAccount(account.id))if(!groupIds.has(group.id))this.library.deleteGroupForAccountIfNoStarred(account.id,group.id)
-    const feedIds=new Set(remoteFeeds.map((feed)=>feed.id))
-    for(const feed of this.library.listFeedsForAccount(account.id))if(!feedIds.has(feed.id))this.library.deleteFeedForAccountIfNoStarred(account.id,feed.id)
-    this.accounts.updateSyncMetadata(account.id,Date.now(),lastSeen?remoteDbId(account.id,lastSeen):null)
+    if(typeof unreadBody.unread_item_ids!=='string')throw new Error('Fever unread_item_ids 缺失或无效')
+    if(typeof savedBody.saved_item_ids!=='string')throw new Error('Fever saved_item_ids 缺失或无效')
+    const unread=new Set(splitIds(unreadBody.unread_item_ids))
+    const saved=new Set(splitIds(savedBody.saved_item_ids))
+    // 网络全部成功后才开启事务；目录、文章、状态和游标共同提交。
+    this.library.transaction(()=>{
+      const existingFeeds=new Map(this.library.listFeedsForAccount(account.id).map(feed=>[feed.id,feed]))
+      const remoteGroups=groupsBody.groups!.filter(item=>item.id!==undefined).map((item):GroupRecord=>({
+        id:remoteDbId(account.id,item.id!),accountId:account.id,name:item.title??'Untitled',sortOrder:0,isDefault:false
+      }))
+      const mapping=mergeFeverGroupMapping(groupsBody.feeds_groups,feedsBody.feeds_groups)
+      const icons=new Map(faviconsBody.favicons!.map(item=>[item.id,item.data]))
+      let fallbackDefaultGroup:GroupRecord|null=null
+      const remoteFeeds=feedsBody.feeds!.filter(item=>item.id!==undefined&&item.url).map((item):FeedRecord=>{
+        const groupRemoteId=mapping.get(String(item.id))
+        const groupId=groupRemoteId?remoteDbId(account.id,groupRemoteId):(fallbackDefaultGroup??=this.ensureDefaultGroup(account.id)).id
+        const feedId=remoteDbId(account.id,item.id!)
+        const existing=existingFeeds.get(feedId)
+        const icon=item.favicon_id===undefined?undefined:icons.get(item.favicon_id)
+        return {
+          id:feedId,accountId:account.id,groupId,
+          name:decodeHtml(item.title??'')||'Untitled',url:item.url!,sourcePageUrl:item.site_url??null,
+          sourceType:'rss',icon:icon??existing?.icon??null,
+          isNotification:existing?.isNotification??false,isFullContent:existing?.isFullContent??false,
+          isBrowser:existing?.isBrowser??false,dynamicRendering:existing?.dynamicRendering??false,createdAt:existing?.createdAt??now,updatedAt:now
+        }
+      })
+      if(fallbackDefaultGroup&&!remoteGroups.some(group=>group.id===fallbackDefaultGroup!.id))remoteGroups.push(fallbackDefaultGroup)
+      for(const group of remoteGroups)this.library.upsertGroup(group)
+      for(const feed of remoteFeeds)this.library.upsertFeed(feed)
+      for(const item of fetchedItems){
+        const article=feverItemToArticle(item,account.id,now)
+        if(article)this.library.upsertArticle(article)
+      }
+      const latestLocalStates=this.library.listArticleStateForAccount(account.id)
+      const toBeUnread:string[]=[],toBeRead:string[]=[],toBeStarred:string[]=[],toBeUnstarred:string[]=[]
+      for(const state of latestLocalStates){
+        const id=remoteId(state.id)
+        if(unread.has(id)&&!state.isUnread)toBeUnread.push(state.id)
+        if(!unread.has(id)&&state.isUnread)toBeRead.push(state.id)
+        if(saved.has(id)&&!state.isStarred)toBeStarred.push(state.id)
+        if(!saved.has(id)&&state.isStarred)toBeUnstarred.push(state.id)
+      }
+      this.library.setArticleUnreadBatchForAccount(account.id,toBeUnread,true)
+      this.library.setArticleUnreadBatchForAccount(account.id,toBeRead,false)
+      this.library.setArticleStarredBatchForAccount(account.id,toBeStarred,true)
+      this.library.setArticleStarredBatchForAccount(account.id,toBeUnstarred,false)
+      const groupIds=new Set(remoteGroups.map(group=>group.id))
+      for(const group of this.library.listGroupsForAccount(account.id))if(!groupIds.has(group.id))this.library.deleteGroupForAccountIfNoStarred(account.id,group.id)
+      const feedIds=new Set(remoteFeeds.map(feed=>feed.id))
+      for(const feed of this.library.listFeedsForAccount(account.id))if(!feedIds.has(feed.id))this.library.deleteFeedForAccountIfNoStarred(account.id,feed.id)
+      this.accounts.updateSyncMetadata(account.id,Date.now(),lastSeen?remoteDbId(account.id,lastSeen):null)
+    })
   }
 
   private ensureDefaultGroup(accountId:number):GroupRecord{

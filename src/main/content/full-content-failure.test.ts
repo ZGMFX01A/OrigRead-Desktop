@@ -21,3 +21,8 @@ describe('FullContent failure and dynamic policy', () => {
     expect(shouldAttemptDynamicArticleContent('<div id="__next"></div><script src="/app.js"></script>', 'NO_CONTENT', true)).toBe(true)
   })
 })
+
+it('ignores non-visible SPA bootstrap text while retaining executable-script detection', () => {
+  expect(shouldAttemptDynamicArticleContent(`<body><div id="app"></div><script>${'bootstrap'.repeat(1000)}</script><style>${'.app{}'.repeat(1000)}</style><noscript>${'disabled'.repeat(1000)}</noscript><template>${'template'.repeat(1000)}</template></body>`, 'NO_CONTENT', true)).toBe(true)
+  expect(shouldAttemptDynamicArticleContent(`<body><script>${'bootstrap'.repeat(1000)}</script></body>`, 'NO_CONTENT', true)).toBe(true)
+})

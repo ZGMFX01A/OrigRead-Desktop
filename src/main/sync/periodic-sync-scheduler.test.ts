@@ -127,3 +127,25 @@ function result(): SourceSyncBatchResult {
   }
 }
 
+
+it('isolates concurrent runs and completion state by account', async () => {
+  let accountId = 1
+  let finish!: (value: SourceSyncBatchResult) => void
+  const firstResult = { ...result(), sourceCount: 1 }
+  const secondResult = { ...result(), sourceCount: 2 }
+  const refresh = vi.fn(() => accountId === 1 ? new Promise<SourceSyncBatchResult>(resolve => { finish = resolve }) : Promise.resolve(secondResult))
+  const scheduler = new PeriodicSyncScheduler({ current: () => createSettings() }, { refreshAllSources: refresh }, () => {}, () => true, () => accountId)
+  const first = scheduler.runNow()
+  accountId = 2
+  scheduler.reconfigure()
+  expect(scheduler.currentState().running).toBe(false)
+  const second = scheduler.runNow()
+  expect(second).not.toBe(first)
+  expect(await second).toBe(secondResult)
+  finish(firstResult)
+  await first
+  expect(scheduler.currentState().lastResult).toBe(secondResult)
+  accountId = 1
+  expect(scheduler.currentState().lastResult).toBe(firstResult)
+  scheduler.stop()
+})

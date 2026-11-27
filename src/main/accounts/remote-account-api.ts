@@ -31,6 +31,7 @@ export interface GoogleReaderTag {
 export class GoogleReaderApi {
   private loginToken:string|null=null
   private actionToken:string|null=null
+  private authInflight:Promise<void>|null=null
 
   constructor(
     private readonly serverUrl:string,
@@ -46,6 +47,26 @@ export class GoogleReaderApi {
   }
 
   async authenticate():Promise<void>{
+    await this.runSingleFlightAuth(()=>this.executeAuthenticate())
+  }
+
+  private async runSingleFlightAuth(work:()=>Promise<void>):Promise<void>{
+    if(this.authInflight){await this.authInflight;return}
+    this.authInflight=work()
+    try{await this.authInflight}finally{this.authInflight=null}
+  }
+
+  private async reauthenticateAfterUnauthorized(failedToken:string|null):Promise<void>{
+    if(this.authInflight)await this.authInflight
+    if(this.loginToken&&this.loginToken!==failedToken)return
+    await this.runSingleFlightAuth(async()=>{
+      if(this.loginToken&&this.loginToken!==failedToken)return
+      this.clearAuthorization()
+      await this.executeAuthenticate()
+    })
+  }
+
+  private async executeAuthenticate():Promise<void>{
     const form=new URLSearchParams({
       output:'json',Email:this.username,Passwd:this.password,client:'OrigRead',
       accountType:'HOSTED_OR_GOOGLE',service:'reader'
@@ -126,7 +147,7 @@ export class GoogleReaderApi {
   }
   private async postJson<T>(path:string,formEntries:Array<[string,string|undefined]>,query=''):Promise<T>{
     const text=await this.postText(path,formEntries,query)
-    try{return JSON.parse(text) as T}catch{throw new Error(`Google Reader 返回了无效 JSON：${text.slice(0,160)}`)}
+    try{const parsed:unknown=JSON.parse(text);if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('Expected JSON object');return parsed as T}catch{throw new Error(`Google Reader 返回了无效 JSON：${text.slice(0,160)}`)}
   }
   private async postText(path:string,formEntries:Array<[string,string|undefined]>,query=''):Promise<string>{
     await this.ensureAuth()
@@ -147,9 +168,10 @@ export class GoogleReaderApi {
   }
   private authHeaders():Record<string,string>{return{Authorization:`GoogleLogin auth=${this.loginToken}`,'User-Agent':'OrigRead Desktop'}}
   private async requestWithReauth<T>(work:()=>Promise<T>):Promise<T>{
+    const attemptToken=this.loginToken
     try{return await work()}catch(error){
       if(!(error instanceof UnauthorizedError))throw error
-      this.clearAuthorization();await this.authenticate();return work()
+      await this.reauthenticateAfterUnauthorized(attemptToken);return work()
     }
   }
 }
@@ -183,7 +205,7 @@ export class FeverApi {
     if(response.status===401)throw new Error('Unauthorized')
     if(!response.ok)throw new Error('Forbidden')
     const text=await response.text()
-    try{return JSON.parse(text) as T}catch{throw new Error('Unable to parse response')}
+    try{const parsed:unknown=JSON.parse(text);if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('Expected JSON object');return parsed as T}catch{throw new Error('Unable to parse response')}
   }
 }
 
@@ -225,5 +247,5 @@ async function parseJsonResponse<T>(response:Response):Promise<T>{
   if(response.status===401)throw new UnauthorizedError()
   if(response.status===400)throw new Error('BadRequest')
   if(!response.ok)throw new GoogleReaderHttpError(response.status,text||`HTTP ${response.status}`)
-  try{return JSON.parse(text) as T}catch{throw new Error(`Google Reader 返回了无效 JSON：${text.slice(0,160)}`)}
+  try{const parsed:unknown=JSON.parse(text);if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('Expected JSON object');return parsed as T}catch{throw new Error(`Google Reader 返回了无效 JSON：${text.slice(0,160)}`)}
 }

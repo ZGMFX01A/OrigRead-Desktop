@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { getEventListeners } from 'node:events'
 import type { AiChatCompletionDeltaListener, AiChatCompletionResult, AiChatMessage, AiChatToolDefinition, AiRuntimeConfig } from '../ai/openai-compatible-provider'
 import { AiSettingsRepository } from '../ai/ai-settings-repository'
 import { MemorySecretStore } from '../security/secret-store'
@@ -326,7 +327,10 @@ describe('LlmChatExecutionService D2 pipeline', () => {
       const transport = new QueueTransport([
         async ({ onDelta }) => {
           onDelta({ content: 'Partial answer [[E1]]', reasoning: '', finishReason: null, toolCalls: [] })
-          if (terminal === 'stopped') throw new DOMException('cancelled', 'AbortError')
+          if (terminal === 'stopped') {
+            env.registry.cancel(`request-partial-${terminal}`)
+            throw new DOMException('cancelled', 'AbortError')
+          }
           throw new Error('provider failed after partial output')
         }
       ])
@@ -572,7 +576,7 @@ describe('LlmChatExecutionService D2 pipeline', () => {
     env.database.close()
   })
 
-  it('stops promptly when a Tool ignores AbortSignal and waits for its drain before the next request', async () => {
+  it('stops promptly and gates an immediate restart on an ignored Tool drain', async () => {
     let markToolStarted!: () => void
     const toolStarted = new Promise<void>((resolve) => { markToolStarted = resolve })
     let releaseTool!: () => void
@@ -607,16 +611,6 @@ describe('LlmChatExecutionService D2 pipeline', () => {
 
     const stopStartedAt = performance.now()
     expect(env.registry.cancel('request-stuck-tool')).toBe(true)
-    const stopped = await Promise.race([
-      first,
-      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('Stop waited for the ignored Tool drain')), 250))
-    ])
-    expect(performance.now() - stopStartedAt).toBeLessThan(250)
-    expect(stopped).toMatchObject({ status: 'STOPPED', finishReason: 'CANCELLED' })
-    expect(env.repository.getToolCalls(identity.conversationId)).toMatchObject([
-      { providerCallId: 'provider-stuck-tool', status: 'ERROR', errorMessage: expect.stringContaining('cancelled') }
-    ])
-
     env.repository.appendMessage(identity.conversationId, { id: 'user-2', role: 'USER', content: 'Continue safely.', now: 40 })
     env.repository.appendMessage(identity.conversationId, { id: 'assistant-2', role: 'ASSISTANT', content: '', status: 'STREAMING', now: 50 })
     const second = env.service.execute({
@@ -627,7 +621,17 @@ describe('LlmChatExecutionService D2 pipeline', () => {
       profile: { enabledToolIds: new Set(['slow_lookup']) }
     }, () => undefined)
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 20))
+
+    const stopped = await Promise.race([
+      first,
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('Stop waited for the ignored Tool drain')), 250))
+    ])
+    expect(performance.now() - stopStartedAt).toBeLessThan(250)
+    expect(stopped).toMatchObject({ status: 'STOPPED', finishReason: 'CANCELLED' })
+    expect(env.repository.getToolCalls(identity.conversationId)).toMatchObject([
+      { providerCallId: 'provider-stuck-tool', status: 'ERROR', errorMessage: expect.stringContaining('cancelled') }
+    ])
+
     expect(transport.calls).toHaveLength(1)
     releaseTool()
     await expect(second).resolves.toMatchObject({ content: 'Second request completed', status: 'COMPLETE', finishReason: 'STOP' })
@@ -1102,5 +1106,129 @@ describe('LlmChatExecutionService D2 pipeline', () => {
     expect(refs[0]).toMatchObject({ type: 'WEB_SEARCH_RESULT', includedInPrompt: true })
     expect(env.repository.getEvidenceBlocks(refs[0]!.id)).toHaveLength(1)
     env.database.close()
+  })
+})
+
+describe('Batch 1C execution invariants', () => {
+  it('keeps COMPLETE persisted when terminal delivery throws', async () => {
+    const env = setup(new QueueTransport([async () => ({ content: 'done', reasoning: null, finishReason: 'stop', toolCalls: [] })]))
+    const identity = createConversation(env.repository)
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      const result = await env.service.execute({ ...identity, requestId: 'complete', ownerId: 'owner' }, (event) => {
+        if (event.type === 'TERMINAL') throw new Error('window closed')
+      })
+      expect(result.status).toBe('COMPLETE')
+      expect(env.repository.getMessage(identity.assistantMessageId)?.status).toBe('COMPLETE')
+      expect(env.registry.size()).toBe(0)
+      expect(errors).toHaveBeenCalled()
+    } finally { errors.mockRestore(); env.database.close() }
+  })
+
+  it.each(['throw', 'cancel', 'delivery'] as const)('finalizes every tool and approval when the round exits via %s', async (mode) => {
+    const env = setup(new QueueTransport([async () => ({
+      content: '', reasoning: null, finishReason: 'tool_calls',
+      toolCalls: ['first', 'second', 'third'].map((name) => ({ id: name, name, argumentsJson: '{}' }))
+    })]))
+    const identity = createConversation(env.repository)
+    for (const name of ['first', 'second', 'third']) {
+      const tool = readOnlyTool(name)
+      if (name !== 'third') tool.descriptor.risk = 'WRITE'
+      env.toolRuntime.register(tool)
+    }
+    const events: LlmExecutionEvent[] = []
+    let signal!: AbortSignal
+    let executingStatus: string | undefined
+    let executingEvent: LlmExecutionEvent | undefined
+    const execute = vi.spyOn(env.toolRuntime, 'execute').mockImplementation(async (call, _policy, options) => {
+      signal = options!.signal!
+      executingStatus = env.repository.getToolCalls(identity.conversationId).find((row) => row.id === call.id)?.status
+      executingEvent = events.at(-1)
+      if (mode === 'cancel') env.registry.cancel('round-failure')
+      throw new Error('tool exploded')
+    })
+    try {
+      const result = await env.service.execute({
+        ...identity, requestId: 'round-failure', ownerId: 'owner',
+        profile: { enabledToolIds: new Set(['first', 'second', 'third']) }
+      }, (event) => {
+        events.push(event)
+        if (event.type === 'TOOL_STATE' && event.status === 'PENDING_APPROVAL') {
+          if (mode === 'delivery') throw new Error('tool event delivery failed')
+          const call = env.repository.getToolCalls(identity.conversationId).find((row) => row.id === event.toolCallId)!
+          if (call.apiName === 'first') env.service.resolveToolApproval(event.toolCallId, 'APPROVE')
+        }
+      })
+      expect(result.status).toBe(mode === 'cancel' ? 'STOPPED' : 'ERROR')
+      const calls = env.repository.getToolCalls(identity.conversationId)
+      expect(calls).toHaveLength(3)
+      expect(calls.every((call) => call.status === 'ERROR' && call.errorMessage)).toBe(true)
+      expect(events.filter((event) => event.type === 'TOOL_STATE' && event.status === 'ERROR')).toHaveLength(3)
+      for (const call of calls) expect(env.service.resolveToolApproval(call.id, 'APPROVE')).toBe(false)
+      // Approval cleanup must remove listeners even when the signal never aborts.
+      if (signal) {
+        expect(signal.aborted).toBe(mode === 'cancel')
+        expect(getEventListeners(signal, 'abort')).toHaveLength(0)
+      }
+      expect(execute).toHaveBeenCalledTimes(mode === 'delivery' ? 0 : 1)
+      if (mode !== 'delivery') {
+        expect(executingStatus).toBe('RUNNING')
+        expect(executingEvent).toMatchObject({ type: 'TOOL_STATE', status: 'RUNNING' })
+      }
+    } finally { env.database.close() }
+  })
+
+  it.each([false, true])('omits tools on the final round and rejects further calls before side effects (calls=%s)', async (extraCall) => {
+    const tool = readOnlyTool()
+    const perform = vi.fn(tool.execute)
+    tool.execute = perform
+    const handlers: StreamHandler[] = Array.from({ length: 8 }, (_, round) => async ({ tools }) => {
+      expect(tools).toHaveLength(round === 7 ? 0 : 1)
+      return { content: '', reasoning: null, finishReason: round === 7 && !extraCall ? 'stop' : 'tool_calls',
+        toolCalls: round === 7 && !extraCall ? [] : [{ id: `call-${round}`, name: 'lookup', argumentsJson: '{}' }] }
+    })
+    const transport = new QueueTransport(handlers)
+    const env = setup(transport)
+    env.toolRuntime.register(tool)
+    const identity = createConversation(env.repository)
+    try {
+      const result = await env.service.execute({ ...identity, requestId: 'limit', ownerId: 'owner', profile: { enabledToolIds: new Set(['lookup']) } }, () => undefined)
+      expect(result.status).toBe(extraCall ? 'ERROR' : 'COMPLETE')
+      expect(perform).toHaveBeenCalledTimes(7)
+      expect(env.repository.getToolCalls(identity.conversationId)).toHaveLength(7)
+      expect(transport.calls).toHaveLength(8)
+    } finally { env.database.close() }
+  })
+
+  it('bounds historical tool snapshots and keeps the newest evidence traceable across turns', async () => {
+    const transport = new QueueTransport(Array.from({ length: 2 }, () => async ({ messages, onDelta }) => {
+      const latest = messages.filter((message) => message.role === 'tool').at(-1)!.content
+      expect(latest).toContain('result-23')
+      expect(latest).toContain('[Tool result truncated]')
+      expect(latest).not.toContain('x'.repeat(1500))
+      onDelta({ content: 'latest [[E8]]', reasoning: '', finishReason: 'stop', toolCalls: [] })
+      return { content: 'latest [[E8]]', reasoning: null, finishReason: 'stop', toolCalls: [] }
+    }))
+    const env = setup(transport)
+    const identity = createConversation(env.repository)
+    try {
+      const old = env.repository.appendMessage(identity.conversationId, { id: 'old', role: 'ASSISTANT', content: 'history' })
+      env.repository.appendToolCalls(Array.from({ length: 24 }, (_, index) => ({
+        id: `old-${index}`, conversationId: identity.conversationId, assistantMessageId: old.id,
+        providerCallId: `provider-${index}`, toolId: 'lookup', apiName: 'lookup', argumentsJson: '{}',
+        status: 'COMPLETE', resultContent: `result-${index} ` + 'x'.repeat(2000), errorMessage: null, createdAt: index, updatedAt: index
+      })))
+      for (let turn = 0; turn < 2; turn += 1) {
+        const assistantMessageId = turn === 0 ? identity.assistantMessageId : env.repository.appendMessage(identity.conversationId, { role: 'ASSISTANT', status: 'STREAMING' }).id
+        await env.service.execute({ ...identity, assistantMessageId, requestId: `history-${turn}`, ownerId: 'owner' }, () => undefined)
+        const refs = env.repository.getContextRefsForAssistant(assistantMessageId)
+        expect(refs).toHaveLength(8)
+        expect(refs.map((ref) => ref.contextId).sort()).toEqual(Array.from({ length: 8 }, (_, index) => `tool-result:old-${index + 16}`).sort())
+        expect(refs.reduce((sum, ref) => sum + ref.contentSnapshot.length, 0)).toBeLessThanOrEqual(12_000)
+        expect(refs.every((ref) => ref.truncatedInPrompt && ref.contentSnapshot.endsWith('[Tool result truncated]'))).toBe(true)
+        expect(refs.flatMap((ref) => env.repository.getEvidenceBlocks(ref.id))).toHaveLength(8)
+        expect(env.repository.getCitationRefsForAssistant(assistantMessageId)[0]?.locatorSnapshot?.toolCallId).toBe('old-23')
+      }
+    } finally { env.database.close() }
   })
 })

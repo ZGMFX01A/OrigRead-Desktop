@@ -1,3 +1,4 @@
+import { rollbackSettingsAndSecrets } from '../storage/settings-rollback'
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, isAbsolute } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
@@ -59,11 +60,6 @@ export class McpLocalRepository implements McpToolCatalogRegistry {
     const current = this.toStored(this.current())
     const existing = current.servers.find((server) => server.id === patch.id.trim())
     if (!existing) throw new Error('本地 MCP Server 不存在')
-    if (patch.environment !== undefined) {
-      // Validate before committing the secret so a malformed edit never replaces the last good value.
-      parseMcpLocalEnvironment(patch.environment)
-      this.secrets.put(environmentSecretKey(existing.id), normalizeEnvironmentText(patch.environment))
-    }
     const updated = normalizeServer({
       ...existing,
       ...(patch.name === undefined ? {} : { name: patch.name }),
@@ -72,7 +68,17 @@ export class McpLocalRepository implements McpToolCatalogRegistry {
       ...(patch.args === undefined ? {} : { args: patch.args }),
       ...(patch.cwd === undefined ? {} : { cwd: patch.cwd })
     })
-    return this.save({ servers: current.servers.map((server) => server.id === updated.id ? updated : server) })
+    if (patch.environment !== undefined) parseMcpLocalEnvironment(patch.environment)
+    const secretSnapshot = this.secrets.snapshot()
+    this.database.exec('SAVEPOINT mcp_local_update')
+    try {
+      if (patch.environment !== undefined) this.secrets.put(environmentSecretKey(existing.id), normalizeEnvironmentText(patch.environment))
+      const result = this.save({ servers: current.servers.map((server) => server.id === updated.id ? updated : server) })
+      this.database.exec('RELEASE SAVEPOINT mcp_local_update')
+      return result
+    } catch (error) {
+      rollbackSettingsAndSecrets(this.database, 'mcp_local_update', this.secrets, secretSnapshot, error)
+    }
   }
 
   removeServer(serverId: string): McpLocalSettings {
@@ -149,7 +155,7 @@ export class McpLocalRepository implements McpToolCatalogRegistry {
       ...normalized.servers.map((server) => server.id)
     ])
     for (const id of idsToClear) this.secrets.delete(environmentSecretKey(id))
-    this.save(normalized)
+    this.save({ servers: normalized.servers.map((server) => ({ ...server, enabled: false })) })
     for (const [serverId, environment] of Object.entries(environments ?? {})) {
       if (environment) this.secrets.put(environmentSecretKey(serverId), normalizeEnvironmentText(environment))
     }
@@ -205,31 +211,99 @@ export function parseMcpLocalEnvironment(value: string): Record<string, string> 
     const name = line.slice(0, separator).trim()
     const envValue = line.slice(separator + 1)
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`环境变量名称无效：${name}`)
+    if (isBlockedMcpEnvironmentName(name)) throw new Error(`不允许覆盖高危环境变量：${name}`)
     if (envValue.length > MAX_ENV_VALUE_LENGTH || envValue.includes('\0')) throw new Error(`环境变量值过长或无效：${name}`)
     result[name] = envValue
   }
   return result
 }
 
+const BLOCKED_ENVIRONMENT_NAMES = new Set([
+  'NODE_OPTIONS', 'NODE_EXTRA_CA_CERTS', 'NODE_PATH', 'NODE_REDIRECT_WARNINGS',
+  'LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH',
+  'DYLD_FRAMEWORK_PATH', 'DYLD_FORCE_FLAT_NAMESPACE', 'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ASAR',
+  'PYTHONSTARTUP', 'PYTHONPATH', 'RUBYOPT', 'PERL5OPT', 'BASH_ENV', 'ENV', 'ZDOTDIR', 'IFS',
+  'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS', 'COMSPEC', 'PATHEXT', 'PATH', 'SYSTEMROOT', 'WINDIR'
+])
+
+export function isBlockedMcpEnvironmentName(name: string): boolean {
+  const upper = name.toUpperCase()
+  return BLOCKED_ENVIRONMENT_NAMES.has(upper)
+    || ['ORIGREAD_MCP_', 'LD_', 'DYLD_', 'ELECTRON_'].some((prefix) => upper.startsWith(prefix))
+}
+
+const OPTIONS_WITH_VALUE = new Set(['--prefix', '-C', '--dir', '--cwd', '--userconfig', '--config', '--cache', '--registry', '-p', '--package', '--workspace', '-w', '--filter', '-F', '--directory'])
+const COMMAND_SWITCHES = new Set(['--quiet', '-q', '--silent', '-s', '--verbose', '-v', '--offline', '--prefer-offline', '--global', '-g', '--force', '-f', '--ignore-scripts', '--help', '-h', '--version', '--no-progress'])
+
+function leadingCommandOptions(args: readonly string[], blockedSubcommands: readonly string[]): { options: string[]; subcommand: string | undefined } {
+  const options: string[] = []
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!
+    if (arg === '--') return { options, subcommand: args[index + 1] }
+    if (!arg.startsWith('-') || arg === '-') return { options, subcommand: arg }
+    options.push(arg)
+    if (OPTIONS_WITH_VALUE.has(arg)) {
+      const value = args[++index]
+      if (!value || value.startsWith('-')) throw new Error('本地 MCP 命令选项缺少明确的值')
+      // 不同包管理器的短选项含义可能不同，不能让值位置隐藏危险子命令。
+      if (blockedSubcommands.includes(value.trim().toLowerCase())) throw new Error('本地 MCP 命令选项包含危险子命令')
+    } else if (!arg.includes('=') && !COMMAND_SWITCHES.has(arg)) {
+      // 无法确认未知选项是否吞掉下一位置参数时，不能猜测子命令并放行。
+      throw new Error(`本地 MCP 命令选项未经允许：${arg}`)
+    }
+  }
+  return { options, subcommand: undefined }
+}
+
+function hasSafeNpxOptions(args: readonly string[]): boolean {
+  // 参数必须保持原文。npx 将 --no-install 改写为 --yes=false，其他 yes 形式可覆盖它。
+  const valueOptions = new Set(['--prefix', '-C', '--dir', '--cwd', '--userconfig', '--config', '--cache', '--registry', '-p', '--package'])
+  const switches = new Set(['--quiet', '-q', '--offline', '--prefer-offline'])
+  let noInstall = false
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!
+    if (arg === '--' || !arg.startsWith('-') || arg === '-') break
+    if (arg === '--no-install') { noInstall = true; continue }
+    if (switches.has(arg)) continue
+    const separator = arg.indexOf('=')
+    const name = separator < 0 ? arg : arg.slice(0, separator)
+    if (!valueOptions.has(name)) return false
+    const value = separator < 0 ? args[++index] : arg.slice(separator + 1)
+    // 不把另一个选项误当作值跳过，避免隐藏后续 --yes/-y。
+    if (!value || value.startsWith('-')) return false
+  }
+  return noInstall
+}
+
 export function assertSafeLocalCommand(command: string, args: readonly string[]): void {
   const normalizedCommand = normalizeCommand(command)
   if (!normalizedCommand) throw new Error('本地 MCP 可执行程序不能为空')
-  const executable = basename(normalizedCommand).toLowerCase().replace(/\.(exe|cmd|bat)$/i, '')
-  const normalizedArgs = args.map((arg) => arg.trim().toLowerCase())
-  const blockedShells = new Set(['cmd', 'powershell', 'pwsh', 'sh', 'bash', 'zsh', 'fish'])
+  const executable = basename(normalizedCommand.replaceAll('\\', '/')).toLowerCase().replace(/\.(exe|cmd|bat)$/i, '')
+  const blockedShells = new Set(['cmd', 'powershell', 'pwsh', 'sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'csh', 'tcsh', 'wscript', 'cscript', 'mshta'])
   if (blockedShells.has(executable)) {
     throw new Error('本地 MCP 不允许通过 Shell 启动。请直接填写服务器可执行程序和独立参数。')
   }
-  if (executable === 'npx' && !normalizedArgs.includes('--no-install')) {
-    throw new Error('为避免自动下载软件包，npx 仅允许配合 --no-install 使用')
+  // 只承认目标包之前的选项，包名之后的参数不能为启动器授权。
+  if (executable === 'npx' && !hasSafeNpxOptions(args)) {
+    throw new Error('为避免自动下载软件包，npx 仅允许配合 --no-install 使用且禁止 -y/--yes')
   }
-  if (executable === 'bunx' || executable === 'uvx' || executable === 'corepack') {
+  if (['bunx', 'uvx', 'corepack'].includes(executable)) {
     throw new Error(`不允许使用可能自动获取软件包的命令：${executable}`)
   }
-  if (executable === 'pnpm' && normalizedArgs[0] === 'dlx') throw new Error('不允许使用 pnpm dlx 自动获取 MCP Server')
-  if (executable === 'yarn' && normalizedArgs[0] === 'dlx') throw new Error('不允许使用 yarn dlx 自动获取 MCP Server')
-  if (executable === 'npm' && normalizedArgs[0] === 'exec') throw new Error('不允许使用 npm exec 自动获取 MCP Server')
-  if (executable === 'pipx' && normalizedArgs[0] === 'run') throw new Error('不允许使用 pipx run 自动获取 MCP Server')
+  const blockedSubcommands: Record<string, string[]> = {
+    npm: ['exec', 'x', 'i', 'install', 'add', 'init', 'create'],
+    pnpm: ['dlx', 'exec', 'create', 'init', 'install', 'i', 'add'],
+    yarn: ['dlx', 'create', 'install', 'add'],
+    pipx: ['run', 'install'],
+    uv: ['tool', 'x']
+  }
+  const blocked = blockedSubcommands[executable]
+  if (!blocked) return
+  const { subcommand } = leadingCommandOptions(args, blocked)
+  if (!subcommand && executable === 'yarn') throw new Error('不允许使用 yarn 默认安装依赖')
+  if (subcommand && blocked.includes(subcommand.trim().toLowerCase())) {
+    throw new Error(`不允许使用 ${executable} ${subcommand} 自动获取 MCP Server`)
+  }
 }
 
 function normalizeSettings(value: unknown): StoredMcpLocalSettings {

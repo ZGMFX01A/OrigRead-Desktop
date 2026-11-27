@@ -1,6 +1,7 @@
-import { createWriteStream } from 'node:fs'
-import { rename, rm } from 'node:fs/promises'
-import { Readable } from 'node:stream'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { createHash, timingSafeEqual } from 'node:crypto'
+import { rename, rm, stat } from 'node:fs/promises'
+import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type {
   DesktopReleaseAsset,
@@ -11,9 +12,15 @@ import type {
 
 export const ORIGREAD_DESKTOP_REPOSITORY = 'ZGMFX01A/OrigRead-Desktop'
 const OFFICIAL_RELEASE_DOWNLOAD_PREFIX = `https://github.com/${ORIGREAD_DESKTOP_REPOSITORY}/releases/download/`
-const OFFICIAL_LATEST_RELEASE_API_URL = `https://api.github.com/repos/${ORIGREAD_DESKTOP_REPOSITORY}/releases/latest`
 const OFFICIAL_LATEST_RELEASE_URL = `https://github.com/${ORIGREAD_DESKTOP_REPOSITORY}/releases/latest`
-const MAINLAND_RELEASE_PROXY = 'https://gh-proxy.com/'
+const REDIRECT_HOSTS = new Set(['github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com', 'github-releases.githubusercontent.com'])
+const CHECKSUM_MAX_BYTES = 1024 * 1024
+
+export interface ReleaseUpdateOptions {
+  metadataTimeoutMs?: number
+  downloadTimeoutMs?: number
+  maxAssetBytes?: number
+}
 
 export type UpdateFetch = (input: string, init?: RequestInit) => Promise<Response>
 
@@ -22,6 +29,7 @@ interface GitHubReleaseAssetPayload {
   name?: unknown
   size?: unknown
   browser_download_url?: unknown
+  digest?: unknown
 }
 
 interface GitHubReleasePayload {
@@ -37,8 +45,11 @@ interface GitHubReleasePayload {
 export class ReleaseUpdateService {
   constructor(
     private readonly fetcher: UpdateFetch,
-    private readonly apiBase = 'https://api.github.com'
+    private readonly apiBase = 'https://api.github.com',
+    private readonly options: ReleaseUpdateOptions = {}
   ) {}
+
+  private get metadataTimeoutMs(): number { return this.options.metadataTimeoutMs ?? 15_000 }
 
   async check(
     currentVersion: string,
@@ -55,7 +66,8 @@ export class ReleaseUpdateService {
 
     for (const [index, candidate] of candidates.entries()) {
       try {
-        const response = await this.fetcher(candidate, {
+        const response = await this.fetchWithRedirects(candidate, {
+          signal: AbortSignal.timeout(this.metadataTimeoutMs),
           headers: {
             Accept: 'application/vnd.github+json',
             'User-Agent': `OrigRead-Desktop/${currentVersion}`,
@@ -103,6 +115,15 @@ export class ReleaseUpdateService {
           return failure(currentVersion, checkedAt, 'INVALID_RESPONSE', 'GitHub Release 返回的数据不完整。')
         }
 
+        const assets = Array.isArray(payload.assets) ? payload.assets as GitHubReleaseAssetPayload[] : []
+        if (release.asset && assets.some((value) => {
+          const asset = parseAsset(value)
+          return asset && (asset.name === 'SHA256SUMS' || asset.name === 'SHA256SUMS.txt')
+            && new URL(asset.downloadUrl).pathname.split('/')[5] === encodeURIComponent(release.tagName)
+        })) {
+          const checksum = await this.officialChecksum(release.asset)
+          if (!release.asset.sha256 && checksum) release.asset.sha256 = checksum
+        }
         return {
           status: compareVersions(release.version, currentVersion) > 0 ? 'available' : 'latest',
           currentVersion,
@@ -138,7 +159,8 @@ export class ReleaseUpdateService {
     try {
       response = await this.fetcher(OFFICIAL_LATEST_RELEASE_URL, {
         headers: { 'User-Agent': `OrigRead-Desktop/${currentVersion}` },
-        redirect: 'manual'
+        redirect: 'manual',
+        signal: AbortSignal.timeout(this.metadataTimeoutMs)
       })
     } catch {
       return failure(currentVersion, checkedAt, fallbackErrorCode, fallbackErrorMessage)
@@ -182,32 +204,103 @@ export class ReleaseUpdateService {
     }
   }
 
-  async downloadAsset(asset: DesktopReleaseAsset, destination: string, locale: string): Promise<void> {
+  private async fetchWithRedirects(input: string, init: RequestInit): Promise<Response> {
+    let current = input
+    for (let hops = 0; ; hops += 1) {
+      const response = await this.fetcher(current, { ...init, redirect: 'manual' })
+      if (![301, 302, 303, 307, 308].includes(response.status)) return response
+      const location = response.headers.get('location')
+      await response.body?.cancel()
+      if (hops >= 5 || !location) throw new Error('更新请求重定向过多或缺少目标')
+      const next = new URL(location, current)
+      if (next.protocol !== 'https:' || next.username || next.password || !REDIRECT_HOSTS.has(next.hostname)) {
+        throw new Error('拒绝不受信任的更新重定向')
+      }
+      current = next.href
+    }
+  }
+
+  private async officialChecksum(asset: DesktopReleaseAsset): Promise<string | null> {
+    const url = new URL(asset.downloadUrl)
+    const base = url.href.slice(0, url.href.lastIndexOf('/') + 1)
+    for (const name of ['SHA256SUMS', 'SHA256SUMS.txt']) {
+      try {
+        const signal = AbortSignal.timeout(this.metadataTimeoutMs)
+        const response = await this.fetchWithRedirects(`${base}${name}`, {
+          signal, headers: { 'User-Agent': 'OrigRead-Desktop-Updater' }
+        })
+        if (response.status === 404) { await response.body?.cancel(); continue }
+        if (!response.ok || !response.body) throw new Error(`SHA256SUMS HTTP ${response.status}`)
+        const declared = response.headers.get('content-length')
+        if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > CHECKSUM_MAX_BYTES)) {
+          await response.body.cancel()
+          throw new Error('SHA256SUMS 超出 1 MiB 上限')
+        }
+        const chunks: Buffer[] = []
+        let size = 0
+        for await (const chunk of Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0], { signal })) {
+          const bytes = Buffer.from(chunk)
+          size += bytes.length
+          if (size > CHECKSUM_MAX_BYTES) throw new Error('SHA256SUMS 超出 1 MiB 上限')
+          chunks.push(bytes)
+        }
+        const sums = parseSha256Sums(Buffer.concat(chunks).toString('utf8'))
+        const digest = sums.get(asset.name) ?? sums.get(fileBasename(asset.name))
+        if (digest) return digest
+      } catch (error) {
+        console.warn(`官方 ${name} 校验摘要获取失败：${errorText(error)}`)
+      }
+    }
+    return null
+  }
+
+  async downloadAsset(asset: DesktopReleaseAsset, destination: string, _locale: string): Promise<{ sha256: string; size: number }> {
     if (!isTrustedReleaseDownloadUrl(asset.downloadUrl)) throw new Error('拒绝下载非 OrigRead Desktop Release 资产')
     const temporary = `${destination}.part`
     await rm(temporary, { force: true })
-    let lastError: unknown = null
-    for (const candidate of releaseDownloadCandidates(asset.downloadUrl, locale)) {
-      try {
-        const response = await this.fetcher(candidate, {
-          headers: { 'User-Agent': 'OrigRead-Desktop-Updater' },
-          redirect: 'follow'
-        })
-        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
-        await pipeline(
-          Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]),
-          createWriteStream(temporary)
-        )
-        await rm(destination, { force: true })
-        await rename(temporary, destination)
-        return
-      } catch (error) {
-        lastError = error
-        await rm(temporary, { force: true })
+    const expectedSha256 = normalizeSha256(asset.sha256) ?? await this.officialChecksum(asset)
+    if (!expectedSha256) throw new Error('缺少官方 SHA-256 校验摘要，请前往 GitHub Release 页面手动核验下载')
+    const maxBytes = this.options.maxAssetBytes ?? 512 * 1024 * 1024
+    try {
+      const signal = AbortSignal.timeout(this.options.downloadTimeoutMs ?? 300_000)
+      const response = await this.fetchWithRedirects(asset.downloadUrl, {
+        headers: { 'User-Agent': 'OrigRead-Desktop-Updater' }, signal
+      })
+      if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
+      const declared = response.headers.get('content-length')
+      if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > maxBytes
+        || (asset.size > 0 && Number(declared) !== asset.size))) {
+        await response.body.cancel()
+        throw new Error('更新安装包声明体积不匹配或超出上限')
       }
+      const hash = createHash('sha256')
+      let size = 0
+      const meter = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          size += chunk.length
+          if (size > maxBytes || (asset.size > 0 && size > asset.size)) {
+            callback(new Error('更新安装包体积不匹配或超出上限'))
+            return
+          }
+          hash.update(chunk)
+          callback(null, chunk)
+        }
+      })
+      await pipeline(
+        Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]),
+        meter, createWriteStream(temporary), { signal }
+      )
+      if (asset.size > 0 && size !== asset.size) throw new Error('更新安装包体积不匹配')
+      const sha256 = hash.digest('hex')
+      assertMatchingSha256(sha256, expectedSha256)
+      await rename(temporary, destination)
+      return { sha256, size }
+    } catch (error) {
+      await rm(temporary, { force: true })
+      throw new Error(`更新安装包下载失败：${errorText(error)}`, { cause: error })
     }
-    throw new Error(`更新安装包下载失败：${errorText(lastError)}`)
   }
+
 }
 
 function failure(currentVersion: string, checkedAt: number, errorCode: UpdateErrorCode, errorMessage: string): UpdateCheckResult {
@@ -307,14 +400,12 @@ export function selectReleaseAsset(assets: GitHubReleaseAssetPayload[], platform
   return supported.sort((left, right) => assetScore(right, platform, arch) - assetScore(left, platform, arch))[0] ?? null
 }
 
-export function releaseDownloadCandidates(url: string, locale: string): string[] {
-  if (!isTrustedReleaseDownloadUrl(url)) return [url]
-  return shouldPreferMainlandReleaseMirror(locale) ? [`${MAINLAND_RELEASE_PROXY}${url}`, url] : [url]
+export function releaseDownloadCandidates(url: string, _locale: string): string[] {
+  return [url]
 }
 
-export function releaseCheckCandidates(url: string, locale: string): string[] {
-  if (url !== OFFICIAL_LATEST_RELEASE_API_URL) return [url]
-  return shouldPreferMainlandReleaseMirror(locale) ? [`${MAINLAND_RELEASE_PROXY}${url}`, url] : [url]
+export function releaseCheckCandidates(url: string, _locale: string): string[] {
+  return [url]
 }
 
 export function shouldPreferMainlandReleaseMirror(locale: string): boolean {
@@ -323,12 +414,13 @@ export function shouldPreferMainlandReleaseMirror(locale: string): boolean {
 }
 
 export function isTrustedReleaseDownloadUrl(value: string): boolean {
-  return value.startsWith(OFFICIAL_RELEASE_DOWNLOAD_PREFIX)
+  return isTrustedReleaseUrl(value, 'download', 6)
 }
 
 export function resolveLatestReleasePageUrl(response: Response): string | null {
   const location = response.headers.get('location')?.trim() ?? ''
   if (location) {
+    if (unsafeReleasePath(location)) return null
     try {
       const resolved = new URL(location, OFFICIAL_LATEST_RELEASE_URL).toString()
       return isTrustedReleasePageUrl(resolved) ? resolved : null
@@ -341,16 +433,8 @@ export function resolveLatestReleasePageUrl(response: Response): string | null {
 }
 
 export function releaseTagFromPageUrl(value: string): string | null {
-  try {
-    const url = new URL(value)
-    if (url.origin !== 'https://github.com') return null
-    const prefix = `/${ORIGREAD_DESKTOP_REPOSITORY}/releases/tag/`
-    if (!url.pathname.startsWith(prefix)) return null
-    const tag = decodeURIComponent(url.pathname.slice(prefix.length)).trim()
-    return tag && !tag.includes('/') ? tag : null
-  } catch {
-    return null
-  }
+  if (!isTrustedReleasePageUrl(value)) return null
+  try { return decodeURIComponent(new URL(value).pathname.split('/').filter(Boolean)[4]!) } catch { return null }
 }
 
 export function buildFallbackReleaseAsset(
@@ -373,8 +457,65 @@ export function buildFallbackReleaseAsset(
   }
 }
 
-function isTrustedReleasePageUrl(value: string): boolean {
-  return value.startsWith(`https://github.com/${ORIGREAD_DESKTOP_REPOSITORY}/releases/tag/`)
+export function isTrustedReleasePageUrl(value: string): boolean {
+  return isTrustedReleaseUrl(value, 'tag', 5)
+}
+
+function unsafeReleasePath(value: string): boolean {
+  return /\\|%2e|%2f|%5c/i.test(value) || value.split('/').some((part) => part === '.' || part === '..')
+}
+
+function isTrustedReleaseUrl(value: string, action: string, count: number): boolean {
+  try {
+    // 必须先查原文；URL 构造会消去点路径，不能拿规范化结果代替输入检查。
+    if (unsafeReleasePath(value)) return false
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || url.origin !== 'https://github.com' || url.username || url.password
+      || url.search || url.hash || unsafeReleasePath(url.pathname)) return false
+    const parts = url.pathname.split('/').filter(Boolean)
+    return parts.length === count && parts[0] === 'ZGMFX01A' && parts[1] === 'OrigRead-Desktop'
+      && parts[2] === 'releases' && parts[3] === action
+  } catch {
+    return false
+  }
+}
+
+function fileBasename(name: string): string {
+  return name.replaceAll('\\', '/').split('/').pop() ?? name
+}
+
+export function parseSha256Sums(content: string): Map<string, string> {
+  const result = new Map<string, string>()
+  for (const line of content.split(/\r?\n/)) {
+    const match = /^([a-f0-9]{64}) [ *](.+)$/i.exec(line)
+    if (!match) continue
+    const name = match[2]!
+    const digest = match[1]!.toLowerCase()
+    result.set(name, digest)
+    result.set(fileBasename(name), digest)
+  }
+  return result
+}
+
+function normalizeSha256(value: unknown): string | null {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value) ? value.toLowerCase() : null
+}
+
+function assertMatchingSha256(actual: string, expected: string): void {
+  const normalized = normalizeSha256(expected)
+  if (!normalized || !timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(normalized, 'hex'))) {
+    throw new Error('更新安装包 SHA-256 校验失败')
+  }
+}
+
+export async function verifyDownloadedFileIntegrity(filePath: string, expectedSha256: string, expectedSize: number): Promise<void> {
+  const info = await stat(filePath)
+  if (!info.isFile() || info.size !== expectedSize) throw new Error('更新安装包体积不匹配')
+  const hash = createHash('sha256')
+  let size = 0
+  for await (const chunk of createReadStream(filePath)) { hash.update(chunk); size += chunk.length }
+  if (size !== expectedSize) throw new Error('更新安装包体积不匹配')
+  assertMatchingSha256(hash.digest('hex'), expectedSha256)
 }
 
 function parseRelease(payload: GitHubReleasePayload, platform: NodeJS.Platform, arch: string, language: string): DesktopReleaseInfo | null {
@@ -402,7 +543,9 @@ function parseAsset(value: GitHubReleaseAssetPayload): DesktopReleaseAsset | nul
   const name = typeof value.name === 'string' ? value.name.trim() : ''
   const size = typeof value.size === 'number' && Number.isFinite(value.size) ? Math.max(0, value.size) : 0
   const downloadUrl = typeof value.browser_download_url === 'string' ? value.browser_download_url.trim() : ''
-  return id !== null && name && isTrustedReleaseDownloadUrl(downloadUrl) ? { id, name, size, downloadUrl } : null
+  const digest = typeof value.digest === 'string' && /^sha256:[a-f0-9]{64}$/i.test(value.digest)
+    ? value.digest.slice(7).toLowerCase() : null
+  return id !== null && name && isTrustedReleaseDownloadUrl(downloadUrl) ? { id, name, size, downloadUrl, sha256: digest } : null
 }
 
 function assetScore(asset: DesktopReleaseAsset, platform: NodeJS.Platform, arch: string): number {

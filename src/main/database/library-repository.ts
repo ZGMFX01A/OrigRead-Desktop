@@ -75,11 +75,12 @@ export class LibraryRepository {
   listArticlesByGroup(groupId: string, accountId?: number): ArticleRecord[] { return this.reader.listArticlesByGroup(groupId, accountId) }
   listFeedArticleStats(): FeedArticleStats[] { return this.reader.listFeedArticleStats() }
   upsertWebsiteFeedWithArticles(feed: FeedRecord, articles: ArticleRecord[], obsoleteArticleIds: string[]): void {
+    const accountId = feed.accountId ?? this.getCurrentAccountId()
     this.transaction(() => {
       this.upsertFeed(feed)
       this.writer.upsertArticlesPrepared(articles)
-      const deleteStatement = this.database.prepare('DELETE FROM articles WHERE id = ? AND is_starred = 0')
-      for (const articleId of obsoleteArticleIds) deleteStatement.run(articleId)
+      const deleteStatement = this.database.prepare('DELETE FROM articles WHERE id = ? AND account_id = ? AND is_starred = 0')
+      for (const articleId of obsoleteArticleIds) deleteStatement.run(articleId, accountId)
     })
   }
 
@@ -123,7 +124,7 @@ export class LibraryRepository {
   getDefaultGroupForAccount(accountId: number): GroupRecord | null { return this.catalog.getDefaultGroupForAccount(accountId) }
   getCurrentDefaultGroup(): GroupRecord { return this.catalog.getCurrentDefaultGroup() }
   upsertGroup(group: GroupRecord): void { return this.catalog.upsertGroup(group) }
-  deleteArticlesByFeed(feedId: string, includeStarred = false): void { return this.writer.deleteArticlesByFeed(feedId, includeStarred) }
+  deleteArticlesByFeed(feedId: string, includeStarred = false, accountId = this.getCurrentAccountId()): void { return this.writer.deleteArticlesByFeed(feedId, includeStarred, accountId) }
   deleteFeed(feedId: string): void { return this.catalog.deleteFeed(feedId) }
   listFeeds(): FeedRecord[] { return this.catalog.listFeeds() }
   listFeedsForAccount(accountId: number): FeedRecord[] { return this.catalog.listFeedsForAccount(accountId) }

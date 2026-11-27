@@ -1,3 +1,5 @@
+import { acceptChatExecution, recoverUnsentChatDraft, isCurrentChatSnapshot, isCurrentGeneration, optimisticArticleFlag, type ArticleFlag, type ReaderArticleState } from './reader-state-guards'
+import { isCustomReaderFontId, resolveMissingCustomReaderFont } from './reader-font-sync'
 import { formatGroupOperationError } from './group-operation-error'
 import {
   ArrowLeft,
@@ -85,7 +87,7 @@ import type {
 } from '../../shared/llm-ipc'
 import type { LlmReasoningEffort } from '../../shared/llm'
 import { resolveQuickMessageTemplate, type LlmQuickMessage } from '../../shared/llm-quick-message'
-import type { TranslationDocument, TranslationTarget } from '../../shared/translation'
+import { translationTargetKey, type TranslationDocument, type TranslationTarget } from '../../shared/translation'
 import type { FeedCatalogEntry } from '../../shared/source-catalog'
 import type { AccountSnapshot } from '../../shared/account'
 import { CreateGroupDialog, GroupContextMenu, GroupRenameDialog, MoveGroupDialog } from './GroupRenameDialog'
@@ -343,6 +345,11 @@ export default function App(): React.JSX.Element {
   const [globalSearchLoading, setGlobalSearchLoading] = useState(false)
   const [globalSearchError, setGlobalSearchError] = useState<string | null>(null)
   const [readerFonts, setReaderFonts] = useState<ReaderFontEntry[]>([])
+  const readerFontsRef = useRef(readerFonts)
+  readerFontsRef.current = readerFonts
+  const checkedMissingFontIdRef = useRef<string | null>(null)
+  const readerFontIdRef = useRef(settings?.readerFontId)
+  readerFontIdRef.current = settings?.readerFontId
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [syncRuntimeState, setSyncRuntimeState] = useState<SyncRuntimeState | null>(null)
 
@@ -389,6 +396,28 @@ export default function App(): React.JSX.Element {
     startedAt: number
     firstVisibleScheduled: boolean
   } | null>(null)
+  const chatSessionEpochRef = useRef(0)
+  const chatConfigSeqRef = useRef(0)
+  const chatSnapshotSeqRef = useRef(0)
+  const chatSendEpochRef = useRef<number | null>(null)
+  const globalSearchSeqRef = useRef(0)
+  const articleMutationEpochRef = useRef(0)
+  const articleCountsPublicationRef = useRef(0)
+  const pendingArticleFlagsRef = useRef(new Set<string>())
+  const bumpChatSessionEpoch = useCallback((): number => {
+    chatSessionEpochRef.current += 1
+    chatSnapshotSeqRef.current += 1
+    chatSendEpochRef.current = null
+    const requestId = chatActiveRequestIdRef.current
+    chatActiveRequestIdRef.current = null
+    chatActiveRequestTaskRef.current = 'CHAT'
+    if (requestId) void window.origread.cancelLlmExecution(requestId).catch((error) => console.error('取消旧聊天请求失败', error))
+    setChatActiveExecution(null)
+    setChatManualToolBusy(false)
+    setChatHistoryLoading(false)
+    setChatConversationHistoryLoading(false)
+    return chatSessionEpochRef.current
+  }, [])
   const chatConversationIdRef = useRef<string | null>(null)
   const readerAiConversationByArticleRef = useRef(new Map<string, string>())
   const chatManualToolContextsRef = useRef<LlmManualToolContextView[]>([])
@@ -529,6 +558,46 @@ export default function App(): React.JSX.Element {
   liveAccountIdRef.current = currentAccountId
   liveScopeRef.current = articleScope
 
+  const articleStateRef = useRef<ReaderArticleState>({ articles, scopeArticles, readArticles, recentArticles, selectedArticleRecord, feedArticleStats, librarySnapshot })
+  articleStateRef.current = { articles, scopeArticles, readArticles, recentArticles, selectedArticleRecord, feedArticleStats, librarySnapshot }
+  const commitArticleState = (update: (current: ReaderArticleState) => ReaderArticleState): void => {
+    const base = articleStateRef.current
+    articleStateRef.current = update(base)
+    // Each functional setter sees the latest queued value, including selection/history
+    // changes that have not rendered yet. Never restore whole stale array snapshots.
+    setArticles((current) => update({ ...base, articles: current }).articles)
+    setScopeArticles((current) => update({ ...base, scopeArticles: current }).scopeArticles)
+    setReadArticles((current) => update({ ...base, readArticles: current }).readArticles)
+    setRecentArticles((current) => update({ ...base, recentArticles: current }).recentArticles)
+    setSelectedArticleRecord((current) => update({ ...base, selectedArticleRecord: current }).selectedArticleRecord)
+    setFeedArticleStats((current) => update({ ...base, feedArticleStats: current }).feedArticleStats)
+    setLibrarySnapshot((current) => update({ ...base, librarySnapshot: current }).librarySnapshot)
+  }
+  const persistArticleFlag = (article: ArticleRecord, flag: ArticleFlag, next: boolean): ArticleRecord => {
+    const key = `${currentAccountId}:${article.id}:${flag}`
+    const current = articleStateRef.current.articles.find((item) => item.id === article.id)
+      ?? articleStateRef.current.scopeArticles?.find((item) => item.id === article.id)
+      ?? articleStateRef.current.readArticles?.find((item) => item.id === article.id)
+      ?? article
+    if (pendingArticleFlagsRef.current.has(key) || current[flag] === next) return current
+    const accountId = currentAccountId
+    const epoch = articleMutationEpochRef.current
+    const countsPublication = articleCountsPublicationRef.current
+    const change = optimisticArticleFlag(articleStateRef.current, current, flag, next)
+    pendingArticleFlagsRef.current.add(key)
+    commitArticleState(change.apply)
+    const persist = flag === 'isUnread' ? window.origread.setArticleUnread : window.origread.setArticleStarred
+    void persist(article.id, next).catch((error) => {
+      if (articleMutationEpochRef.current !== epoch || liveAccountIdRef.current !== accountId) return
+      const restoreCounts = isCurrentGeneration(articleCountsPublicationRef, countsPublication)
+      commitArticleState((current) => change.rollback(current, restoreCounts))
+      const message = `${flag === 'isUnread' ? '更新已读状态失败' : '更新星标失败'}: ${error instanceof Error ? error.message : String(error)}`
+      setArticleListError(message)
+      showReadingShareStatus('error', message)
+    }).finally(() => pendingArticleFlagsRef.current.delete(key))
+    return { ...current, [flag]: next }
+  }
+
   const reloadLibrary = useCallback(async (): Promise<void> => {
     const seq = ++libraryRequestSeqRef.current
     const requestAccountId = liveAccountIdRef.current
@@ -547,6 +616,9 @@ export default function App(): React.JSX.Element {
     if (requestAccountId !== null && liveAccountIdRef.current !== requestAccountId && loadedAccountSnapshot.currentAccountId !== liveAccountIdRef.current) {
       return
     }
+    articleCountsPublicationRef.current += 1
+    articleStateRef.current = { ...articleStateRef.current, articles: loadedArticles,
+      feedArticleStats: loadedFeedStats, librarySnapshot: snapshot }
     setLibrarySnapshot(snapshot)
     setFeeds(loadedFeeds)
     setGroups(loadedGroups)
@@ -842,6 +914,7 @@ export default function App(): React.JSX.Element {
     })
     const unsubscribeLlmExecution = window.origread.onLlmExecutionEvent((event) => {
       if (event.requestId !== chatActiveRequestIdRef.current) return
+      const epoch = chatSessionEpochRef.current
       chatConversationIdRef.current = event.conversationId
       setChatActiveExecution({
         requestId: event.requestId,
@@ -867,13 +940,17 @@ export default function App(): React.JSX.Element {
         })
       }
       if (event.type === 'TOOL_STATE') {
+        const snapshotSeq = ++chatSnapshotSeqRef.current
         void window.origread.getLlmToolActivity(event.conversationId)
           .then((activity) => {
-            if (chatConversationIdRef.current === event.conversationId) setChatToolActivity(activity)
+            if (isCurrentChatSnapshot(chatSessionEpochRef, epoch, chatSnapshotSeqRef, snapshotSeq) && chatConversationIdRef.current === event.conversationId) setChatToolActivity(activity)
           })
-          .catch(() => undefined)
+          .catch((error) => {
+            if (isCurrentChatSnapshot(chatSessionEpochRef, epoch, chatSnapshotSeqRef, snapshotSeq)) setChatError(error instanceof Error ? error.message : t('conversationLoadFailed'))
+          })
       }
       if (event.type === 'TERMINAL' || event.type === 'ERROR') {
+        const snapshotSeq = ++chatSnapshotSeqRef.current
         if (perfRun?.requestId === event.requestId) {
           const outcome = event.type === 'ERROR'
             ? 'error'
@@ -890,12 +967,14 @@ export default function App(): React.JSX.Element {
         setChatActiveExecution(null)
         void Promise.all([window.origread.getLlmMessages(event.conversationId), window.origread.getLlmToolActivity(event.conversationId)])
           .then(([messages, activity]) => {
-            if (chatConversationIdRef.current === event.conversationId) {
+            if (isCurrentChatSnapshot(chatSessionEpochRef, epoch, chatSnapshotSeqRef, snapshotSeq) && chatConversationIdRef.current === event.conversationId) {
               setChatMessages(messages)
               setChatToolActivity(activity)
             }
           })
-          .catch(() => undefined)
+          .catch((error) => {
+            if (isCurrentChatSnapshot(chatSessionEpochRef, epoch, chatSnapshotSeqRef, snapshotSeq)) setChatError(error instanceof Error ? error.message : t('conversationLoadFailed'))
+          })
       }
     })
     const unsubscribeSourceDiscoveryProgress = window.origread.onSourceDiscoveryProgress((progress) => {
@@ -916,6 +995,8 @@ export default function App(): React.JSX.Element {
     const conversationId = readerAiPanel.conversationId
     if (!readerAiPanel.open || readerAiPanel.view !== 'chat' || !conversationId || !selectedArticleId) return
     if (chatConversation?.id === conversationId && chatMessages.length > 0) return
+    const epoch = chatSessionEpochRef.current
+    const snapshotSeq = ++chatSnapshotSeqRef.current
     let cancelled = false
     setChatHistoryLoading(true)
     void Promise.all([
@@ -924,7 +1005,7 @@ export default function App(): React.JSX.Element {
       window.origread.getLlmToolActivity(conversationId),
       window.origread.getLlmConversationArticles(conversationId)
     ]).then(([conversations, messages, activity, attachedArticles]) => {
-      if (cancelled) return
+      if (cancelled || !isCurrentChatSnapshot(chatSessionEpochRef, epoch, chatSnapshotSeqRef, snapshotSeq)) return
       const conversation = conversations.find((item) => item.id === conversationId) ?? null
       if (!conversation) {
         setChatError(t('conversationUnavailable'))
@@ -936,9 +1017,9 @@ export default function App(): React.JSX.Element {
       setChatMessages(messages)
       setChatToolActivity(activity)
     }).catch(() => {
-      if (!cancelled) setChatError(t('conversationLoadFailed'))
+      if (!cancelled && isCurrentChatSnapshot(chatSessionEpochRef, epoch, chatSnapshotSeqRef, snapshotSeq)) setChatError(t('conversationLoadFailed'))
     }).finally(() => {
-      if (!cancelled) setChatHistoryLoading(false)
+      if (!cancelled && isCurrentChatSnapshot(chatSessionEpochRef, epoch, chatSnapshotSeqRef, snapshotSeq)) setChatHistoryLoading(false)
     })
     return () => { cancelled = true }
   }, [chatConversation?.id, chatMessages.length, readerAiPanel.conversationId, readerAiPanel.open, readerAiPanel.view, selectedArticleId, t])
@@ -951,15 +1032,31 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     let cancelled = false
-    void window.origread.listReaderFonts().then((fonts)=>{if(!cancelled)setReaderFonts(fonts)}).catch(()=>{})
+    void window.origread.listReaderFonts().then((fonts)=>{if(!cancelled){readerFontsRef.current=fonts;setReaderFonts(fonts)}}).catch((error)=>{console.warn('读取阅读字体失败', error)})
     return()=>{cancelled=true}
   }, [])
 
   useEffect(() => {
     const id = settings?.readerFontId
-    if (!id?.startsWith('custom:') || readerFonts.some((font)=>font.id===id)) return
-    void window.origread.listReaderFonts().then(setReaderFonts).catch(()=>{})
-  }, [readerFonts, settings?.readerFontId])
+    const lastCheckedMissingFontId = checkedMissingFontIdRef.current
+    // 在请求前占位；重渲染和并发 effect 都不能重复补查同一个缺失字体。
+    checkedMissingFontIdRef.current = isCustomReaderFontId(id) ? id : null
+    void resolveMissingCustomReaderFont({
+      fontId: id,
+      currentFonts: readerFontsRef.current,
+      lastCheckedMissingFontId,
+      listReaderFonts: () => window.origread.listReaderFonts(),
+      onFontsUpdated: (fonts) => { readerFontsRef.current = fonts; setReaderFonts(fonts) },
+      onFallbackToDefault: async () => {
+        if (readerFontIdRef.current !== id) return
+        const updated = await window.origread.updateSettings({ readerFontId: 'system' })
+        setSettings((current) => current?.readerFontId === id ? updated : current)
+      },
+      onError: (error) => console.warn('补查阅读字体失败', error)
+    }).then((result) => {
+      if (readerFontIdRef.current === id) checkedMissingFontIdRef.current = result.nextCheckedMissingFontId
+    }).catch((error) => console.warn('同步阅读字体失败', error))
+  }, [settings?.readerFontId])
 
   useEffect(() => {
     const id = settings?.readerFontId
@@ -1017,6 +1114,7 @@ export default function App(): React.JSX.Element {
       aiSummaryUiTtfvRecordedRef.current = false
     }
     if (!selectedArticleId) {
+      bumpChatSessionEpoch()
       setReaderContent(null)
       setReaderContentError(null)
       setReaderCacheWriteError(null)
@@ -1033,6 +1131,7 @@ export default function App(): React.JSX.Element {
     setReaderAiSelection(null)
     setReaderAiSelectionCandidate(null)
     if (!preserveAiForCitation) {
+      const epoch = bumpChatSessionEpoch()
       setAiSummary(null)
       if (chatActiveRequestIdRef.current) {
         void window.origread.cancelLlmExecution(chatActiveRequestIdRef.current).catch(() => undefined)
@@ -1068,7 +1167,7 @@ export default function App(): React.JSX.Element {
       setChatHistoryLoading(true)
       void window.origread.listLlmConversations(selectedArticleId)
         .then((conversations) => {
-          if (cancelled) return
+          if (cancelled || !isCurrentGeneration(chatSessionEpochRef, epoch)) return
           setChatConversations(conversations)
           const rememberedConversationId = readerAiConversationByArticleRef.current.get(selectedArticleId)
           const conversation = conversations.find((item) => item.id === rememberedConversationId)
@@ -1086,10 +1185,10 @@ export default function App(): React.JSX.Element {
           }))
         })
         .catch(() => {
-          if (!cancelled) setChatError(t('conversationLoadFailed'))
+          if (!cancelled && isCurrentGeneration(chatSessionEpochRef, epoch)) setChatError(t('conversationLoadFailed'))
         })
         .finally(() => {
-          if (!cancelled) setChatHistoryLoading(false)
+          if (!cancelled && isCurrentGeneration(chatSessionEpochRef, epoch)) setChatHistoryLoading(false)
         })
     }
     setAiSummaryProgress(null)
@@ -1277,61 +1376,51 @@ export default function App(): React.JSX.Element {
     dismissedFallback: readerAiSourceSnapshot ?? readerAiInteractionCitationSnapshot ?? readerAiAnswerCitationSnapshot
   })
 
-  useEffect(() => {
-    const root = readerContentRef.current?.querySelector<HTMLElement>('.article-body:not(.translated-article-body)') ?? null
-    const clearMarkers = (): void => {
-      root?.querySelectorAll<HTMLElement>('[data-origread-citation-marker="true"]').forEach((marker) => marker.remove())
-    }
-    clearMarkers()
-    if (!root || readerMode !== 'article' || !selectedArticleId || !readerAiVisibleCitationSnapshot) return
+  const citationMessageId = readerAiVisibleCitationSnapshot?.messageId ?? null
+  const citationSnapshot = readerAiVisibleCitationSnapshot?.snapshot ?? null
+  const citationOwnerContent = readerAiVisibleCitationSnapshot?.messageContent
+    ?? chatMessages.find((message) => message.id === citationMessageId)?.content
+    ?? citationSnapshot?.citations.slice()
+      .sort((a, b) => (a.displayOrder ?? Number.MAX_SAFE_INTEGER) - (b.displayOrder ?? Number.MAX_SAFE_INTEGER))
+      .map((citation) => `[[${citation.protocolId}]]`).join(' ')
+    ?? ''
 
-    const frame = window.requestAnimationFrame(() => {
-      clearMarkers()
-      const { messageId, snapshot } = readerAiVisibleCitationSnapshot
-      const ownerContent = readerAiVisibleCitationSnapshot.messageContent
-        ?? chatMessages.find((message) => message.id === messageId)?.content
-        ?? snapshot.citations
-          .slice()
-          .sort((a, b) => (a.displayOrder ?? Number.MAX_SAFE_INTEGER) - (b.displayOrder ?? Number.MAX_SAFE_INTEGER))
-          .map((citation) => `[[${citation.protocolId}]]`)
-          .join(' ')
-      const display = projectReaderAiCitationDisplay(messageId, ownerContent, snapshot)
+  const decorateReaderCitations = useCallback((root: HTMLElement): void => {
+    root.querySelectorAll('[data-origread-citation-marker="true"]').forEach((marker) => marker.remove())
+    if (!citationMessageId || !citationSnapshot || !selectedArticleId) return
+    const messageId = citationMessageId
+    const snapshot = citationSnapshot
+    const display = projectReaderAiCitationDisplay(messageId, citationOwnerContent, snapshot)
 
-      for (const occurrence of display.occurrences) {
-        const elements = new Map<HTMLElement, LlmCitationRefRecord>()
-        for (const citation of occurrence.refs) {
-          const sourceKind = citation.locatorSnapshot?.sourceKind
-          const contextRef = snapshot.contextRefs.find((ref) => ref.id === citation.contextRefId) ?? null
-          const articleId = citation.locatorSnapshot?.articleId ?? contextRef?.articleId ?? null
-          if ((sourceKind !== 'ARTICLE' && sourceKind !== 'SELECTION') || articleId !== selectedArticleId) continue
-          const element = findReaderCitationElement(root, citation)
-          if (element && !elements.has(element)) elements.set(element, citation)
-        }
-        for (const [element, citation] of elements) {
-          const marker = document.createElement('button')
-          marker.type = 'button'
-          marker.className = 'origread-reader-citation-marker'
-          marker.dataset.origreadCitationMarker = 'true'
-          marker.dataset.origreadCitationId = citation.id
-          marker.dataset.origreadCitationConversationId = citation.conversationId
-          marker.dataset.origreadCitationMessageId = messageId
-          marker.dataset.origreadCitationAnnotationId = occurrence.annotationId
-          marker.textContent = `[${occurrence.displayOrder}]`
-          marker.title = t('citationNumberLabel', {
-            number: occurrence.displayOrder,
-            source: selectedArticle?.title ?? t('citationSourceArticle')
-          })
-          marker.setAttribute('aria-label', marker.title)
-          element.appendChild(marker)
-        }
+    for (const occurrence of display.occurrences) {
+      const elements = new Map<HTMLElement, LlmCitationRefRecord>()
+      for (const citation of occurrence.refs) {
+        const sourceKind = citation.locatorSnapshot?.sourceKind
+        const contextRef = snapshot.contextRefs.find((ref) => ref.id === citation.contextRefId) ?? null
+        const articleId = citation.locatorSnapshot?.articleId ?? contextRef?.articleId ?? null
+        if ((sourceKind !== 'ARTICLE' && sourceKind !== 'SELECTION') || articleId !== selectedArticleId) continue
+        const element = findReaderCitationElement(root, citation)
+        if (element && !elements.has(element)) elements.set(element, citation)
       }
-    })
-
-    return () => {
-      window.cancelAnimationFrame(frame)
-      clearMarkers()
+      for (const [element, citation] of elements) {
+        const marker = document.createElement('button')
+        marker.type = 'button'
+        marker.className = 'origread-reader-citation-marker'
+        marker.dataset.origreadCitationMarker = 'true'
+        marker.dataset.origreadCitationId = citation.id
+        marker.dataset.origreadCitationConversationId = citation.conversationId
+        marker.dataset.origreadCitationMessageId = messageId
+        marker.dataset.origreadCitationAnnotationId = occurrence.annotationId
+        marker.textContent = `[${occurrence.displayOrder}]`
+        marker.title = t('citationNumberLabel', {
+          number: occurrence.displayOrder,
+          source: selectedArticle?.title ?? t('citationSourceArticle')
+        })
+        marker.setAttribute('aria-label', marker.title)
+        element.appendChild(marker)
+      }
     }
-  }, [readerAiVisibleCitationSnapshot, readerContent?.html, readerMode, readerSearchIndex, readerSearchQuery, selectedArticle?.title, selectedArticleId, chatMessages, t])
+  }, [citationMessageId, citationSnapshot, citationOwnerContent, selectedArticleId, selectedArticle?.title, t])
 
   useEffect(() => {
     if (!readerAiPanel.open || settingsOpen) return
@@ -1411,12 +1500,15 @@ export default function App(): React.JSX.Element {
   }, [])
 
   const openGlobalSearch = useCallback((): void => {
+    globalSearchSeqRef.current += 1
+    setGlobalSearchLoading(false)
     setGlobalSearchOpen(true)
     setGlobalSearchResults([])
     setGlobalSearchError(null)
   }, [])
 
   const closeGlobalSearch = useCallback((): void => {
+    globalSearchSeqRef.current += 1
     setGlobalSearchOpen(false)
     setGlobalSearchResults([])
     setGlobalSearchLoading(false)
@@ -1697,6 +1789,7 @@ export default function App(): React.JSX.Element {
   }
 
   const executeReaderAiManualTool = async (toolId: string, argumentsJson: string): Promise<boolean> => {
+    const epoch = chatSessionEpochRef.current
     const conversationId = chatConversationIdRef.current
     if (!conversationId) {
       setChatError(t('manualToolNeedsConversation'))
@@ -1719,18 +1812,24 @@ export default function App(): React.JSX.Element {
         // one-shot user approval; remote readOnlyHint cannot bypass Main authorization.
         confirmed: true
       })
+      if (!isCurrentGeneration(chatSessionEpochRef, epoch)) {
+        void window.origread.discardLlmManualToolContext(context.contextId).catch((error) => console.error('清理过期工具上下文失败', error))
+        return false
+      }
       chatManualToolContextsRef.current = [...chatManualToolContextsRef.current, context]
       setChatManualToolContexts((current) => [...current, context])
       return true
     } catch (error) {
+      if (!isCurrentGeneration(chatSessionEpochRef, epoch)) return false
       setChatError(error instanceof Error ? error.message : t('manualToolExecutionFailed'))
       return false
     } finally {
-      setChatManualToolBusy(false)
+      if (isCurrentGeneration(chatSessionEpochRef, epoch)) setChatManualToolBusy(false)
     }
   }
 
   const startNewReaderAiChat = (): void => {
+    bumpChatSessionEpoch()
     const requestId = chatActiveRequestIdRef.current
     if (requestId) void window.origread.cancelLlmExecution(requestId).catch(() => undefined)
     discardPendingManualToolContexts()
@@ -1755,14 +1854,18 @@ export default function App(): React.JSX.Element {
 
   const loadReaderAiConversationHistory = async (): Promise<void> => {
     if (!selectedArticleId) return
+    const epoch = chatSessionEpochRef.current
     setChatConversationHistoryLoading(true)
     setChatConversationHistoryError(null)
     try {
-      setChatConversations(await window.origread.listLlmConversations(selectedArticleId))
+      const conversations = await window.origread.listLlmConversations(selectedArticleId)
+      if (!isCurrentGeneration(chatSessionEpochRef, epoch)) return
+      setChatConversations(conversations)
     } catch {
+      if (!isCurrentGeneration(chatSessionEpochRef, epoch)) return
       setChatConversationHistoryError(t('conversationHistoryLoadFailed'))
     } finally {
-      setChatConversationHistoryLoading(false)
+      if (isCurrentGeneration(chatSessionEpochRef, epoch)) setChatConversationHistoryLoading(false)
     }
   }
 
@@ -1797,6 +1900,8 @@ export default function App(): React.JSX.Element {
 
   const openReaderAiConversation = async (conversation: LlmConversationRecord): Promise<void> => {
     if (chatActiveRequestIdRef.current) return
+    const epoch = bumpChatSessionEpoch()
+    const snapshotSeq = ++chatSnapshotSeqRef.current
     discardPendingManualToolContexts()
     setReaderAiSelection(null)
     setReaderAiSelectionCandidate(null)
@@ -1808,6 +1913,7 @@ export default function App(): React.JSX.Element {
         window.origread.getLlmToolActivity(conversation.id),
         window.origread.getLlmConversationArticles(conversation.id)
       ])
+      if (!isCurrentChatSnapshot(chatSessionEpochRef, epoch, chatSnapshotSeqRef, snapshotSeq)) return
       chatConversationIdRef.current = conversation.id
       setChatConversation(conversation)
       setChatAttachedArticles(attachedArticles)
@@ -1820,9 +1926,10 @@ export default function App(): React.JSX.Element {
         conversationId: conversation.id
       }))
     } catch {
+      if (!isCurrentChatSnapshot(chatSessionEpochRef, epoch, chatSnapshotSeqRef, snapshotSeq)) return
       setChatConversationHistoryError(t('conversationLoadFailed'))
     } finally {
-      setChatHistoryLoading(false)
+      if (isCurrentChatSnapshot(chatSessionEpochRef, epoch, chatSnapshotSeqRef, snapshotSeq)) setChatHistoryLoading(false)
     }
   }
 
@@ -1833,7 +1940,9 @@ export default function App(): React.JSX.Element {
   }
 
   const deleteReaderAiConversation = async (conversationId: string): Promise<void> => {
+    const epoch = chatConversationIdRef.current === conversationId ? bumpChatSessionEpoch() : chatSessionEpochRef.current
     const result = await window.origread.deleteLlmConversation(conversationId)
+    if (!isCurrentGeneration(chatSessionEpochRef, epoch)) return
     if (!result.deleted) return
     setChatConversations((current) => current.filter((item) => item.id !== conversationId))
     for (const [articleId, rememberedConversationId] of readerAiConversationByArticleRef.current) {
@@ -1854,6 +1963,7 @@ export default function App(): React.JSX.Element {
   }
 
   const replaceReaderAiAttachedArticles = async (candidates: readonly LlmArticleContextCandidate[]): Promise<void> => {
+    const epoch = chatSessionEpochRef.current
     const currentArticleId = chatConversation?.articleId ?? selectedArticle?.id ?? null
     const unique = [...new Map(
       candidates
@@ -1865,6 +1975,7 @@ export default function App(): React.JSX.Element {
         conversationId: chatConversation.id,
         articleIds: unique.map((item) => item.articleId)
       })
+      if (!isCurrentGeneration(chatSessionEpochRef, epoch)) return
       setChatAttachedArticles(persisted)
       return
     }
@@ -1897,7 +2008,14 @@ export default function App(): React.JSX.Element {
     requestTask: 'CHAT' | 'ARTICLE_ANALYSIS' = 'CHAT'
   ): Promise<void> => {
     const content = (contentOverride ?? chatDraft).trim()
-    if (!content || !selectedArticle || !selectedArticleId || chatActiveRequestIdRef.current) return
+    if (!content || !selectedArticle || !selectedArticleId || chatHistoryLoading || chatActiveRequestIdRef.current) return
+    const epoch = chatSessionEpochRef.current
+    if (chatSendEpochRef.current === epoch) return
+    chatSendEpochRef.current = epoch
+    chatSnapshotSeqRef.current += 1
+    setChatHistoryLoading(false)
+    let userMessagePersisted = false
+    const draft = chatDraft
     const perfStartedAt = performance.now()
     let perfRequestId: string | null = null
     setChatError(null)
@@ -1905,10 +2023,12 @@ export default function App(): React.JSX.Element {
       let conversation = chatConversation?.id === readerAiPanel.conversationId ? chatConversation : null
       if (!conversation && readerAiPanel.conversationId) {
         const existing = await window.origread.listLlmConversations(selectedArticleId)
+        if (!isCurrentGeneration(chatSessionEpochRef, epoch)) return
         conversation = existing.find((item) => item.id === readerAiPanel.conversationId) ?? null
       }
       if (!conversation) {
         const aiSettings = chatAiSettings ?? await window.origread.getAiSettings()
+        if (!isCurrentGeneration(chatSessionEpochRef, epoch)) return
         setChatAiSettings(aiSettings)
         const enabledProviders = aiSettings.providers.filter((item) => item.enabled)
         const provider = enabledProviders.find((item) => item.id === chatDraftProviderId)
@@ -1926,11 +2046,13 @@ export default function App(): React.JSX.Element {
           articleTitle: selectedArticle.title,
           articleLink: selectedArticle.url
         })
+        if (!isCurrentGeneration(chatSessionEpochRef, epoch)) return
         if (chatAttachedArticles.length > 0) {
           const persistedAttachments = await window.origread.replaceLlmConversationArticles({
             conversationId: conversation.id,
             articleIds: chatAttachedArticles.map((item) => item.articleId)
           })
+          if (!isCurrentGeneration(chatSessionEpochRef, epoch)) return
           setChatAttachedArticles(persistedAttachments)
         }
       }
@@ -1942,8 +2064,10 @@ export default function App(): React.JSX.Element {
         content,
         requestTask
       })
+      userMessagePersisted = true
+      if (!isCurrentGeneration(chatSessionEpochRef, epoch)) return
       setChatMessages((current) => [...current, userMessage])
-      if (contentOverride === undefined) setChatDraft('')
+      if (contentOverride === undefined) setChatDraft((current) => current === draft ? '' : current)
       if (requestTask === 'ARTICLE_ANALYSIS') setReaderAiSelection(null)
       setReaderAiPanel((current) => ({
         ...openReaderAiPanel(current, 'chat'),
@@ -1979,6 +2103,11 @@ export default function App(): React.JSX.Element {
           ...(chatForceWebSearchNext ? { webSearchMode: 'FORCE' as const } : {})
         }
       })
+      if (!await acceptChatExecution(chatSessionEpochRef, epoch, identity, (requestId) => window.origread.cancelLlmExecution(requestId))) return
+      if (!isCurrentGeneration(chatSessionEpochRef, epoch)) {
+        await window.origread.cancelLlmExecution(identity.requestId)
+        return
+      }
       if (manualToolContextIds.length > 0) {
         const consumed = new Set(manualToolContextIds)
         chatManualToolContextsRef.current = chatManualToolContextsRef.current.filter((item) => !consumed.has(item.contextId))
@@ -1992,7 +2121,11 @@ export default function App(): React.JSX.Element {
       if (chatForceWebSearchNext) setChatForceWebSearchNext(false)
       setChatActiveExecution(identity)
       setChatMessages((current) => ensureChatAssistantMessage(current, identity, requestTask))
-    } catch {
+    } catch (error) {
+      if (!isCurrentGeneration(chatSessionEpochRef, epoch)) {
+        console.error('旧会话请求失败', error)
+        return
+      }
       if (perfRequestId && chatPerfRunRef.current?.requestId === perfRequestId) {
         logReaderChatUiPerf(chatPerfRunRef.current, 'UI_TOTAL', { outcome: 'error' })
         chatPerfRunRef.current = null
@@ -2000,7 +2133,10 @@ export default function App(): React.JSX.Element {
       chatActiveRequestIdRef.current = null
       chatActiveRequestTaskRef.current = 'CHAT'
       setChatActiveExecution(null)
-      setChatError(t('aiChatRequestFailed'))
+      if (contentOverride === undefined) setChatDraft((current) => recoverUnsentChatDraft(current, draft, userMessagePersisted))
+      setChatError(`${t('aiChatRequestFailed')}${userMessagePersisted ? '（消息已保存，执行未能启动，请重试）' : ''}: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      if (chatSendEpochRef.current === epoch) chatSendEpochRef.current = null
     }
   }
 
@@ -2041,26 +2177,35 @@ export default function App(): React.JSX.Element {
   }
 
   const resolveReaderAiToolApproval = async (toolCallId: string, decision: LlmToolApprovalDecision): Promise<void> => {
+    const epoch = chatSessionEpochRef.current
     const conversationId = chatConversationIdRef.current
     if (!conversationId || chatToolDecisionBusy[toolCallId]) return
     setChatToolDecisionBusy((current) => ({ ...current, [toolCallId]: true }))
     setChatError(null)
     try {
       const result = await window.origread.resolveLlmToolApproval(toolCallId, decision)
+      if (!isCurrentGeneration(chatSessionEpochRef, epoch)) return
       if (!result.accepted) {
         setChatError(t('toolApprovalExpired'))
-        setChatToolActivity(await window.origread.getLlmToolActivity(conversationId))
+        const snapshotSeq = ++chatSnapshotSeqRef.current
+        const activity = await window.origread.getLlmToolActivity(conversationId)
+        if (!isCurrentChatSnapshot(chatSessionEpochRef, epoch, chatSnapshotSeqRef, snapshotSeq)) return
+        setChatToolActivity(activity)
       }
     } catch {
+      if (!isCurrentGeneration(chatSessionEpochRef, epoch)) return
       setChatError(t('toolApprovalFailed'))
     } finally {
-      setChatToolDecisionBusy((current) => ({ ...current, [toolCallId]: false }))
+      if (isCurrentGeneration(chatSessionEpochRef, epoch)) setChatToolDecisionBusy((current) => ({ ...current, [toolCallId]: false }))
     }
   }
 
   const regenerateReaderAiAssistant = async (assistantMessageId: string): Promise<void> => {
+    const epoch = chatSessionEpochRef.current
     const conversation = chatConversation
-    if (!conversation || chatActiveRequestIdRef.current) return
+    if (!conversation || chatHistoryLoading || chatActiveRequestIdRef.current) return
+    chatSnapshotSeqRef.current += 1
+    setChatHistoryLoading(false)
     const requestTask = chatMessages.find((message) => message.id === assistantMessageId)?.requestTask ?? 'CHAT'
     const perfStartedAt = performance.now()
     setChatError(null)
@@ -2088,9 +2233,18 @@ export default function App(): React.JSX.Element {
           reasoning: { effort: chatReasoningEffort, showReasoning: true }
         }
       })
+      if (!await acceptChatExecution(chatSessionEpochRef, epoch, identity, (id) => window.origread.cancelLlmExecution(id))) return
+      if (!isCurrentGeneration(chatSessionEpochRef, epoch)) {
+        await window.origread.cancelLlmExecution(identity.requestId)
+        return
+      }
       setChatActiveExecution(identity)
       setChatMessages((current) => ensureChatAssistantMessage(current, identity, requestTask))
-    } catch {
+    } catch (error) {
+      if (!isCurrentGeneration(chatSessionEpochRef, epoch)) {
+        console.error('旧会话重新生成失败', error)
+        return
+      }
       if (chatPerfRunRef.current?.requestId === requestId) {
         logReaderChatUiPerf(chatPerfRunRef.current, 'UI_TOTAL', { outcome: 'error' })
         chatPerfRunRef.current = null
@@ -2099,7 +2253,12 @@ export default function App(): React.JSX.Element {
       chatActiveRequestTaskRef.current = 'CHAT'
       setChatActiveExecution(null)
       setChatError(t('aiChatRegenerateFailed'))
-      void window.origread.getLlmMessages(conversation.id).then(setChatMessages).catch(() => undefined)
+      const snapshotSeq = ++chatSnapshotSeqRef.current
+      void window.origread.getLlmMessages(conversation.id).then((messages) => {
+        if (isCurrentChatSnapshot(chatSessionEpochRef, epoch, chatSnapshotSeqRef, snapshotSeq)) setChatMessages(messages)
+      }).catch((error) => {
+        if (isCurrentChatSnapshot(chatSessionEpochRef, epoch, chatSnapshotSeqRef, snapshotSeq)) setChatError(error instanceof Error ? error.message : t('conversationLoadFailed'))
+      })
     }
   }
 
@@ -2291,6 +2450,10 @@ export default function App(): React.JSX.Element {
   }
 
   const handleAccountChanged = async (): Promise<void> => {
+    bumpChatSessionEpoch()
+    articleMutationEpochRef.current += 1
+    globalSearchSeqRef.current += 1
+    setGlobalSearchOpen(false)
     cancelSourceSearch()
     setAddSourceOpen(false)
     setSourceDiscovery(null)
@@ -2446,7 +2609,8 @@ export default function App(): React.JSX.Element {
     const markdown = buildReadingShareMarkdown({
       title: selectedArticle.title,
       sourceUrl: originalUrl,
-      bodyHtml: readerContent?.html || selectedArticle.description,
+      bodyHtml: readerContent?.html ?? '',
+      bodyFallbackText: readerContent?.html ? null : selectedArticle.description,
       // 与 Android 一致：只有当前阅读模式正在显示的翻译才参与分享。
       translatedHtml: readerMode === 'translation' ? translationDocument?.translatedContent ?? null : null,
       translatedDisplayMode: readerMode === 'translation' ? translationDocument?.displayMode : undefined,
@@ -2747,18 +2911,7 @@ export default function App(): React.JSX.Element {
     if (!closeSettingsIfAllowed()) return
     readerCitationReturnRevisionRef.current += 1
     cancelPendingReaderCitationNavigation()
-    const readerArticle = article.isUnread ? { ...article, isUnread: false } : article
-    if (article.isUnread) {
-      setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isUnread: false } : item))
-      setScopeArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isUnread: false } : item) ?? current)
-      setReadArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isUnread: false } : item) ?? current)
-      setRecentArticles((current) => current.map((item) => item.id === article.id ? { ...item, isUnread: false } : item))
-      setFeedArticleStats((current) => current.map((stats) => stats.feedId === article.feedId
-        ? { ...stats, unread: Math.max(0, stats.unread - 1) }
-        : stats))
-      setLibrarySnapshot((current) => current ? { ...current, unread: Math.max(0, current.unread - 1) } : current)
-      void window.origread.setArticleUnread(article.id, false)
-    }
+    const readerArticle = article.isUnread ? persistArticleFlag(article, 'isUnread', false) : article
     const feed = feeds.find((item) => item.id === article.feedId)
     if (feed?.isBrowser) {
       const url = normalizeHttpUrl(article.url)
@@ -2767,6 +2920,7 @@ export default function App(): React.JSX.Element {
     }
     if (originalViewState.open) void closeOriginalArticle()
     const articleChanged = selectedArticleId !== article.id
+    if (articleChanged) bumpChatSessionEpoch()
     if (articleChanged) {
       const currentIndex = visibleArticles.findIndex((item) => item.id === selectedArticleId)
       const nextIndex = visibleArticles.findIndex((item) => item.id === article.id)
@@ -2791,21 +2945,26 @@ export default function App(): React.JSX.Element {
   const searchCachedArticles = useCallback(async (value: string): Promise<void> => {
     const normalized = value.trim()
     if (!normalized) {
+      globalSearchSeqRef.current += 1
       setGlobalSearchResults([])
       setGlobalSearchLoading(false)
       setGlobalSearchError(null)
       return
     }
 
+    const seq = ++globalSearchSeqRef.current
     setGlobalSearchLoading(true)
     setGlobalSearchError(null)
     try {
-      setGlobalSearchResults(await window.origread.searchArticles(normalized, 100))
+      const results = await window.origread.searchArticles(normalized, 100)
+      if (!isCurrentGeneration(globalSearchSeqRef, seq)) return
+      setGlobalSearchResults(results)
     } catch (error) {
+      if (!isCurrentGeneration(globalSearchSeqRef, seq)) return
       setGlobalSearchResults([])
       setGlobalSearchError(error instanceof Error ? error.message : String(error))
     } finally {
-      setGlobalSearchLoading(false)
+      if (isCurrentGeneration(globalSearchSeqRef, seq)) setGlobalSearchLoading(false)
     }
   }, [])
 
@@ -2829,43 +2988,11 @@ export default function App(): React.JSX.Element {
   }
 
   const toggleStarred = (article: ArticleRecord): void => {
-    const next = !article.isStarred
-    setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isStarred: next } : item))
-    setScopeArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isStarred: next } : item) ?? current)
-    setReadArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isStarred: next } : item) ?? current)
-    setRecentArticles((current) => current.map((item) => item.id === article.id ? { ...item, isStarred: next } : item))
-    setSelectedArticleRecord((current) => current?.id === article.id ? { ...current, isStarred: next } : current)
-    setFeedArticleStats((current) => current.map((stats) => stats.feedId === article.feedId
-      ? { ...stats, starred: Math.max(0, stats.starred + (next ? 1 : -1)) }
-      : stats))
-    setLibrarySnapshot((current) => current ? {
-      ...current,
-      starred: Math.max(0, current.starred + (next ? 1 : -1))
-    } : current)
-    void window.origread.setArticleStarred(article.id, next)
+    persistArticleFlag(article, 'isStarred', !article.isStarred)
   }
 
   const toggleUnread = (article: ArticleRecord): void => {
-    const next = !article.isUnread
-    setArticles((current) => current.map((item) => item.id === article.id ? { ...item, isUnread: next } : item))
-    setScopeArticles((current) => current?.map((item) => item.id === article.id ? { ...item, isUnread: next } : item) ?? current)
-    setReadArticles((current) => {
-      if (!current) return current
-      if (next) {
-        return current.filter((item) => item.id !== article.id)
-      }
-      return current.map((item) => item.id === article.id ? { ...item, isUnread: false } : item)
-    })
-    setRecentArticles((current) => current.map((item) => item.id === article.id ? { ...item, isUnread: next } : item))
-    setSelectedArticleRecord((current) => current?.id === article.id ? { ...current, isUnread: next } : current)
-    setFeedArticleStats((current) => current.map((stats) => stats.feedId === article.feedId
-      ? { ...stats, unread: Math.max(0, stats.unread + (next ? 1 : -1)) }
-      : stats))
-    setLibrarySnapshot((current) => current ? {
-      ...current,
-      unread: Math.max(0, current.unread + (next ? 1 : -1))
-    } : current)
-    void window.origread.setArticleUnread(article.id, next)
+    persistArticleFlag(article, 'isUnread', !article.isUnread)
   }
 
   const nextArticle = selectedArticle
@@ -3372,7 +3499,7 @@ export default function App(): React.JSX.Element {
     try {
       await window.origread.deleteFeed(feed.id)
       if (articleScope.kind === 'feed' && articleScope.id === feed.id) setArticleScope({ kind: 'all' })
-      if (selectedArticle?.feedId === feed.id) setSelectedArticleId(null)
+      if (selectedArticle?.feedId === feed.id) { bumpChatSessionEpoch(); setSelectedArticleId(null) }
       if (sourceSettingsFeed?.id === feed.id) setSourceSettingsFeed(null)
       await reloadLibrary()
     } catch (error) {
@@ -3627,6 +3754,8 @@ export default function App(): React.JSX.Element {
     const activeChatModel = chatConversation?.model ?? chatDraftModel
     const chatModelLabel = [activeChatProvider?.name, activeChatModel].filter(Boolean).join(' · ') || t('defaultModel')
     const changeChatProvider = async (providerId: string): Promise<void> => {
+      const epoch = chatSessionEpochRef.current
+      const seq = ++chatConfigSeqRef.current
       const provider = enabledChatProviders.find((item) => item.id === providerId)
       const nextModel = provider?.defaultModel || provider?.models[0] || ''
       setChatDraftProviderId(providerId)
@@ -3638,20 +3767,26 @@ export default function App(): React.JSX.Element {
           providerId,
           model: nextModel || null
         })
+        if (!isCurrentGeneration(chatSessionEpochRef, epoch) || seq !== chatConfigSeqRef.current) return
         setChatConversation(updated)
         setChatConversations((current) => current.map((item) => item.id === updated.id ? updated : item))
       } catch {
+        if (!isCurrentGeneration(chatSessionEpochRef, epoch) || seq !== chatConfigSeqRef.current) return
         setChatError(t('conversationModelUpdateFailed'))
       }
     }
     const changeChatModel = async (model: string): Promise<void> => {
+      const epoch = chatSessionEpochRef.current
+      const seq = ++chatConfigSeqRef.current
       setChatDraftModel(model)
       if (!chatConversation) return
       try {
         const updated = await window.origread.updateLlmConversation({ conversationId: chatConversation.id, model: model || null })
+        if (!isCurrentGeneration(chatSessionEpochRef, epoch) || seq !== chatConfigSeqRef.current) return
         setChatConversation(updated)
         setChatConversations((current) => current.map((item) => item.id === updated.id ? updated : item))
       } catch {
+        if (!isCurrentGeneration(chatSessionEpochRef, epoch) || seq !== chatConfigSeqRef.current) return
         setChatError(t('conversationModelUpdateFailed'))
       }
     }
@@ -3857,7 +3992,7 @@ export default function App(): React.JSX.Element {
             selectionTruncated={readerAiSelection?.articleId === selectedArticle.id ? readerAiSelection.truncated : false}
             composerRef={chatComposerInputRef}
             quickMessages={chatQuickMessages}
-            active={Boolean(chatActiveExecution || chatActiveRequestIdRef.current || chatManualToolBusy)}
+            active={Boolean(chatHistoryLoading || chatActiveExecution || chatActiveRequestIdRef.current || chatManualToolBusy)}
             loading={chatHistoryLoading}
             error={chatError}
             modelLabel={chatModelLabel}
@@ -3933,7 +4068,7 @@ export default function App(): React.JSX.Element {
           selectionTruncated={readerAiSelection?.articleId === selectedArticle.id ? readerAiSelection.truncated : false}
           composerRef={chatComposerInputRef}
           quickMessages={chatQuickMessages}
-          active={Boolean(chatActiveExecution || chatActiveRequestIdRef.current || chatManualToolBusy)}
+          active={Boolean(chatHistoryLoading || chatActiveExecution || chatActiveRequestIdRef.current || chatManualToolBusy)}
           loading={chatHistoryLoading}
           error={chatError}
           modelLabel={chatModelLabel}
@@ -4498,7 +4633,7 @@ export default function App(): React.JSX.Element {
                 <div className="translation-result-meta">{translationTargetLabel(translationDocument.target)} · {translationDocument.targetLanguage} · {translationDocument.displayMode === 'BILINGUAL' ? t('bilingual') : t('translatedOnly')}</div>
                 {translationDocument.cacheWriteFailed && <div className="dialog-error" role="status">{t('translationCacheSaveFailed')}</div>}
                 <SearchableHtml
-                  key={`translation:${selectedArticle.id}:${translationDocument.target}:${translationDocument.displayMode}`}
+                  key={`translation:${selectedArticle.id}:${translationTargetKey(translationDocument.target)}:${translationDocument.displayMode}`}
                   html={translationDocument.translatedContent}
                   className={`article-body translated-article-body ${settings?.readerIndentParagraphs ? 'indent-paragraphs' : ''}`.trim()}
                   query={readerSearchQuery}
@@ -4516,6 +4651,7 @@ export default function App(): React.JSX.Element {
               <SearchableHtml
                 key={`article:${selectedArticle.id}`}
                 html={readerContent.html}
+                decorate={decorateReaderCitations}
                 className={`article-body ${settings?.readerIndentParagraphs ? 'indent-paragraphs' : ''}`.trim()}
                 query={readerSearchQuery}
                 activeIndex={readerSearchIndex}
@@ -5018,7 +5154,7 @@ export default function App(): React.JSX.Element {
           feed={sourceSettingsFeed}
           onClose={()=>setSourceSettingsFeed(null)}
           onChanged={(updated)=>{
-            if (!updated && selectedFeed?.id === sourceSettingsFeed.id) setSelectedArticleId(null)
+            if (!updated && selectedFeed?.id === sourceSettingsFeed.id) { bumpChatSessionEpoch(); setSelectedArticleId(null) }
             setSourceSettingsFeed(null)
             void Promise.all([reloadLibrary(), reloadCurrentScope()])
           }}

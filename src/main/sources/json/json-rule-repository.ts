@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { backupCorruptFileAndThrow, writeAtomicTextFile } from '../../storage/atomic-json-file'
+import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import type { JsonRule, JsonRuleBundle } from '../../../shared/json-source'
 import { JSON_RULE_SCHEMA_VERSION, normalizeJsonRule } from '../../../shared/json-source'
 import { validateJsonPath } from './simple-json-path'
@@ -11,6 +12,18 @@ const MAX_JSON_RULE_ITEMS = 200
 
 export class JsonRuleRepository {
   constructor(private readonly ruleFile: string) {}
+
+  exportRawState(): string | null {
+    return existsSync(this.ruleFile) ? readFileSync(this.ruleFile, 'utf8') : null
+  }
+
+  restoreRawState(raw: string | null): void {
+    if (raw === null) {
+      if (existsSync(this.ruleFile)) unlinkSync(this.ruleFile)
+    } else {
+      writeAtomicTextFile(this.ruleFile, raw)
+    }
+  }
 
   listRules(): JsonRule[] {
     return this.loadRules().sort((a, b) => a.name.localeCompare(b.name))
@@ -124,6 +137,7 @@ export class JsonRuleRepository {
 
   /** 导入、编辑和恢复使用相同校验顺序，错误直接向调用方报告。 */
   private validateRule(rule: JsonRule): void {
+    if (typeof rule.enabled !== 'boolean') throw new Error('规则 enabled 必须是布尔值')
     this.validateDateTimezone(rule)
     this.validateIdentity(rule)
     this.validateHosts(rule.hosts)
@@ -194,25 +208,28 @@ export class JsonRuleRepository {
     if (!Array.isArray(parsed.rules)) throw new Error('JSON 规则文件缺少 rules')
     return {
       schemaVersion: JSON_RULE_SCHEMA_VERSION,
-      rules: parsed.rules.map((rule) => normalizeJsonRule(rule as JsonRule))
+      rules: parsed.rules.map((rule) => {
+        if (rule && 'enabled' in rule && typeof rule.enabled !== 'boolean') throw new Error('规则 enabled 必须是布尔值')
+        return normalizeJsonRule(rule as JsonRule)
+      })
     }
   }
 
   private loadRules(): JsonRule[] {
+    if (!existsSync(this.ruleFile)) return []
     try {
-      if (!existsSync(this.ruleFile)) return []
       const bundle = this.decodeBundle(readFileSync(this.ruleFile, 'utf8'))
+      bundle.rules.forEach((rule) => this.validateRule(rule))
       return bundle.rules
-    } catch {
-      return []
+    } catch (error) {
+      backupCorruptFileAndThrow(this.ruleFile, 'JSON 规则文件', error)
     }
   }
 
   private writeRules(rules: JsonRule[]): void {
-    writeFileSync(
+    writeAtomicTextFile(
       this.ruleFile,
       JSON.stringify({ schemaVersion: JSON_RULE_SCHEMA_VERSION, rules }, null, 2),
-      'utf8'
     )
   }
 }

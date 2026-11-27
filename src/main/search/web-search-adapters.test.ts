@@ -1,3 +1,4 @@
+import { MAX_JSON_RESPONSE_BYTES } from '../network/safe-response-reader'
 import { createServer, type Server } from 'node:http'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { WebSearchProviderProfile, WebSearchRequest } from '../../shared/web-search'
@@ -154,3 +155,31 @@ async function fixtureServer(payload: (request: { headers: Record<string, string
   if (!address || typeof address === 'string') throw new Error('fixture port missing')
   return { url: `http://127.0.0.1:${address.port}/search`, requests }
 }
+
+async function listenSecurityServer(server: Server): Promise<string> {
+  servers.push(server)
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('fixture port missing')
+  return `http://127.0.0.1:${address.port}/search`
+}
+
+describe('Search redirect and response limits', () => {
+  it.each(['TAVILY', 'EXA', 'BRAVE'] as const)('never sends %s credentials to a redirected origin', async (kind) => {
+    let targetRequests = 0
+    let sourceRequests = 0
+    const target = await listenSecurityServer(createServer((_req, res) => { targetRequests++; res.end('{}') }))
+    const source = await listenSecurityServer(createServer((_req, res) => { sourceRequests++; res.writeHead(302, { location: target }).end() }))
+    const adapter = kind === 'TAVILY' ? new TavilyWebSearchAdapter() : kind === 'EXA' ? new ExaWebSearchAdapter() : new BraveWebSearchAdapter()
+    await expect(adapter.search(profile(kind, source), 'secret', request())).rejects.toThrow('跨源')
+    expect(sourceRequests).toBe(1)
+    expect(targetRequests).toBe(0)
+  })
+  it.each([true, false])('rejects oversized JSON (declared=%s)', async (declared) => {
+    const source = await listenSecurityServer(createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json', ...(declared ? { 'content-length': String(MAX_JSON_RESPONSE_BYTES + 1) } : {}) })
+      res.end('x'.repeat(MAX_JSON_RESPONSE_BYTES + 1))
+    }))
+    await expect(new SearxngWebSearchAdapter().search(profile('SEARXNG', source), '', request())).rejects.toThrow('响应体大小超过限制')
+  })
+})

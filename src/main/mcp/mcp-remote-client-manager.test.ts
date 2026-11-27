@@ -1,3 +1,4 @@
+import { createMcpRemoteFetch } from './mcp-remote-client-manager'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { MemorySecretStore } from '../security/secret-store'
@@ -462,5 +463,46 @@ describe('McpRemoteClientManager', () => {
       await manager.disconnectAll()
       database.close()
     }
+  })
+})
+describe('createMcpRemoteFetch security', () => {
+  const lookup = async () => [{ address: '1.1.1.1' }]
+  it.each(['http://auth.example.com/metadata', 'https://169.254.169.254/latest', 'https://127.0.0.1/metadata'])('rejects third-party discovery %s', async (target) => {
+    let calls = 0
+    const fetchImpl: typeof fetch = async () => { calls++; return new Response('ok') }
+    const request = createMcpRemoteFetch('https://mcp.example.com/mcp', { timeoutMs: 1000, authMode: 'OAUTH', fetchImpl, lookup })
+    await expect(request(target)).rejects.toThrow()
+    expect(calls).toBe(0)
+  })
+  it('rejects discovery DNS resolving to private addresses', async () => {
+    let calls = 0
+    const request = createMcpRemoteFetch('https://mcp.example.com/mcp', { timeoutMs: 1000, authMode: 'OAUTH', fetchImpl: async () => { calls++; return new Response('ok') }, lookup: async () => [{ address: '10.0.0.1' }] })
+    await expect(request('https://auth.example.com/metadata')).rejects.toThrow('DNS')
+    expect(calls).toBe(0)
+  })
+  it('rejects authenticated public HTTP even on configured origins', async () => {
+    const request = createMcpRemoteFetch('http://mcp.example.com/mcp', { timeoutMs: 1000, authMode: 'BEARER', lookup })
+    await expect(request('http://mcp.example.com/mcp', { headers: { Authorization: 'secret' } })).rejects.toThrow('HTTPS')
+  })
+  it.each(['Authorization', 'X-Api-Key', 'X-Custom-Token'])('rejects cross-origin redirect with %s', async (name) => {
+    let calls = 0
+    const request = createMcpRemoteFetch('https://mcp.example.com/mcp', { timeoutMs: 1000, authMode: 'CUSTOM_HEADERS', customHeaderNames: ['X-Custom-Token'], lookup, fetchImpl: async () => { calls++; return new Response(null, { status: 302, headers: { location: 'https://other.example.com' } }) } })
+    await expect(request('https://mcp.example.com/mcp', { headers: { [name]: 'secret' } })).rejects.toThrow('跨源')
+    expect(calls).toBe(1)
+  })
+  it.each(['https://mcp.example.com/mcp', 'http://127.0.0.1:1234/mcp'])('allows same-origin redirects %s', async (url) => {
+    let calls = 0
+    const request = createMcpRemoteFetch(url, { timeoutMs: 0, authMode: 'OAUTH', lookup, fetchImpl: async (_input, init) => {
+      expect(init?.redirect).toBe('manual')
+      return ++calls === 1 ? new Response(null, { status: 307, headers: { location: '/next' } }) : new Response('ok')
+    } })
+    expect(await (await request(url, { headers: { Authorization: 'secret' } })).text()).toBe('ok')
+    expect(calls).toBe(2)
+  })
+  it('preserves caller cancellation', async () => {
+    const controller = new AbortController()
+    controller.abort(new Error('caller cancelled'))
+    const request = createMcpRemoteFetch('http://127.0.0.1/mcp', { timeoutMs: Infinity, authMode: 'NONE', fetchImpl: async (_input, init) => { init?.signal?.throwIfAborted(); return new Response('ok') } })
+    await expect(request('http://127.0.0.1/mcp', { signal: controller.signal })).rejects.toThrow('caller cancelled')
   })
 })

@@ -129,3 +129,11 @@ describe('AiSettingsRepository provider capabilities', () => {
     }
   })
 })
+
+it.each(['NONE', 'XHIGH'] as const)('round trips reasoning effort %s', (effort) => {
+  const { database, repository } = createRepository()
+  try {
+    expect(repository.setReasoningEffort(effort).reasoningEffort).toBe(effort)
+    expect(repository.current().reasoningEffort).toBe(effort)
+  } finally { database.close() }
+})

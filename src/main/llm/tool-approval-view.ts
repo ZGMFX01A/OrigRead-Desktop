@@ -8,7 +8,7 @@ const MAX_STRING_CHARS = 1_000
 const MAX_ARRAY_ITEMS = 40
 const MAX_OBJECT_KEYS = 80
 const MAX_DEPTH = 6
-const SENSITIVE_KEY = /(?:authorization|cookie|credential|password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)/i
+const SENSITIVE_KEY = /(?:deepl[-_]?auth[-_]?key|x[-_]?api[-_]?key|x[-_]?subscription[-_]?token|client[-_]?secret|refresh[-_]?token|authorization|cookie|credential|password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)/i
 
 export function buildLlmToolActivityView(record: LlmToolCallRecord, descriptor: LlmToolDescriptor | null): LlmToolActivityView {
   const argumentsPreview = safeJsonPreview(record.argumentsJson)
@@ -47,7 +47,10 @@ export function redactLlmToolPreviewText(value: string, maxChars = MAX_PREVIEW_C
 
 function sanitizeValue(value: unknown, depth: number): unknown {
   if (depth >= MAX_DEPTH) return '[truncated]'
-  if (typeof value === 'string') return value.length > MAX_STRING_CHARS ? `${value.slice(0, MAX_STRING_CHARS)}…` : value
+  if (typeof value === 'string') {
+    const safe = redactSensitiveText(value)
+    return safe.length > MAX_STRING_CHARS ? `${safe.slice(0, MAX_STRING_CHARS)}…` : safe
+  }
   if (typeof value === 'number' || typeof value === 'boolean' || value == null) return value
   if (Array.isArray(value)) {
     const items = value.slice(0, MAX_ARRAY_ITEMS).map((item) => sanitizeValue(item, depth + 1))

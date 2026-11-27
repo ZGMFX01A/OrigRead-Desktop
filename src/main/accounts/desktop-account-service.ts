@@ -240,17 +240,28 @@ export class DesktopAccountService {
   }
 
   async updateFeed(feedId:string,patch:{name?:string;url?:string;groupId?:string;isNotification?:boolean;isFullContent?:boolean;isBrowser?:boolean}):Promise<FeedRecord>{
-    if(this.current().type!=='local')return this.services.remote.updateFeed(feedId,patch)
-    const current=this.library.getFeedById(feedId);if(!current)throw new Error('来源不存在')
+    const account = this.current()
+    const current = this.library.getFeedByIdForAccount(account.id, feedId)
+    if (!current) throw new Error('来源不存在')
+    if (patch.groupId !== undefined && !this.library.listGroupsForAccount(account.id).some((group) => group.id === patch.groupId)) {
+      throw new Error('目标分组不存在或不属于当前账户')
+    }
+    if(account.type!=='local')return this.services.remote.updateFeed(feedId,patch)
     if(current.sourceType==='json'&&patch.url!==undefined&&patch.url!==current.url){
       throw new Error('JSON 来源地址需要在解析设置中重新探测并确认规则')
     }
-    const next={...current,...patch,updatedAt:Date.now()};this.library.upsertFeed(next);return this.library.getFeedById(feedId)!
+    const next={...current,...patch,updatedAt:Date.now()};this.library.upsertFeed(next);return this.library.getFeedByIdForAccount(account.id,feedId)!
   }
 
   async deleteFeed(feedId:string):Promise<void>{
-    if(this.current().type!=='local')return this.services.remote.deleteFeed(feedId)
-    this.library.deleteArticlesByFeed(feedId,true);this.library.deleteFeed(feedId)
+    const account = this.current()
+    if (!this.library.getFeedByIdForAccount(account.id, feedId)) throw new Error('来源不存在')
+    if(account.type!=='local')return this.services.remote.deleteFeed(feedId)
+    this.library.transaction(() => {
+      this.library.deleteArticlesByFeed(feedId, true, account.id)
+      // deleteFeed also constrains account_id; this synchronous transaction cannot switch accounts.
+      this.library.deleteFeed(feedId)
+    })
   }
 
   async markArticleUnread(articleId:string,unread:boolean):Promise<void>{await this.services.remote.markArticleUnread(articleId,unread)}

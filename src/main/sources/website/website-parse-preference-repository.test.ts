@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -84,3 +85,31 @@ function automaticRule(id: string) {
   })
 }
 
+
+it('preserves corrupt JSON and invalid schema and prevents subsequent overwrites', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'batch2b-rules-'))
+  dirs.push(dir)
+  const file = join(dir, 'rules.json')
+  const repository = new WebsiteParsePreferenceRepository(file)
+  expect(() => repository.get('feed')).not.toThrow()
+  writeFileSync(file, JSON.stringify({ items: [] }))
+  expect(() => repository.get('feed')).not.toThrow()
+  for (const raw of ['{broken', '{}', 'null', '{"rules":[{}],"items":[{}]}', '{"items":[{"feedId":"feed","automaticRuleHistory":"bad"}]}']) {
+    writeFileSync(file, raw)
+    expect(() => repository.get('feed')).toThrow(/损坏.*corrupt-/)
+    expect(() => repository.setDynamicRenderingEnabled('feed', true)).toThrow(/损坏/)
+    expect(readFileSync(file, 'utf8')).toBe(raw)
+    expect(readdirSync(dir).filter((name) => name.includes('.corrupt-')).some((name) => readFileSync(join(dir, name), 'utf8') === raw)).toBe(true)
+  }
+})
+
+it('returns normalized cached legacy rules with required defaults filled', () => {
+  const { repository, file } = createRepository()
+  writeFileSync(file, JSON.stringify({ items: [{ feedId: 'feed', cachedAutomaticRule: {
+    id: 'auto-dom:legacy', name: 'Legacy', version: 1, hosts: ['example.com'], articleSelectors: ['article'], titleSelector: 'a'
+  } }] }))
+  const rule = repository.get('feed')!.cachedAutomaticRule!
+  expect(rule.linkSelector).toBe('a')
+  expect(rule.contentSelectors).toEqual([])
+  expect(rule.enabled).toBe(true)
+})

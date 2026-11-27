@@ -18,7 +18,7 @@ afterEach(async()=>{while(cleanup.length)await cleanup.pop()!()})
 describe('AiRuleGenerationService',()=>{
   it('locally validates a website rule and only saves the confirmed preview',async()=>{
     const fixture=await startFixture();const env=createEnvironment([websiteRuleJson()]);cleanup.push(fixture.close,env.close)
-    const service=new AiRuleGenerationService(env.ai,env.website,env.json,new JsonArticleParser(),env.provider)
+    const service=new AiRuleGenerationService(env.ai,env.website,env.json,new JsonArticleParser(),env.provider,{allowedInitialOrigins:new Set([fixture.baseUrl])})
     const progress:string[]=[]
     const preview=await service.generateWebsiteRule(`${fixture.baseUrl}/news`,{model:'selected-model'},(stage)=>progress.push(stage))
     expect(preview.kind).toBe('WEBSITE');expect(preview.articleCount).toBe(10);expect(preview.score).toBeGreaterThan(0);expect(preview.model).toBe('selected-model');expect(env.models()).toEqual(['selected-model']);expect(progress.slice(0,5)).toEqual(['PREPARING','FETCHING_SOURCE','ANALYZING_SOURCE','GENERATING_CANDIDATE','VALIDATING_CANDIDATE']);expect(progress).toContain('FETCHING_CONTENT');expect(preview.contentStatus).toBe('FAILED')
@@ -29,7 +29,7 @@ describe('AiRuleGenerationService',()=>{
 
   it('does not retain an unverified website content selector when content validation fails',async()=>{
     const fixture=await startFixture();const env=createEnvironment([websiteRuleWithUnverifiedContentJson(),'{invalid']);cleanup.push(fixture.close,env.close)
-    const service=new AiRuleGenerationService(env.ai,env.website,env.json,new JsonArticleParser(),env.provider)
+    const service=new AiRuleGenerationService(env.ai,env.website,env.json,new JsonArticleParser(),env.provider,{allowedInitialOrigins:new Set([fixture.baseUrl])})
     const preview=await service.generateWebsiteRule(`${fixture.baseUrl}/news`)
     const rule=JSON.parse(preview.ruleJson).rules[0]
     expect(preview.contentStatus).toBe('FAILED')
@@ -38,7 +38,7 @@ describe('AiRuleGenerationService',()=>{
 
   it('preserves the automatic date extraction decision from an AI website rule',async()=>{
     const fixture=await startFixture();const env=createEnvironment([websiteRuleWithAutomaticDateJson()]);cleanup.push(fixture.close,env.close)
-    const service=new AiRuleGenerationService(env.ai,env.website,env.json,new JsonArticleParser(),env.provider)
+    const service=new AiRuleGenerationService(env.ai,env.website,env.json,new JsonArticleParser(),env.provider,{allowedInitialOrigins:new Set([fixture.baseUrl])})
     const preview=await service.generateWebsiteRule(`${fixture.baseUrl}/news`)
     const rule=JSON.parse(preview.ruleJson).rules[0]
     expect(rule.automaticDateExtraction).toBe(true)
@@ -46,7 +46,7 @@ describe('AiRuleGenerationService',()=>{
 
   it('repairs a website candidate that ignores visible article dates',async()=>{
     const fixture=await startFixture();const env=createEnvironment([websiteRuleJson(),websiteRuleWithAutomaticDateJson()]);cleanup.push(fixture.close,env.close)
-    const service=new AiRuleGenerationService(env.ai,env.website,env.json,new JsonArticleParser(),env.provider)
+    const service=new AiRuleGenerationService(env.ai,env.website,env.json,new JsonArticleParser(),env.provider,{allowedInitialOrigins:new Set([fixture.baseUrl])})
     const preview=await service.generateWebsiteRule(`${fixture.baseUrl}/news-with-date`)
     const rule=JSON.parse(preview.ruleJson).rules[0]
     expect(rule.automaticDateExtraction).toBe(true)
@@ -55,7 +55,7 @@ describe('AiRuleGenerationService',()=>{
 
   it('does not retain an unverified JSON content path when content validation fails',async()=>{
     const fixture=await startFixture();const env=createEnvironment([jsonRuleWithUnverifiedContentJson(),'{invalid']);cleanup.push(fixture.close,env.close)
-    const service=new AiRuleGenerationService(env.ai,env.website,env.json,new JsonArticleParser(),env.provider)
+    const service=new AiRuleGenerationService(env.ai,env.website,env.json,new JsonArticleParser(),env.provider,{allowedInitialOrigins:new Set([fixture.baseUrl])})
     const preview=await service.generateJsonRule(`${fixture.baseUrl}/api`)
     const rule=JSON.parse(preview.ruleJson).rules[0]
     expect(preview.contentStatus).toBe('FAILED')
@@ -64,7 +64,7 @@ describe('AiRuleGenerationService',()=>{
 
   it('repairs one invalid JSON candidate and saves only the locally validated result',async()=>{
     const fixture=await startFixture();const env=createEnvironment([invalidJsonRuleJson(),validJsonRuleJson(),jsonContentRuleJson()]);cleanup.push(fixture.close,env.close)
-    const service=new AiRuleGenerationService(env.ai,env.website,env.json,new JsonArticleParser(),env.provider)
+    const service=new AiRuleGenerationService(env.ai,env.website,env.json,new JsonArticleParser(),env.provider,{allowedInitialOrigins:new Set([fixture.baseUrl])})
     const preview=await service.generateJsonRule(`${fixture.baseUrl}/api`)
     expect(env.calls()).toBe(3);expect(preview.kind).toBe('JSON');expect(preview.articleCount).toBe(10);expect(preview.sampleTitles[0]).toBe('Fixture article 1');expect(preview.attempts).toBe(2);expect(preview.contentStatus).toBe('VERIFIED');expect(preview.contentSampleCount).toBe(10);expect(preview.contentMessage).toContain('共用同一字段')
     expect(env.json.listRules()).toHaveLength(0)
@@ -74,7 +74,7 @@ describe('AiRuleGenerationService',()=>{
 
   it('normalizes a root-array JSON rule to item paths before local validation',async()=>{
     const fixture=await startFixture();const env=createEnvironment([rootArrayJsonRuleJson(),jsonContentRuleJson()]);cleanup.push(fixture.close,env.close)
-    const service=new AiRuleGenerationService(env.ai,env.website,env.json,new JsonArticleParser(),env.provider)
+    const service=new AiRuleGenerationService(env.ai,env.website,env.json,new JsonArticleParser(),env.provider,{allowedInitialOrigins:new Set([fixture.baseUrl])})
     const preview=await service.generateJsonRule(`${fixture.baseUrl}/array-api`)
     expect(preview.articleCount).toBe(10);expect(preview.contentStatus).toBe('VERIFIED')
     service.save(preview.previewId)

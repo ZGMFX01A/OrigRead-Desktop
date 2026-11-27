@@ -158,6 +158,14 @@ describe('LlmChatRepository D2.6 persistence foundation', () => {
       expect(repository.getMessage(assistant.id)?.content).toBe('Canonical.')
       expect(repository.getCitationRefsForAssistant(assistant.id)).toEqual([citation])
       expect(repository.getCitationAnnotationsForAssistant(assistant.id)).toEqual([annotation])
+      const invalid = { ...context, assistantMessageId: 'another-assistant' }
+      expect(() => repository.replaceContextRefsForAssistant(assistant.id, [invalid])).toThrow()
+      expect(repository.getCitationAnnotationsForAssistant(assistant.id)).toEqual([annotation])
+      expect(repository.getCitationAnnotationRefsForAssistant(assistant.id)).toHaveLength(1)
+      repository.replaceContextRefsForAssistant(assistant.id, [])
+      expect(repository.getCitationRefsForAssistant(assistant.id)).toEqual([])
+      expect(repository.getCitationAnnotationRefsForAssistant(assistant.id)).toEqual([])
+      expect(repository.getCitationAnnotationsForAssistant(assistant.id)).toEqual([])
     } finally {
       database.close()
     }

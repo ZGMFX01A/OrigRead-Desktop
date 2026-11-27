@@ -1,4 +1,4 @@
-import { shell, WebContentsView, type BrowserWindow } from 'electron'
+import { dialog, shell, WebContentsView, type BrowserWindow } from 'electron'
 import { DESKTOP_BROWSER_USER_AGENT } from '../network/user-agent-policy'
 import type {
   OriginalArticleViewState,
@@ -20,7 +20,15 @@ export class OriginalArticleViewController {
 
   constructor(
     private readonly window: BrowserWindow,
-    private readonly onStateChanged: (state: OriginalArticleViewState) => void = () => undefined
+    private readonly onStateChanged: (state: OriginalArticleViewState) => void = () => undefined,
+    private readonly confirmExternalDownload: (url: string) => Promise<boolean> = async (url) => {
+      const result = await dialog.showMessageBox(window, {
+        type: 'question', title: '打开外部下载链接',
+        message: '是否在系统浏览器中打开此下载链接？', detail: url,
+        buttons: ['取消', '打开'], defaultId: 0, cancelId: 0, noLink: true
+      })
+      return result.response === 1
+    }
   ) {}
 
   open(urlValue: string, bounds: OriginalViewBounds): OriginalArticleViewState {
@@ -159,7 +167,11 @@ export class OriginalArticleViewController {
       if (webContents === contents) {
         event.preventDefault()
         const url = item.getURL()
-        if (isHttpUrl(url)) void shell.openExternal(url).catch(() => undefined)
+        if (isHttpUrl(url)) {
+          void this.confirmExternalDownload(url).then((confirmed) => {
+            if (confirmed) return shell.openExternal(url)
+          }).catch((error) => console.error('打开外部下载链接失败', error))
+        }
       }
     }
     contents.session.on('will-download', downloadHandler)

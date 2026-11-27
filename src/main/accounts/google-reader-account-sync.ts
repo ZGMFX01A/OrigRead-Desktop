@@ -1,5 +1,5 @@
 import type { AccountRecord } from '../../shared/account'
-import type { FeedRecord, GroupRecord } from '../../shared/library'
+import type { ArticleRecord, FeedRecord, GroupRecord } from '../../shared/library'
 import type { LibraryRepository } from '../database/library-repository'
 import type { AccountRepository } from './account-repository'
 import { remoteDbId, remoteId } from './account-repository'
@@ -19,6 +19,7 @@ const MILLISECONDS_PER_SECOND = 1_000
 // 保留原有每批文章数和网络并发，不截断上游返回的身份集合。
 const CONTENT_BATCH_SIZE = 100
 const CONTENT_CONCURRENCY = 8
+const MAX_CONTINUATION_PAGES = 1000
 
 interface SyncContext {
   readonly account: AccountRecord
@@ -31,7 +32,6 @@ interface SyncState {
   readonly unread: Set<string>
   readonly starred: Set<string>
   readonly read: Set<string>
-  readonly localStates: ReturnType<LibraryRepository['listArticleStateForAccount']>
   readonly localIds: Set<string>
   readonly subscriptions: Awaited<ReturnType<GoogleReaderApi['getSubscriptionList']>>
   readonly serverTags: GoogleReaderTag[] | null
@@ -43,9 +43,12 @@ interface Catalog { readonly remoteGroups: Map<string, GroupRecord>; readonly re
 export async function syncGoogleReaderAccount(context: SyncContext): Promise<void> {
   const state = await fetchSnapshots(context)
   const catalog = saveCatalog(context, state)
-  await fetchMissingArticles(context, state)
-  applyArticleStates(context, state)
-  cleanupCatalog(context, catalog)
+  const fetchedArticles = await fetchMissingArticles(context, state)
+  context.library.transaction(() => {
+    for (const article of fetchedArticles) context.library.upsertArticle(article)
+    applyArticleStates(context, state)
+    cleanupCatalog(context, catalog)
+  })
 }
 
 /** 并行取状态和目录，保留所有分页身份，并在网络后读取本地状态快照。 */
@@ -60,13 +63,14 @@ async function fetchSnapshots(context: SyncContext): Promise<SyncState> {
       api.getSubscriptionList(),
       fetchServerTagsSafely(api)
     ])
+    if (!subscriptions || !Array.isArray(subscriptions.subscriptions)) throw new Error('Google Reader subscriptions 列表缺失')
     const unread=new Set(remoteUnread.map(googleRemoteItemId))
     const starred=new Set(remoteStarred.map(googleRemoteItemId))
     const read=new Set(remoteRead.map(googleRemoteItemId))
     const localStates=library.listArticleStateForAccount(account.id)
     const localIds=new Set(localStates.map((item)=>remoteId(item.id)))
 
-  return { unread, starred, read, localStates, localIds, subscriptions, serverTags, now: Date.now() }
+  return { unread, starred, read, localIds, subscriptions, serverTags, now: Date.now() }
 }
 
 async function fetchServerTagsSafely(api: GoogleReaderApi): Promise<GoogleReaderTag[] | null> {
@@ -92,7 +96,8 @@ function saveCatalog(context: SyncContext, state: SyncState): Catalog {
     const now=state.now
     const existingGroups = library.listGroupsForAccount(account.id)
     const existingMap = new Map(existingGroups.map((g) => [g.id, g]))
-    for(const subscription of subscriptions.subscriptions??[]){
+    const existingFeeds = new Map(library.listFeedsForAccount(account.id).map(feed => [feed.id, feed]))
+    for(const subscription of subscriptions.subscriptions){
       if(!subscription.id)continue
       const category=subscription.categories?.[0]
       let group=defaultGroup
@@ -106,11 +111,13 @@ function saveCatalog(context: SyncContext, state: SyncState): Catalog {
       const remoteFeedId=feedRemoteId(subscription.id)
       const url=subscription.url??subscription.htmlUrl
       if(!url)continue
+      const feedId=remoteDbId(account.id,remoteFeedId)
+      const existing=existingFeeds.get(feedId)
       remoteFeeds.push({
-        id:remoteDbId(account.id,remoteFeedId),accountId:account.id,groupId:group.id,
+        id:feedId,accountId:account.id,groupId:group.id,
         name:decodeHtml(subscription.title??'')||'Untitled',url,sourcePageUrl:subscription.htmlUrl??null,
-        sourceType:'rss',icon:subscription.iconUrl??null,isNotification:false,isFullContent:false,
-        isBrowser:false,dynamicRendering:false,createdAt:now,updatedAt:now
+        sourceType:'rss',icon:subscription.iconUrl??existing?.icon??null,isNotification:existing?.isNotification??false,isFullContent:existing?.isFullContent??false,
+        isBrowser:existing?.isBrowser??false,dynamicRendering:existing?.dynamicRendering??false,createdAt:existing?.createdAt??now,updatedAt:now
       })
     }
     // 服务端真实 label tags 补充权威分组（包含空组），并过滤 state/system 标签
@@ -157,30 +164,31 @@ function saveCatalog(context: SyncContext, state: SyncState): Catalog {
 }
 
 /** 分批抓取尚未拥有的文章，内容入库后单独应用本轮远端状态。 */
-async function fetchMissingArticles(context: SyncContext, state: SyncState): Promise<void> {
-  const { account, api, library } = context
+async function fetchMissingArticles(context: SyncContext, state: SyncState): Promise<ArticleRecord[]> {
+  const { account, api } = context
+  const fetchedArticles:ArticleRecord[]=[]
   const { unread, starred, read, localIds, now } = state
     const needed=new Set([...unread,...starred,...read].filter((id)=>!localIds.has(id)))
     const chunks=[...needed].reduce<string[][]>((list,id,index)=>{const bucket=Math.floor(index/CONTENT_BATCH_SIZE);(list[bucket]??=[]).push(id);return list},[])
     for(let offset=0;offset<chunks.length;offset+=CONTENT_CONCURRENCY){
       const batches=await Promise.all(chunks.slice(offset,offset+CONTENT_CONCURRENCY).map((ids)=>api.getItemsContents(ids)))
       for(const batch of batches){
-        for(const item of batch.items??[]){
+        if (!batch || !Array.isArray(batch.items)) throw new Error('Google Reader items 列表缺失')
+        for(const item of batch.items){
           const article=googleItemToArticle(item,{accountId:account.id,unread,starred,updated:batch.updated,now})
           if(!article)continue
-          library.upsertArticle(article)
-          library.setArticleUnreadForAccount(account.id,article.id,article.isUnread)
-          library.setArticleStarredForAccount(account.id,article.id,article.isStarred)
+          fetchedArticles.push(article)
         }
       }
     }
-
+  return fetchedArticles
 }
 
 /** 收藏和已读差集按账户分批更新，不覆盖内容字段。 */
 function applyArticleStates(context: SyncContext, state: SyncState): void {
   const { account, library } = context
-  const { unread, starred, read, localStates } = state
+  const { unread, starred, read } = state
+  const localStates = library.listArticleStateForAccount(account.id)
     // 对齐 Android GoogleReaderRssService：先在内存求差集，再用 IN (...) 分批落库。
     // read 集合只有最近一个月窗口，不能简单用 !remoteUnread 把所有旧文章强制标为已读。
     const toBeStarred=localStates
@@ -216,10 +224,18 @@ function cleanupCatalog(context: SyncContext, catalog: Catalog): void {
 /** continuation 分页完整收集身份，任何一页失败仍抛给整轮同步。 */
 async function collectIds(loader:(continuation?:string)=>Promise<{itemRefs?:Array<{id?:string}>;continuation?:string}>):Promise<string[]>{
   const ids:string[]=[]
+  const seenContinuations=new Set<string>()
+  let pages=0
   let continuation:string|undefined
   do {
     const result=await loader(continuation)
-    for(const item of result.itemRefs??[])if(item.id)ids.push(item.id)
+    if (!result || !Array.isArray(result.itemRefs)) throw new Error('Google Reader itemRefs 列表缺失')
+    pages++
+    if(result.continuation){
+      if(seenContinuations.has(result.continuation)||pages>=MAX_CONTINUATION_PAGES)throw new Error('Google Reader 分页 continuation 异常，已中止同步')
+      seenContinuations.add(result.continuation)
+    }
+    for(const item of result.itemRefs)if(item.id)ids.push(item.id)
     continuation=result.continuation
   } while(continuation)
   return ids

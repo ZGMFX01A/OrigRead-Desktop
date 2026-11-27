@@ -156,9 +156,9 @@ describe('RssDiscoveryService Android behavior parity', () => {
   it('default fetcher sends HTTP validators and treats 304 as not modified', async () => {
     const lastModified = 'Tue, 18 Aug 2026 12:00:00 GMT'
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const headers = init?.headers as Record<string, string>
-      expect(headers['If-None-Match']).toBe('"etag-v1"')
-      expect(headers['If-Modified-Since']).toBe(lastModified)
+      const headers = new Headers(init?.headers)
+      expect(headers.get('If-None-Match')).toBe('"etag-v1"')
+      expect(headers.get('If-Modified-Since')).toBe(lastModified)
       return new Response(null, {
         status: 304,
         headers: { ETag: '"etag-v1"', 'Last-Modified': lastModified }
@@ -169,7 +169,7 @@ describe('RssDiscoveryService Android behavior parity', () => {
       const result = await fetchRssPayload('https://example.com/feed.xml', {
         etag: '"etag-v1"',
         lastModified
-      })
+      }, undefined, {lookup: async () => [{address: '1.1.1.1'}], fetchImpl: fetchMock})
       expect(result.notModified).toBe(true)
       expect(result.etag).toBe('"etag-v1"')
       expect(result.lastModified).toBe(lastModified)

@@ -37,6 +37,8 @@ import { buildLlmToolActivityView } from './tool-approval-view'
 import { MANUAL_TOOL_CONTEXT_PRIORITY } from './context-priority'
 
 const MAX_AUTOMATIC_TOOL_ROUNDS = 8
+const MAX_HISTORICAL_TOOL_CONTEXTS = 8
+const MAX_HISTORICAL_TOOL_CHARS = 1_500
 const STREAMING_SNAPSHOT_PERSIST_INTERVAL_MS = 300
 
 interface LlmExecutionPerfState {
@@ -90,6 +92,7 @@ export class LlmChatExecutionService {
   private readonly pendingToolApprovals = new Map<string, {
     conversationId: string
     resolve(decision: LlmToolApprovalDecision): void
+    cancel(reason: unknown): void
   }>()
   private readonly pendingToolDrains = new Map<string, Set<Promise<void>>>()
 
@@ -138,6 +141,7 @@ export class LlmChatExecutionService {
       terminalPersistMs: null,
       outcome: 'error'
     }
+    let completedFinishReason: LlmUnifiedFinishReason | null = null
     let sequence = 0
     let latestAssistant: LlmMessageRecord | null = null
     let accumulatedContent = ''
@@ -267,7 +271,8 @@ export class LlmChatExecutionService {
       let finalResult: AiChatCompletionResult | null = null
 
       for (let round = 0; round < MAX_AUTOMATIC_TOOL_ROUNDS; round += 1) {
-        const budget = validateLlmPromptBudget(plan, providerMessages, toolDefinitions)
+        const roundTools = round === MAX_AUTOMATIC_TOOL_ROUNDS - 1 ? [] : toolDefinitions
+        const budget = validateLlmPromptBudget(plan, providerMessages, roundTools)
         estimatedPromptTokens += budget.promptTokens
         const providerRoundStartedAt = performance.now()
         perf.providerRounds += 1
@@ -306,11 +311,14 @@ export class LlmChatExecutionService {
               emitEvent({ type: 'CONTENT_DELTA', delta: content })
             })
           },
-          toolDefinitions,
+          roundTools,
           registered.signal
         )
         finalResult = result
 
+        if (result.toolCalls.length > 0 && round >= MAX_AUTOMATIC_TOOL_ROUNDS - 1) {
+          throw new Error('Tool 调用轮次超过安全上限')
+        }
         if (result.toolCalls.length === 0 || normalizeLlmFinishReason(result.finishReason) !== 'TOOL_CALLS') break
         if (!plan.automaticToolCalling) throw new Error('Provider 返回了未授权的 Tool Call')
 
@@ -348,8 +356,7 @@ export class LlmChatExecutionService {
       latestAssistant = assistant
       perf.terminalPersistMs = performance.now() - terminalPersistStartedAt
       perf.outcome = 'complete'
-      emitEvent({ type: 'TERMINAL', finishReason })
-      return assistant
+      completedFinishReason = finishReason
     } catch (error) {
       const serialized = serializeLlmIpcError(error, registered.signal)
       perf.outcome = serialized.code === 'CANCELLED' ? 'cancelled' : 'error'
@@ -400,6 +407,12 @@ export class LlmChatExecutionService {
       logLlmExecutionPerf(perf)
       this.registry.finish(identity.requestId)
     }
+    try {
+      emitEvent({ type: 'TERMINAL', finishReason: completedFinishReason! })
+    } catch (error) {
+      console.error('[LLM] Failed to emit completed execution', error)
+    }
+    return latestAssistant!
   }
 
   private persistContext(
@@ -438,7 +451,16 @@ export class LlmChatExecutionService {
       return ref
     })
     const historicalToolContextIds: string[] = []
-    for (const call of historicalToolCalls) {
+    const selectedHistoricalCalls = historicalToolCalls
+      .filter((call) => call.status === 'COMPLETE' && call.resultContent?.trim())
+      .slice(-MAX_HISTORICAL_TOOL_CONTEXTS)
+      .map((call) => {
+        const content = call.resultContent!
+        const marker = '\n[Tool result truncated]'
+        return { ...call, resultContent: content.length > MAX_HISTORICAL_TOOL_CHARS
+          ? content.slice(0, MAX_HISTORICAL_TOOL_CHARS - marker.length) + marker : content }
+      })
+    for (const call of selectedHistoricalCalls) {
       const content = call.resultContent
       if (call.status !== 'COMPLETE' || !content?.trim()) continue
       const contextId = `tool-result:${call.id}`
@@ -459,7 +481,7 @@ export class LlmChatExecutionService {
         contentSha256: sha256(content),
         priority: MANUAL_TOOL_CONTEXT_PRIORITY,
         includedInPrompt: true,
-        truncatedInPrompt: false,
+        truncatedInPrompt: call.resultContent?.endsWith('[Tool result truncated]') ?? false,
         createdAt: now
       }
       contextRefs.push(ref)
@@ -504,7 +526,7 @@ export class LlmChatExecutionService {
         })
       }
     }
-    for (const call of historicalToolCalls) {
+    for (const call of selectedHistoricalCalls) {
       const content = call.resultContent
       if (call.status !== 'COMPLETE' || !content?.trim()) continue
       const contextId = `tool-result:${call.id}`
@@ -562,11 +584,11 @@ export class LlmChatExecutionService {
       list.push(call)
       callsByAssistant.set(call.assistantMessageId, list)
     }
-    const citationProtocolByToolCallId = new Map<string, string>()
+    const citationProtocolByToolCallId = new Map<string, { protocolId: string; content: string }>()
     for (const entry of citationEntries) {
       const locator = entry.locatorSnapshot
       if (locator?.sourceKind !== 'TOOL_RESULT' || !locator.toolCallId) continue
-      citationProtocolByToolCallId.set(locator.toolCallId, entry.protocolId)
+      citationProtocolByToolCallId.set(locator.toolCallId, { protocolId: entry.protocolId, content: entry.quoteSnapshot })
     }
     const result: AiChatMessage[] = [{ role: 'system', content: systemPrompt }]
     for (const message of history) {
@@ -599,11 +621,11 @@ export class LlmChatExecutionService {
       })
       for (const call of calls) {
         const content = toolHistoryContent(call)
-        const protocolId = citationProtocolByToolCallId.get(call.id)
+        const citation = citationProtocolByToolCallId.get(call.id)
         result.push({
           role: 'tool',
           toolCallId: call.providerCallId,
-          content: protocolId ? wrapToolResultEvidence(content, protocolId) : content
+          content: citation ? wrapToolResultEvidence(citation.content, citation.protocolId) : content
         })
       }
     }
@@ -637,107 +659,139 @@ export class LlmChatExecutionService {
         updatedAt: now
       }
     })
-    this.repository.appendToolCalls(records)
-
-    const approvalPromises = new Map<string, Promise<LlmToolApprovalDecision>>()
-    for (const record of records) {
+    const update = (record: LlmToolCallRecord, updated: LlmToolCallRecord): void => {
+      this.repository.updateToolCall(updated)
+      Object.assign(record, updated)
       emit({ type: 'TOOL_STATE', toolCallId: record.id, status: record.status })
-      if (record.status === 'PENDING_APPROVAL') {
-        const pending = this.waitForToolApproval(record, signal)
-        void pending.catch(() => undefined)
-        approvalPromises.set(record.id, pending)
-      }
     }
+    let roundError: unknown = new Error('Tool round interrupted')
+    try {
+      this.repository.appendToolCalls(records)
 
-    const providerMessages: AiChatMessage[] = []
-    for (const record of records) {
-      const descriptor = descriptorByName.get(record.apiName)
-      if (!descriptor) {
-        providerMessages.push({ role: 'tool', toolCallId: record.providerCallId, content: record.errorMessage ?? 'Tool unavailable' })
-        continue
-      }
-      if (record.status === 'PENDING_APPROVAL') {
-        let decision: LlmToolApprovalDecision
-        const approvalStartedAt = performance.now()
-        try {
-          decision = await approvalPromises.get(record.id)!
-        } catch (error) {
-          perf.toolApprovalWaitTotalMs += performance.now() - approvalStartedAt
-          const updated = {
-            ...record,
-            status: 'ERROR' as const,
-            errorMessage: 'Tool 审批已取消，Tool 未执行。',
-            updatedAt: Date.now()
-          }
-          this.repository.updateToolCall(updated)
-          emit({ type: 'TOOL_STATE', toolCallId: record.id, status: updated.status })
-          throw error
+      // Store rejection outcomes until consumed; a sibling failure may cancel waits not yet visited.
+      const approvalPromises = new Map<string, Promise<{ decision: LlmToolApprovalDecision } | { error: unknown }>>()
+      for (const record of records) {
+        if (record.status === 'PENDING_APPROVAL') {
+          const pending = this.waitForToolApproval(record, signal)
+          approvalPromises.set(record.id, pending.then(
+            (decision) => ({ decision }),
+            (error: unknown) => ({ error })
+          ))
         }
-        perf.toolApprovalWaitTotalMs += performance.now() - approvalStartedAt
-        if (decision === 'DENY') {
-          const resultContent = 'Tool execution was denied by the user.'
-          const updated = {
-            ...record,
-            status: 'DENIED' as const,
-            resultContent,
-            errorMessage: null,
-            updatedAt: Date.now()
-          }
-          this.repository.updateToolCall(updated)
-          emit({ type: 'TOOL_STATE', toolCallId: record.id, status: updated.status })
-          providerMessages.push({ role: 'tool', toolCallId: record.providerCallId, content: resultContent })
+        emit({ type: 'TOOL_STATE', toolCallId: record.id, status: record.status })
+      }
+
+      const providerMessages: AiChatMessage[] = []
+      for (const record of records) {
+        const descriptor = descriptorByName.get(record.apiName)
+        if (!descriptor) {
+          providerMessages.push({ role: 'tool', toolCallId: record.providerCallId, content: record.errorMessage ?? 'Tool unavailable' })
           continue
         }
-      }
-      const toolStartedAt = performance.now()
-      perf.toolCalls += 1
-      const executionPromise = this.tools.execute(
-        { id: record.id, toolId: descriptor.id, argumentsJson: record.argumentsJson },
-        { enabledToolIds: new Set([descriptor.id]) },
-        { signal, confirmed: record.status === 'PENDING_APPROVAL' }
-      )
-      let execution: Awaited<ReturnType<LlmToolRuntime['execute']>>
-      try {
-        execution = await this.awaitAbortableToolExecution(identity.conversationId, executionPromise, signal)
-        recordToolExecutionTiming(perf, performance.now() - toolStartedAt)
-      } catch (error) {
-        if (signal.aborted) {
-          const updated = {
-            ...record,
-            status: 'ERROR' as const,
-            errorMessage: 'Tool execution was cancelled; any in-flight result was discarded.',
-            updatedAt: Date.now()
+        const requiresApproval = record.status === 'PENDING_APPROVAL'
+        if (requiresApproval) {
+          let decision: LlmToolApprovalDecision
+          const approvalStartedAt = performance.now()
+          try {
+            const approval = await approvalPromises.get(record.id)!
+            if ('error' in approval) throw approval.error
+            decision = approval.decision
+          } catch (error) {
+            perf.toolApprovalWaitTotalMs += performance.now() - approvalStartedAt
+            const updated = {
+              ...record,
+              status: 'ERROR' as const,
+              errorMessage: 'Tool 审批已取消，Tool 未执行。',
+              updatedAt: Date.now()
+            }
+            update(record, updated)
+            throw error
           }
-          this.repository.updateToolCall(updated)
-          emit({ type: 'TOOL_STATE', toolCallId: record.id, status: updated.status })
+          perf.toolApprovalWaitTotalMs += performance.now() - approvalStartedAt
+          if (decision === 'DENY') {
+            const resultContent = 'Tool execution was denied by the user.'
+            const updated = {
+              ...record,
+              status: 'DENIED' as const,
+              resultContent,
+              errorMessage: null,
+              updatedAt: Date.now()
+            }
+            update(record, updated)
+            providerMessages.push({ role: 'tool', toolCallId: record.providerCallId, content: resultContent })
+            continue
+          }
         }
-        throw error
+        if (signal.aborted) throw llmAbortReason(signal)
+        if (requiresApproval) {
+          update(record, { ...record, status: 'RUNNING', updatedAt: Date.now() })
+        }
+        const toolStartedAt = performance.now()
+        perf.toolCalls += 1
+        const executionPromise = this.tools.execute(
+          { id: record.id, toolId: descriptor.id, argumentsJson: record.argumentsJson },
+          { enabledToolIds: new Set([descriptor.id]) },
+          { signal, confirmed: requiresApproval }
+        )
+        let execution: Awaited<ReturnType<LlmToolRuntime['execute']>>
+        try {
+          execution = await this.awaitAbortableToolExecution(identity.conversationId, executionPromise, signal)
+          recordToolExecutionTiming(perf, performance.now() - toolStartedAt)
+        } catch (error) {
+          if (signal.aborted) {
+            const updated = {
+              ...record,
+              status: 'ERROR' as const,
+              errorMessage: 'Tool execution was cancelled; any in-flight result was discarded.',
+              updatedAt: Date.now()
+            }
+            update(record, updated)
+          }
+          throw error
+        }
+        if (execution.status === 'CONFIRMATION_REQUIRED') {
+          const updated = { ...record, status: 'ERROR' as const, errorMessage: 'Tool 审批状态失效，Tool 未执行。', updatedAt: Date.now() }
+          update(record, updated)
+          providerMessages.push({ role: 'tool', toolCallId: record.providerCallId, content: 'Tool execution failed: approval state was invalid.' })
+          continue
+        }
+        if (execution.status === 'SUCCESS') {
+          const updated = { ...record, status: 'COMPLETE' as const, resultContent: execution.content, updatedAt: Date.now() }
+          update(record, updated)
+          const protocolId = this.persistAutomaticToolEvidence(identity, updated, descriptor, execution.content, contextState)
+          providerMessages.push({
+            role: 'tool',
+            toolCallId: record.providerCallId,
+            content: wrapToolResultEvidence(execution.content, protocolId)
+          })
+        } else {
+          const updated = { ...record, status: 'ERROR' as const, errorMessage: execution.message, updatedAt: Date.now() }
+          update(record, updated)
+          providerMessages.push({ role: 'tool', toolCallId: record.providerCallId, content: `Tool execution failed: ${execution.message}` })
+        }
       }
-      if (execution.status === 'CONFIRMATION_REQUIRED') {
-        const updated = { ...record, status: 'ERROR' as const, errorMessage: 'Tool 审批状态失效，Tool 未执行。', updatedAt: Date.now() }
-        this.repository.updateToolCall(updated)
-        emit({ type: 'TOOL_STATE', toolCallId: record.id, status: updated.status })
-        providerMessages.push({ role: 'tool', toolCallId: record.providerCallId, content: 'Tool execution failed: approval state was invalid.' })
-        continue
+      return { providerMessages }
+    } catch (error) {
+      roundError = error
+      throw error
+    } finally {
+      const cleanupErrors: unknown[] = []
+      for (const record of records) {
+        this.pendingToolApprovals.get(record.id)?.cancel(roundError)
+        if (record.status !== 'PENDING_APPROVAL' && record.status !== 'RUNNING') continue
+        const updated: LlmToolCallRecord = {
+          ...record, status: 'ERROR', updatedAt: Date.now(),
+          errorMessage: signal.aborted
+            ? 'Tool execution was cancelled; any in-flight result was discarded.'
+            : 'Tool round aborted because another Tool or round operation failed.'
+        }
+        try { update(record, updated) } catch (error) {
+          console.error('[LLM] Failed to finalize Tool state', error)
+          cleanupErrors.push(error)
+        }
       }
-      if (execution.status === 'SUCCESS') {
-        const updated = { ...record, status: 'COMPLETE' as const, resultContent: execution.content, updatedAt: Date.now() }
-        this.repository.updateToolCall(updated)
-        emit({ type: 'TOOL_STATE', toolCallId: record.id, status: updated.status })
-        const protocolId = this.persistAutomaticToolEvidence(identity, updated, descriptor, execution.content, contextState)
-        providerMessages.push({
-          role: 'tool',
-          toolCallId: record.providerCallId,
-          content: wrapToolResultEvidence(execution.content, protocolId)
-        })
-      } else {
-        const updated = { ...record, status: 'ERROR' as const, errorMessage: execution.message, updatedAt: Date.now() }
-        this.repository.updateToolCall(updated)
-        emit({ type: 'TOOL_STATE', toolCallId: record.id, status: updated.status })
-        providerMessages.push({ role: 'tool', toolCallId: record.providerCallId, content: `Tool execution failed: ${execution.message}` })
-      }
+      if (cleanupErrors.length) throw new AggregateError(cleanupErrors, 'Tool round cleanup failed')
     }
-    return { providerMessages }
   }
 
   private persistAutomaticToolEvidence(
@@ -819,6 +873,7 @@ export class LlmChatExecutionService {
       }
       this.pendingToolApprovals.set(record.id, {
         conversationId: record.conversationId,
+        cancel: (reason) => { cleanup(); reject(reason) },
         resolve: (decision) => {
           cleanup()
           resolve(decision)
@@ -840,15 +895,17 @@ export class LlmChatExecutionService {
     }
     let removeAbortListener = (): void => undefined
     const aborted = new Promise<never>((_resolve, reject) => {
-      const onAbort = (): void => reject(llmAbortReason(signal))
+      const onAbort = (): void => {
+        // Register synchronously: cancel() releases the conversation registry immediately,
+        // so a same-tick restart must see the drain before it can prepare a new request.
+        this.registerToolDrain(conversationId, execution)
+        reject(llmAbortReason(signal))
+      }
       signal.addEventListener('abort', onAbort, { once: true })
       removeAbortListener = () => signal.removeEventListener('abort', onAbort)
     })
     try {
       return await Promise.race([execution, aborted])
-    } catch (error) {
-      if (signal.aborted) this.registerToolDrain(conversationId, execution)
-      throw error
     } finally {
       removeAbortListener()
     }

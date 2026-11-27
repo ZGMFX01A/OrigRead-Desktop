@@ -1,3 +1,10 @@
+import { withShutdownTimeout } from './shutdown-timeout'
+import { redactErrorForBoundary, redactSensitiveText } from './security/sensitive-text'
+
+function formatIpcErrorMessage(error: unknown): string {
+  return redactSensitiveText(error instanceof Error ? error.message : String(error))
+}
+
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, Notification, powerMonitor, protocol, shell, type IpcMainInvokeEvent } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { basename, join } from 'node:path'
@@ -51,7 +58,7 @@ import {
 import type { OriginalNavigationAction } from '../shared/original-view'
 import { PeriodicSyncScheduler } from './sync/periodic-sync-scheduler'
 import { ElectronSecretStore } from './security/secret-store'
-import { isAllowedRendererUrl } from './security/renderer-trust'
+import { isAllowedRendererUrl, isTrustedIpcSender, resolveRuntimeOverrides } from './security/renderer-trust'
 import { AiSettingsRepository } from './ai/ai-settings-repository'
 import { AiSummaryService } from './ai/ai-summary-service'
 import { TranslationSettingsRepository } from './translation/translation-settings-repository'
@@ -67,7 +74,7 @@ import type { AiGeneratedRuleKind, AiRuleGenerationOptions } from '../shared/ai-
 import type { TranslationProviderPatch, TranslationProviderType, TranslationSettingsPatch, TranslationTarget } from '../shared/translation'
 import type { ArticleFilterRuleType } from '../shared/filter-rules'
 import type { UpdateCheckResult } from '../shared/update'
-import { ReleaseUpdateService } from './update/release-update-service'
+import { ReleaseUpdateService, verifyDownloadedFileIntegrity } from './update/release-update-service'
 import { DESKTOP_BROWSER_USER_AGENT } from './network/user-agent-policy'
 import { AccountRepository } from './accounts/account-repository'
 import { RemoteAccountSyncService } from './accounts/remote-account-sync-service'
@@ -126,10 +133,11 @@ import { McpLocalClientManager, createSdkMcpLocalConnectorFactory } from './mcp/
 import { McpCombinedRuntime } from './mcp/mcp-combined-runtime'
 import type { McpLocalServerPatch, McpRemoteServerPatch } from '../shared/mcp'
 
-const isDevelopment = Boolean(process.env.ELECTRON_RENDERER_URL)
+const runtimeOverrides = resolveRuntimeOverrides(app.isPackaged, process.env)
+const isDevelopment = runtimeOverrides.isDevelopment
 const productionRendererUrl = pathToFileURL(join(__dirname, '../renderer/index.html')).toString()
-if (process.env.ORIGREAD_E2E_USER_DATA_DIR) {
-  app.setPath('userData', process.env.ORIGREAD_E2E_USER_DATA_DIR)
+if (runtimeOverrides.e2eUserDataDir) {
+  app.setPath('userData', runtimeOverrides.e2eUserDataDir)
 }
 
 function validateOriginalNavigationAction(value: unknown): OriginalNavigationAction {
@@ -143,7 +151,7 @@ let libraryRepository: LibraryRepository | null = null
 let settingsRepository: SettingsRepository | null = null
 let releaseUpdateService: ReleaseUpdateService | null = null
 let lastUpdateCheck: UpdateCheckResult | null = null
-let lastDownloadedUpdatePath: string | null = null
+let lastDownloadedUpdate: { path: string; sha256: string; size: number } | null = null
 let readerFontRepository: ReaderFontRepository | null = null
 let rssSubscriptionService: RssSubscriptionService | null = null
 let rssHubSettingsRepository: RssHubSettingsRepository | null = null
@@ -246,8 +254,10 @@ function validateUrlInput(value: unknown): string {
 }
 
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
-  const senderUrl = event.senderFrame?.url ?? ''
-  if (!isTrustedRendererUrl(senderUrl)) {
+  if (!isTrustedIpcSender(event, mainWindow?.webContents ?? null, {
+    developmentUrl: runtimeOverrides.rendererUrl,
+    productionUrl: productionRendererUrl
+  })) {
     throw new Error('Rejected IPC request from an untrusted renderer')
   }
 }
@@ -262,7 +272,7 @@ function showSaveDialog(options: Electron.SaveDialogOptions): Promise<Electron.S
 
 function isTrustedRendererUrl(url: string): boolean {
   return isAllowedRendererUrl(url, {
-    developmentUrl: isDevelopment ? process.env.ELECTRON_RENDERER_URL : null,
+    developmentUrl: isDevelopment ? runtimeOverrides.rendererUrl : null,
     productionUrl: productionRendererUrl
   })
 }
@@ -272,7 +282,7 @@ function createMainWindow(): BrowserWindow {
     width: 1440,
     height: 900,
     // macOS CI has a small display; isolated E2E windows must honor requested test sizes.
-    enableLargerThanScreen: !app.isPackaged && Boolean(process.env.ORIGREAD_E2E_USER_DATA_DIR),
+    enableLargerThanScreen: !app.isPackaged && Boolean(runtimeOverrides.e2eUserDataDir),
     minWidth: 960,
     minHeight: 640,
     show: false,
@@ -315,6 +325,10 @@ function createMainWindow(): BrowserWindow {
     }
   })
 
+  window.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
+  window.webContents.on('will-redirect', (event, url) => {
+    if (!isTrustedRendererUrl(url)) event.preventDefault()
+  })
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   const llmOwnerId = String(window.webContents.id)
   window.webContents.once('destroyed', () => {
@@ -340,8 +354,8 @@ function createMainWindow(): BrowserWindow {
     originalArticleViewController = null
   })
 
-  if (isDevelopment && process.env.ELECTRON_RENDERER_URL) {
-    void window.loadURL(process.env.ELECTRON_RENDERER_URL)
+  if (isDevelopment && runtimeOverrides.rendererUrl) {
+    void window.loadURL(runtimeOverrides.rendererUrl)
   } else {
     void window.loadFile(join(__dirname, '../renderer/index.html'))
   }
@@ -472,18 +486,18 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.switchAccount, (event, accountId: unknown) => {
     assertTrustedSender(event)
     if (!accountService) throw new Error('Account service is not ready')
-    activeFullContentRequest?.controller.abort()
-    activeFullContentRequest = null
-    activeTranslationRequest?.controller.abort()
-    stopListTranslationRequests()
-    const result = accountService.switchTo(validateAccountId(accountId))
+    const id = validateAccountId(accountId)
+    cancelAccountTasks()
+    const result = accountService.switchTo(id)
     periodicSyncScheduler?.reconfigure()
     return result
   })
   ipcMain.handle(IPC_CHANNELS.deleteAccount, (event, accountId: unknown) => {
     assertTrustedSender(event)
     if (!accountService) throw new Error('Account service is not ready')
-    const result = accountService.delete(validateAccountId(accountId))
+    const id = validateAccountId(accountId)
+    if (accountService.current().id === id) cancelAccountTasks()
+    const result = accountService.delete(id)
     void translationService?.maintain().catch(error => console.warn('Translation cleanup failed', error))
     event.sender.send(IPC_CHANNELS.translationChanged)
     periodicSyncScheduler?.reconfigure()
@@ -609,7 +623,7 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (!releaseUpdateService) throw new Error('更新服务尚未初始化')
     if (language !== 'zh' && language !== 'en') throw new TypeError('language must be zh or en')
-    if (process.env.ORIGREAD_DISABLE_AUTO_UPDATE_CHECK === '1') {
+    if (runtimeOverrides.disableAutoUpdateCheck) {
       lastUpdateCheck = {
         status: 'unavailable',
         currentVersion: app.getVersion(),
@@ -635,9 +649,10 @@ function registerIpcHandlers(): void {
     if (typeof assetId !== 'number' || !Number.isSafeInteger(assetId)) throw new TypeError('assetId must be an integer')
     const asset = lastUpdateCheck?.release?.asset
     if (!asset || asset.id !== assetId) throw new Error('当前没有可下载的安装包，请重新检查更新')
+    lastDownloadedUpdate = null
     const safeName = asset.name.replace(/[<>:"/\\|?*]/g, '_')
-    const selected = process.env.ORIGREAD_E2E_DOWNLOAD_DIR
-      ? { canceled: false, filePath: join(process.env.ORIGREAD_E2E_DOWNLOAD_DIR, safeName) }
+    const selected = runtimeOverrides.e2eDownloadDir
+      ? { canceled: false, filePath: join(runtimeOverrides.e2eDownloadDir, safeName) }
       : await showSaveDialog({
           title: '下载 OrigRead Desktop 更新',
           defaultPath: join(app.getPath('downloads'), safeName),
@@ -645,17 +660,24 @@ function registerIpcHandlers(): void {
         })
     if (selected.canceled || !selected.filePath) return { cancelled: true, path: null, error: null }
     try {
-      await releaseUpdateService.downloadAsset(asset, selected.filePath, app.getLocale())
-      lastDownloadedUpdatePath = selected.filePath
+      const verified = await releaseUpdateService.downloadAsset(asset, selected.filePath, app.getLocale())
+      lastDownloadedUpdate = { path: selected.filePath, ...verified }
       return { cancelled: false, path: selected.filePath, error: null }
     } catch (error) {
-      return { cancelled: false, path: null, error: error instanceof Error ? error.message : String(error) }
+      return { cancelled: false, path: null, error: formatIpcErrorMessage(error) }
     }
   })
   ipcMain.handle(IPC_CHANNELS.launchDownloadedUpdate, async (event) => {
     assertTrustedSender(event)
-    if (!lastDownloadedUpdatePath) throw new Error('当前没有已下载的安装包')
-    const error = await shell.openPath(lastDownloadedUpdatePath)
+    if (!lastDownloadedUpdate) throw new Error('当前没有已下载的安装包')
+    const downloaded = lastDownloadedUpdate
+    try {
+      await verifyDownloadedFileIntegrity(downloaded.path, downloaded.sha256, downloaded.size)
+    } catch (error) {
+      lastDownloadedUpdate = null
+      throw redactErrorForBoundary(error)
+    }
+    const error = await shell.openPath(downloaded.path)
     if (error) throw new Error(error)
   })
   ipcMain.handle(IPC_CHANNELS.listReaderFonts, (event) => {
@@ -675,7 +697,7 @@ function registerIpcHandlers(): void {
       if (selected.canceled || !selected.filePaths[0]) return { ok: false, cancelled: true, font: null, error: null }
       return { ok: true, cancelled: false, font: readerFontRepository.importFile(selected.filePaths[0]), error: null }
     } catch (error) {
-      return { ok: false, cancelled: false, font: null, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, cancelled: false, font: null, error: formatIpcErrorMessage(error) }
     }
   })
   ipcMain.handle(IPC_CHANNELS.deleteReaderFont, (event, id: unknown) => {
@@ -736,7 +758,7 @@ function registerIpcHandlers(): void {
       await rssHubResolver.testConnection(validateUrlInput(url))
       return { ok: true, error: null }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, error: formatIpcErrorMessage(error) }
     }
   })
   ipcMain.handle(IPC_CHANNELS.restoreDefaultRssHubSettings, (event) => {
@@ -815,8 +837,8 @@ function registerIpcHandlers(): void {
         ? await aiRuleGenerationService.generateWebsiteRule(sourceUrl, options, sendProgress)
         : await aiRuleGenerationService.generateJsonRule(sourceUrl, options, sendProgress)
     } catch (error) {
-      sendProgress('FAILED', 1, error instanceof Error ? error.message : String(error))
-      throw error
+      sendProgress('FAILED', 1, formatIpcErrorMessage(error))
+      throw redactErrorForBoundary(error)
     }
   })
   ipcMain.handle(IPC_CHANNELS.saveAiGeneratedRule, (event, previewId: unknown) => {
@@ -838,7 +860,7 @@ function registerIpcHandlers(): void {
       await writeFile(selected.filePath, content, 'utf8')
       return { ok:true,cancelled:false,path:selected.filePath,error:null }
     } catch (error) {
-      return { ok:false,cancelled:false,path:null,error:error instanceof Error ? error.message : String(error) }
+      return { ok:false,cancelled:false,path:null,error:formatIpcErrorMessage(error) }
     }
   })
   ipcMain.handle(IPC_CHANNELS.inspectWebsiteStatic, async (event, url: unknown) => {
@@ -898,7 +920,7 @@ function registerIpcHandlers(): void {
       const result = await websiteSourceService.inspect(validateUrlInput(url))
       return { ok:true,articleCount:result.candidate.articles.length,error:null }
     } catch (error) {
-      return { ok:false,articleCount:0,error:error instanceof Error ? error.message : String(error) }
+      return { ok:false,articleCount:0,error:formatIpcErrorMessage(error) }
     }
   })
   ipcMain.handle(IPC_CHANNELS.discoverSource, async (event, url: unknown, requestId: unknown) => {
@@ -1104,7 +1126,7 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event); if (!aiSummaryService) throw new Error('AI service is not ready'); return aiSummaryService.refreshModels(validateId(providerId, 'providerId'), draftApiKey === undefined ? undefined : validateOptionalText(draftApiKey, 'apiKey', 16_384))
   })
   ipcMain.handle(IPC_CHANNELS.testAiProvider, async (event, providerId: unknown) => {
-    assertTrustedSender(event); if (!aiSummaryService) throw new Error('AI service is not ready'); try { await aiSummaryService.testProvider(validateId(providerId, 'providerId')); return { ok:true,error:null } } catch(error) { return { ok:false,error:error instanceof Error?error.message:String(error) } }
+    assertTrustedSender(event); if (!aiSummaryService) throw new Error('AI service is not ready'); try { await aiSummaryService.testProvider(validateId(providerId, 'providerId')); return { ok:true,error:null } } catch(error) { return { ok:false,error:formatIpcErrorMessage(error) } }
   })
   ipcMain.handle(IPC_CHANNELS.getWebSearchSettings, (event) => {
     assertTrustedSender(event)
@@ -1142,7 +1164,7 @@ function registerIpcHandlers(): void {
     try {
       return { ok: true, result: await webSearchService.checkHealth(validateId(providerId, 'providerId')), error: null }
     } catch (error) {
-      return { ok: false, result: null, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, result: null, error: formatIpcErrorMessage(error) }
     }
   })
   ipcMain.handle(IPC_CHANNELS.getMcpRemoteSettings, (event) => {
@@ -1190,7 +1212,7 @@ function registerIpcHandlers(): void {
     try {
       return { ok: true, result: await mcpRemoteClientManager.checkHealth(validateId(serverId, 'serverId')), error: null }
     } catch (error) {
-      return { ok: false, result: null, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, result: null, error: formatIpcErrorMessage(error) }
     }
   })
   ipcMain.handle(IPC_CHANNELS.connectMcpRemoteServer, async (event, serverId: unknown) => {
@@ -1257,7 +1279,7 @@ function registerIpcHandlers(): void {
     try {
       return { ok: true, result: await mcpLocalClientManager.checkHealth(validateId(serverId, 'serverId')), error: null }
     } catch (error) {
-      return { ok: false, result: null, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, result: null, error: formatIpcErrorMessage(error) }
     }
   })
   ipcMain.handle(IPC_CHANNELS.connectMcpLocalServer, async (event, serverId: unknown) => {
@@ -1368,7 +1390,7 @@ function registerIpcHandlers(): void {
         replaced: false,
         skillId: null,
         snapshot: toLlmSkillManagementSnapshot(llmSkillRepository.current()),
-        error: error instanceof Error ? error.message : String(error)
+        error: formatIpcErrorMessage(error)
       }
     }
   })
@@ -1392,7 +1414,7 @@ function registerIpcHandlers(): void {
         replaced: false,
         skillId: null,
         snapshot: toLlmSkillManagementSnapshot(llmSkillRepository.current()),
-        error: error instanceof Error ? error.message : String(error)
+        error: formatIpcErrorMessage(error)
       }
     }
   })
@@ -1623,6 +1645,7 @@ function registerIpcHandlers(): void {
     if (!llmChatRepository || !llmExecutionService) throw new Error('LLM runtime is not ready')
     const value = validateLlmStartExecutionRequest(request)
     if (llmExecutionRegistry.get(value.requestId)) throw new Error('LLM requestId 已存在')
+    if (llmExecutionRegistry.hasActiveConversation(value.conversationId)) throw new Error('当前会话已有正在进行的请求')
     const conversation = llmChatRepository.getConversation(value.conversationId)
     if (!conversation) throw new Error('会话不存在')
     const context = buildMainLlmArticleContext(conversation)
@@ -1646,6 +1669,12 @@ function registerIpcHandlers(): void {
         item.evidenceBlocks = [{ stableLocatorKey: block.stableLocatorKey, content: block.content }]
         context.evidenceGroups.push({ contextId: item.id, blocks: [block] })
       }
+    }
+    if (value.manualToolContextIds && value.manualToolContextIds.length > 0) {
+      if (!manualToolContextService) throw new Error('Manual MCP Tool context runtime is not ready')
+      const manual = manualToolContextService.consume(value.conversationId, value.manualToolContextIds)
+      context.contextItems.push(...manual.contextItems)
+      context.evidenceGroups.push(...manual.evidenceGroups)
     }
     const assistant = value.regenerateAssistantMessageId
       ? llmChatRepository.appendRegeneratedAssistant(
@@ -1689,12 +1718,7 @@ function registerIpcHandlers(): void {
         executionProfile.skillId = llmSkillRepository.boundSkill('ARTICLE_ANALYSIS')?.id ?? null
       }
     }
-    if (value.manualToolContextIds && value.manualToolContextIds.length > 0) {
-      if (!manualToolContextService) throw new Error('Manual MCP Tool context runtime is not ready')
-      const manual = manualToolContextService.consume(value.conversationId, value.manualToolContextIds)
-      context.contextItems.push(...manual.contextItems)
-      context.evidenceGroups.push(...manual.evidenceGroups)
-    }
+    let nextExecutionSequence = 0
     void llmExecutionService.execute({
       ...identity,
       ownerId,
@@ -1703,8 +1727,22 @@ function registerIpcHandlers(): void {
       evidenceGroups: context.evidenceGroups,
       ...(webSearch ? { webSearch } : {})
     }, (executionEvent) => {
+      nextExecutionSequence = executionEvent.sequence + 1
       if (!event.sender.isDestroyed()) event.sender.send(IPC_CHANNELS.llmExecutionEvent, executionEvent)
-    }).catch(() => undefined)
+    }).catch((error) => {
+      console.error('[LLM] Execution failed outside terminal handling', error)
+      try {
+        llmExecutionRegistry.finish(identity.requestId)
+        if (!event.sender.isDestroyed()) {
+          event.sender.send(IPC_CHANNELS.llmExecutionEvent, {
+            ...identity, type: 'ERROR', sequence: nextExecutionSequence, emittedAt: Date.now(),
+            error: { code: 'INTERNAL_ERROR', message: 'LLM 请求失败', retryable: false }
+          })
+        }
+      } catch (cleanupError) {
+        console.error('[LLM] Failed to clean up or report execution failure', cleanupError)
+      }
+    })
     return identity
   })
   ipcMain.handle(IPC_CHANNELS.cancelLlmExecution, (event, requestId: unknown) => {
@@ -1825,7 +1863,7 @@ function registerIpcHandlers(): void {
       }
       return { ok: true, cancelled: false, path, importResult, error: null }
     } catch (error) {
-      return { ok: false, cancelled: false, path: null, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, cancelled: false, path: null, error: formatIpcErrorMessage(error) }
     }
   })
   ipcMain.handle(IPC_CHANNELS.exportOpml, async (event, attachInfo?: unknown) => {
@@ -1843,11 +1881,11 @@ function registerIpcHandlers(): void {
       await writeFile(selected.filePath, content, 'utf8')
       return { ok: true, cancelled: false, path: selected.filePath, error: null }
     } catch (error) {
-      return { ok: false, cancelled: false, path: null, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, cancelled: false, path: null, error: formatIpcErrorMessage(error) }
     }
   })
   ipcMain.handle(IPC_CHANNELS.exportConfigurationBackup, async (event, password?: unknown) => {
-    assertTrustedSender(event);if(!configurationBackupService)throw new Error('Backup service is not ready');try{const content=configurationBackupService.exportBackup(password===undefined?'':validateOptionalText(password,'password',1_024));const selected=await showSaveDialog({title:'导出 OrigRead 配置备份',defaultPath:`OrigRead-Configuration-${new Date().toISOString().slice(0,10)}.json`,filters:[{name:'OrigRead JSON Backup',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};await writeFile(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
+    assertTrustedSender(event);if(!configurationBackupService)throw new Error('Backup service is not ready');try{const content=configurationBackupService.exportBackup(password===undefined?'':validateOptionalText(password,'password',1_024));const selected=await showSaveDialog({title:'导出 OrigRead 配置备份',defaultPath:`OrigRead-Configuration-${new Date().toISOString().slice(0,10)}.json`,filters:[{name:'OrigRead JSON Backup',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};await writeFile(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:formatIpcErrorMessage(error)}}
   })
   ipcMain.handle(IPC_CHANNELS.restoreConfigurationBackup, async (event, password?: unknown) => {
     assertTrustedSender(event)
@@ -1867,13 +1905,13 @@ function registerIpcHandlers(): void {
       mcpToolRuntimeBridge?.sync()
       periodicSyncScheduler?.reconfigure()
       return{ok:true,cancelled:false,path,restoreResult,error:null}
-    }catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
+    }catch(error){return{ok:false,cancelled:false,path:null,error:formatIpcErrorMessage(error)}}
   })
   ipcMain.handle(IPC_CHANNELS.importRuleFile, async (event, kind: unknown) => {
-    assertTrustedSender(event);const ruleKind=validateRuleKind(kind);try{const selected=await showOpenDialog({title:'导入 OrigRead 规则',properties:['openFile'],filters:[{name:'JSON',extensions:['json']}]});if(selected.canceled||!selected.filePaths[0])return{ok:false,cancelled:true,count:0,error:null};const content=await readFile(selected.filePaths[0],'utf8');const count=ruleKind==='website'?websiteRuleRepository!.importRules(content):ruleKind==='json'?jsonRuleRepository!.importRules(content):articleFilterRepository!.importRules(content);return{ok:true,cancelled:false,count,error:null}}catch(error){return{ok:false,cancelled:false,count:0,error:error instanceof Error?error.message:String(error)}}
+    assertTrustedSender(event);const ruleKind=validateRuleKind(kind);try{const selected=await showOpenDialog({title:'导入 OrigRead 规则',properties:['openFile'],filters:[{name:'JSON',extensions:['json']}]});if(selected.canceled||!selected.filePaths[0])return{ok:false,cancelled:true,count:0,error:null};const content=await readFile(selected.filePaths[0],'utf8');const count=ruleKind==='website'?websiteRuleRepository!.importRules(content):ruleKind==='json'?jsonRuleRepository!.importRules(content):articleFilterRepository!.importRules(content);return{ok:true,cancelled:false,count,error:null}}catch(error){return{ok:false,cancelled:false,count:0,error:formatIpcErrorMessage(error)}}
   })
   ipcMain.handle(IPC_CHANNELS.exportRuleFile, async (event, kind: unknown) => {
-    assertTrustedSender(event);const ruleKind=validateRuleKind(kind);try{const content=ruleKind==='website'?websiteRuleRepository!.exportRules():ruleKind==='json'?jsonRuleRepository!.exportRules():articleFilterRepository!.exportRules();const selected=await showSaveDialog({title:'导出 OrigRead 规则',defaultPath:`OrigRead-${ruleKind}-rules.json`,filters:[{name:'JSON',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};await writeFile(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:error instanceof Error?error.message:String(error)}}
+    assertTrustedSender(event);const ruleKind=validateRuleKind(kind);try{const content=ruleKind==='website'?websiteRuleRepository!.exportRules():ruleKind==='json'?jsonRuleRepository!.exportRules():articleFilterRepository!.exportRules();const selected=await showSaveDialog({title:'导出 OrigRead 规则',defaultPath:`OrigRead-${ruleKind}-rules.json`,filters:[{name:'JSON',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};await writeFile(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:formatIpcErrorMessage(error)}}
   })
   ipcMain.handle(IPC_CHANNELS.openOriginalArticle, (event, url: unknown, bounds: unknown) => {
     assertTrustedSender(event)
@@ -2434,7 +2472,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   settingsRepository = new SettingsRepository(desktopDatabase.connection)
   releaseUpdateService = new ReleaseUpdateService(
     (input, init) => net.fetch(input, init),
-    process.env.ORIGREAD_UPDATE_API_BASE || 'https://api.github.com'
+    runtimeOverrides.updateApiBase
   )
   readerFontRepository = new ReaderFontRepository(join(app.getPath('userData'), 'reader-fonts'))
   protocol.handle('origread-font', async (request: Request) => {
@@ -2479,6 +2517,7 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
       (server) => mcpRemoteRepository!.runtimeAuth(server.id),
       (server) => createMcpOAuthProviderSession({
         serverId: server.id,
+        serverUrl: server.url,
         clientName: 'OrigRead Desktop',
         secrets: secretStore,
         openExternal: (url) => shell.openExternal(validateExternalHttpUrl(url))
@@ -2634,11 +2673,12 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     () => {
       const account = accountRepository?.current()
       return !account?.syncOnlyWhenCharging || !powerMonitor.isOnBatteryPower()
-    }
+    },
+    () => accountRepository?.currentId() ?? 1
   )
   registerIpcHandlers()
   createMainWindow()
-  if (process.env.ORIGREAD_DISABLE_PERIODIC_SYNC !== '1') periodicSyncScheduler.start()
+  if (!runtimeOverrides.disablePeriodicSync) periodicSyncScheduler.start()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -2658,64 +2698,85 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   app.quit()
 })
 
+function cancelAccountTasks(): void {
+  activeFullContentRequest?.controller.abort()
+  activeFullContentRequest = null
+  activeTranslationRequest?.controller.abort()
+  activeTranslationRequest = null
+  stopListTranslationRequests()
+  activeAiSummaryRequest?.controller.abort()
+  activeAiSummaryRequest = null
+  for (const controller of activeSourceDiscoveryRequests.values()) controller.abort()
+  activeSourceDiscoveryRequests.clear()
+  llmExecutionRegistry.cancelAll('Account changed or application shutting down')
+}
+
 let applicationShutdownStarted = false
 app.on('before-quit', (event) => {
   if (applicationShutdownStarted) return
   event.preventDefault()
   applicationShutdownStarted = true
   void (async () => {
-    await Promise.allSettled([
-      mcpRemoteClientManager?.disconnectAll(),
-      mcpLocalClientManager?.disconnectAll()
-    ])
-    manualToolContextService = null
-    mcpToolRuntimeBridge = null
-    mcpToolCatalogService = null
-    mcpCombinedRuntime = null
-    mcpLocalClientManager = null
-    mcpLocalRepository = null
-    mcpRemoteClientManager = null
-    mcpRemoteRepository = null
-    periodicSyncScheduler?.stop()
-    periodicSyncScheduler = null
-    originalArticleViewController?.dispose()
-    originalArticleViewController = null
-    mainWindow = null
-    activeTranslationRequest?.controller.abort()
-    stopListTranslationRequests()
-    await translationService?.dispose()
-    desktopDatabase?.close()
-    desktopDatabase = null
-    libraryRepository = null
-    settingsRepository = null
-    readerFontRepository = null
-    rssSubscriptionService = null
-    rssHubSettingsRepository = null
-    rssHubResolver = null
-    jsonSubscriptionService = null
-    jsonSourceRepairService = null
-    jsonSourceService = null
-    jsonRuleRepository = null
-    websiteSubscriptionService = null
-    websiteSourceService = null
-    websitePreferenceRepository = null
-    websiteRuleRepository = null
-    sourceDiscoveryService = null
-    sourceSyncService = null
-    readerContentService = null
-    articleFullContentService = null
-    rssHubSubscriptionService = null
-    aiSettingsRepository = null
-    aiSummaryService = null
-    translationSettingsRepository = null
-    translationService = null
-    articleFilterRepository = null
-    configurationBackupService = null
-    opmlService = null
-    feedDiscoveryCatalog = null
-    aiRuleGenerationService = null
-    app.quit()
-  })()
+    try {
+      periodicSyncScheduler?.stop()
+      cancelAccountTasks()
+      const results = await Promise.allSettled([
+        withShutdownTimeout(() => mcpRemoteClientManager?.disconnectAll(), 4_000),
+        withShutdownTimeout(() => mcpLocalClientManager?.disconnectAll(), 4_000),
+        withShutdownTimeout(() => translationService?.dispose(), 4_000)
+      ])
+      for (const result of results) {
+        if (result.status === 'rejected') console.warn('Application shutdown cleanup failed', result.reason)
+      }
+    } finally {
+      try {
+        manualToolContextService = null
+        mcpToolRuntimeBridge = null
+        mcpToolCatalogService = null
+        mcpCombinedRuntime = null
+        mcpLocalClientManager = null
+        mcpLocalRepository = null
+        mcpRemoteClientManager = null
+        mcpRemoteRepository = null
+        periodicSyncScheduler?.stop()
+        periodicSyncScheduler = null
+        originalArticleViewController?.dispose()
+        originalArticleViewController = null
+        mainWindow = null
+      } finally {
+        desktopDatabase?.close()
+      }
+      desktopDatabase = null
+      libraryRepository = null
+      settingsRepository = null
+      readerFontRepository = null
+      rssSubscriptionService = null
+      rssHubSettingsRepository = null
+      rssHubResolver = null
+      jsonSubscriptionService = null
+      jsonSourceRepairService = null
+      jsonSourceService = null
+      jsonRuleRepository = null
+      websiteSubscriptionService = null
+      websiteSourceService = null
+      websitePreferenceRepository = null
+      websiteRuleRepository = null
+      sourceDiscoveryService = null
+      sourceSyncService = null
+      readerContentService = null
+      articleFullContentService = null
+      rssHubSubscriptionService = null
+      aiSettingsRepository = null
+      aiSummaryService = null
+      translationSettingsRepository = null
+      translationService = null
+      articleFilterRepository = null
+      configurationBackupService = null
+      opmlService = null
+      feedDiscoveryCatalog = null
+      aiRuleGenerationService = null
+    }
+  })().catch(error => console.error('Application shutdown failed', error)).finally(() => app.quit())
 })
 
 app.on('window-all-closed', () => {

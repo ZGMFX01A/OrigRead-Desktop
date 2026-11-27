@@ -26,6 +26,7 @@ export interface ConfigurationBackup {
   rssHubDescriptors?: Record<string, RssHubSubscriptionDescriptor>
   translation: TranslationBackup
   ai: AiBackup
+  editionConfiguration?: unknown
   llm?: LlmBackup
   webSearch?: WebSearchBackup
   mcp?: McpBackup
@@ -121,6 +122,7 @@ export interface AiBackup {
 }
 export interface EncryptedBackupSecrets { kdf:'PBKDF2WithHmacSHA256';cipher:'AES-256-GCM';iterations:number;saltBase64:string;ivBase64:string;ciphertextBase64:string }
 export interface ConfigurationBackupSecrets {
+  editionSecrets?: unknown
   translationApiKeys:Partial<Record<TranslationProviderType,string>>
   aiApiKeys:Record<string,string>
   /** Optional so encrypted backups created before D5 remain readable. */

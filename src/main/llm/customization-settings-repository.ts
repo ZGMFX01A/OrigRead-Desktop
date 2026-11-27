@@ -1,3 +1,4 @@
+import { backupCorruptSetting, corruptSettingError } from '../storage/corrupt-settings'
 import type { DatabaseSync } from 'node:sqlite'
 import {
   DEFAULT_LLM_CUSTOMIZATION_SETTINGS,
@@ -15,7 +16,14 @@ export class LlmCustomizationSettingsRepository {
   current(): LlmCustomizationSettings {
     const row = this.database.prepare('SELECT value FROM app_settings WHERE key=?').get(SETTINGS_KEY) as { value: string } | undefined
     if (!row) return { ...DEFAULT_LLM_CUSTOMIZATION_SETTINGS }
-    try { return normalizeLlmCustomizationSettings(JSON.parse(row.value)) } catch { return { ...DEFAULT_LLM_CUSTOMIZATION_SETTINGS } }
+    try {
+      const value: unknown = JSON.parse(row.value)
+      const patch = normalizeLlmCustomizationSettingsPatch(value)
+      return normalizeLlmCustomizationSettings(patch)
+    } catch (error) {
+      const backup = backupCorruptSetting(this.database, SETTINGS_KEY, row.value)
+      throw corruptSettingError('LLM 自定义配置', backup, error)
+    }
   }
 
   update(value: LlmCustomizationSettingsPatch): LlmCustomizationSettings {

@@ -16,6 +16,17 @@ const dynamicRoute: RssHubRouteDefinition = {
 }
 
 describe('RssHubResolver Android parity', () => {
+  it('allows an explicitly tested self-hosted health endpoint but rejects its private redirect', async () => {
+    const database = new DesktopDatabase(':memory:')
+    const settings = new RssHubSettingsRepository(database.connection)
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response('ok')).mockResolvedValueOnce(new Response(null,{status:302,headers:{location:'https://127.0.0.1:4321/next'}}))
+    try {
+      const resolver = new RssHubResolver(new RssHubRouteMatcher([]),settings,undefined,{fetchImpl})
+      await expect(resolver.testConnection('http://127.0.0.1:1234')).resolves.toBeUndefined()
+      await expect(resolver.testConnection('http://127.0.0.1:1234')).rejects.toThrow('私网')
+      expect(fetchImpl).toHaveBeenCalledTimes(2)
+    } finally { database.close() }
+  })
   it('does not record a success if the caller cancels as the feed probe completes', async () => {
     const database = new DesktopDatabase(':memory:')
     const settings = new RssHubSettingsRepository(database.connection)
@@ -61,7 +72,7 @@ describe('RssHubResolver Android parity', () => {
       const resolver = new RssHubResolver(new RssHubRouteMatcher([]), settings)
       const result = await resolver.probeRoute('/bilibili/user/dynamic/42')
       expect(result[0]?.available).toBe(true)
-      expect(fetcher.mock.calls.map((call) => (call as unknown[])[0])).toEqual([`${instance}/bilibili/user/dynamic/42`])
+      expect(fetcher.mock.calls.map((call) => String((call as unknown[])[0]))).toEqual([`${instance}/bilibili/user/dynamic/42`])
       expect(result[0]?.feed?.sourcePageUrl).toBe(`${instance}/bilibili/user/dynamic/42`)
     } finally {
       vi.unstubAllGlobals()

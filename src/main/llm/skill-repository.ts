@@ -1,3 +1,4 @@
+import { backupCorruptSetting, corruptSettingError } from '../storage/corrupt-settings'
 import type { DatabaseSync } from 'node:sqlite'
 import * as unzipper from 'unzipper'
 import {
@@ -51,13 +52,14 @@ export class LlmSkillRepository {
 
   current(): LlmSkillState {
     const primary = this.readSetting(SKILL_STATE_KEY)
-    if (primary) {
-      const decoded = tryDecodeState(primary)
-      if (decoded) return cloneState(decoded)
+    if (primary === null) return emptyLlmSkillState()
+    try { return cloneState(decodeState(primary)) } catch (error) {
+      const corruptKey = backupCorruptSetting(this.database, SKILL_STATE_KEY, primary)
+      const backup = this.readSetting(SKILL_STATE_BACKUP_KEY)
+      const recovered = backup === null ? null : tryDecodeState(backup)
+      if (!recovered) throw corruptSettingError('Skill 状态及备份', corruptKey, error)
+      return cloneState(recovered)
     }
-    const backup = this.readSetting(SKILL_STATE_BACKUP_KEY)
-    const recovered = backup ? tryDecodeState(backup) : null
-    return recovered ? cloneState(recovered) : emptyLlmSkillState()
   }
 
   enabledSkills(): LlmSkillRecord[] {
@@ -228,11 +230,20 @@ async function parseSkillZip(bytes: Buffer): Promise<ImportedLlmSkill> {
   } catch {
     throw new LlmSkillFormatError('无法读取 Skill ZIP 文件')
   }
-  const files = directory.files.filter((entry) => entry.type === 'File')
-  if (files.length > MAX_LLM_SKILL_ARCHIVE_ENTRIES) throw new LlmSkillFormatError('Skill 包文件数量过多')
+  if (directory.files.length > MAX_LLM_SKILL_ARCHIVE_ENTRIES) throw new LlmSkillFormatError('Skill 包文件数量过多')
   const normalized = new Map<string, unzipper.File>()
   let declaredBytes = 0
-  for (const entry of files) {
+  for (const entry of directory.files) {
+    const attributes = entry as unzipper.File & { vars?: { externalFileAttributes?: number } }
+    if (String(entry.type) === 'SymbolicLink' || ((((attributes.vars?.externalFileAttributes ?? entry.externalFileAttributes) ?? 0) >>> 16) & 0o170000) === 0o120000) {
+      throw new LlmSkillFormatError('Skill 包不允许包含符号链接')
+    }
+    if (entry.type === 'Directory') {
+      const directoryPath = entry.path.replace(/[\\/]+$/, '')
+      if (directoryPath) normalizeArchivePath(directoryPath)
+      continue
+    }
+    if (entry.type !== 'File') continue
     const path = normalizeArchivePath(entry.path)
     if (normalized.has(path)) throw new LlmSkillFormatError(`Skill 包存在重复路径：${path}`)
     declaredBytes += Math.max(0, Number(entry.uncompressedSize) || 0)
@@ -246,6 +257,7 @@ async function parseSkillZip(bytes: Buffer): Promise<ImportedLlmSkill> {
   if (skillPaths.length !== 1) throw new LlmSkillFormatError('Skill 包必须且只能包含一个 SKILL.md')
   const skillPath = skillPaths[0]!
   const root = skillPath.slice(0, -'SKILL.md'.length).replace(/\/$/, '')
+  if (root && [...normalized.keys()].some((path) => !path.startsWith(`${root}/`))) throw new LlmSkillFormatError('Skill 包包含超出根目录的文件')
   const markdown = decodeUtf8(await boundedEntryBuffer(normalized.get(skillPath)!, MAX_LLM_SKILL_ARCHIVE_BYTES), skillPath)
   const parsed = parseLlmSkillMarkdown(markdown)
   if (root && root.split('/').at(-1) !== parsed.name) throw new LlmSkillFormatError('SKILL.md name 必须与所在目录名一致')
@@ -257,10 +269,10 @@ async function parseSkillZip(bytes: Buffer): Promise<ImportedLlmSkill> {
   for (const [path, entry] of normalized) {
     if (path === skillPath) continue
     const relative = root ? path.startsWith(`${root}/`) ? path.slice(root.length + 1) : null : path
-    if (relative === null) continue
+    if (relative === null) throw new LlmSkillFormatError('Skill 包包含超出根目录的文件')
     if (relative.startsWith('scripts/')) { hasScripts = true; continue }
     if (!isSafeTextResource(relative)) continue
-    const buffer = await boundedEntryBuffer(entry, MAX_LLM_SKILL_ARCHIVE_BYTES - actualBytes)
+    const buffer = await boundedEntryBuffer(entry, Math.min(MAX_LLM_SKILL_ARCHIVE_BYTES - actualBytes, MAX_LLM_SKILL_RESOURCE_CHARACTERS * 4))
     actualBytes += buffer.byteLength
     if (actualBytes > MAX_LLM_SKILL_ARCHIVE_BYTES) throw new LlmSkillFormatError('Skill 包实际解压内容过大')
     const content = decodeUtf8(buffer, relative)
@@ -276,9 +288,34 @@ async function parseSkillZip(bytes: Buffer): Promise<ImportedLlmSkill> {
 
 async function boundedEntryBuffer(entry: unzipper.File, remaining: number): Promise<Buffer> {
   if (remaining <= 0 || entry.uncompressedSize > remaining) throw new LlmSkillFormatError('Skill 包解压内容超过安全上限')
-  const buffer = await entry.buffer()
-  if (buffer.byteLength > remaining) throw new LlmSkillFormatError('Skill 包解压内容超过安全上限')
-  return buffer
+  return new Promise<Buffer>((resolve, reject) => {
+    const stream = entry.stream()
+    const chunks: Buffer[] = []
+    let totalBytes = 0
+    let settled = false
+    stream.on('error', () => {
+      if (settled) return
+      settled = true
+      reject(new LlmSkillFormatError('无法读取 Skill ZIP 文件条目'))
+    })
+    stream.on('data', (chunk: Buffer | Uint8Array) => {
+      if (settled) return
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      totalBytes += buffer.byteLength
+      if (totalBytes > remaining) {
+        settled = true
+        stream.destroy()
+        reject(new LlmSkillFormatError('Skill 包解压内容超过安全上限'))
+        return
+      }
+      chunks.push(buffer)
+    })
+    stream.on('end', () => {
+      if (settled) return
+      settled = true
+      resolve(Buffer.concat(chunks, totalBytes))
+    })
+  })
 }
 
 function normalizeArchivePath(raw: string): string {
@@ -340,7 +377,14 @@ function validateState(state: LlmSkillState): void {
     if (typeof skill.instructions !== 'string' || !skill.instructions.trim() || skill.instructions.length > MAX_BACKUP_INSTRUCTION_CHARACTERS) throw new Error(`Skill 指令大小无效：${skill.id}`)
     if (typeof skill.enabled !== 'boolean' || typeof skill.hasScripts !== 'boolean') throw new Error(`Skill 状态无效：${skill.id}`)
     if (!Array.isArray(skill.resources) || skill.resources.length > MAX_LLM_SKILL_ARCHIVE_ENTRIES) throw new Error(`Skill 文本资源数量过多：${skill.id}`)
-    if (skill.resources.some((resource) => !resource?.path || typeof resource.content !== 'string' || resource.content.length > MAX_LLM_SKILL_RESOURCE_CHARACTERS)) throw new Error(`Skill 文本资源无效：${skill.id}`)
+    const paths = new Set<string>()
+    for (const resource of skill.resources) {
+      if (typeof resource?.path !== 'string' || typeof resource.content !== 'string' || resource.content.length > MAX_LLM_SKILL_RESOURCE_CHARACTERS) throw new Error('Skill 文本资源路径无效')
+      let canonical: string
+      try { canonical = normalizeArchivePath(resource.path) } catch { throw new Error('Skill 文本资源路径无效') }
+      if (canonical !== resource.path || resource.path.startsWith('scripts/') || !isSafeTextResource(resource.path) || paths.has(resource.path)) throw new Error('Skill 文本资源路径无效')
+      paths.add(resource.path)
+    }
     if (skill.resources.reduce((sum, resource) => sum + resource.content.length, 0) > MAX_LLM_SKILL_TOTAL_RESOURCE_CHARACTERS) throw new Error(`Skill 文本资源过大：${skill.id}`)
     if (typeof skill.contentHash !== 'string' || !/^[a-f0-9]{64}$/.test(skill.contentHash)) throw new Error(`Skill contentHash 无效：${skill.id}`)
     if (!Number.isFinite(skill.installedAt) || !Number.isFinite(skill.updatedAt)) throw new Error(`Skill 时间戳无效：${skill.id}`)

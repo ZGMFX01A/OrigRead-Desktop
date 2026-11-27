@@ -20,3 +20,17 @@ describe('LlmCustomizationSettingsRepository', () => {
     }
   })
 })
+
+
+it.each(['{broken', 'null', '[]', '{"skillsEnabled":"false"}', '{"customInstructions":123}'])('backs up corrupt customization without changing it: %s', (raw) => {
+  const database = new DatabaseSync(':memory:')
+  database.exec('CREATE TABLE app_settings (key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at INTEGER NOT NULL)')
+  try {
+    database.prepare('INSERT INTO app_settings VALUES (?,?,0)').run('llm.customization', raw)
+    const repository = new LlmCustomizationSettingsRepository(database)
+    expect(() => repository.current()).toThrow(/损坏.*corrupt/)
+    expect(() => repository.update({ customInstructions: 'replacement' })).toThrow(/损坏/)
+    expect(database.prepare('SELECT value FROM app_settings WHERE key=?').get('llm.customization')).toEqual({ value: raw })
+    expect(database.prepare("SELECT value FROM app_settings WHERE key LIKE 'llm.customization.corrupt.%'").all()).toEqual([{ value: raw }])
+  } finally { database.close() }
+})

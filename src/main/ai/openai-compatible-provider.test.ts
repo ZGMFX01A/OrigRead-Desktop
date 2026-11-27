@@ -1,5 +1,5 @@
 import { createServer } from 'node:http'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OpenAiCompatibleProvider, chatEndpoint, modelsEndpoint } from './openai-compatible-provider'
 
 const servers: ReturnType<typeof createServer>[] = []
@@ -267,3 +267,124 @@ describe('OpenAiCompatibleProvider Android parity', () => {
   })
 })
 
+
+describe('streaming idle deadlines', () => {
+  it('allows continuous SSE output beyond the timeout and times out only stalled reads', async () => {
+    vi.useFakeTimers()
+    let controller!: ReadableStreamDefaultController<Uint8Array>
+    const cancel = vi.fn()
+    const body = new ReadableStream<Uint8Array>({ start(value) { controller = value }, cancel })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body)))
+    const encoder = new TextEncoder()
+    const config = { endpoint: 'https://example.com', model: 'm', apiKey: '', requestTimeoutMs: 50 }
+    try {
+      const running = new OpenAiCompatibleProvider().streamChatDetailed([{ role: 'user', content: 'hi' }], config, () => undefined)
+      for (let i = 0; i < 6; i += 1) {
+        await vi.advanceTimersByTimeAsync(20)
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"x"}}]}\n\n'))
+      }
+      controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+      controller.close()
+      await expect(running).resolves.toMatchObject({ content: 'xxxxxx' })
+      expect(cancel).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+
+      const stalled = new ReadableStream<Uint8Array>({ cancel })
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(stalled))
+      const failure = new OpenAiCompatibleProvider().streamChatDetailed([{ role: 'user', content: 'hi' }], config, () => undefined)
+      const assertion = expect(failure).rejects.toMatchObject({
+        name: 'Error', message: 'AI 流式响应超时，服务长时间未返回新数据'
+      })
+      await vi.advanceTimersByTimeAsync(51)
+      await assertion
+      expect(cancel).toHaveBeenCalledOnce()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.unstubAllGlobals()
+      vi.useRealTimers()
+    }
+  })
+
+  it('applies idle timeouts to stalled HTTP error bodies', async () => {
+    vi.useFakeTimers()
+    const cancel = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream({ cancel }), { status: 503 })))
+    try {
+      const running = new OpenAiCompatibleProvider().streamChatDetailed(
+        [{ role: 'user', content: 'hi' }],
+        { endpoint: 'https://example.com', model: 'm', apiKey: '', requestTimeoutMs: 50 }, () => undefined
+      )
+      const assertion = expect(running).rejects.toMatchObject({ name: 'Error', message: 'AI 流式响应超时，服务长时间未返回新数据' })
+      await vi.advanceTimersByTimeAsync(51)
+      await assertion
+      expect(cancel).toHaveBeenCalledOnce()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.unstubAllGlobals(); vi.useRealTimers() }
+  })
+
+  it('preserves provider HTTP details after reading a complete error body', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":{"message":"service unavailable"}}', { status: 503 })))
+    try {
+      await expect(new OpenAiCompatibleProvider().streamChatDetailed(
+        [{ role: 'user', content: 'hi' }],
+        { endpoint: 'https://example.com', model: 'm', apiKey: '' }, () => undefined
+      )).rejects.toThrow('AI 服务暂时不可用（HTTP 503）：service unavailable')
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('keeps a real fetch stream alive while chunks arrive beyond the connection deadline', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.flushHeaders()
+      let chunks = 0
+      const timer = setInterval(() => {
+        response.write('data: {"choices":[{"delta":{"content":"x"}}]}\n\n')
+        chunks += 1
+        if (chunks === 8) {
+          clearInterval(timer)
+          response.end('data: [DONE]\n\n')
+        }
+      }, 50)
+      response.on('close', () => clearInterval(timer))
+    })
+    servers.push(server)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('no port')
+    const result = await new OpenAiCompatibleProvider().streamChatDetailed(
+      [{ role: 'user', content: 'hi' }],
+      { endpoint: `http://127.0.0.1:${address.port}`, model: 'm', apiKey: '', requestTimeoutMs: 200 },
+      () => undefined
+    )
+    expect(result.content).toBe('xxxxxxxx')
+  })
+
+  it('cancels stalled mock streams with the external signal and removes its listener', async () => {
+    const abort = new AbortController()
+    const remove = vi.spyOn(abort.signal, 'removeEventListener')
+    const cancel = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream({ cancel }))))
+    try {
+      const running = new OpenAiCompatibleProvider().streamChatDetailed(
+        [{ role: 'user', content: 'hi' }], { endpoint: 'https://example.com', model: 'm', apiKey: '' },
+        () => undefined, [], abort.signal
+      )
+      await Promise.resolve()
+      abort.abort()
+      await expect(running).rejects.toMatchObject({ name: 'AbortError' })
+      expect(cancel).toHaveBeenCalledOnce()
+      expect(remove).toHaveBeenCalledWith('abort', expect.any(Function))
+    } finally { vi.unstubAllGlobals() }
+  })
+})
+
+ it.each(['/api/paas/v4', '/api/v3'])('preserves explicit gateway %s', (path) => {
+   expect(chatEndpoint(`https://example.com${path}`)).toBe(`https://example.com${path}/chat/completions`)
+   expect(modelsEndpoint(`https://example.com${path}`)).toBe(`https://example.com${path}/models`)
+ })
+ it('rejects reasoning-only streaming responses', async () => {
+   const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('data: {"choices":[{"delta":{"reasoning_content":"thinking"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'))
+   try {
+     await expect(new OpenAiCompatibleProvider().streamDetailed('s', 'u', { endpoint: 'https://example.com', model: 'm', apiKey: '' }, () => {})).rejects.toThrow('AI 流式响应未返回有效正文内容')
+   } finally { spy.mockRestore() }
+ })

@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { ArticleRecord, FeedRecord } from '../../shared/library'
 import { DesktopDatabase } from './database'
 import { LibraryRepository } from './library-repository'
+import { AccountRepository } from '../accounts/account-repository'
+import { MemorySecretStore } from '../security/secret-store'
 import { CURRENT_SCHEMA_VERSION, DEFAULT_GROUP_ID } from './migrations'
 import { ORIGREAD_DESKTOP_RELEASE_FEED_URL } from '../../shared/origread-release'
 
@@ -17,6 +19,34 @@ afterEach(() => {
 })
 
 describe('LibraryRepository', () => {
+  it('constrains article deletion to the captured account even for an identical feed reference', () => {
+    const database = new DesktopDatabase(':memory:')
+    const repository = new LibraryRepository(database.connection)
+    const accounts = new AccountRepository(database.connection, new MemorySecretStore())
+    try {
+      const feed = { ...createFeed(), accountId: 1 }
+      repository.upsertFeed(feed)
+      repository.upsertArticle({ ...createArticle(feed.id), id: 'owned', accountId: 1 })
+      const other = accounts.add({ type: 'local' })
+      // Legacy/inconsistent rows may share a feed_id: DELETE must still include account_id.
+      repository.upsertArticle({ ...createArticle(feed.id), id: 'foreign', accountId: other.id })
+      repository.deleteArticlesByFeed(feed.id, true)
+      expect(repository.getArticleByIdForAccount(1, 'owned')).not.toBeNull()
+      expect(repository.getArticleByIdForAccount(other.id, 'foreign')).toBeNull()
+      repository.upsertArticle({ ...createArticle(feed.id), id: 'foreign', accountId: other.id })
+      repository.deleteArticlesByFeed(feed.id, true, 1)
+      expect(repository.getArticleByIdForAccount(1, 'owned')).toBeNull()
+      expect(repository.getArticleByIdForAccount(other.id, 'foreign')).not.toBeNull()
+      repository.upsertWebsiteFeedWithArticles(feed, [], ['foreign'])
+      expect(repository.getArticleByIdForAccount(other.id, 'foreign')).not.toBeNull()
+      const otherFeed = { ...createFeed('other-feed'), accountId: other.id, groupId: repository.getCurrentDefaultGroup().id }
+      repository.upsertFeed(otherFeed)
+      repository.upsertArticle({ ...createArticle(otherFeed.id), id: 'other-owned', accountId: other.id })
+      repository.upsertWebsiteFeedWithArticles(otherFeed, [], ['other-owned'])
+      expect(repository.getArticleByIdForAccount(other.id, 'other-owned')).toBeNull()
+    } finally { database.close() }
+  })
+
   it('keeps list payloads small while retaining full bodies for reading and synchronization', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)

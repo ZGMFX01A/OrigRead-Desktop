@@ -1,3 +1,5 @@
+import { safeFetch, type SafeFetchOptions } from '../../network/safe-fetch'
+import { MAX_RSS_RESPONSE_BYTES, readResponseBytes } from '../../network/safe-response-reader'
 import type { DiscoveredRssFeed } from '../../../shared/rss'
 import type { RssHubCandidateState, RssHubFailureReason, RssHubProbeResult, RssHubRouteMatch } from '../../../shared/rsshub'
 import { RssDiscoveryService, type RssFetchPayload, type RssRequestValidators } from '../rss/rss-discovery-service'
@@ -35,12 +37,14 @@ export class FeedFetchError extends Error {
 
 export class RssHubResolver {
   static readonly DEFAULT_INSTANCE = 'https://rsshub.app'
+  private readonly feedProbe: RssHubFeedProbe
 
   constructor(
     private readonly routeMatcher: RssHubRouteMatcher,
     private readonly settingsRepository: RssHubSettingsRepository,
-    private readonly feedProbe: RssHubFeedProbe = createDefaultFeedProbe()
-  ) {}
+    feedProbe: RssHubFeedProbe | undefined = undefined,
+    private readonly safeFetchOptions: SafeFetchOptions = {}
+  ) { this.feedProbe = feedProbe ?? createDefaultFeedProbe(() => this.knownInstanceUrls(), this.safeFetchOptions) }
 
   isEnabled(): boolean {
     return this.settingsRepository.current().enabled
@@ -303,10 +307,11 @@ export class RssHubResolver {
   async testConnection(instanceBaseUrl: string): Promise<void> {
     const normalized = normalizeRssHubInstanceUrl(instanceBaseUrl)
     if (!normalized) throw new TypeError(`无效的 RSSHub 实例地址：${instanceBaseUrl}`)
-    const response = await fetch(`${normalized}/healthz`, {
+    const response = await safeFetch(`${normalized}/healthz`, {
       redirect: 'follow',
       signal: AbortSignal.timeout(HEALTH_TIMEOUT_MILLIS)
-    })
+    }, { ...this.safeFetchOptions, allowLoopbackHttp: false, allowedInitialOrigins: new Set([new URL(normalized).origin]) })
+    await readResponseBytes(response, MAX_RSS_RESPONSE_BYTES)
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
   }
 
@@ -382,27 +387,28 @@ export class RssHubResolver {
   }
 }
 
-function createDefaultFeedProbe(): RssHubFeedProbe {
+function createDefaultFeedProbe(instances: () => string[], options: SafeFetchOptions): RssHubFeedProbe {
   // A logical route is not a website URL. Icon discovery is decorative and must not
   // consume the probe budget or leave requests running after peers are cancelled.
-  const discovery = new RssDiscoveryService(fetchRssHubPayload)
+  const discovery = new RssDiscoveryService((url, validators, signal) => fetchRssHubPayload(url, validators, signal, { ...options, allowLoopbackHttp: false, allowedInitialOrigins: new Set(instances().map(instance => new URL(instance).origin)) }))
   return (feedUrl, _sourceUrl, signal) => discovery.parseDirect(feedUrl, { sourcePageUrl: feedUrl, signal, skipIconDiscovery: true })
 }
 
-async function fetchRssHubPayload(
+export async function fetchRssHubPayload(
   url: string,
   _validators: RssRequestValidators = {},
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: SafeFetchOptions = {}
 ): Promise<RssFetchPayload> {
   let response: Response
   try {
-    response = await fetch(url, {
+    response = await safeFetch(url, {
       redirect: 'follow',
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(CALL_TIMEOUT_MILLIS)]) : AbortSignal.timeout(CALL_TIMEOUT_MILLIS),
       headers: {
         Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.8'
       }
-    })
+    }, options)
   } catch (error) {
     throw error
   }
@@ -411,7 +417,7 @@ async function fetchRssHubPayload(
     throw new FeedFetchError('blocked', response.status, 'Feed request blocked by an anti-bot challenge')
   }
 
-  const bytes = new Uint8Array(await response.arrayBuffer())
+  const bytes = await readResponseBytes(response, MAX_RSS_RESPONSE_BYTES, signal)
   const preview = new TextDecoder('utf-8', { fatal: false }).decode(bytes.slice(0, 65536))
   const feedRoot = /(?:<\?.*?\?>|<!--.*?-->|\s)*<(?:rss|(?:[\w-]+:)?feed|(?:[\w-]+:)?RDF)\b/i.test(preview)
   const contentType = response.headers.get('content-type') || ''

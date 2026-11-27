@@ -20,10 +20,10 @@ export class SqliteLibraryWriter {
     return Number(result.changes)
   }
 
-  deleteArticlesByFeed(feedId: string, includeStarred = false): void {
+  deleteArticlesByFeed(feedId: string, includeStarred = false, accountId = this.library.getCurrentAccountId()): void {
     this.database
-      .prepare(`DELETE FROM articles WHERE feed_id = ?${includeStarred ? '' : ' AND is_starred = 0'}`)
-      .run(feedId)
+      .prepare(`DELETE FROM articles WHERE feed_id = ? AND account_id = ?${includeStarred ? '' : ' AND is_starred = 0'}`)
+      .run(feedId, accountId)
   }
 
   upsertArticle(article: ArticleRecord): void {

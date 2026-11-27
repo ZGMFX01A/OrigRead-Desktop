@@ -79,6 +79,7 @@ export class OpenAiCompatibleProvider {
       signal
     )
     if (!result.content.trim()) throw new Error('AI 服务没有返回有效内容')
+    if (!result.content.trim()) throw new Error('AI 流式响应未返回有效正文内容')
     return { content: result.content, reasoning: result.reasoning }
   }
 
@@ -127,6 +128,7 @@ export class OpenAiCompatibleProvider {
       [],
       signal
     )
+    if (!result.content.trim()) throw new Error('AI 流式响应未返回有效正文内容')
     return { content: result.content, reasoning: result.reasoning }
   }
 
@@ -141,16 +143,27 @@ export class OpenAiCompatibleProvider {
     validateChatMessages(messages)
     const requestStartedAt = performance.now()
     emitTiming(config.onTiming, 'request_start', 0)
-    const response = await fetch(chatEndpoint(config.endpoint), {
-      method: 'POST',
-      headers: { ...headers(config.apiKey), Accept: 'text/event-stream, application/json' },
-      body: JSON.stringify(chatCompletionRequestBody(messages, config, true, tools)),
-      signal: requestSignal(signal, config.requestTimeoutMs ?? NETWORK_REQUEST_TIMEOUT_MS.AI_STREAMING)
-    })
+    const connectController = new AbortController()
+    const connectTimer = setTimeout(() => connectController.abort(
+      new DOMException('AI connection timed out', 'TimeoutError')
+    ), config.requestTimeoutMs ?? NETWORK_REQUEST_TIMEOUT_MS.AI_STREAMING_CONNECT)
+    let response: Response
+    try {
+      response = await fetch(chatEndpoint(config.endpoint), {
+        method: 'POST',
+        headers: { ...headers(config.apiKey), Accept: 'text/event-stream, application/json' },
+        body: JSON.stringify(chatCompletionRequestBody(messages, config, true, tools)),
+        signal: signal ? AbortSignal.any([signal, connectController.signal]) : connectController.signal
+      })
+    } finally {
+      clearTimeout(connectTimer)
+    }
     emitTiming(config.onTiming, 'TTFB', performance.now() - requestStartedAt)
 
     if (!response.ok) {
-      const body = await response.text()
+      const body = response.body
+        ? await readResponseText(response.body, signal, config.requestTimeoutMs ?? NETWORK_REQUEST_TIMEOUT_MS.AI_STREAMING_IDLE)
+        : ''
       ensureAiResponse(response.status, body)
     }
     if (!response.body) throw new Error('AI 服务返回了空响应')
@@ -159,7 +172,9 @@ export class OpenAiCompatibleProvider {
       onDelta,
       config.strictStreamTermination !== false,
       requestStartedAt,
-      config.onTiming
+      config.onTiming,
+      signal,
+      config.requestTimeoutMs ?? NETWORK_REQUEST_TIMEOUT_MS.AI_STREAMING_IDLE
     )
   }
 
@@ -194,7 +209,7 @@ export function chatEndpoint(value: string): string {
   if (endpoint.endsWith('/v1')) return `${endpoint}/chat/completions`
   const url = new URL(endpoint)
   if (url.pathname === '/' || url.pathname === '') return `${endpoint}/v1/chat/completions`
-  return `${endpoint}/v1/chat/completions`
+  return `${endpoint}/chat/completions`
 }
 
 export function modelsEndpoint(value: string): string {
@@ -205,7 +220,7 @@ export function modelsEndpoint(value: string): string {
   if (endpoint.endsWith('/v1')) return `${endpoint}/models`
   const url = new URL(endpoint)
   if (url.pathname === '/' || url.pathname === '') return `${endpoint}/v1/models`
-  return `${endpoint}/v1/models`
+  return `${endpoint}/models`
 }
 
 function headers(apiKey: string): Record<string, string> {
@@ -268,7 +283,9 @@ async function readStreamingChatCompletion(
   onDelta: AiChatCompletionDeltaListener,
   strictStreamTermination: boolean,
   requestStartedAt: number,
-  onTiming?: AiTransportTimingListener
+  onTiming: AiTransportTimingListener | undefined,
+  signal: AbortSignal | undefined,
+  idleTimeoutMs: number
 ): Promise<AiChatCompletionResult> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
@@ -333,7 +350,7 @@ async function readStreamingChatCompletion(
 
   try {
     while (true) {
-      const { value, done } = await reader.read()
+      const { value, done } = await readStreamChunk(reader, signal, idleTimeoutMs)
       if (done) break
       pending += decoder.decode(value, { stream: true })
       let newline = pending.indexOf('\n')
@@ -377,6 +394,50 @@ async function readStreamingChatCompletion(
   if (!finalContent && !finalReasoning && finalToolCalls.length === 0) throw new Error('AI 服务没有返回有效内容')
   if (finalToolCalls.some((call) => !call.id.trim() || !call.name.trim())) throw new Error('AI Tool Call 流式响应不完整')
   return { content: finalContent, reasoning: finalReasoning, finishReason, toolCalls: finalToolCalls }
+}
+
+/** Each read owns its idle deadline; there is no total generation deadline. */
+async function readStreamChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal | undefined,
+  idleTimeoutMs: number
+): ReturnType<ReadableStreamDefaultReader<Uint8Array>['read']> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let onAbort: (() => void) | undefined
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    const stop = (error: unknown): void => {
+      reject(error)
+      void reader.cancel().catch((cancelError) => {
+        console.error('[AI] Failed to cancel response stream', cancelError)
+      })
+    }
+    onAbort = () => stop(signal?.reason ?? new DOMException('Request cancelled', 'AbortError'))
+    if (signal?.aborted) { onAbort(); return }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    timer = setTimeout(() => stop(new Error('AI 流式响应超时，服务长时间未返回新数据')), idleTimeoutMs)
+  })
+  try {
+    return await Promise.race([interrupted, reader.read()])
+  } finally {
+    clearTimeout(timer)
+    if (onAbort) signal?.removeEventListener('abort', onAbort)
+  }
+}
+
+/** Error responses need the same idle bound as successful SSE bodies. */
+async function readResponseText(body: ReadableStream<Uint8Array>, signal: AbortSignal | undefined, idleTimeoutMs: number): Promise<string> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let text = ''
+  try {
+    while (true) {
+      const { value, done } = await readStreamChunk(reader, signal, idleTimeoutMs)
+      if (done) return text + decoder.decode()
+      text += decoder.decode(value, { stream: true })
+    }
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 function parseCompletionStreamPayload(payload: string): AiChatCompletionDelta | null {

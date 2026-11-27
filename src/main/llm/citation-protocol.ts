@@ -231,5 +231,5 @@ export function stripHistoricalCitationProtocolTokens(content: string): string {
 }
 
 function quoteAttribute(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  return JSON.stringify(value)
 }

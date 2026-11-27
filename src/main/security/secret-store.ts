@@ -1,4 +1,6 @@
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { backupCorruptFileAndThrow, writeAtomicTextFile } from '../storage/atomic-json-file'
+import { redactSensitiveText } from './sensitive-text'
 import { safeStorage } from 'electron'
 
 export interface SecretStore {
@@ -15,12 +17,12 @@ export class ElectronSecretStore implements SecretStore {
 
   get(key: string): string {
     const encoded = this.load()[key]
-    if (!encoded) return ''
-    if (!safeStorage.isEncryptionAvailable()) throw new Error('系统安全存储当前不可用')
+    if (encoded === undefined || encoded === '') return ''
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('系统安全存储当前不可用，无法解密已保存凭据')
     try {
       return safeStorage.decryptString(Buffer.from(encoded, 'base64'))
-    } catch {
-      return ''
+    } catch (error) {
+      throw new Error(`无法解密已保存凭据：${redactSensitiveText(error instanceof Error ? error.message : String(error))}`)
     }
   }
 
@@ -56,18 +58,23 @@ export class ElectronSecretStore implements SecretStore {
   }
 
   private load(): Record<string, string> {
+    if (!existsSync(this.file)) return {}
+    const raw = readFileSync(this.file, 'utf8')
     try {
-      if (!existsSync(this.file)) return {}
-      const value = JSON.parse(readFileSync(this.file, 'utf8')) as unknown
-      return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, string> : {}
-    } catch {
-      return {}
+      const value: unknown = JSON.parse(raw)
+      if (!value || typeof value !== 'object' || Array.isArray(value)
+        || Object.getPrototypeOf(value) !== Object.prototype
+        || Object.values(value).some((item) => typeof item !== 'string')) {
+        throw new Error('密钥存储必须是字符串值的 plain object')
+      }
+      return value as Record<string, string>
+    } catch (error) {
+      backupCorruptFileAndThrow(this.file, '密钥存储文件', error)
     }
   }
 
   private write(value: Record<string, string>): void {
-    writeFileSync(this.file, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600 })
-    try { chmodSync(this.file, 0o600) } catch { /* safeStorage ciphertext remains protected if chmod is unsupported */ }
+    writeAtomicTextFile(this.file, JSON.stringify(value, null, 2), 0o600)
   }
 }
 

@@ -1,3 +1,5 @@
+import { rollbackSettingsAndSecrets } from '../storage/settings-rollback'
+import { isLoopbackHost } from '../network/safe-fetch'
 import { createHash, randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import type { SecretStore } from '../security/secret-store'
@@ -75,13 +77,11 @@ export class McpRemoteRepository implements McpToolCatalogRegistry {
     if (!existing) throw new Error('Remote MCP Server 不存在')
     const normalizedUrl = patch.url === undefined ? existing.url : normalizeUrl(patch.url)
     const nextAuthMode = patch.authMode === undefined ? existing.authMode : patch.authMode
+    assertRemoteServerTransportPolicy(normalizedUrl, nextAuthMode)
     const nextOAuthScopes = patch.oauthScopes === undefined ? existing.oauthScopes : normalizeOAuthScopes(patch.oauthScopes)
     const endpointChanged = normalizedUrl !== existing.url
     const authModeChanged = nextAuthMode !== existing.authMode
     const oauthScopesChanged = nextOAuthScopes !== existing.oauthScopes
-    if (endpointChanged || authModeChanged) this.clearOAuthSecrets(existing.id)
-    else if (oauthScopesChanged) this.clearOAuthAuthorization(existing.id)
-    if (patch.credential !== undefined) this.secrets.put(credentialSecretKey(existing.id), patch.credential)
     const updated = normalizeServer({
       ...existing,
       ...(patch.name === undefined ? {} : { name: patch.name }),
@@ -90,7 +90,19 @@ export class McpRemoteRepository implements McpToolCatalogRegistry {
       ...(patch.authMode === undefined ? {} : { authMode: patch.authMode }),
       ...(patch.oauthScopes === undefined ? {} : { oauthScopes: patch.oauthScopes })
     })
-    return this.save({ servers: current.servers.map((server) => server.id === updated.id ? updated : server) })
+    if (patch.credential !== undefined && updated.authMode === 'CUSTOM_HEADERS') parseCustomHeaders(patch.credential)
+    const secretSnapshot = this.secrets.snapshot()
+    this.database.exec('SAVEPOINT mcp_remote_update')
+    try {
+      if (endpointChanged || authModeChanged) this.clearOAuthSecrets(existing.id)
+      else if (oauthScopesChanged) this.clearOAuthAuthorization(existing.id)
+      if (patch.credential !== undefined) this.secrets.put(credentialSecretKey(existing.id), patch.credential)
+      const result = this.save({ servers: current.servers.map((server) => server.id === updated.id ? updated : server) })
+      this.database.exec('RELEASE SAVEPOINT mcp_remote_update')
+      return result
+    } catch (error) {
+      rollbackSettingsAndSecrets(this.database, 'mcp_remote_update', this.secrets, secretSnapshot, error)
+    }
   }
 
   removeServer(serverId: string): McpRemoteSettings {
@@ -109,6 +121,7 @@ export class McpRemoteRepository implements McpToolCatalogRegistry {
   requireConfiguredServer(serverId: string): McpRemoteServerProfile {
     const server = this.getServer(serverId)
     if (!server) throw new Error('Remote MCP Server 不存在')
+    assertRemoteServerTransportPolicy(server.url, server.authMode)
     if (!server.enabled) throw new Error(`Remote MCP Server 已停用：${server.name}`)
     if (!server.url) throw new Error(`Remote MCP Server 尚未配置 URL：${server.name}`)
     if ((server.authMode === 'BEARER' || server.authMode === 'CUSTOM_HEADERS') && !server.hasCredential) {
@@ -199,7 +212,7 @@ export class McpRemoteRepository implements McpToolCatalogRegistry {
       }
       if (server.authMode === 'OAUTH') {
         const saved: McpRemoteOAuthBackupSecrets = {}
-        for (const kind of ['client', 'tokens', 'discovery'] as const) {
+        for (const kind of ['client', 'tokens'] as const) {
           const value = this.secrets.get(mcpOAuthSecretKey(server.id, kind))
           if (value) saved[kind] = value
         }
@@ -238,7 +251,7 @@ export class McpRemoteRepository implements McpToolCatalogRegistry {
       if (credential) this.secrets.put(credentialSecretKey(serverId), credential)
     }
     for (const [serverId, values] of Object.entries(oauth ?? {})) {
-      for (const kind of ['client', 'tokens', 'discovery'] as const) {
+      for (const kind of ['client', 'tokens'] as const) {
         const secret = values[kind]
         if (secret) this.secrets.put(mcpOAuthSecretKey(serverId, kind), secret)
       }
@@ -360,6 +373,7 @@ function normalizeServer(value: unknown): StoredMcpRemoteServerProfile {
   const authMode = typeof record.authMode === 'string' && MCP_REMOTE_AUTH_MODES.includes(record.authMode as McpRemoteAuthMode)
     ? record.authMode as McpRemoteAuthMode
     : 'NONE'
+  assertRemoteServerTransportPolicy(url, authMode)
   return {
     id,
     name: name || 'MCP Server',
@@ -418,3 +432,11 @@ function remoteCatalogFingerprint(server: Pick<McpRemoteServerProfile, 'url' | '
   return createHash('sha256').update(`REMOTE\0${server.transport}\0${server.url}\0${authFingerprint}`).digest('hex')
 }
 
+
+export function assertRemoteServerTransportPolicy(value: string, authMode: McpRemoteAuthMode): void {
+  if (!value) return
+  const parsed = new URL(value)
+  if (authMode !== 'NONE' && parsed.protocol === 'http:' && !isLoopbackHost(parsed.hostname)) {
+    throw new Error('启用认证的公网 Remote MCP Server 必须使用 HTTPS')
+  }
+}

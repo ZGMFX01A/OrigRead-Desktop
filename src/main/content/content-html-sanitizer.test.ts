@@ -2,6 +2,25 @@ import { describe, expect, it } from 'vitest'
 import { sanitizeContentHtml } from './content-html-sanitizer'
 
 describe('sanitizeContentHtml', () => {
+  it('allows only semantic tags and per-tag attributes, strips all CSS and unwraps unknown containers', () => {
+    const html = sanitizeContentHtml(`<article id="clobber" name="x" style="position:fixed;background:url(https://evil.example)">
+      <custom-box data-secret="x"><p strange="x" xmlns="evil">kept</p></custom-box>
+      <textarea>removed textarea</textarea><select><option>removed option</option></select>
+      <applet>removed applet</applet><style>removed css</style>
+      <pre class="language-ts"><code class="javascript">code</code></pre>
+      <p class="language-ts">plain</p><code class="bad:class">safe</code>
+      <video poster="javascript:evil" controls src="/video.mp4"></video>
+      <img data-src="/image.png" data-original="/other.png" style="position:fixed" arbitrary="x">
+    </article>`, 'https://news.example/article')
+    expect(html).toContain('<article>')
+    expect(html).toContain('<p>kept</p>')
+    expect(html).toContain('class="language-ts"')
+    expect(html).toContain('class="javascript"')
+    expect(html).toContain('src="https://news.example/image.png"')
+    expect(html).toContain('src="https://news.example/video.mp4"')
+    expect(html).not.toMatch(/style=|id=|name=|xmlns=|strange=|data-|arbitrary=|custom-box|removed|bad:class|poster=|<p class=/)
+  })
+
   it('removes executable elements and event attributes', () => {
     const html = sanitizeContentHtml(`
       <article onclick="alert(1)">

@@ -16,8 +16,8 @@ describe('LlmExecutionRegistry D2.7 lifecycle', () => {
   it('cancels every request owned by a destroyed Renderer without touching other owners', () => {
     const registry = new LlmExecutionRegistry()
     const first = registry.begin({ requestId: 'r1', conversationId: 'c', assistantMessageId: 'a1' }, 'renderer-a')
-    const second = registry.begin({ requestId: 'r2', conversationId: 'c', assistantMessageId: 'a2' }, 'renderer-a')
-    const other = registry.begin({ requestId: 'r3', conversationId: 'c', assistantMessageId: 'a3' }, 'renderer-b')
+    const second = registry.begin({ requestId: 'r2', conversationId: 'c2', assistantMessageId: 'a2' }, 'renderer-a')
+    const other = registry.begin({ requestId: 'r3', conversationId: 'c3', assistantMessageId: 'a3' }, 'renderer-b')
     expect(registry.cancelOwner('renderer-a')).toBe(2)
     expect(first.signal.aborted).toBe(true)
     expect(second.signal.aborted).toBe(true)
@@ -54,11 +54,39 @@ describe('serializeLlmIpcError', () => {
   })
 
   it('serializes cancellation and expected provider failures without exposing Error objects', () => {
-    expect(serializeLlmIpcError(new DOMException('user stopped', 'AbortError'))).toEqual({
+    expect(serializeLlmIpcError(new DOMException('user stopped', 'AbortError'), AbortSignal.abort())).toEqual({
       code: 'CANCELLED', message: '请求已停止', retryable: true
     })
     expect(serializeLlmIpcError(new Error('AI 服务暂时不可用（HTTP 503）'))).toEqual({
       code: 'PROVIDER_ERROR', message: 'AI 服务暂时不可用（HTTP 503）', retryable: true
     })
   })
+})
+
+it('excludes internal AbortErrors from explicit user cancellation', () => {
+  expect(serializeLlmIpcError(new DOMException('x', 'AbortError')).code).not.toBe('CANCELLED')
+  expect(serializeLlmIpcError(new DOMException('x', 'AbortError'), new AbortController().signal).code).not.toBe('CANCELLED')
+  expect(serializeLlmIpcError(new Error('x'), AbortSignal.abort()).code).toBe('CANCELLED')
+})
+
+it('rejects concurrent conversation requests and preserves the replacement when the old request finishes', () => {
+  const registry = new LlmExecutionRegistry()
+  const first = { requestId: 'old', conversationId: 'c', assistantMessageId: 'a' }
+  const next = { ...first, requestId: 'new' }
+  registry.begin(first, 'owner')
+  expect(registry.hasActiveConversation('c')).toBe(true)
+  expect(() => registry.begin(next, 'owner')).toThrow('当前会话已有正在生成的请求')
+  registry.cancel('old')
+  registry.begin(next, 'owner')
+  expect(registry.finish('old')).toBe(false)
+  expect(registry.cancel('old')).toBe(false)
+  expect(registry.hasActiveConversation('c')).toBe(true)
+  expect(registry.get('new')).not.toBeNull()
+  registry.finish('new')
+  expect(registry.hasActiveConversation('c')).toBe(false)
+})
+
+it('classifies Chinese streaming idle timeouts as retryable provider errors', () => {
+  const message = 'AI 流式响应超时，服务长时间未返回新数据'
+  expect(serializeLlmIpcError(new Error(message))).toEqual({ code: 'PROVIDER_ERROR', message, retryable: true })
 })

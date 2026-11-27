@@ -1,3 +1,4 @@
+import { safeFetch, type SafeFetchOptions } from '../../network/safe-fetch'
 import type { FeedRecord } from '../../../shared/library'
 import type { JsonParsedArticle, JsonRule, JsonSourceProbeResult } from '../../../shared/json-source'
 import { extractNextData, extractNuxtData } from './embedded-json-extractor'
@@ -138,8 +139,8 @@ export class JsonSourceService {
   }
 }
 
-export async function fetchJsonText(url: string, signal?: AbortSignal): Promise<string> {
-  const response = await fetch(url, {
+export async function fetchJsonText(url: string, signal?: AbortSignal, safeFetchOptions: SafeFetchOptions = {}): Promise<string> {
+  const response = await safeFetch(url, {
     redirect: 'follow',
     signal: signal
       ? AbortSignal.any([signal, AbortSignal.timeout(8_000)])
@@ -147,7 +148,7 @@ export async function fetchJsonText(url: string, signal?: AbortSignal): Promise<
     headers: {
       Accept: 'application/json, text/html;q=0.9, */*;q=0.8'
     }
-  })
+  }, safeFetchOptions)
   if (!response.ok) throw new Error(`JSON API 请求失败：HTTP ${response.status}`)
   return readResponseText(response, MAX_JSON_RESPONSE_BYTES, signal)
 }

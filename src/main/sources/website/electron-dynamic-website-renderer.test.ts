@@ -16,7 +16,7 @@ const { mockCreatedWindows, MockBrowserWindow } = vi.hoisted(() => {
 
     webContents = {
       setAudioMuted: vi.fn(),
-      session: { setPermissionRequestHandler: vi.fn() },
+      session: { setPermissionRequestHandler: vi.fn(), clearCache: vi.fn().mockResolvedValue(undefined), clearStorageData: vi.fn().mockResolvedValue(undefined) },
       setWindowOpenHandler: vi.fn(),
       on: (event: string, handler: (...args: unknown[]) => void) => {
         if (!this.listeners.has(event)) this.listeners.set(event, [])
@@ -31,7 +31,7 @@ const { mockCreatedWindows, MockBrowserWindow } = vi.hoisted(() => {
       getURL: vi.fn().mockImplementation(() => this.url || 'https://example.com/test')
     }
 
-    constructor() {
+    constructor(public options: unknown) {
       mockCreatedWindows.push(this)
     }
 
@@ -178,6 +178,9 @@ describe('ElectronDynamicWebsiteRenderer', () => {
 
     await expect(task1).rejects.toThrow('动态页面 DOM 读取失败')
     expect(window1.isDestroyed()).toBe(true)
+    expect(window1.options).toMatchObject({ webPreferences: { partition: 'origread-dynamic-website' } })
+    expect(window1.webContents.session.clearCache).toHaveBeenCalledOnce()
+    expect(window1.webContents.session.clearStorageData).toHaveBeenCalledOnce()
 
     // 任务 2：后续正常任务不受影响
     const task2 = await renderer.render('https://example.com/success-after-failure')
@@ -187,4 +190,21 @@ describe('ElectronDynamicWebsiteRenderer', () => {
     expect(renderer.activeWindowsCount).toBe(0)
     expect(renderer.waitingQueueSize).toBe(0)
   })
+})
+
+it('does not load a URL if aborted during window setup', async () => {
+  mockCreatedWindows.length = 0
+  const controller = new AbortController()
+  const spy = vi.spyOn(MockBrowserWindow.prototype, 'loadURL')
+  const signal = controller.signal
+  const add = signal.addEventListener.bind(signal)
+  vi.spyOn(signal, 'addEventListener').mockImplementation((...args) => {
+    add(...args)
+    // The first listener belongs to the queue; the second is installed after window creation.
+    if (mockCreatedWindows.length) controller.abort()
+  })
+  try {
+    await expect(new ElectronDynamicWebsiteRenderer().render('https://example.com', signal)).rejects.toThrow('已取消')
+    expect(spy).not.toHaveBeenCalled()
+  } finally { vi.restoreAllMocks() }
 })

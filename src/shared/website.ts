@@ -141,8 +141,8 @@ export const BUILT_IN_WEBSITE_RULES: WebsiteRule[] = [
     ],
     includeUrlRegex: '^https?://(?:www\\.)?ithome\\.com/0/\\d+/\\d+\\.htm(?:\\?.*)?$',
     excludeTitleRegexes: [
-      '(?i).*Win(?:dows)?\\s*11/10/7.*系统镜像下载.*',
-      '.*系统镜像下载.*'
+      '(?i)Win(?:dows)?\\s*11/10/7.*系统镜像下载',
+      '系统镜像下载'
     ],
     cleanupMode: 'URL_ID_RANGE',
     urlIdRegex: '/(\\d+)\\.htm'

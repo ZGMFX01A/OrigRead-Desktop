@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import type { WebsiteParseCandidate, WebsiteRule } from '../../../shared/website'
+import { backupCorruptFileAndThrow, writeAtomicTextFile } from '../../storage/atomic-json-file'
+import { existsSync, readFileSync, unlinkSync } from 'node:fs'
+import { normalizeWebsiteRule, type WebsiteParseCandidate, type WebsiteRule } from '../../../shared/website'
 import { AUTOMATIC_WEBSITE_RULE_ID_PREFIX } from './automatic-website-list-detector'
 import { FULL_SCAN_REUSE_INTERVAL } from './automatic-rule-stability-scorer'
 
@@ -36,6 +37,18 @@ const MAX_CONSECUTIVE_MISSES = 20
 
 export class WebsiteParsePreferenceRepository {
   constructor(private readonly preferenceFile: string) {}
+
+  exportRawState(): string | null {
+    return existsSync(this.preferenceFile) ? readFileSync(this.preferenceFile, 'utf8') : null
+  }
+
+  restoreRawState(raw: string | null): void {
+    if (raw === null) {
+      if (existsSync(this.preferenceFile)) unlinkSync(this.preferenceFile)
+    } else {
+      writeAtomicTextFile(this.preferenceFile, raw)
+    }
+  }
 
   get(feedId: string): WebsiteParsePreference | null {
     return this.load().find((item) => item.feedId === feedId) ?? null
@@ -137,11 +150,11 @@ export class WebsiteParsePreferenceRepository {
   }
 
   private load(): WebsiteParsePreference[] {
+    if (!existsSync(this.preferenceFile)) return []
     try {
-      if (!existsSync(this.preferenceFile)) return []
       return this.decode(readFileSync(this.preferenceFile, 'utf8')).items
-    } catch {
-      return []
+    } catch (error) {
+      backupCorruptFileAndThrow(this.preferenceFile, '网站解析偏好文件', error)
     }
   }
 
@@ -152,7 +165,7 @@ export class WebsiteParsePreferenceRepository {
   }
 
   private write(items: WebsiteParsePreference[]): void {
-    writeFileSync(this.preferenceFile, JSON.stringify({ items: items.sort((a, b) => a.feedId.localeCompare(b.feedId)) }, null, 2), 'utf8')
+    writeAtomicTextFile(this.preferenceFile, JSON.stringify({ items: items.sort((a, b) => a.feedId.localeCompare(b.feedId)) }, null, 2))
   }
 }
 
@@ -176,8 +189,29 @@ function defaultPreference(feedId: string): WebsiteParsePreference {
 }
 
 function normalizePreference(input: Partial<WebsiteParsePreference>): WebsiteParsePreference {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('网站解析偏好必须是对象')
   if (typeof input.feedId !== 'string' || !input.feedId) throw new Error('网站解析偏好缺少 feedId')
-  return { ...defaultPreference(input.feedId), ...input, feedId: input.feedId, automaticRuleHistory: Array.isArray(input.automaticRuleHistory) ? input.automaticRuleHistory : [] }
+  for (const key of ['preferredRuleId', 'preferredRuleName', 'lastSelectedRuleId', 'automaticLastSelectedRuleId'] as const) {
+    if (input[key] !== undefined && input[key] !== null && typeof input[key] !== 'string') throw new Error(`网站解析偏好 ${key} 必须是字符串或 null`)
+  }
+  if (input.dynamicRenderingEnabled !== undefined && typeof input.dynamicRenderingEnabled !== 'boolean') throw new Error('网站解析偏好 dynamicRenderingEnabled 必须是布尔值')
+  for (const key of ['lastScore', 'lastArticleCount', 'automaticRuleUpdatedAt', 'automaticSelectionStreak', 'automaticReuseSinceFullScan', 'automaticFullScanCount'] as const) {
+    const value = input[key]
+    if (value !== undefined && value !== null && (typeof value !== 'number' || !Number.isFinite(value))) throw new Error(`网站解析偏好 ${key} 必须是有限数值`)
+    if (value === null && ['automaticSelectionStreak', 'automaticReuseSinceFullScan', 'automaticFullScanCount'].includes(key)) throw new Error(`网站解析偏好 ${key} 不能为空`)
+  }
+  const cachedAutomaticRule = input.cachedAutomaticRule == null ? null : normalizeWebsiteRule(input.cachedAutomaticRule)
+  if (input.automaticRuleHistory !== undefined) {
+    if (!Array.isArray(input.automaticRuleHistory)) throw new Error('网站解析偏好 automaticRuleHistory 必须是数组')
+    for (const entry of input.automaticRuleHistory) {
+      if (!entry || typeof entry.ruleId !== 'string' || !entry.ruleId.trim()) throw new Error('网站解析偏好历史缺少 ruleId')
+      for (const key of ['fullScanAppearances', 'consecutiveFullScanMisses', 'successfulSelections'] as const) {
+        if (!Number.isInteger(entry[key]) || entry[key] < 0) throw new Error(`网站解析偏好历史 ${key} 无效`)
+      }
+      if (entry.lastSeenAt !== null && (typeof entry.lastSeenAt !== 'number' || !Number.isFinite(entry.lastSeenAt))) throw new Error('网站解析偏好历史 lastSeenAt 无效')
+    }
+  }
+  return { ...defaultPreference(input.feedId), ...input, feedId: input.feedId, cachedAutomaticRule, automaticRuleHistory: Array.isArray(input.automaticRuleHistory) ? input.automaticRuleHistory : [] }
 }
 
 function historyEntry(ruleId: string, fullScanAppearances = 0, lastSeenAt: number | null = null): AutomaticRuleHistoryEntry {

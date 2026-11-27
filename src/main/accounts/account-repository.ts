@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { libraryTransaction } from '../database/library-transaction'
 import type { AccountCreateInput, AccountPatch, AccountRecord, AccountSnapshot, AccountType } from '../../shared/account'
 import type { SecretStore } from '../security/secret-store'
 import { CURRENT_ACCOUNT_SETTING_KEY, DEFAULT_LOCAL_ACCOUNT_ID, defaultGroupId } from '../database/migrations'
@@ -139,11 +140,17 @@ export class AccountRepository {
     if (accounts.length <= 1) throw new Error('OrigRead 至少需要保留一个账户')
     const account = this.get(id)
     if (!account) throw new Error('账户不存在')
-    this.database.prepare('DELETE FROM accounts WHERE id = ?').run(id)
+    libraryTransaction(this.database, () => {
+      this.database.prepare('DELETE FROM articles WHERE account_id = ?').run(id)
+      this.database.prepare('DELETE FROM feeds WHERE account_id = ?').run(id)
+      this.database.prepare('UPDATE groups SET parent_id = NULL WHERE account_id = ?').run(id)
+      this.database.prepare('DELETE FROM groups WHERE account_id = ?').run(id)
+      this.database.prepare('DELETE FROM accounts WHERE id = ?').run(id)
+      if (this.currentIdUnsafe() === id) this.switchTo(this.list()[0]!.id)
+    })
     this.secrets.delete(passwordKey(id))
     this.secrets.delete(clientCertificateKey(id))
     this.secrets.delete(clientCertificatePassphraseKey(id))
-    if (this.currentIdUnsafe() === id) this.switchTo(this.list()[0]!.id)
     return account
   }
 

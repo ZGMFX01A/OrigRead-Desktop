@@ -1,5 +1,4 @@
 import { BrowserWindow } from 'electron'
-import { randomUUID } from 'node:crypto'
 import {
   isAllowedDynamicNavigation,
   requiresInteractiveVerification,
@@ -130,26 +129,30 @@ export class ElectronDynamicWebsiteRenderer implements DynamicWebsiteRenderer {
           sandbox: true,
           webSecurity: true,
           devTools: false,
-          partition: `origread-dynamic-website-${randomUUID()}`
+          partition: 'origread-dynamic-website'
         }
       })
       window.webContents.setAudioMuted(true)
       window.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
       window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
 
-      const cleanup = (): void => {
+      const renderSession = window.webContents.session
+      const cleanup = async (): Promise<void> => {
         if (settleTimer) clearTimeout(settleTimer)
         settleTimer = null
         if (abortHandler && signal) signal.removeEventListener('abort', abortHandler)
         abortHandler = null
         if (!window.isDestroyed()) window.destroy()
+        const results = await Promise.allSettled([renderSession.clearCache(), renderSession.clearStorageData()])
+        for (const result of results) {
+          if (result.status === 'rejected') console.warn('Dynamic website session cleanup failed', result.reason)
+        }
       }
       const fail = (message: string): void => {
         if (completed) return
         completed = true
         clearTimeout(timeoutTimer)
-        cleanup()
-        reject(new DynamicWebsiteRenderError(message))
+        void cleanup().finally(() => reject(new DynamicWebsiteRenderError(message)))
       }
       const finish = async (finalUrl: string): Promise<void> => {
         if (completed) return
@@ -162,7 +165,7 @@ export class ElectronDynamicWebsiteRenderer implements DynamicWebsiteRenderer {
           }
           completed = true
           clearTimeout(timeoutTimer)
-          cleanup()
+          await cleanup()
           resolve({ finalUrl, html })
         } catch {
           fail('动态页面 DOM 读取失败')
@@ -182,9 +185,10 @@ export class ElectronDynamicWebsiteRenderer implements DynamicWebsiteRenderer {
 
       const timeoutTimer = setTimeout(() => fail('动态页面渲染超时'), RENDER_TIMEOUT_MS)
       if (signal) {
-        abortHandler = () => fail('动态页面渲染已取消')
-        signal.addEventListener('abort', abortHandler, { once: true })
-        if (signal.aborted) abortHandler()
+        const onAbort = (): void => fail('动态页面渲染已取消')
+        abortHandler = onAbort
+        signal.addEventListener('abort', onAbort, { once: true })
+        if (signal.aborted) { onAbort(); return }
       }
 
       window.webContents.on('will-navigate', (event, targetUrl) => {
@@ -236,7 +240,7 @@ function validateInitialUrl(value: string): void {
 
 const CAPTURE_DOM_SCRIPT = `
 (() => {
-  const wechatContent = document.querySelector('#js_content');
+  const wechatContent = /(?:^|\\.)(?:mp\\.weixin\\.qq\\.com|weixin\\.qq\\.com)$/i.test(window.location.hostname) ? document.querySelector('#js_content') : null;
   if (wechatContent) return '<html><body>' + wechatContent.outerHTML + '</body></html>';
   const root = document.documentElement;
   if (!root) return '';

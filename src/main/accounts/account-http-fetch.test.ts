@@ -1,10 +1,13 @@
 import https from 'node:https'
+import http from 'node:http'
+import { EventEmitter } from 'node:events'
+import type { IncomingMessage, ClientRequest } from 'node:http'
 import type { TLSSocket } from 'node:tls'
-import { afterEach, describe, expect, it } from 'vitest'
-import { createCertificateAwareAccountFetch } from './account-http-fetch'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createCertificateAwareAccountFetch, MAX_ACCOUNT_RESPONSE_BYTES } from './account-http-fetch'
 
 const servers:https.Server[]=[]
-afterEach(async()=>{for(const server of servers.splice(0))await new Promise<void>((resolve)=>server.close(()=>resolve()))})
+afterEach(async()=>{vi.restoreAllMocks();for(const server of servers.splice(0))await new Promise<void>((resolve)=>server.close(()=>resolve()))})
 
 describe('account client certificate mTLS',()=>{
   it('authenticates to a local HTTPS server that requires a client certificate',async()=>{
@@ -32,6 +35,71 @@ describe('account client certificate mTLS',()=>{
     const response=await fetcher(`https://127.0.0.1:${address.port}/account-test`)
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({authorized:true,subject:'OrigRead Test Client'})
+  })
+})
+
+
+describe('account transport boundaries', () => {
+  function transport(respond: (incoming: IncomingMessage, req: ClientRequest, index: number) => void) {
+    const calls: Array<{url: URL; options: https.RequestOptions}> = []
+    const requests: ClientRequest[] = []
+    vi.spyOn(https, 'request').mockImplementation(((url: URL, options: https.RequestOptions, callback: (incoming: IncomingMessage) => void) => {
+      const req = new EventEmitter() as ClientRequest
+      req.write = vi.fn().mockReturnValue(true)
+      req.destroy = vi.fn((error?: Error) => { if (error) queueMicrotask(()=>req.emit('error',error)); return req })
+      const index = calls.length
+      calls.push({url,options}); requests.push(req)
+      req.end = vi.fn(() => {
+        queueMicrotask(() => {
+          const incoming = new EventEmitter() as IncomingMessage
+          incoming.headers = {}; incoming.statusCode = 200
+          incoming.destroy = vi.fn((error?: Error) => {if(error) queueMicrotask(()=>incoming.emit('error',error)); return incoming})
+          callback(incoming)
+          respond(incoming, req, index)
+        })
+        return req
+      })
+      return req
+    }) as typeof https.request)
+    vi.spyOn(http, 'request').mockImplementation(https.request as typeof http.request)
+    return {calls,requests}
+  }
+  const certificate = {pfx:Buffer.from('test identity'),passphrase:'secret',ca:'test CA'}
+  it.each(['same-origin','cross-origin','downgrade'])('isolates certificate and headers on %s redirects', async mode => {
+    const sameOrigin = mode === 'same-origin'
+    const {calls} = transport((incoming, _req, index) => {
+      if (index===0) {incoming.statusCode=302; incoming.headers.location=sameOrigin?'/next':mode==='downgrade'?'http://account.example/next':'https://third.example/next'}
+      incoming.emit('end')
+    })
+    await createCertificateAwareAccountFetch(certificate)('https://account.example/start',{headers:{authorization:'Bearer secret',cookie:'session=secret'}})
+    expect(calls).toHaveLength(2)
+    expect(calls[0]!.options.pfx).toBe(certificate.pfx)
+    expect(calls[1]!.options.pfx).toBe(sameOrigin ? certificate.pfx : undefined)
+    expect(calls[1]!.options.passphrase).toBe(sameOrigin ? certificate.passphrase : undefined)
+    expect(calls[1]!.options.ca).toBe(sameOrigin ? certificate.ca : undefined)
+    const headers = new Headers(calls[1]!.options.headers as Record<string,string>)
+    expect(headers.get('authorization')).toBe(sameOrigin ? 'Bearer secret' : null)
+    expect(headers.get('cookie')).toBe(sameOrigin ? 'session=secret' : null)
+  })
+  it('never reattaches certificate after redirecting back to the original host', async () => {
+    const {calls} = transport((incoming,_req,index)=>{
+      if(index<2){incoming.statusCode=302;incoming.headers.location=index===0?'https://third.example/next':'https://account.example/end'}
+      incoming.emit('end')
+    })
+    await createCertificateAwareAccountFetch(certificate)('https://account.example/')
+    expect(calls.map(call=>call.options.pfx)).toEqual([certificate.pfx,undefined,undefined])
+  })
+  it('accepts the exact byte limit and aborts immediately on one extra byte', async () => {
+    const {requests} = transport((incoming,_req,index)=>{
+      incoming.emit('data', Buffer.alloc(MAX_ACCOUNT_RESPONSE_BYTES))
+      if(index===1) incoming.emit('data',Buffer.alloc(1))
+      incoming.emit('end')
+    })
+    const fetcher = createCertificateAwareAccountFetch(certificate)
+    const response = await fetcher('https://account.example/')
+    expect((await response.arrayBuffer()).byteLength).toBe(MAX_ACCOUNT_RESPONSE_BYTES)
+    await expect(fetcher('https://account.example/')).rejects.toThrow('账户服务器响应大小超过安全限制')
+    expect(requests[1]!.destroy).toHaveBeenCalledOnce()
   })
 })
 

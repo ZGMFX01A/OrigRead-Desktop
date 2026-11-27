@@ -46,6 +46,8 @@ export function shouldAttemptDynamicArticleContent(
   if (reason === 'ACCESS_RESTRICTED') return allowRestrictedFallback
   if (reason !== 'NO_CONTENT') return false
   const $ = cheerio.load(html)
+  const hasExecutableScripts = $('script[src], script:not([type="application/ld+json"])').length > 0
+  $('script, style, noscript, template').remove()
   const visibleTextLength = $('body').text().trim().length
   if (visibleTextLength > 500) return false
   const normalized = html.toLocaleLowerCase()
@@ -54,6 +56,5 @@ export function shouldAttemptDynamicArticleContent(
     'data-reactroot', 'data-server-rendered', 'ng-version=', 'id="app"', "id='app'"
   ]
   const hasHydrationRoot = dynamicRoots.some((marker) => normalized.includes(marker))
-  const hasExecutableScripts = $('script[src], script:not([type="application/ld+json"])').length > 0
   return hasHydrationRoot || hasExecutableScripts
 }

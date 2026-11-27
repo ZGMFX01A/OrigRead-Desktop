@@ -8,10 +8,11 @@ interface SearchableHtmlProps {
   query: string
   activeIndex: number
   onMatchCount(count: number): void
+  decorate?(root: HTMLElement): void
   onClick?(event: React.MouseEvent<HTMLDivElement>): void
 }
 
-export const SearchableHtml = memo(function SearchableHtml({ html, className, query, activeIndex, onMatchCount, onClick }: SearchableHtmlProps): React.JSX.Element {
+export const SearchableHtml = memo(function SearchableHtml({ html, className, query, activeIndex, onMatchCount, onClick, decorate }: SearchableHtmlProps): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -27,6 +28,12 @@ export const SearchableHtml = memo(function SearchableHtml({ html, className, qu
     onMatchCount(count)
   }, [html, query, onMatchCount])
 
+  // Run after HTML replacement and highlighting, including when only Citation data changes.
+  useEffect(() => {
+    const root = ref.current
+    if (root) decorate?.(root)
+  }, [html, query, onMatchCount, decorate])
+
   useEffect(() => {
     const root = ref.current
     if (!root) return
@@ -34,7 +41,7 @@ export const SearchableHtml = memo(function SearchableHtml({ html, className, qu
     marks.forEach((mark, index) => mark.classList.toggle('current', index === activeIndex))
     const current = marks[activeIndex]
     if (current) current.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  }, [activeIndex, html, query])
+  }, [activeIndex, html, query, onMatchCount])
 
   return <div ref={ref} className={className} onClick={onClick} />
 })
@@ -94,7 +101,7 @@ function highlightText(root: HTMLElement, query: string): number {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const parent = node.parentElement
-      if (!parent || parent.closest('script,style,mark.reader-search-match')) return NodeFilter.FILTER_REJECT
+      if (!parent || parent.closest('script,style,mark.reader-search-match,[data-origread-citation-marker]')) return NodeFilter.FILTER_REJECT
       return node.nodeValue?.toLocaleLowerCase().includes(lowerQuery) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
     }
   })

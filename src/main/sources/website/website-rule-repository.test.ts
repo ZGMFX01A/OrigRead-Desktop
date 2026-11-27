@@ -1,3 +1,4 @@
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -72,3 +73,35 @@ function createRepository(): WebsiteRuleRepository {
   return new WebsiteRuleRepository(join(dir, 'website-rules.json'))
 }
 
+
+it('preserves corrupt JSON and invalid schema and prevents subsequent overwrites', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'batch2b-rules-'))
+  dirs.push(dir)
+  const file = join(dir, 'rules.json')
+  const repository = new WebsiteRuleRepository(file)
+  expect(() => repository.exportRules()).not.toThrow()
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, rules: [] }))
+  expect(() => repository.exportRules()).not.toThrow()
+  for (const raw of ['{broken', '{}', 'null', '{"rules":[{}],"items":[{}]}']) {
+    writeFileSync(file, raw)
+    expect(() => repository.exportRules()).toThrow(/损坏.*corrupt-/)
+    expect(() => repository.setEnabled('ithome-home', false)).toThrow(/损坏/)
+    expect(readFileSync(file, 'utf8')).toBe(raw)
+    expect(readdirSync(dir).filter((name) => name.includes('.corrupt-')).some((name) => readFileSync(join(dir, name), 'utf8') === raw)).toBe(true)
+  }
+})
+
+it.each(['false', null, 0])('rejects and preserves rules with non-boolean enabled: %s', (enabled) => {
+  const dir = mkdtempSync(join(tmpdir(), 'batch2b-schema-'))
+  dirs.push(dir)
+  const file = join(dir, 'rules.json')
+  const repository = new WebsiteRuleRepository(file)
+  const bundle = JSON.parse(repository.exportTemplate())
+  bundle.rules[0].enabled = enabled
+  const raw = JSON.stringify(bundle)
+  writeFileSync(file, raw)
+  expect(() => repository.exportRules()).toThrow(/损坏.*enabled/)
+  expect(readFileSync(file, 'utf8')).toBe(raw)
+  const backup = readdirSync(dir).find((name) => name.includes('.corrupt-'))!
+  expect(readFileSync(join(dir, backup), 'utf8')).toBe(raw)
+})

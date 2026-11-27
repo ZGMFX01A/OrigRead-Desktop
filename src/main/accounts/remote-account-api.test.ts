@@ -87,6 +87,71 @@ describe('GoogleReaderApi Android protocol parity', () => {
     expect(lists[1]?.headers.authorization).toBe('GoogleLogin auth=token-2')
   })
 
+  it('single-flights concurrent initial authentication', async () => {
+    let logins=0
+    const api=new GoogleReaderApi('https://reader.example/','u','p',async input=>{
+      if(String(input).endsWith('/ClientLogin')){logins++;return json({Auth:'t'})}
+      return new Response('action')
+    })
+    await Promise.all(Array.from({length:8},()=>api.authenticate()))
+    expect(logins).toBe(1)
+  })
+
+  it('single-flights eight concurrent expired-token requests', async () => {
+    let logins=0
+    const headers:string[]=[]
+    const api=new GoogleReaderApi('https://reader.example/','u','p',async (input,init)=>{
+      const url=String(input)
+      if(url.endsWith('/ClientLogin'))return json({Auth:`token-${++logins}`})
+      const auth=new Headers(init?.headers).get('Authorization')!
+      headers.push(auth)
+      if(url.endsWith('/token'))return new Response('action')
+      if(auth==='GoogleLogin auth=token-1')return new Response('expired',{status:401})
+      expect(auth).toBe('GoogleLogin auth=token-2')
+      return json({subscriptions:[],userName:'u',itemRefs:[]})
+    })
+    await api.authenticate()
+    await Promise.all(Array.from({length:8},(_,i)=>i%3===0?api.getSubscriptionList():i%3===1?api.getUserInfo():api.getUnreadItemIds()))
+    expect(logins).toBe(2)
+    expect(headers.filter(h=>h==='GoogleLogin auth=token-1')).toHaveLength(9)
+    expect(headers.every(h=>/^GoogleLogin auth=token-[12]$/.test(h))).toBe(true)
+    expect(headers.filter(h=>h==='GoogleLogin auth=token-2')).toHaveLength(9)
+  })
+
+  it('reuses a refreshed token when another old-token 401 arrives late', async () => {
+    let logins=0
+    let release!:()=>void
+    const gate=new Promise<void>(resolve=>{release=resolve})
+    const api=new GoogleReaderApi('https://reader.example/','u','p',async (input,init)=>{
+      const url=String(input)
+      if(url.endsWith('/ClientLogin'))return json({Auth:`token-${++logins}`})
+      if(url.endsWith('/token'))return new Response('action')
+      const auth=new Headers(init?.headers).get('Authorization')
+      if(auth==='GoogleLogin auth=token-1'){
+        if(url.includes('/user-info'))await gate
+        return new Response('expired',{status:401})
+      }
+      expect(auth).toBe('GoogleLogin auth=token-2')
+      return json({subscriptions:[],userName:'u'})
+    })
+    await api.authenticate()
+    const late=api.getUserInfo()
+    await api.getSubscriptionList()
+    release()
+    await expect(late).resolves.toEqual({subscriptions:[],userName:'u'})
+    expect(logins).toBe(2)
+  })
+
+  it.each([{value:null},{value:[]}])('rejects non-object JSON %j in GET and POST responses', async ({value}) => {
+    const api=new GoogleReaderApi('https://reader.example/','u','p',async input=>{
+      if(String(input).endsWith('/ClientLogin'))return json({Auth:'t'})
+      if(String(input).endsWith('/token'))return new Response('action')
+      return json(value)
+    })
+    await expect(api.getSubscriptionList()).rejects.toThrow('Google Reader')
+    await expect(api.getItemsContents(['1'])).rejects.toThrow('Google Reader')
+  })
+
   it('fetches tag list with reader/api/0/tag/list?output=json', async () => {
     const calls: CapturedCall[] = []
     const api = new GoogleReaderApi('https://reader.example/', 'u', 'p', mockFetch(calls, (url) => {
@@ -103,6 +168,11 @@ describe('GoogleReaderApi Android protocol parity', () => {
 })
 
 describe('FeverApi Android protocol parity', () => {
+  it.each([{value:null},{value:[]}])('rejects non-object JSON %j', async ({value}) => {
+    const api=new FeverApi('https://fever.example/','u','p',async()=>json(value))
+    await expect(api.getGroups()).rejects.toThrow('Unable to parse response')
+  })
+
   it('uses the exact Fever endpoint and md5(username:password) api_key', async () => {
     const calls:CapturedCall[]=[]
     const api=new FeverApi('https://fever.example/api/fever.php','alice','secret',mockFetch(calls,()=>json({auth:1})))

@@ -15,22 +15,18 @@ interface SyncRunner {
  */
 export class PeriodicSyncScheduler {
   private timer: ReturnType<typeof setTimeout> | null = null
-  private activeRun: Promise<SourceSyncBatchResult> | null = null
+  private readonly activeRuns = new Map<number, Promise<SourceSyncBatchResult>>()
+  private readonly states = new Map<number, SyncRuntimeState>()
+  private timerAccountId: number | null = null
   private stopped = true
-  private state: SyncRuntimeState = {
-    running: false,
-    lastStartedAt: null,
-    lastFinishedAt: null,
-    nextRunAt: null,
-    lastTrigger: null,
-    lastResult: null
-  }
+
 
   constructor(
     private readonly settings: SettingsProvider,
     private readonly syncRunner: SyncRunner,
     private readonly onStateChanged: (state: SyncRuntimeState) => void = () => undefined,
-    private readonly periodicConstraintsSatisfied: () => boolean = () => true
+    private readonly periodicConstraintsSatisfied: () => boolean = () => true,
+    private readonly getCurrentAccountId: () => number = () => 1
   ) {}
 
   start(): void {
@@ -51,15 +47,18 @@ export class PeriodicSyncScheduler {
 
   reconfigure(): void {
     this.clearTimer()
-    if (!this.stopped && !this.activeRun) this.scheduleNext()
+    if (!this.stopped && !this.activeRuns.has(this.getCurrentAccountId())) this.scheduleNext()
+    else this.onStateChanged(this.currentState())
   }
 
   currentState(): SyncRuntimeState {
-    return { ...this.state }
+    return { ...this.stateFor(this.getCurrentAccountId()) }
   }
 
   runNow(trigger: SyncTrigger = 'manual'): Promise<SourceSyncBatchResult> {
-    if (this.activeRun) return this.activeRun
+    const accountId = this.getCurrentAccountId()
+    const existing = this.activeRuns.get(accountId)
+    if (existing) return existing
     this.clearTimer()
     const startedAt = Date.now()
     this.patchState({
@@ -67,26 +66,27 @@ export class PeriodicSyncScheduler {
       lastStartedAt: startedAt,
       nextRunAt: null,
       lastTrigger: trigger
-    })
+    }, accountId)
 
-    this.activeRun = this.syncRunner.refreshAllSources(startedAt)
+    const run = this.syncRunner.refreshAllSources(startedAt)
       .then((result) => {
         this.patchState({
           running: false,
           lastFinishedAt: Date.now(),
           lastResult: result
-        })
+        }, accountId)
         return result
       })
       .catch((error) => {
-        this.patchState({ running: false, lastFinishedAt: Date.now() })
+        this.patchState({ running: false, lastFinishedAt: Date.now() }, accountId)
         throw error
       })
       .finally(() => {
-        this.activeRun = null
-        if (!this.stopped) this.scheduleNext()
+        this.activeRuns.delete(accountId)
+        if (!this.stopped && this.getCurrentAccountId() === accountId) this.scheduleNext()
       })
-    return this.activeRun
+    this.activeRuns.set(accountId, run)
+    return run
   }
 
   private scheduleNext(): void {
@@ -98,8 +98,12 @@ export class PeriodicSyncScheduler {
     const delay = interval * 60_000
     const nextRunAt = Date.now() + delay
     this.patchState({ nextRunAt })
+    const accountId = this.getCurrentAccountId()
+    this.timerAccountId = accountId
     this.timer = setTimeout(() => {
       this.timer = null
+      this.timerAccountId = null
+      if (this.stopped || this.getCurrentAccountId() !== accountId) return
       if (!this.periodicConstraintsSatisfied()) {
         this.scheduleConstraintRetry()
         return
@@ -112,8 +116,12 @@ export class PeriodicSyncScheduler {
     if (this.stopped) return
     const delay = 60_000
     this.patchState({ nextRunAt: Date.now() + delay })
+    const accountId = this.getCurrentAccountId()
+    this.timerAccountId = accountId
     this.timer = setTimeout(() => {
       this.timer = null
+      this.timerAccountId = null
+      if (this.stopped || this.getCurrentAccountId() !== accountId) return
       if (!this.periodicConstraintsSatisfied()) {
         this.scheduleConstraintRetry()
         return
@@ -125,11 +133,21 @@ export class PeriodicSyncScheduler {
   private clearTimer(): void {
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
+    if (this.timerAccountId !== null) this.patchState({ nextRunAt: null }, this.timerAccountId)
+    this.timerAccountId = null
   }
 
-  private patchState(patch: Partial<SyncRuntimeState>): void {
-    this.state = { ...this.state, ...patch }
-    this.onStateChanged(this.currentState())
+  private stateFor(accountId: number): SyncRuntimeState {
+    let state = this.states.get(accountId)
+    if (!state) {
+      state = { running: false, lastStartedAt: null, lastFinishedAt: null, nextRunAt: null, lastTrigger: null, lastResult: null }
+      this.states.set(accountId, state)
+    }
+    return state
+  }
+
+  private patchState(patch: Partial<SyncRuntimeState>, accountId = this.getCurrentAccountId()): void {
+    this.states.set(accountId, { ...this.stateFor(accountId), ...patch })
+    if (accountId === this.getCurrentAccountId()) this.onStateChanged(this.currentState())
   }
 }
-

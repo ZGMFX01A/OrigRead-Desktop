@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { DesktopDatabase } from '../database/database'
 import { LibraryRepository } from '../database/library-repository'
 import { MemorySecretStore } from '../security/secret-store'
@@ -993,6 +993,251 @@ describe('RemoteAccountSyncService Android parity', () => {
     })
   })
 })
+
+describe('Sprint 1A remote sync data protection', () => {
+  it.each([
+    ['&groups',{auth:1},'Fever 目录响应缺少必要字段'],
+    ['&feeds',{auth:1},'Fever 目录响应缺少必要字段'],
+    ['&favicons',{auth:1},'Fever 目录响应缺少必要字段'],
+    ['&groups',{auth:1,groups:[],feeds_groups:{}},'Fever 目录响应缺少必要字段'],
+    ['&feeds',{auth:1,feeds:[],feeds_groups:{}},'Fever 目录响应缺少必要字段'],
+    ['&items&',{auth:1},'Fever items 列表缺失'],
+    ['&unread_item_ids',{auth:1},'Fever unread_item_ids 缺失或无效'],
+    ['&saved_item_ids',{auth:1},'Fever saved_item_ids 缺失或无效'],
+    ['&unread_item_ids',{auth:1,unread_item_ids:null},'Fever unread_item_ids 缺失或无效'],
+    ['&saved_item_ids',{auth:1,saved_item_ids:[]},'Fever saved_item_ids 缺失或无效']
+  ])('rejects invalid Fever response at %s without changing persisted data', async (endpoint,body,message) => {
+    const f=createFixture()
+    try{
+      const account=f.accounts.add({type:'fever',serverUrl:'https://fever.example/',username:'u',password:'p'})
+      seedProtectedArticle(f,account.id)
+      const before=snapshot(f,account.id)
+      const base=feverFixtureFetch()
+      const service=new RemoteAccountSyncService(f.accounts,f.library,(input,init)=>String(input).includes(endpoint)?Promise.resolve(json(body)):base(input,init))
+      await expect(service.sync(account.id)).rejects.toThrow(message)
+      expect(snapshot(f,account.id)).toEqual(before)
+    }finally{f.database.close()}
+  })
+
+  it('accepts legal empty Fever state strings and clears existing states', async () => {
+    const f=createFixture()
+    try{
+      const account=f.accounts.add({type:'fever',serverUrl:'https://fever.example/',username:'u',password:'p'})
+      const base=feverFixtureFetch()
+      const service=new RemoteAccountSyncService(f.accounts,f.library,base)
+      await service.sync(account.id)
+      const empty=new RemoteAccountSyncService(f.accounts,f.library,(input,init)=>{
+        const url=String(input)
+        if(url.includes('&unread_item_ids'))return Promise.resolve(json({auth:1,unread_item_ids:''}))
+        if(url.includes('&saved_item_ids'))return Promise.resolve(json({auth:1,saved_item_ids:''}))
+        return base(input,init)
+      })
+      await empty.sync(account.id)
+      expect(f.library.getArticleById(remoteDbId(account.id,'101'))).toMatchObject({isUnread:false,isStarred:false})
+    }finally{f.database.close()}
+  })
+
+  it('aborts repeated full Fever pages before committing any data', async () => {
+    const f=createFixture()
+    try{
+      const account=f.accounts.add({type:'fever',serverUrl:'https://fever.example/',username:'u',password:'p'})
+      seedProtectedArticle(f,account.id)
+      const before=snapshot(f,account.id)
+      let pages=0
+      const base=feverFixtureFetch()
+      const service=new RemoteAccountSyncService(f.accounts,f.library,(input,init)=>{
+        if(String(input).includes('&items&')){
+          if(++pages>2)throw new Error('unexpected extra page')
+          return Promise.resolve(json({auth:1,items:Array.from({length:50},(_,i)=>({id:String(i+1),feed_id:7}))}))
+        }
+        return base(input,init)
+      })
+      await expect(service.sync(account.id)).rejects.toThrow('Fever 分页游标异常，已中止同步')
+      expect(pages).toBe(2)
+      expect(snapshot(f,account.id)).toEqual(before)
+    }finally{f.database.close()}
+  })
+
+  it.each(['google_reader','fever'] as const)('bounds non-repeating %s pagination at 1000 pages without writes', async type => {
+    const f=createFixture()
+    try{
+      const account=f.accounts.add({type,serverUrl:'https://remote.example/',username:'u',password:'p'})
+      seedProtectedArticle(f,account.id)
+      const before=snapshot(f,account.id)
+      const base=type==='fever'?feverFixtureFetch():googleFixtureFetch()
+      let pages=0
+      const service=new RemoteAccountSyncService(f.accounts,f.library,(input,init)=>{
+        const url=String(input)
+        if(type==='fever'&&url.includes('&items&')){
+          pages++
+          if(pages>1000)throw new Error('page limit missed')
+          return Promise.resolve(json({auth:1,items:Array.from({length:50},(_,i)=>({id:String(pages*50+i),feed_id:7}))}))
+        }
+        if(type==='google_reader'&&url.includes('/stream/items/ids')){
+          const query=new URL(url).searchParams
+          if(query.get('s')!==STREAM_READ&&!query.has('xt'))return Promise.resolve(json({itemRefs:[]}))
+          if(query.get('s')===STREAM_READ)return Promise.resolve(json({itemRefs:[]}))
+          pages++
+          if(pages>1000)throw new Error('page limit missed')
+          return Promise.resolve(json({itemRefs:[],continuation:String(pages)}))
+        }
+        return base(input,init)
+      })
+      await expect(service.sync(account.id)).rejects.toThrow(type==='fever'?'Fever 分页游标异常':'Google Reader 分页 continuation 异常')
+      expect(pages).toBe(1000)
+      expect(snapshot(f,account.id)).toEqual(before)
+    }finally{f.database.close()}
+  })
+
+  it('rolls back a newly created Fever default group on a tail DB failure', async () => {
+    const f=createFixture()
+    try{
+      const account=f.accounts.add({type:'fever',serverUrl:'https://fever.example/',username:'u',password:'p'})
+      const before=snapshot(f,account.id)
+      const base=feverFixtureFetch()
+      const service=new RemoteAccountSyncService(f.accounts,f.library,(input,init)=>{
+        if(String(input).includes('&groups'))return Promise.resolve(json({auth:1,groups:[]}))
+        if(String(input).includes('&feeds'))return Promise.resolve(json({auth:1,feeds:[{id:7,url:'https://fever-feed.example/rss'}]}))
+        return base(input,init)
+      })
+      const spy=vi.spyOn(f.accounts,'updateSyncMetadata').mockImplementation(()=>{throw new Error('DB tail failure')})
+      try{await expect(service.sync(account.id)).rejects.toThrow('DB tail failure')}finally{spy.mockRestore()}
+      expect(snapshot(f,account.id)).toEqual(before)
+    }finally{f.database.close()}
+  })
+
+  it.each(['google_reader','fever'] as const)('rolls back %s article/state/cleanup writes when metadata commit fails', async type => {
+    const f=createFixture()
+    try{
+      const account=f.accounts.add({type,serverUrl:'https://remote.example/',username:'u',password:'p'})
+      seedProtectedArticle(f,account.id)
+      const before=snapshot(f,account.id)
+      const spy=vi.spyOn(f.accounts,'updateSyncMetadata').mockImplementation(()=>{throw new Error('DB tail failure')})
+      try{
+        await expect(new RemoteAccountSyncService(f.accounts,f.library,type==='fever'?feverFixtureFetch():googleFixtureFetch()).sync(account.id)).rejects.toThrow('DB tail failure')
+      }finally{spy.mockRestore()}
+      const after=snapshot(f,account.id)
+      expect(after.articles).toEqual(before.articles)
+      expect(after.account).toEqual(before.account)
+      if(type==='fever')expect(after).toEqual(before)
+      else expect(f.library.getFeedById(remoteDbId(account.id,'protected-feed'))).toEqual(before.feeds[0])
+    }finally{f.database.close()}
+  })
+
+  it.each([
+    ['/subscription/list',{},'Google Reader subscriptions 列表缺失'],
+    ['/stream/items/ids',{},'Google Reader itemRefs 列表缺失'],
+    ['/stream/items/contents',{},'Google Reader items 列表缺失'],
+    ['/stream/items/ids',{itemRefs:[{id:'101'}],continuation:'repeat'},'Google Reader 分页 continuation 异常，已中止同步']
+  ])('rejects invalid Google Reader response at %s and protects existing articles and feeds', async (endpoint,body,message) => {
+    const f=createFixture()
+    try{
+      const account=f.accounts.add({type:'google_reader',serverUrl:'https://reader.example/',username:'u',password:'p'})
+      seedProtectedArticle(f,account.id)
+      const before=snapshot(f,account.id)
+      let pages=0
+      const base=googleFixtureFetch()
+      const service=new RemoteAccountSyncService(f.accounts,f.library,(input,init)=>{
+        if(String(input).includes(endpoint)){
+          if(++pages>6)throw new Error('unexpected extra page')
+          return Promise.resolve(json(body))
+        }
+        return base(input,init)
+      })
+      await expect(service.sync(account.id)).rejects.toThrow(message)
+      expect(f.library.listArticlesForAccount(account.id)).toEqual(before.articles)
+      expect(f.library.getFeedById(remoteDbId(account.id,'protected-feed'))).toEqual(before.feeds[0])
+      expect(f.accounts.get(account.id)).toEqual(before.account)
+    }finally{f.database.close()}
+  })
+
+  it.each(['google_reader','fever'] as const)('preserves all local feed preferences for %s without a remote icon', async type => {
+    const f=createFixture()
+    try{
+      const account=f.accounts.add({type,serverUrl:'https://remote.example/',username:'u',password:'p'})
+      const base=type==='fever'?feverFixtureFetch():googleFixtureFetch()
+      const service=new RemoteAccountSyncService(f.accounts,f.library,(input,init)=>String(input).includes('&favicons')?Promise.resolve(json({auth:1,favicons:[]})):base(input,init))
+      await service.sync(account.id)
+      const feed=f.library.listFeedsForAccount(account.id)[0]!
+      const preferences={icon:'custom-icon',isNotification:true,isFullContent:true,isBrowser:true,dynamicRendering:true,createdAt:feed.createdAt}
+      f.library.upsertFeed({...feed,...preferences})
+      await service.sync(account.id)
+      expect(f.library.getFeedById(feed.id)).toMatchObject(preferences)
+    }finally{f.database.close()}
+  })
+
+  it('re-reads latest Google Reader local states after suspended content fetch', async () => {
+    const f=createFixture()
+    try{
+      const account=f.accounts.add({type:'google_reader',serverUrl:'https://reader.example/',username:'u',password:'p'})
+      const base=googleFixtureFetch()
+      await new RemoteAccountSyncService(f.accounts,f.library,base).sync(account.id)
+      const id=remoteDbId(account.id,'101')
+      let release!:()=>void
+      let entered!:()=>void
+      const waiting=new Promise<void>(resolve=>{entered=resolve})
+      const gate=new Promise<void>(resolve=>{release=resolve})
+      const service=new RemoteAccountSyncService(f.accounts,f.library,async(input,init)=>{
+        const url=String(input)
+        if(url.includes('/stream/items/ids')){
+          const stream=new URL(url).searchParams.get('s')!
+          return json({itemRefs:stream.includes('starred')?[]:stream===STREAM_READ?[{id:'101'}]:[{id:'102'}]})
+        }
+        if(url.includes('/stream/items/contents')){
+          entered();await gate
+          return json({items:[{id:'102',origin:{streamId:'feed/remote-feed'},title:'New'}]})
+        }
+        return base(input,init)
+      })
+      // The old snapshot sees read/unstarred. Concurrent UI changes must be reconciled too.
+      f.library.setArticleUnreadForAccount(account.id,id,false)
+      f.library.setArticleStarredForAccount(account.id,id,false)
+      const sync=service.sync(account.id)
+      await waiting
+      f.library.setArticleUnreadForAccount(account.id,id,true)
+      f.library.setArticleStarredForAccount(account.id,id,true)
+      release()
+      await sync
+      expect(f.library.getArticleById(id)).toMatchObject({isUnread:false,isStarred:false})
+      expect(f.library.getArticleById(remoteDbId(account.id,'102'))).toMatchObject({isUnread:true,isStarred:false})
+    }finally{f.database.close()}
+  })
+
+  it('does not commit successful Google Reader content batches when a later batch is invalid', async () => {
+    const f=createFixture()
+    try{
+      const account=f.accounts.add({type:'google_reader',serverUrl:'https://reader.example/',username:'u',password:'p'})
+      seedProtectedArticle(f,account.id)
+      const before=snapshot(f,account.id)
+      const base=googleFixtureFetch()
+      let batches=0
+      const service=new RemoteAccountSyncService(f.accounts,f.library,(input,init)=>{
+        const url=String(input)
+        if(url.includes('/stream/items/ids'))return Promise.resolve(json({itemRefs:Array.from({length:801},(_,i)=>({id:String(i+1)}))}))
+        if(url.includes('/stream/items/contents')){
+          batches++
+          return Promise.resolve(json(batches===9?{}:{items:[{id:String(batches),origin:{streamId:'feed/remote-feed'},title:'Fetched'}]}))
+        }
+        return base(input,init)
+      })
+      await expect(service.sync(account.id)).rejects.toThrow('Google Reader items 列表缺失')
+      expect(batches).toBe(9)
+      expect(f.library.listArticlesForAccount(account.id)).toEqual(before.articles)
+    }finally{f.database.close()}
+  })
+})
+
+function seedProtectedArticle(f:ReturnType<typeof createFixture>,accountId:number){
+  const group={id:remoteDbId(accountId,'protected-group'),accountId,name:'Protected',sortOrder:1,isDefault:false}
+  f.library.upsertGroup(group)
+  const feed=feedRecord(remoteDbId(accountId,'protected-feed'),accountId,group.id,'https://protected.example/rss')
+  f.library.upsertFeed(feed)
+  f.library.upsertArticle({id:remoteDbId(accountId,'999'),accountId,feedId:feed.id,title:'Protected',url:'https://protected.example/999',author:null,
+    publishedAt:1,description:'',contentHtml:'Keep',fullContentHtml:null,imageUrl:null,isUnread:false,isStarred:true,createdAt:1,updatedAt:1})
+}
+function snapshot(f:ReturnType<typeof createFixture>,accountId:number){
+  return {groups:f.library.listGroupsForAccount(accountId),feeds:f.library.listFeedsForAccount(accountId),articles:f.library.listArticlesForAccount(accountId),account:f.accounts.get(accountId)}
+}
 
 function createFixture(){
   const database=new DesktopDatabase(':memory:')

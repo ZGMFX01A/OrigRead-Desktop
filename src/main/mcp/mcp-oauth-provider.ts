@@ -1,3 +1,4 @@
+import { isLoopbackHost, isPrivateOrLoopbackHostLiteral } from '../network/safe-fetch'
 import { randomBytes } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import type {
@@ -30,12 +31,15 @@ export interface McpOAuthProviderSession extends OAuthClientProvider {
 
 export async function createMcpOAuthProviderSession(options: {
   serverId: string
+  serverUrl?: string
   clientName: string
   secrets: SecretStore
   openExternal: (url: string) => Promise<void>
 }): Promise<McpOAuthProviderSession> {
   const listener = await createLoopbackListener(options.serverId)
-  return new ElectronMcpOAuthProvider({ ...options, ...listener })
+  let allowLoopbackHttp = false
+  try { allowLoopbackHttp = !!options.serverUrl && isLoopbackHost(new URL(options.serverUrl).hostname) } catch { allowLoopbackHttp = false }
+  return new ElectronMcpOAuthProvider({ ...options, ...listener, allowLoopbackHttp })
 }
 
 interface LoopbackListener {
@@ -52,6 +56,7 @@ class ElectronMcpOAuthProvider implements McpOAuthProviderSession {
 
   constructor(private readonly options: {
     serverId: string
+    allowLoopbackHttp: boolean
     clientName: string
     secrets: SecretStore
     openExternal: (url: string) => Promise<void>
@@ -97,9 +102,7 @@ class ElectronMcpOAuthProvider implements McpOAuthProviderSession {
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
     if (!this.interactiveAllowed) throw new McpOAuthAuthorizationRequiredError()
-    if (authorizationUrl.protocol !== 'http:' && authorizationUrl.protocol !== 'https:') {
-      throw new Error('MCP OAuth 授权地址必须使用 HTTP/HTTPS')
-    }
+    this.assertOAuthUrl(authorizationUrl)
     await this.options.openExternal(authorizationUrl.toString())
     this.authorizationRedirected = true
   }
@@ -121,7 +124,33 @@ class ElectronMcpOAuthProvider implements McpOAuthProviderSession {
   discoveryState(): OAuthDiscoveryState | undefined {
     const raw = this.options.secrets.get(mcpOAuthSecretKey(this.options.serverId, 'discovery'))
     if (!raw) return undefined
-    try { return JSON.parse(raw) as OAuthDiscoveryState } catch { return undefined }
+    try {
+      const state = JSON.parse(raw)
+      if (!state || typeof state !== 'object' || Array.isArray(state)) throw new Error('OAuth discovery 结构无效')
+      const check = (value: unknown): void => {
+        if (typeof value !== 'string') throw new Error('OAuth discovery URL 无效')
+        this.assertOAuthUrl(new URL(value))
+      }
+      if (state.authorizationServerUrl !== undefined) check(state.authorizationServerUrl)
+      if (state.authorizationServerMetadata !== undefined) {
+        const metadata = state.authorizationServerMetadata
+        if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) throw new Error('OAuth metadata 结构无效')
+        for (const key of ['issuer', 'authorization_endpoint', 'token_endpoint', 'registration_endpoint', 'revocation_endpoint', 'jwks_uri']) {
+          if (metadata[key] !== undefined) check(metadata[key])
+        }
+      }
+      return state as OAuthDiscoveryState
+    } catch {
+      this.invalidateCredentials('discovery')
+      return undefined
+    }
+  }
+
+  private assertOAuthUrl(url: URL): void {
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('MCP OAuth 地址必须使用无凭据 HTTP/HTTPS')
+    const local = this.options.allowLoopbackHttp && isLoopbackHost(url.hostname)
+    if (!local && url.protocol !== 'https:') throw new Error('MCP OAuth 地址必须使用 HTTPS')
+    if (!local && isPrivateOrLoopbackHostLiteral(url.hostname)) throw new Error('MCP OAuth 地址不允许访问私网或保留地址')
   }
 
   invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'): void {

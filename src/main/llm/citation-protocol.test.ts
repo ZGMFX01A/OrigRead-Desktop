@@ -28,6 +28,19 @@ describe('D2.9 citation protocol', () => {
     expect(prepared.instruction).toContain('[[E1]]')
   })
 
+  it('matches composer attributes containing quotes and control characters', () => {
+    const contextId = 'context\n\r\t"quoted"'
+    const key = 'block\n\r\t"quoted"'
+    const composed = new LlmContextComposer().compose([{
+      id: contextId, type: 'ARTICLE', content: 'Evidence',
+      evidenceBlocks: [{ stableLocatorKey: key, content: 'Evidence' }]
+    }], { maxTokens: 200 })
+    const prepared = prepareCitationProtocol(composed, [{ ...candidate(key, 'evidence-control'), contextId }])
+    expect(prepared.protocolEntries).toHaveLength(1)
+    expect(prepared.text).toContain('[ORIGREAD_EVIDENCE id="E1"]')
+    expect(prepared.text).not.toContain('[ORIGREAD_EVIDENCE id="context')
+  })
+
   it('does not resolve hallucinated or omitted evidence IDs', () => {
     const entries = [
       { ...candidate('block-a', 'evidence-a'), protocolId: 'E1' },

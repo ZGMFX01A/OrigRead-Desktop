@@ -37,8 +37,8 @@ export function matchRssHubRoutes(
   }
   if (!['http:', 'https:'].includes(input.protocol)) return []
 
-  const encodedPath = input.pathname.toLowerCase()
-  if (encodedPath.includes('%2f') || encodedPath.includes('%5c')) return []
+  const encodedPath = input.pathname
+  if (/%2f|%5c/i.test(encodedPath)) return []
 
   const pathSegments = encodedPath
     .split('/')
@@ -249,7 +249,7 @@ function buildInlineSegmentRegex(template: string): {
   }
   pattern += literalPattern(template.slice(cursor))
   pattern += '$'
-  return { regex: new RegExp(pattern), parameters }
+  return { regex: new RegExp(pattern, 'i'), parameters }
 }
 
 function literalPattern(value: string): string {
@@ -309,8 +309,9 @@ function normalizeInstanceBaseUrl(value: string): string | null {
 
 function pathMatches(path: string, prefix: string): boolean {
   if (prefix === '/') return true
-  const normalized = prefix.replace(/\/+$/, '')
-  return path === normalized || path.startsWith(`${normalized}/`)
+  const normalized = prefix.replace(/\/+$/, '').toLowerCase()
+  const candidate = path.toLowerCase()
+  return candidate === normalized || candidate.startsWith(`${normalized}/`)
 }
 
 function safeDecodeURIComponent(value: string): string {

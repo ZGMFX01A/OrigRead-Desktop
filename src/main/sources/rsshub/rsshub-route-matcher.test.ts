@@ -152,3 +152,14 @@ describe('RssHubRouteMatcher Android parity', () => {
     expect(urls).toContain('https://rsshub-balancer.virworks.moe')
   })
 })
+
+it.each([
+  ['youtube.com', '/@MixedHandle', '/@:handle', 'handle', 'MixedHandle'],
+  ['youtube.com', '/CHANNEL/UCaBCdEf', '/channel/:id', 'id', 'UCaBCdEf'],
+  ['bilibili.com', '/VIDEO/BV1xxAbCd', '/video/:id', 'id', 'BV1xxAbCd']
+])('preserves case-sensitive parameters on %s%s', (host, path, template, key, value) => {
+  const route: RssHubRouteDefinition = { id: 'case', name: 'case', host, pathPrefix: '/', sourcePathTemplate: template, target: `/feed/:${key}` }
+  const match = matchRssHubRoutes(`https://${host}${path}`, [route], 'https://rsshub.example')[0]!
+  expect(match.parameters[key]).toBe(value)
+  expect(match.feedUrl).toBe(`https://rsshub.example/feed/${value}`)
+})

@@ -25,6 +25,9 @@ interface MarkdownFence {
   length: number
 }
 
+const MAX_MALFORMED_TOKEN_CHARS = 32
+const MAX_PENDING_INLINE_CHARS = 256
+
 const CITATION_PUNCTUATION = new Set([',', '.', ';', ':', '!', '?', '，', '。', '；', '：', '！', '？'])
 
 /**
@@ -47,6 +50,7 @@ export function parseCitationTransport(
   let inlineDelimiterLength = 0
   let index = 0
   let stalled = false
+  let justStrippedCitation = false
   let normalizedLength = 0
 
   const resolvePendingAnnotations = (preservedWhitespace: number): void => {
@@ -68,7 +72,7 @@ export function parseCitationTransport(
       return
     }
     let preservedWhitespace = pendingWhitespace.length
-    if (CITATION_PUNCTUATION.has(character)) {
+    if (justStrippedCitation && CITATION_PUNCTUATION.has(character)) {
       while (preservedWhitespace > 0) {
         const value = pendingWhitespace[preservedWhitespace - 1]
         if (value !== ' ' && value !== '\t') break
@@ -83,16 +87,16 @@ export function parseCitationTransport(
     pendingWhitespace.length = 0
     normalized.push(character)
     normalizedLength += character.length
+    justStrippedCitation = false
   }
 
-  const appendCanonicalRange = (start: number, endExclusive: number): void => {
-    for (let cursor = start; cursor < endExclusive;) {
-      const cp = transportText.codePointAt(cursor)
-      if (cp === undefined) break
-      const value = String.fromCodePoint(cp)
-      appendCanonicalChar(value)
-      cursor += value.length
-    }
+  const appendProtectedRange = (start: number, endExclusive: number): void => {
+    resolvePendingAnnotations(pendingWhitespace.length)
+    const value = pendingWhitespace.join('') + transportText.slice(start, endExclusive)
+    normalized.push(value)
+    normalizedLength += value.length
+    pendingWhitespace.length = 0
+    justStrippedCitation = false
   }
 
   const addAnnotation = (protocolIds: string[]): void => {
@@ -123,7 +127,7 @@ export function parseCitationTransport(
         }
         if (canOpenFence(transportText, index, fence)) {
           activeFence = fence
-          appendCanonicalRange(index, index + fence.length)
+          appendProtectedRange(index, index + fence.length)
           index += fence.length
           continue
         }
@@ -134,7 +138,7 @@ export function parseCitationTransport(
         }
         if (isClosingFenceLine(transportText, index + fence.length)) {
           activeFence = null
-          appendCanonicalRange(index, index + fence.length)
+          appendProtectedRange(index, index + fence.length)
           index += fence.length
           continue
         }
@@ -143,9 +147,15 @@ export function parseCitationTransport(
 
     if (!activeFence && transportText[index] === '`') {
       const delimiterLength = repeatedCharLength(transportText, index, '`')
-      if (inlineDelimiterLength === 0) inlineDelimiterLength = delimiterLength
-      else if (delimiterLength === inlineDelimiterLength) inlineDelimiterLength = 0
-      appendCanonicalRange(index, index + delimiterLength)
+      if (inlineDelimiterLength === 0) {
+        if (hasInlineCloser(transportText, index, delimiterLength)) {
+          inlineDelimiterLength = delimiterLength
+        } else if (!final && !/\r?\n\r?\n/u.test(transportText.slice(index)) && transportText.length - index <= MAX_PENDING_INLINE_CHARS) {
+          stalled = true
+          break
+        }
+      } else if (delimiterLength === inlineDelimiterLength) inlineDelimiterLength = 0
+      appendProtectedRange(index, index + delimiterLength)
       index += delimiterLength
       continue
     }
@@ -157,34 +167,42 @@ export function parseCitationTransport(
         break
       }
       if (citationStart) {
-        const token = parseTokenAt(transportText, index, final)
+        const token = parseTokenAt(transportText, index)
         if (token.state === 'COMPLETE') {
           const validIds = [...new Set(token.protocolIds.filter((id) => allowedProtocolIds.has(id)))]
           for (const id of token.protocolIds) if (!allowedProtocolIds.has(id)) invalidIds.add(id)
           if (validIds.length > 0) addAnnotation(validIds)
           else invalidFragmentCount += 1
+          justStrippedCitation = true
           index = token.endExclusive
           continue
         }
-        if (token.state === 'INCOMPLETE') {
-          if (final) {
-            invalidFragmentCount += 1
-            index = transportText.length
-          } else {
-            stalled = true
-          }
-          break
+        const malformedEnd = malformedTokenEnd(transportText, index)
+        if (malformedEnd !== null) {
+          invalidFragmentCount += 1
+          justStrippedCitation = true
+          index = malformedEnd
+          continue
         }
-        invalidFragmentCount += 1
-        index = Math.max(token.endExclusive, index + 2)
-        continue
+        if (isLegalTokenPrefix(transportText.slice(index))) {
+          if (!final) {
+            stalled = true
+            break
+          }
+          invalidFragmentCount += 1
+          justStrippedCitation = true
+          index = transportText.length
+          continue
+        }
+        // A non-protocol suffix is literal; keep scanning for later citations.
       }
     }
 
     const cp = transportText.codePointAt(index)
     if (cp === undefined) break
     const character = String.fromCodePoint(cp)
-    appendCanonicalChar(character)
+    if (activeFence !== null || inlineDelimiterLength > 0) appendProtectedRange(index, index + character.length)
+    else appendCanonicalChar(character)
     index += character.length
   }
 
@@ -208,55 +226,48 @@ export function parseCitationTransport(
   }
 }
 
-function parseTokenAt(text: string, start: number, final: boolean): ParsedCitationToken {
-  let cursor = start + 2
-  const ids: string[] = []
-  while (cursor < text.length) {
-    if (text.startsWith(']]', cursor)) {
-      return { state: ids.length > 0 ? 'COMPLETE' : 'INVALID', protocolIds: ids, endExclusive: cursor + 2 }
-    }
-    if (text[cursor] !== 'E') {
-      const end = invalidTokenEnd(text, cursor, final)
-      return end == null
-        ? { state: 'INCOMPLETE', protocolIds: ids, endExclusive: text.length }
-        : { state: 'INVALID', protocolIds: ids, endExclusive: end }
-    }
-    const digitsStart = cursor + 1
-    let digitsEnd = digitsStart
-    while (digitsEnd < text.length && /\d/.test(text[digitsEnd]!)) digitsEnd += 1
-    if (digitsEnd === digitsStart) {
-      if (digitsEnd === text.length) return { state: 'INCOMPLETE', protocolIds: ids, endExclusive: text.length }
-      const end = invalidTokenEnd(text, digitsEnd, final)
-      return end == null
-        ? { state: 'INCOMPLETE', protocolIds: ids, endExclusive: text.length }
-        : { state: 'INVALID', protocolIds: ids, endExclusive: end }
-    }
-    ids.push(text.slice(cursor, digitsEnd))
-    if (digitsEnd >= text.length) return { state: 'INCOMPLETE', protocolIds: ids, endExclusive: text.length }
-    if (text.startsWith(']]', digitsEnd)) return { state: 'COMPLETE', protocolIds: ids, endExclusive: digitsEnd + 2 }
-    if (text.startsWith('][', digitsEnd)) {
-      cursor = digitsEnd + 2
-      continue
-    }
-    const end = invalidTokenEnd(text, digitsEnd, final)
-    return end == null
-      ? { state: 'INCOMPLETE', protocolIds: ids, endExclusive: text.length }
-      : { state: 'INVALID', protocolIds: ids, endExclusive: end }
+function parseTokenAt(text: string, start: number): ParsedCitationToken {
+  const match = /^\[\[(E\d+(?:(?:\]\[|, *)E\d+)*)\]\]/u.exec(text.slice(start))
+  if (!match) return { state: 'INVALID', protocolIds: [], endExclusive: start }
+  return {
+    state: 'COMPLETE',
+    protocolIds: match[1]!.match(/E\d+/gu)!,
+    endExclusive: start + match[0].length
   }
-  return { state: 'INCOMPLETE', protocolIds: ids, endExclusive: text.length }
 }
 
-/** Malformed Citation transport is bounded by a close delimiter or line end, never arbitrary later prose. */
-function invalidTokenEnd(text: string, from: number, final: boolean): number | null {
-  for (let cursor = from; cursor < text.length; cursor += 1) {
-    if (text.startsWith(']]', cursor)) return cursor + 2
-    if (text[cursor] === '\n') return cursor
+/** Only short, closed protocol-shaped mistakes are owned; prose stays literal. */
+function malformedTokenEnd(text: string, start: number): number | null {
+  const window = text.slice(start, start + MAX_MALFORMED_TOKEN_CHARS)
+  const close = window.indexOf(']]')
+  if (close < 0) return null
+  const fragment = window.slice(0, close + 2)
+  if (/[\r\n]/u.test(fragment)) return null
+  // Require a digit or protocol delimiter after E so English wiki text stays literal.
+  // Allow a single malformed member, but never multiple prose words or nested tokens.
+  if (!/^\[\[E(?=\d|\]\[|\]\])[\dA-Za-z]*(?:(?:, *|\]\[)E?[\dA-Za-z]*)*\]\]$/u.test(fragment)) return null
+  return start + fragment.length
+}
+
+function isLegalTokenPrefix(suffix: string): boolean {
+  return suffix.length <= MAX_MALFORMED_TOKEN_CHARS &&
+    /^\[\[E(?:\d+(?:(?:\]\[|, *)E\d+)*(?:\]|\]\[E?|, *E?)?|)$/u.test(suffix)
+}
+
+function hasInlineCloser(text: string, start: number, length: number): boolean {
+  const paragraphEnd = /\r?\n\r?\n/u.exec(text.slice(start))
+  const end = paragraphEnd ? start + paragraphEnd.index : text.length
+  for (let cursor = start + length; cursor < end;) {
+    if (text[cursor] !== '`') { cursor += 1; continue }
+    const run = repeatedCharLength(text, cursor, '`')
+    if (run === length) return true
+    cursor += run
   }
-  return final ? text.length : null
+  return false
 }
 
 function isCitationStart(text: string, index: number): boolean {
-  return text.startsWith('[[E', index) && /\d/.test(text[index + 3] ?? '')
+  return text.startsWith('[[E', index)
 }
 
 function isCitationPrefixAtEnd(text: string, index: number): boolean {

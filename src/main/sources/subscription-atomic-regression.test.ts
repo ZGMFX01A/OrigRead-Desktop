@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AccountRepository } from '../accounts/account-repository'
@@ -16,6 +16,11 @@ import { WebsiteSubscriptionService } from './website/website-subscription-servi
 import { WebsiteRuleRepository } from './website/website-rule-repository'
 import { WebsiteParsePreferenceRepository } from './website/website-parse-preference-repository'
 import { discoveryFlow, rssDiscovery, rssXml, jsonSource, withLibrary } from './subscription-regression-support'
+
+vi.mock('node:fs', async (original) => {
+  const actual = await original<typeof import('node:fs')>()
+  return { ...actual, renameSync: vi.fn(actual.renameSync) }
+})
 
 describe('订阅元数据与批次的原子性', () => {
   it('JSON 规则写入失败时来源和首批文章一起回滚', async () => withLibrary(async (library, database) => {
@@ -34,15 +39,17 @@ describe('订阅元数据与批次的原子性', () => {
     try {
       const html = readFileSync(join(process.cwd(), 'src/main/testing/fixtures/website-samples/url-clusters.html'), 'utf8')
       const source = new WebsiteSourceService(new WebsiteRuleRepository(join(directory, 'rules.json')),
-        new WebsiteParsePreferenceRepository(directory), {
+        new WebsiteParsePreferenceRepository(join(directory, 'preferences.json')), {
           fetcher: async () => ({ status: 200, finalUrl: 'https://news.example.com/', html })
         })
       const inspection = await source.inspect('https://news.example.com/')
       const before = library.snapshot()
-      // 将目录作为偏好文件，触发真实文件系统写入失败，而非伪造订阅成功。
-      await expect(new WebsiteSubscriptionService(library, source).add(inspection)).rejects.toThrow()
+      // Fail the atomic commit after successful reads; corrupt/read errors now fail during inspection.
+      vi.mocked(renameSync).mockImplementationOnce(() => { throw new Error('preference rename failed') })
+      await expect(new WebsiteSubscriptionService(library, source).add(inspection)).rejects.toThrow('preference rename failed')
       expect(library.snapshot()).toEqual(before)
     } finally {
+      vi.mocked(renameSync).mockRestore()
       rmSync(directory, { recursive: true, force: true })
     }
   }))

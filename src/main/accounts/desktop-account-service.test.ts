@@ -6,6 +6,36 @@ import { AccountRepository } from './account-repository'
 import { DesktopAccountService } from './desktop-account-service'
 
 describe('DesktopAccountService Android parity', () => {
+  it('rejects foreign feed IDs and group moves, preserving feeds and articles with the same URL', async () => {
+    const fixture = createFixture(true)
+    const { accounts, library, service, database } = fixture
+    try {
+      const addFeed = (id: string, accountId: number) => {
+        const groupId = library.getCurrentDefaultGroup().id
+        library.upsertFeed({ id, accountId, groupId, name: id, url: 'https://example.com/shared',
+          sourceType: 'rss', sourcePageUrl: null, icon: null, isNotification: false, isFullContent: false,
+          isBrowser: false, dynamicRendering: false, createdAt: 1, updatedAt: 1 })
+        library.upsertArticle({ id: `${id}-article`, feedId: id, accountId, title: id, url: 'https://example.com/article',
+          author: null, publishedAt: 1, description: '', contentHtml: null, fullContentHtml: null, imageUrl: null,
+          isUnread: true, isStarred: true, createdAt: 1, updatedAt: 1 })
+      }
+      addFeed('first-feed', 1)
+      const other = accounts.add({ type: 'local' })
+      addFeed('other-feed', other.id)
+      const otherGroup = library.getCurrentDefaultGroup().id
+      accounts.switchTo(1)
+      await expect(service.updateFeed('first-feed', { groupId: otherGroup })).rejects.toThrow('目标分组不存在或不属于当前账户')
+      await expect(service.updateFeed('other-feed', { name: 'intrusion' })).rejects.toThrow('来源不存在')
+      await expect(service.deleteFeed('other-feed')).rejects.toThrow('来源不存在')
+      await service.updateFeed('first-feed', { name: 'allowed' })
+      await service.deleteFeed('first-feed')
+      expect(library.getFeedByIdForAccount(1, 'first-feed')).toBeNull()
+      expect(library.getArticleByIdForAccount(1, 'first-feed-article')).toBeNull()
+      expect(library.getFeedByIdForAccount(other.id, 'other-feed')?.name).toBe('other-feed')
+      expect(library.getArticleByIdForAccount(other.id, 'other-feed-article')?.isStarred).toBe(true)
+    } finally { database.close() }
+  })
+
   it('reuses normalized names and the default group within the current local account', async () => {
     const fixture = createFixture(true)
     const first = await fixture.service.addGroup(' Tech ')

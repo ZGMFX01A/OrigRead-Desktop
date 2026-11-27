@@ -16,6 +16,11 @@ interface ActiveExecution extends LlmExecutionIdentity {
  */
 export class LlmExecutionRegistry {
   private readonly active = new Map<string, ActiveExecution>()
+  private readonly activeByConversation = new Map<string, string>()
+
+  hasActiveConversation(conversationId: string): boolean {
+    return this.activeByConversation.has(conversationId.trim())
+  }
 
   begin(identity: LlmExecutionIdentity, ownerId: string): RegisteredLlmExecution {
     const requestId = requiredId(identity.requestId, 'requestId')
@@ -27,18 +32,26 @@ export class LlmExecutionRegistry {
       ownerId: requiredId(ownerId, 'ownerId'),
       controller: new AbortController()
     }
+    if (this.hasActiveConversation(execution.conversationId)) throw new Error('当前会话已有正在生成的请求')
     this.active.set(requestId, execution)
+    this.activeByConversation.set(execution.conversationId, requestId)
     return { ...identityFromActive(execution), ownerId: execution.ownerId, signal: execution.controller.signal }
   }
 
   finish(requestId: string): boolean {
-    return this.active.delete(requestId.trim())
+    const execution = this.active.get(requestId.trim())
+    if (!execution) return false
+    this.active.delete(execution.requestId)
+    if (this.activeByConversation.get(execution.conversationId) === execution.requestId) {
+      this.activeByConversation.delete(execution.conversationId)
+    }
+    return true
   }
 
   cancel(requestId: string, reason = 'LLM request cancelled'): boolean {
     const execution = this.active.get(requestId.trim())
     if (!execution) return false
-    this.active.delete(execution.requestId)
+    this.finish(execution.requestId)
     execution.controller.abort(new DOMException(reason, 'AbortError'))
     return true
   }
@@ -59,6 +72,10 @@ export class LlmExecutionRegistry {
     return cancelled
   }
 
+  cancelAll(reason = 'Account changed'): void {
+    for (const requestId of [...this.active.keys()]) this.cancel(requestId, reason)
+  }
+
   get(requestId: string): RegisteredLlmExecution | null {
     const execution = this.active.get(requestId.trim())
     return execution
@@ -70,13 +87,13 @@ export class LlmExecutionRegistry {
 }
 
 export function serializeLlmIpcError(error: unknown, signal?: AbortSignal): LlmSerializedError {
-  if (signal?.aborted || isAbortError(error)) {
+  if (Boolean(signal?.aborted)) {
     return { code: 'CANCELLED', message: '请求已停止', retryable: true }
   }
   const message = safeErrorMessage(error)
   if (/不存在|not found/i.test(message)) return { code: 'NOT_FOUND', message, retryable: false }
   if (/无效|不能为空|invalid|unsupported/i.test(message)) return { code: 'INVALID_REQUEST', message, retryable: false }
-  if (/provider|模型|AI 服务|HTTP|network|网络|timeout|timed out/i.test(message)) {
+  if (/provider|模型|AI 服务|HTTP|network|网络|超时|timeout|timed out/i.test(message)) {
     return { code: 'PROVIDER_ERROR', message, retryable: true }
   }
   if (/tool/i.test(message)) return { code: 'TOOL_ERROR', message, retryable: true }
@@ -95,10 +112,6 @@ function identityFromActive(execution: ActiveExecution): LlmExecutionIdentity {
     conversationId: execution.conversationId,
     assistantMessageId: execution.assistantMessageId
   }
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError'
 }
 
 function safeErrorMessage(error: unknown): string {

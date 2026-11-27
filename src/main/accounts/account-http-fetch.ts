@@ -2,6 +2,8 @@ import http from 'node:http'
 import https from 'node:https'
 import type { AccountFetch } from './remote-account-api'
 
+export const MAX_ACCOUNT_RESPONSE_BYTES = 20 * 1024 * 1024
+
 export interface ClientCertificateCredentials {
   pfx: Buffer
   passphrase?: string
@@ -22,7 +24,7 @@ export function createCertificateAwareAccountFetch(certificate:ClientCertificate
 async function request(
   input:string|URL|Request,
   init:RequestInit|undefined,
-  certificate:ClientCertificateCredentials,
+  certificate:ClientCertificateCredentials|null,
   redirects:number
 ):Promise<Response>{
   if(redirects>5)throw new Error('账户服务器重定向次数过多')
@@ -37,16 +39,34 @@ async function request(
   const requester=url.protocol==='https:'?https:http
 
   const response=await new Promise<Response>((resolve,reject)=>{
+    let settled = false
+    const fail = (error: Error): void => { if (!settled) { settled = true; reject(error) } }
     const req=requester.request(url,{
       method,
       headers:Object.fromEntries(headers.entries()),
       signal:init?.signal??sourceRequest?.signal,
-      ...(url.protocol==='https:'?{pfx:certificate.pfx,passphrase:certificate.passphrase||undefined,ca:certificate.ca,rejectUnauthorized:true}:{})
+      ...(certificate !== null && url.protocol==='https:'?{pfx:certificate.pfx,passphrase:certificate.passphrase||undefined,ca:certificate.ca,rejectUnauthorized:true}:{})
     },(incoming)=>{
       const chunks:Buffer[]=[]
-      incoming.on('data',(chunk)=>chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk)))
-      incoming.on('error',reject)
+      let totalBytes = 0
+      incoming.on('data',(chunk)=>{
+        if (settled) return
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        totalBytes += bytes.length
+        if (totalBytes > MAX_ACCOUNT_RESPONSE_BYTES) {
+          const error = new Error('账户服务器响应大小超过安全限制')
+          chunks.length = 0
+          fail(error)
+          req.destroy(error)
+          incoming.destroy(error)
+          return
+        }
+        chunks.push(bytes)
+      })
+      incoming.on('error',fail)
       incoming.on('end',()=>{
+        if (settled) return
+        settled = true
         const responseHeaders=new Headers()
         for(const [key,value] of Object.entries(incoming.headers)){
           if(value===undefined)continue
@@ -56,7 +76,7 @@ async function request(
         resolve(new Response(Buffer.concat(chunks),{status:incoming.statusCode??500,statusText:incoming.statusMessage,headers:responseHeaders}))
       })
     })
-    req.on('error',reject)
+    req.on('error',fail)
     if(body!==null)req.write(body)
     req.end()
   })
@@ -76,7 +96,7 @@ async function request(
   }else if(body!==null){
     nextInit.body=body
   }
-  if(target.origin!==url.origin){headers.delete('authorization');headers.delete('cookie')}
+  if(target.origin!==url.origin || (url.protocol==='https:' && target.protocol!=='https:')){headers.delete('authorization');headers.delete('cookie');certificate=null}
   return request(target,nextInit,certificate,redirects+1)
 }
 

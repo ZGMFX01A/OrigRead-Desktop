@@ -62,7 +62,7 @@ export class AiSummaryService {
     const cacheFile = this.cacheFile(articleId, article.title, content, profile.id, profile.endpoint, model, config.outputLanguage, length, promptCustomization.cacheVariant)
     if (!forceRefresh) {
       if (!options.providerId && !options.model && !options.length) {
-        const latest = readLatestCache(this.latestCacheFile(articleId), article.title, content, promptCustomization.cacheVariant)
+        const latest = readLatestCache(this.latestCacheFile(articleId), article.title, content, promptCustomization.cacheVariant, { providerId: profile.id, endpoint: profile.endpoint, model, outputLanguage: config.outputLanguage, length })
         if (latest) return latest
       }
       const cached = readCache(cacheFile)
@@ -86,7 +86,7 @@ export class AiSummaryService {
         domain: null,
         skipReason: localSkip
       }
-      this.writeCache(cacheFile, article.title, content, promptCustomization.cacheVariant, document)
+      this.writeCache(cacheFile, article.title, content, promptCustomization.cacheVariant, profile.endpoint, document)
       return document
     }
     const prepareMs = performance.now() - perfStartedAt
@@ -144,7 +144,7 @@ export class AiSummaryService {
         skipReason: null
       }
       onProgress('FINALIZING')
-      this.writeCache(cacheFile, article.title, content, promptCustomization.cacheVariant, document)
+      this.writeCache(cacheFile, article.title, content, promptCustomization.cacheVariant, profile.endpoint, document)
       logSummaryPerf({
         prepareMs,
         requestStartMs,
@@ -167,11 +167,16 @@ export class AiSummaryService {
     }
   }
 
-  private writeCache(cacheFile: string, title: string, content: string, customizationVariant: string, document: AiSummaryDocument): void {
+  private writeCache(cacheFile: string, title: string, content: string, customizationVariant: string, endpoint: string, document: AiSummaryDocument): void {
     mkdirSync(this.cacheDir, { recursive: true })
     writeFileSync(cacheFile, JSON.stringify(document, null, 2), 'utf8')
     writeFileSync(this.latestCacheFile(document.articleId), JSON.stringify({
-      version: 7,
+      version: 8,
+      providerId: document.providerId,
+      endpoint,
+      model: document.model,
+      outputLanguage: document.outputLanguage,
+      length: document.length,
       titleHash: hashText(title),
       contentHash: hashText(content),
       customizationVariant,
@@ -212,20 +217,33 @@ export class AiSummaryService {
   }
 }
 
-interface LatestAiSummaryCache {
-  version: 7
+interface SummaryCacheConfig {
+  providerId: string
+  endpoint: string
+  model: string
+  outputLanguage: string
+  length: AiSummaryLength
+}
+
+interface LatestAiSummaryCache extends SummaryCacheConfig {
+  version: 8
   titleHash: string
   contentHash: string
   customizationVariant: string
   document: AiSummaryDocument
 }
 
-function readLatestCache(path: string, title: string, content: string, customizationVariant: string): AiSummaryDocument | null {
+function readLatestCache(path: string, title: string, content: string, customizationVariant: string, config: SummaryCacheConfig): AiSummaryDocument | null {
   if (!existsSync(path)) return null
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as LatestAiSummaryCache
     if (
-      parsed.version !== 7
+      parsed.version !== 8
+      || parsed.providerId !== config.providerId
+      || parsed.endpoint !== config.endpoint
+      || parsed.model !== config.model
+      || parsed.outputLanguage !== config.outputLanguage
+      || parsed.length !== config.length
       || parsed.titleHash !== hashText(title)
       || parsed.contentHash !== hashText(content)
       || parsed.customizationVariant !== customizationVariant
@@ -641,7 +659,8 @@ function readCache(file: string): AiSummaryDocument | null {
   try { return existsSync(file) ? normalizeCachedDocument(JSON.parse(readFileSync(file, 'utf8')) as AiSummaryDocument) : null } catch { return null }
 }
 
-function normalizeCachedDocument(document: AiSummaryDocument): AiSummaryDocument {
+function normalizeCachedDocument(document: AiSummaryDocument): AiSummaryDocument | null {
+  if (document.status !== 'NOT_NEEDED' && !document.summary?.trim()) return null
   return {
     ...document,
     status: document.status === 'NOT_NEEDED' ? 'NOT_NEEDED' : 'GENERATED',

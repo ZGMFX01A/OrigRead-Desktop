@@ -31,6 +31,7 @@ describe('Remote MCP OAuth integration', () => {
         (profile) => repository.runtimeAuth(profile.id),
         (profile) => createMcpOAuthProviderSession({
           serverId: profile.id,
+          serverUrl: profile.url,
           clientName: 'OrigRead Test',
           secrets,
           openExternal: async (authorizationUrl) => {

@@ -1,3 +1,5 @@
+import { safeFetch, isLoopbackHost } from '../network/safe-fetch'
+import { readResponseText, MAX_JSON_RESPONSE_BYTES } from '../network/safe-response-reader'
 import { requestSignal } from '../network/request-policy'
 import { redactSensitiveText } from '../security/sensitive-text'
 import {
@@ -402,14 +404,24 @@ async function fetchSearchJson(
   providerName: string
 ): Promise<unknown> {
   let response: Response
+  const combinedSignal = requestSignal(signal, timeoutMs)
+  const parsed = new URL(url)
+  const headers = new Headers(init.headers)
+  const sensitiveHeaderNames = ['authorization', 'x-api-key', 'x-subscription-token', 'api-key'].filter((name) => headers.has(name))
   try {
-    response = await fetch(url, { ...init, signal: requestSignal(signal, timeoutMs) })
+    response = await safeFetch(url, { ...init, signal: combinedSignal }, {
+      allowedInitialOrigins: new Set([parsed.origin]),
+      allowLoopbackHttp: isLoopbackHost(parsed.hostname),
+      sensitiveHeaderNames,
+      requireHttpsForSensitiveHeaders: true,
+      blockPrivateNetwork: true
+    })
   } catch (error) {
     if (signal?.aborted) throw signal.reason
     if (error instanceof DOMException && error.name === 'TimeoutError') throw new WebSearchException(`${providerName} 搜索超时`, { cause: error })
     throw error
   }
-  const text = await response.text()
+  const text = await readResponseText(response, MAX_JSON_RESPONSE_BYTES, combinedSignal)
   if (!response.ok) throw new WebSearchException(`${providerName} 搜索失败：HTTP ${response.status}${searchErrorSuffix(text)}`)
   try { return JSON.parse(text) } catch (error) { throw new WebSearchException(`${providerName} 返回了无效 JSON`, { cause: error }) }
 }

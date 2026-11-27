@@ -10,7 +10,7 @@ import type {
   McpProtocolEra,
   McpServerIdentity
 } from '../../shared/mcp'
-import type { McpLocalRepository } from './mcp-local-repository'
+import { isBlockedMcpEnvironmentName, type McpLocalRepository } from './mcp-local-repository'
 import { redactErrorForBoundary, redactSensitiveText } from '../security/sensitive-text'
 
 const HEALTH_REQUEST_TIMEOUT_MS = 10_000
@@ -303,20 +303,12 @@ export function createSdkMcpLocalConnectorFactory(
     const connect = async (signal?: AbortSignal): Promise<McpLocalConnectorInfo> => {
       await closeCurrent()
       stderrTail = ''
-      const environment = {
-        ...getDefaultEnvironment(),
-        ...repository.runtimeEnvironment(server.id)
-      }
-      const childElectronRunAsNode = environment.ELECTRON_RUN_AS_NODE ?? ''
+      const environment = buildGuardianLaunchEnvironment(getDefaultEnvironment(), repository.runtimeEnvironment(server.id))
       const nextTransport = new StdioClientTransport({
         command: process.execPath,
         args: [MCP_STDIO_GUARDIAN_PATH, String(process.pid), server.command, ...server.args],
         ...(server.cwd ? { cwd: server.cwd } : {}),
-        env: {
-          ...environment,
-          ELECTRON_RUN_AS_NODE: '1',
-          ORIGREAD_MCP_CHILD_ELECTRON_RUN_AS_NODE: childElectronRunAsNode
-        },
+        env: environment,
         stderr: 'pipe',
         maxBufferSize: MAX_STDIO_BUFFER_BYTES
       })
@@ -439,4 +431,18 @@ function tail(value: string, maxChars: number): string {
 
 function errorMessage(error: unknown): string {
   return redactSensitiveText(error instanceof Error ? error.message : String(error))
+}
+
+
+export function buildGuardianLaunchEnvironment(baseEnv: Record<string, string>, userEnv: Record<string, string>): Record<string, string> {
+  const sanitizedUserEnv: Record<string, string> = Object.create(null)
+  for (const [name, value] of Object.entries(userEnv)) {
+    if (isBlockedMcpEnvironmentName(name)) throw new Error(`不允许覆盖高危环境变量：${name}`)
+    sanitizedUserEnv[name] = value
+  }
+  // PATH/系统目录只能来自 SDK 的默认环境，用户配置不进入 Guardian 运行环境。
+  const environment = Object.fromEntries(Object.entries(baseEnv).filter(([name]) =>
+    !isBlockedMcpEnvironmentName(name) || ['PATH', 'SYSTEMROOT', 'WINDIR'].includes(name.toUpperCase())
+  ))
+  return { ...environment, ELECTRON_RUN_AS_NODE: '1', ORIGREAD_MCP_CHILD_ENV_JSON: JSON.stringify(sanitizedUserEnv) }
 }

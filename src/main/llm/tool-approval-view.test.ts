@@ -49,3 +49,28 @@ describe('buildLlmToolActivityView', () => {
     expect(buildLlmToolActivityView(record('{}'), null)).toMatchObject({ risk: 'WRITE', source: 'MCP' })
   })
 })
+
+
+it('redacts embedded nested JSON strings before truncating them', () => {
+  const content = JSON.stringify({ nested: [{ text: 'x'.repeat(970) + ' apiKey=' + 'hidden-value'.repeat(200) + ' tail' }], 'DeepL-Auth-Key': 'deepl-secret' })
+  const input = record(content)
+  input.resultContent = content
+  const view = buildLlmToolActivityView(input, descriptor)
+  for (const preview of [view.argumentsPreview, view.resultPreview!]) {
+    expect(preview).not.toContain('hidden-value')
+    expect(preview).not.toContain('deepl-secret')
+    expect(preview).toContain('[redacted] tail')
+  }
+})
+
+it('redacts incomplete raw arguments and multiline assignments inside JSON strings', () => {
+  for (const raw of ['apiKey="example-unclosed', JSON.stringify({ nested: { text: 'privateKey="line-one\nline-two"' } })]) {
+    const input = record(raw)
+    input.resultContent = raw
+    const view = buildLlmToolActivityView(input, descriptor)
+    for (const safe of [view.argumentsPreview, view.resultPreview!]) {
+      expect(safe).toContain('[redacted]')
+      expect(safe).not.toMatch(/example-unclosed|line-one|line-two/)
+    }
+  }
+})

@@ -1,7 +1,9 @@
+import { safeFetch, isLoopbackHost, type DnsLookupFn } from '../network/safe-fetch'
 import { performance } from 'node:perf_hooks'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import type {
   McpConnectionSnapshot,
+  McpRemoteAuthMode,
   McpProtocolEra,
   McpRemoteRuntimeAuth,
   McpRemoteServerHealthResult,
@@ -380,7 +382,7 @@ export function createSdkMcpRemoteConnectorFactory(
         ...(auth.mode === 'BEARER' && auth.bearerToken ? { authProvider: { token: async () => auth.bearerToken ?? undefined } } : {}),
         ...(auth.mode === 'CUSTOM_HEADERS' ? { requestInit: { headers: auth.headers } } : {}),
         ...(auth.mode === 'OAUTH' && provider ? { authProvider: provider } : {}),
-        fetch: timeoutFetch(options.requestTimeoutMs),
+        fetch: createMcpRemoteFetch(server.url, { timeoutMs: options.requestTimeoutMs, authMode: auth.mode, customHeaderNames: Object.keys(auth.headers) }),
         onInsufficientScope: 'throw'
       })
       client = nextClient
@@ -448,12 +450,33 @@ function connectorInfo(client: Client): McpRemoteConnectorInfo {
   }
 }
 
-function timeoutFetch(timeoutMs: number): typeof fetch {
+export function createMcpRemoteFetch(serverUrl: string, options: {
+  timeoutMs: number
+  authMode: McpRemoteAuthMode
+  customHeaderNames?: readonly string[]
+  fetchImpl?: typeof fetch
+  lookup?: DnsLookupFn
+}): typeof fetch {
+  const serverParsed = new URL(serverUrl)
+  const serverOrigin = serverParsed.origin
+  const serverIsLoopback = isLoopbackHost(serverParsed.hostname)
+  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+    ? Math.min(Math.floor(options.timeoutMs), 2_147_483_647) : DEFAULT_REQUEST_TIMEOUT_MS
   return async (input, init) => {
+    const targetUrl = new URL(input instanceof Request ? input.url : String(input))
+    const sameOrigin = targetUrl.origin === serverOrigin
+    const localTest = serverIsLoopback && isLoopbackHost(targetUrl.hostname)
     const timeoutSignal = AbortSignal.timeout(timeoutMs)
-    const requestSignal = init?.signal
+    const requestSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
     const signal = requestSignal ? AbortSignal.any([requestSignal, timeoutSignal]) : timeoutSignal
-    return fetch(input, { ...init, signal })
+    return safeFetch(input, { ...init, signal }, {
+      fetchImpl: options.fetchImpl,
+      lookup: options.lookup,
+      allowLoopbackHttp: localTest,
+      requireHttps: sameOrigin ? !serverIsLoopback && options.authMode !== 'NONE' : !localTest,
+      blockPrivateNetwork: true,
+      sensitiveHeaderNames: ['authorization', ...(options.customHeaderNames ?? [])]
+    })
   }
 }
 

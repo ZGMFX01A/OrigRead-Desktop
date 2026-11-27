@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { backupCorruptFileAndThrow, writeAtomicTextFile } from '../../storage/atomic-json-file'
+import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import {
   BUILT_IN_WEBSITE_RULES,
   normalizeWebsiteRule,
@@ -12,6 +13,18 @@ const HOST_REGEX = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/
 
 export class WebsiteRuleRepository {
   constructor(private readonly ruleFile: string) {}
+
+  exportRawState(): string | null {
+    return existsSync(this.ruleFile) ? readFileSync(this.ruleFile, 'utf8') : null
+  }
+
+  restoreRawState(raw: string | null): void {
+    if (raw === null) {
+      if (existsSync(this.ruleFile)) unlinkSync(this.ruleFile)
+    } else {
+      writeAtomicTextFile(this.ruleFile, raw)
+    }
+  }
 
   listRules(): WebsiteRule[] {
     const merged = new Map<string, WebsiteRule>()
@@ -126,6 +139,7 @@ export class WebsiteRuleRepository {
   }
 
   private validateRule(rule: WebsiteRule): void {
+    if (typeof rule.enabled !== 'boolean') throw new Error('规则 enabled 必须是布尔值')
     if (!rule.id.trim()) throw new Error('规则 id 不能为空')
     if (!rule.name.trim()) throw new Error('规则名称不能为空')
     if (rule.hosts.length === 0) throw new Error('规则至少需要一个 hosts')
@@ -148,20 +162,25 @@ export class WebsiteRuleRepository {
     const schemaVersion = parsed.schemaVersion ?? WEBSITE_RULE_SCHEMA_VERSION
     if (schemaVersion !== WEBSITE_RULE_SCHEMA_VERSION) throw new Error(`不支持的规则版本：${schemaVersion}`)
     if (!Array.isArray(parsed.rules)) throw new Error('网站规则文件缺少 rules')
-    return { schemaVersion: WEBSITE_RULE_SCHEMA_VERSION, rules: parsed.rules.map((rule) => normalizeWebsiteRule(rule)) }
+    return { schemaVersion: WEBSITE_RULE_SCHEMA_VERSION, rules: parsed.rules.map((rule) => {
+      if (rule && 'enabled' in rule && typeof rule.enabled !== 'boolean') throw new Error('规则 enabled 必须是布尔值')
+      return normalizeWebsiteRule(rule)
+    }) }
   }
 
   private loadCustomRules(): WebsiteRule[] {
+    if (!existsSync(this.ruleFile)) return []
     try {
-      if (!existsSync(this.ruleFile)) return []
-      return this.decodeBundle(readFileSync(this.ruleFile, 'utf8')).rules
-    } catch {
-      return []
+      const rules = this.decodeBundle(readFileSync(this.ruleFile, 'utf8')).rules
+      rules.forEach((rule) => this.validateRule(rule))
+      return rules
+    } catch (error) {
+      backupCorruptFileAndThrow(this.ruleFile, '网站规则文件', error)
     }
   }
 
   private writeCustomRules(rules: WebsiteRule[]): void {
-    writeFileSync(this.ruleFile, JSON.stringify({ schemaVersion: WEBSITE_RULE_SCHEMA_VERSION, rules }, null, 2), 'utf8')
+    writeAtomicTextFile(this.ruleFile, JSON.stringify({ schemaVersion: WEBSITE_RULE_SCHEMA_VERSION, rules }, null, 2))
   }
 }
 

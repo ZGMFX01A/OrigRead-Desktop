@@ -1,8 +1,12 @@
+import { spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { runInNewContext } from 'node:vm'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
 import { MemorySecretStore } from '../security/secret-store'
 import type { McpLocalConnector, McpLocalConnectorFactory } from './mcp-local-client-manager'
-import { McpLocalClientManager } from './mcp-local-client-manager'
+import { buildGuardianLaunchEnvironment, McpLocalClientManager } from './mcp-local-client-manager'
 import { McpLocalRepository } from './mcp-local-repository'
 
 vi.mock('./mcp-stdio-guardian-path', () => ({ MCP_STDIO_GUARDIAN_PATH: 'mcp-stdio-guardian.cjs' }))
@@ -344,5 +348,52 @@ describe('McpLocalClientManager', () => {
       await manager.disconnectAll()
       database.close()
     }
+  })
+})
+
+describe('guardian environment isolation', () => {
+  it('places user variables only inside the child JSON and cleans inherited control keys', () => {
+    const environment = buildGuardianLaunchEnvironment({ PATH: '/bin', SystemRoot: 'C:\\Windows', ORIGREAD_MCP_ATTACK: 'bad', origread_mcp_other: 'bad', NODE_OPTIONS: 'bad' }, { API_TOKEN: 'secret', MODE: 'test' })
+    expect(environment).toEqual({ PATH: '/bin', SystemRoot: 'C:\\Windows', ELECTRON_RUN_AS_NODE: '1', ORIGREAD_MCP_CHILD_ENV_JSON: JSON.stringify({ API_TOKEN: 'secret', MODE: 'test' }) })
+    expect(environment.API_TOKEN).toBeUndefined()
+    expect(environment.MODE).toBeUndefined()
+    for (const name of ['NODE_OPTIONS', 'node_options', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'PATH', 'ELECTRON_RUN_AS_NODE', 'ORIGREAD_MCP_CHILD_ENV_JSON']) expect(() => buildGuardianLaunchEnvironment({}, { [name]: 'bad' })).toThrow('高危环境变量')
+  })
+  it('runs the real guardian with safe user values but no internal flags or injected runtime controls', async () => {
+    const environment = buildGuardianLaunchEnvironment({ PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? 'C:\\Windows' }, { SAFE_USER_TOKEN: 'guardian-test' })
+    // 模拟绕过管理器直接调用 Guardian：子进程仍需过滤高危 JSON 键。
+    environment.ORIGREAD_MCP_CHILD_ENV_JSON = JSON.stringify({ SAFE_USER_TOKEN: 'guardian-test', NODE_OPTIONS: '--invalid-option', ELECTRON_RUN_AS_NODE: 'evil', ORIGREAD_MCP_ATTACK: 'evil', PATH: 'evil' })
+    const child = spawn(process.execPath, [path.resolve('src/main/mcp/mcp-stdio-guardian.cjs'), String(process.pid), process.execPath, '-e', 'console.log(JSON.stringify(process.env))'], { env: environment, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const code = await new Promise<number | null>((resolve, reject) => {
+        child.once('error', reject)
+        child.once('close', resolve)
+        timer = setTimeout(() => { child.kill(); reject(new Error('guardian test timed out')) }, 5000)
+      })
+      expect(code, stderr).toBe(0)
+      const received = JSON.parse(stdout)
+      expect(received.SAFE_USER_TOKEN).toBe('guardian-test')
+      for (const name of ['ELECTRON_RUN_AS_NODE', 'ORIGREAD_MCP_CHILD_ENV_JSON', 'ORIGREAD_MCP_ATTACK', 'NODE_OPTIONS']) expect(received[name]).toBeUndefined()
+      expect(received.PATH).not.toBe('evil')
+    } finally {
+      clearTimeout(timer)
+      child.stdin.destroy()
+      if (child.exitCode === null) child.kill()
+    }
+  })
+  it('resolves Windows taskkill from an absolute system root with a safe fallback', () => {
+    const source = readFileSync('src/main/mcp/mcp-stdio-guardian.cjs', 'utf8')
+    const definition = source.match(/function resolveWindowsTaskkillPath\(\) \{[\s\S]*?\n\}/)![0]
+    const resolve = (env: Record<string, string>): string => runInNewContext(`${definition}; resolveWindowsTaskkillPath()`, { path, process: { env } })
+    expect(resolve({ SystemRoot: 'D:\\Windows' })).toBe('D:\\Windows\\System32\\taskkill.exe')
+    expect(resolve({ WINDIR: 'E:\\Windows' })).toBe('E:\\Windows\\System32\\taskkill.exe')
+    expect(resolve({ SystemRoot: 'relative' })).toBe('C:\\Windows\\System32\\taskkill.exe')
+    expect(resolve({})).toBe('C:\\Windows\\System32\\taskkill.exe')
+    expect(source).toContain('spawnSync(resolveWindowsTaskkillPath(),')
   })
 })

@@ -331,6 +331,10 @@ export class LlmChatRepository {
     const assistantId = assistantMessageId.trim()
     this.transaction(() => {
       this.database.prepare('DELETE FROM llm_context_refs WHERE assistant_message_id=?').run(assistantId)
+      this.database.prepare(`
+        DELETE FROM llm_citation_annotations WHERE assistant_message_id=?
+        AND id NOT IN (SELECT annotation_id FROM llm_citation_annotation_refs)
+      `).run(assistantId)
       const statement = this.database.prepare(`
         INSERT INTO llm_context_refs (
           id,conversation_id,assistant_message_id,context_id,type,title,source_id,article_id,source_url,
