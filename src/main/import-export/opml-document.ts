@@ -216,12 +216,10 @@ function outlineName(element: XmlElement): string {
 
 /** Linkedom 的 XML 属性仍可能包含实体，按属性文本解码后再比较 URL。 */
 function decodeXmlEntities(value: string): string {
-  return value
-    .replace(/&#x([0-9a-f]+);/gi, (_match, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
-    .replace(/&#([0-9]+);/g, (_match, decimal: string) => String.fromCodePoint(Number.parseInt(decimal, 10)))
-    .replaceAll('&quot;', '"')
-    .replaceAll('&apos;', "'")
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&amp;', '&')
+  const named: Record<string, string> = {quot:'"', apos:"'", lt:'<', gt:'>', amp:'&'}
+  return value.replace(/&(#x[0-9a-f]+|#[0-9]+|quot|apos|lt|gt|amp);/gi, (entity, key: string) => {
+    if (!key.startsWith('#')) return named[key] ?? entity
+    const point = key[1]?.toLowerCase() === 'x' ? Number.parseInt(key.slice(2), 16) : Number.parseInt(key.slice(1), 10)
+    return point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff) || point === 0 ? '\uFFFD' : String.fromCodePoint(point)
+  })
 }

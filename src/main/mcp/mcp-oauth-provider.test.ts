@@ -52,7 +52,7 @@ describe('MCP OAuth provider session', () => {
       await expect(provider.redirectToAuthorization(authorizeUrl)).rejects.toBeInstanceOf(McpOAuthAuthorizationRequiredError)
       expect(openExternal).not.toHaveBeenCalled()
 
-      provider.setInteractiveAllowed(true)
+      await provider.setInteractiveAllowed(true)
       await provider.redirectToAuthorization(authorizeUrl)
       expect(openExternal).toHaveBeenCalledOnce()
       expect(openExternal).toHaveBeenCalledWith(authorizeUrl.toString())
@@ -73,6 +73,7 @@ describe('MCP OAuth provider session', () => {
       openExternal: async () => {}
     })
     try {
+      await provider.setInteractiveAllowed(true)
       const state = await provider.state?.()
       const callbackUrl = new URL(provider.redirectUrl!)
       callbackUrl.searchParams.set('code', 'authorization-code')
@@ -97,13 +98,16 @@ describe('MCP OAuth provider session', () => {
       openExternal: async () => {}
     })
     try {
-      await provider.state?.()
+      await provider.setInteractiveAllowed(true)
+      const state = await provider.state?.()
       const callbackUrl = new URL(provider.redirectUrl!)
       callbackUrl.searchParams.set('code', 'authorization-code')
       callbackUrl.searchParams.set('state', 'attacker-state')
       const response = await fetch(callbackUrl)
-      expect(response.status).toBe(200)
-      await expect(provider.waitForCallback()).rejects.toThrow('state 校验失败')
+      expect(response.status).toBe(400)
+      callbackUrl.searchParams.set('state', String(state))
+      expect((await fetch(callbackUrl)).status).toBe(200)
+      expect((await provider.waitForCallback()).get('code')).toBe('authorization-code')
     } finally {
       await provider.close()
     }
@@ -116,7 +120,7 @@ describe('OAuth URL and discovery cache security', () => {
     const openExternal = vi.fn(async () => {})
     const provider = await createMcpOAuthProviderSession({ serverId: 'security', clientName: 'test', secrets: new MemorySecretStore(), openExternal })
     try {
-      provider.setInteractiveAllowed(true)
+      await provider.setInteractiveAllowed(true)
       await expect(provider.redirectToAuthorization(new URL(url))).rejects.toThrow()
       expect(openExternal).not.toHaveBeenCalled()
     } finally { await provider.close() }
@@ -141,11 +145,23 @@ describe('OAuth URL and discovery cache security', () => {
     const openExternal = vi.fn(async () => {})
     const provider = await createMcpOAuthProviderSession({ serverId: 'local', serverUrl: 'http://localhost/mcp', clientName: 'test', secrets: new MemorySecretStore(), openExternal })
     try {
-      provider.setInteractiveAllowed(true)
+      await provider.setInteractiveAllowed(true)
       await provider.redirectToAuthorization(new URL('http://127.0.0.1/authorize'))
       expect(openExternal).toHaveBeenCalledTimes(1)
       await expect(provider.redirectToAuthorization(new URL('http://10.0.0.1/authorize'))).rejects.toThrow()
       await expect(provider.redirectToAuthorization(new URL('https://169.254.169.254/authorize'))).rejects.toThrow()
     } finally { await provider.close() }
   })
+})
+
+
+it('keeps silent sessions off the loopback network', async () => {
+  const provider = await createMcpOAuthProviderSession({ serverId: 'silent', clientName: 'test', secrets: new MemorySecretStore(), openExternal: async () => {} })
+  try {
+    expect(new URL(provider.redirectUrl!).port).toBe('0')
+    await provider.setInteractiveAllowed(false)
+    expect(new URL(provider.redirectUrl!).port).toBe('0')
+    await provider.setInteractiveAllowed(true)
+    expect(new URL(provider.redirectUrl!).port).not.toBe('0')
+  } finally { await provider.close() }
 })

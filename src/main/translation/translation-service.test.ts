@@ -11,7 +11,7 @@ import { LlmTaskPromptCustomizer } from '../llm/prompt-customization'
 import { LlmSkillRepository } from '../llm/skill-repository'
 import type { TranslationSettingsRepository } from './translation-settings-repository'
 import { MicrosoftTranslationProvider,DeepLTranslationProvider,GoogleCloudTranslationProvider,DlxTranslationProvider,resolveDeepLEndpoint } from './cloud-translation-providers'
-import { TranslationService,buildAiTranslationSystemPrompt,buildAiTranslationUserPrompt,parseAiTranslationResponse } from './translation-service'
+import { TranslationService,buildAiTranslationSystemPrompt,buildAiTranslationUserPrompt,parseAiTranslationResponse,splitAll } from './translation-service'
 
 describe('translation providers Android parity',()=>{
   it('maps DeepL free keys to free official endpoint',()=>{expect(resolveDeepLEndpoint('https://api.deepl.com/v2/translate','abc:fx')).toContain('api-free.deepl.com')})
@@ -189,3 +189,26 @@ function createAiTranslationService(cacheDir:string,provider:OpenAiCompatiblePro
   return new TranslationService(library as never,reader as never,translationSettings,aiSettings,cacheDir,provider,promptCustomizer)
 }
 
+
+
+describe('translation segment and entity boundaries', () => {
+  it.each(['abcd efgh', 'abc。 efgh', 'abc😀defgh', '😀😀😀😀'])('splits within max without breaking code points: %s', text => {
+    const parts = splitAll([text], 4)
+    expect(parts.map(part => part.text).join('')).toBe(text)
+    for (const part of parts) {
+      expect(part.text.length).toBeLessThanOrEqual(4)
+      expect(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/.test(part.text)).toBe(false)
+      expect(part.text.length).toBeGreaterThan(0)
+    }
+  })
+  it('decodes entities without parsing literal generic syntax as HTML', async () => {
+    const server = createServer((_req, res) => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ data: { translations: [{ translatedText: 'Use <T>, Array<string> &amp; &lt;U&gt;' }] } })) })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('missing port')
+    try {
+      const result = await new GoogleCloudTranslationProvider().translate(['input'], null, 'en', { endpoint: `http://127.0.0.1:${address.port}`, apiKey: 'key', region: '' })
+      expect(result.texts).toEqual(['Use <T>, Array<string> & <U>'])
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())) }
+  })
+})

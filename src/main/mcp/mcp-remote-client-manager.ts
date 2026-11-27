@@ -1,6 +1,6 @@
 import { safeFetch, isLoopbackHost, type DnsLookupFn } from '../network/safe-fetch'
 import { performance } from 'node:perf_hooks'
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { Client, StreamableHTTPClientTransport, extractWWWAuthenticateParams, auth, UnauthorizedError, type AuthProvider, type OAuthClientProvider } from '@modelcontextprotocol/client'
 import type {
   McpConnectionSnapshot,
   McpRemoteAuthMode,
@@ -257,7 +257,7 @@ export class McpRemoteClientManager {
     try {
       return await connection.connector.listTools(signal)
     } catch (error) {
-      await this.markConnectionError(serverId, connection.connector, error)
+      if (!signal?.aborted) await this.markConnectionError(serverId, connection.connector, error)
       throw redactErrorForBoundary(error)
     }
   }
@@ -272,7 +272,7 @@ export class McpRemoteClientManager {
     try {
       return await connection.connector.callTool(name, argumentsValue, signal)
     } catch (error) {
-      await this.markConnectionError(serverId, connection.connector, error)
+      if (!signal?.aborted) await this.markConnectionError(serverId, connection.connector, error)
       throw redactErrorForBoundary(error)
     }
   }
@@ -311,6 +311,7 @@ export class McpRemoteClientManager {
   }
 
   private async markConnectionError(serverId: string, targetConnector: McpRemoteConnector, error: unknown): Promise<void> {
+    if (!isConnectionFailure(error)) return
     const id = serverId.trim()
     const existing = this.active.get(id)
     if (existing?.connector === targetConnector) {
@@ -343,6 +344,7 @@ export function createSdkMcpRemoteConnectorFactory(
   resolveAuth: (server: McpRemoteServerProfile) => McpRemoteRuntimeAuth = () => ({ mode: 'NONE', bearerToken: null, headers: {}, oauthScopes: '' }),
   createOAuthProvider?: (server: McpRemoteServerProfile) => Promise<McpOAuthProviderSession>
 ): McpRemoteConnectorFactory {
+  const refreshes = new Map<string, Promise<void>>()
   const normalizedClientName = clientName.trim() || 'OrigRead Desktop'
   const normalizedClientVersion = clientVersion.trim() || '0.0.0'
   return (server, options) => {
@@ -371,18 +373,28 @@ export function createSdkMcpRemoteConnectorFactory(
       if (auth.mode === 'OAUTH') {
         if (!createOAuthProvider) throw new Error('当前 MCP Client 未配置 OAuth Provider')
         provider = await createOAuthProvider(server)
-        provider.setInteractiveAllowed(interactiveOAuth)
+        await provider.setInteractiveAllowed(interactiveOAuth)
       }
 
       const nextClient = new Client(
         { name: normalizedClientName, version: normalizedClientVersion },
         { versionNegotiation: { mode: 'auto' }, listMaxPages: 64 }
       )
+      const rejectedTokens = new WeakMap<Response, string | undefined>()
+      const remoteFetch = createMcpRemoteFetch(server.url, { timeoutMs: options.requestTimeoutMs, authMode: auth.mode, customHeaderNames: Object.keys(auth.headers) })
+      const fetchWithAuthContext: typeof fetch = async (input, init) => {
+        const response = await remoteFetch(input, init)
+        if (response.status === 401) {
+          const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+          rejectedTokens.set(response, headers.get('authorization')?.replace(/^Bearer /i, ''))
+        }
+        return response
+      }
       const nextTransport = new StreamableHTTPClientTransport(new URL(server.url), {
         ...(auth.mode === 'BEARER' && auth.bearerToken ? { authProvider: { token: async () => auth.bearerToken ?? undefined } } : {}),
         ...(auth.mode === 'CUSTOM_HEADERS' ? { requestInit: { headers: auth.headers } } : {}),
-        ...(auth.mode === 'OAUTH' && provider ? { authProvider: provider } : {}),
-        fetch: createMcpRemoteFetch(server.url, { timeoutMs: options.requestTimeoutMs, authMode: auth.mode, customHeaderNames: Object.keys(auth.headers) }),
+        ...(auth.mode === 'OAUTH' && provider ? { authProvider: singleFlightOAuthProvider(server.id, provider, auth.oauthScopes, refreshes, rejectedTokens) } : {}),
+        fetch: fetchWithAuthContext,
         onInsufficientScope: 'throw'
       })
       client = nextClient
@@ -414,7 +426,15 @@ export function createSdkMcpRemoteConnectorFactory(
           if (!provider?.wasAuthorizationRedirected() || !authTransport) throw initialError
           try {
             const callbackParams = await provider.waitForCallback(signal)
-            await authTransport.finishAuth(callbackParams)
+            const code = callbackParams.get('code')
+            if (!code) throw new Error(`MCP OAuth 授权失败：${callbackParams.get('error') ?? 'missing code'}`)
+            const runtimeAuth = resolveAuth(server)
+            const result = await auth(provider, {
+              serverUrl: server.url, authorizationCode: code, iss: callbackParams.get('iss') ?? undefined,
+              scope: runtimeAuth.oauthScopes.trim() || undefined,
+              fetchFn: createMcpRemoteFetch(server.url, { timeoutMs: options.requestTimeoutMs, authMode: 'OAUTH' })
+            })
+            if (result !== 'AUTHORIZED') throw new UnauthorizedError('MCP OAuth authorization failed')
           } catch (error) {
             await closeCurrent()
             throw error
@@ -466,17 +486,21 @@ export function createMcpRemoteFetch(serverUrl: string, options: {
     const targetUrl = new URL(input instanceof Request ? input.url : String(input))
     const sameOrigin = targetUrl.origin === serverOrigin
     const localTest = serverIsLoopback && isLoopbackHost(targetUrl.hostname)
-    const timeoutSignal = AbortSignal.timeout(timeoutMs)
+    const timeoutController = new AbortController()
+    const timer = setTimeout(() => timeoutController.abort(new DOMException('MCP response headers timed out', 'TimeoutError')), timeoutMs)
+    const timeoutSignal = timeoutController.signal
     const requestSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
     const signal = requestSignal ? AbortSignal.any([requestSignal, timeoutSignal]) : timeoutSignal
-    return safeFetch(input, { ...init, signal }, {
-      fetchImpl: options.fetchImpl,
-      lookup: options.lookup,
-      allowLoopbackHttp: localTest,
-      requireHttps: sameOrigin ? !serverIsLoopback && options.authMode !== 'NONE' : !localTest,
-      blockPrivateNetwork: true,
-      sensitiveHeaderNames: ['authorization', ...(options.customHeaderNames ?? [])]
-    })
+    try {
+      return await safeFetch(input, { ...init, signal }, {
+        fetchImpl: options.fetchImpl,
+        lookup: options.lookup,
+        allowLoopbackHttp: localTest,
+        requireHttps: sameOrigin ? !serverIsLoopback && options.authMode !== 'NONE' : !localTest,
+        blockPrivateNetwork: true,
+        sensitiveHeaderNames: ['authorization', ...(options.customHeaderNames ?? [])]
+      })
+    } finally { clearTimeout(timer) }
   }
 }
 
@@ -532,4 +556,43 @@ async function safeClose(connector: McpRemoteConnector): Promise<void> {
 
 function errorMessage(error: unknown): string {
   return redactSensitiveText(error instanceof Error ? error.message : String(error))
+}
+
+
+function isConnectionFailure(error: unknown): boolean {
+  if (!(error instanceof Error) || error.name === 'AbortError') return false
+  const detail = error as Error & { code?: string | number; status?: number }
+  return detail.status === 401 || detail.code === 401 || error instanceof UnauthorizedError || error.name === 'McpOAuthAuthorizationRequiredError'
+    || ['NOT_CONNECTED', 'CONNECTION_CLOSED', 'CLIENT_HTTP_AUTHENTICATION', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ENOTFOUND', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT'].includes(String(detail.code))
+    || /connection (closed|lost)|not connected|transport.*(closed|disconnected)/i.test(error.message)
+    || (error.cause !== undefined && isConnectionFailure(error.cause))
+}
+
+/** Share refresh through persistence, so a rotating token is consumed only once per server. */
+export function singleFlightOAuthProvider(serverId: string, provider: OAuthClientProvider, scopes: string, flights: Map<string, Promise<void>>, rejectedTokens?: WeakMap<Response, string | undefined>): AuthProvider {
+  const adapted: AuthProvider = {
+    token: async () => (await provider.tokens())?.access_token,
+    async onUnauthorized(ctx) {
+      const challenge = extractWWWAuthenticateParams(ctx.response)
+      if (await auth(provider, { serverUrl: ctx.serverUrl, resourceMetadataUrl: challenge.resourceMetadataUrl,
+        scope: scopes.trim() || challenge.scope, fetchFn: ctx.fetchFn }) !== 'AUTHORIZED') throw new UnauthorizedError()
+    }
+  }
+  // Remember the token used by this provider. A delayed 401 after a completed
+  // refresh should retry the new token rather than rotate it a second time.
+  let lastToken: string | undefined
+  return {
+    async token() { lastToken = await adapted.token(); return lastToken },
+    async onUnauthorized(ctx) {
+      const pending = flights.get(serverId)
+      if (pending) return pending
+      const current = await adapted.token()
+      if (current && current !== (rejectedTokens?.has(ctx.response) ? rejectedTokens.get(ctx.response) : lastToken)) return
+      const raced = flights.get(serverId)
+      if (raced) return raced
+      const refresh = adapted.onUnauthorized!(ctx)
+      flights.set(serverId, refresh)
+      try { await refresh } finally { if (flights.get(serverId) === refresh) flights.delete(serverId) }
+    }
+  }
 }

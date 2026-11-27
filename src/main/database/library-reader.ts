@@ -48,9 +48,7 @@ export class SqliteLibraryReader {
     if (options?.isUnread !== undefined) {
       params.push(options.isUnread ? 1 : 0)
     }
-    if (scope.kind === 'all') {
-      params.push(Math.min(Math.max(Math.trunc(limit), 1), 1_000))
-    }
+    params.push(Math.min(Math.max(Math.trunc(limit), 1), 1_000))
     return (this.database.prepare(`
       SELECT a.id, a.account_id, a.feed_id, a.title, a.url, a.author, a.published_at, a.description,
              NULL AS content_html, NULL AS full_content_html, a.image_url, a.is_unread, a.is_starred,
@@ -59,7 +57,7 @@ export class SqliteLibraryReader {
       ${scope.kind === 'group' ? 'INNER JOIN feeds f ON f.id = a.feed_id AND f.account_id = a.account_id' : ''}
       WHERE a.account_id = ? ${filter} ${unreadFilter}
       ORDER BY COALESCE(a.published_at, a.created_at) DESC
-      ${scope.kind === 'all' ? 'LIMIT ?' : ''}
+      LIMIT ?
     `).all(...params) as unknown as ArticleRow[]).map(toArticleRecord)
   }
 

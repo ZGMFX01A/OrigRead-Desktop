@@ -201,3 +201,18 @@ function mockFetch(calls:CapturedCall[],handler:(url:string,init?:RequestInit)=>
   }
 }
 function json(value:unknown,status=200):Response{return new Response(JSON.stringify(value),{status,headers:{'Content-Type':'application/json'}})}
+
+
+ describe('credential failure classification', () => {
+  for (const Api of [GoogleReaderApi, FeverApi]) {
+    it.each([401,403])(`${Api.name} rejects HTTP %i credentials`, async status => {
+      const api = new Api('https://example.com/', 'u', 'p', async () => new Response('', {status}))
+      expect(await api.validCredentials()).toBe(false)
+    })
+    it.each(['DNS', 'TLS certificate', 'timeout'])(`${Api.name} propagates %s failure`, async message => {
+      const error = new Error(message)
+      const api = new Api('https://example.com/', 'u', 'p', async () => { throw error })
+      await expect(api.validCredentials()).rejects.toBe(error)
+    })
+  }
+})

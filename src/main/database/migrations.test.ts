@@ -181,7 +181,7 @@ describe('database migration v2 -> current schema', () => {
 
     expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
     expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all())
-      .toEqual([{version:9},{version:10},{version:11},{version:12},{version:13},{version:14},{version:15},{version:16}])
+      .toEqual([{version:9},{version:10},{version:11},{version:12},{version:13},{version:14},{version:15},{version:16},{version:17}])
     const columns = db.prepare("PRAGMA table_info('llm_messages')").all() as Array<{name:string}>
     expect(columns.map((column)=>column.name)).toEqual(expect.arrayContaining([
       'web_search_status','web_search_query','web_search_provider_name','web_search_result_count','web_search_error_message'
@@ -332,4 +332,18 @@ describe('database migration v2 -> current schema', () => {
 
     db.close()
   })
+})
+
+
+it('removes only the duplicate index on upgrade and is idempotent', () => {
+  const db = new DatabaseSync(':memory:')
+  try {
+    applyMigrations(db)
+    db.exec('DELETE FROM schema_migrations WHERE version=17; CREATE INDEX articles_account_id_idx ON articles(account_id,published_at DESC)')
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+    expect(applyMigrations(db)).toBe(CURRENT_SCHEMA_VERSION)
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='articles_account_id_idx'").all()).toEqual([])
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='articles_published_at_idx'").all()).toEqual([{name:'articles_published_at_idx'}])
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+  } finally { db.close() }
 })

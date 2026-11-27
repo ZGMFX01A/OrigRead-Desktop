@@ -16,7 +16,7 @@ describe('ReaderFontRepository', () => {
     const directory = mkdtempSync(join(tmpdir(), 'origread-font-'))
     directories.push(directory)
     const source = join(directory, 'My Reader Font.ttf')
-    writeFileSync(source, new Uint8Array([0, 1, 2, 3]))
+    writeFileSync(source, new Uint8Array([0, 1, 0, 0]))
     const repository = new ReaderFontRepository(join(directory, 'fonts'))
 
     const imported = repository.importFile(source)
@@ -74,4 +74,18 @@ describe('ReaderFontRepository', () => {
     expect(repository.resolveFontFilePath('')).toBeNull()
     expect(repository.resolveFontFilePath('custom:nonexistent-id')).toBeNull()
   })
+})
+
+
+it.each([['.ttf', 'fake', false, ''], ['.ttf', '\x00\x01\x00\x00', true, 'font/ttf'], ['.woff2', 'wOF2', true, 'font/woff2'], ['.otf', 'OTTO', true, 'font/otf'], ['.woff', 'wOFF', true, 'font/woff'], ['.ttf', 'true', true, 'font/ttf'], ['.ttf', 'wOF2', false, '']])('validates signature for %s %s', (extension, header, valid, mime) => {
+  const directory = mkdtempSync(join(tmpdir(), 'origread-font-'))
+  directories.push(directory)
+  const source = join(directory, `font${extension}`)
+  writeFileSync(source, header)
+  const repository = new ReaderFontRepository(join(directory, 'fonts'))
+  if (!valid) { expect(() => repository.importFile(source)).toThrow(/字体/); expect(repository.list()).toEqual([]); return }
+  const font = repository.importFile(source)
+  expect(font.mime).toBe(mime)
+  expect(repository.list()[0]?.mime).toBe(mime)
+  expect(repository.resolveFontFilePath(font.id)?.mime).toBe(mime)
 })

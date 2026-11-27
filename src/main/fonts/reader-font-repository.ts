@@ -1,5 +1,5 @@
 import { basename, extname, join } from 'node:path'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, openSync, readSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import type { ReaderFontEntry } from '../../shared/reader-font'
 
@@ -8,6 +8,7 @@ export interface StoredReaderFont {
   name: string
   cssFamily: string
   fileName: string
+  mime?: string
 }
 
 const ALLOWED_EXTENSIONS = new Set(['.ttf', '.otf', '.woff', '.woff2'])
@@ -40,6 +41,7 @@ export class ReaderFontRepository {
         name: font.name,
         cssFamily: font.cssFamily,
         source: 'custom' as const,
+        mime: font.mime ?? mimeForExtension(extname(font.fileName)),
         dataUrl: toCustomFontProtocolUrl(font.id)
       }]
     })
@@ -55,14 +57,16 @@ export class ReaderFontRepository {
     const stats = statSync(sourcePath)
     if (stats.size === 0 || stats.size > MAX_FONT_BYTES) throw new Error('字体文件为空或超过 30 MB')
 
+    const bytes = readFileSync(sourcePath)
+    const mime = validateFontHeader(bytes, extension)
     const id = `custom:${randomUUID()}`
     const fileName = `${id.slice('custom:'.length)}${extension}`
     const displayName = basename(sourcePath, extension).trim() || 'Custom Font'
     const cssFamily = `OrigReadCustom_${id.slice('custom:'.length).replaceAll('-', '_')}`
 
-    copyFileSync(sourcePath, join(this.directory, fileName))
     const registry = this.load()
-    registry.push({ id, name: displayName, cssFamily, fileName })
+    writeFileSync(join(this.directory, fileName), bytes)
+    registry.push({ id, name: displayName, cssFamily, fileName, mime })
     this.save(registry)
 
     return {
@@ -70,6 +74,7 @@ export class ReaderFontRepository {
       name: displayName,
       cssFamily,
       source: 'custom',
+      mime,
       dataUrl: toCustomFontProtocolUrl(id)
     }
   }
@@ -103,18 +108,27 @@ export class ReaderFontRepository {
 
     return {
       filePath: fullPath,
-      mime: mimeForExtension(extension)
+      mime: this.readFontMime(fullPath, extension)
     }
+  }
+
+  private readFontMime(path: string, extension: string): string {
+    const fd = openSync(path, 'r')
+    try {
+      const header = Buffer.alloc(4)
+      const count = readSync(fd, header, 0, 4, 0)
+      return validateFontHeader(header.subarray(0, count), extension)
+    } finally { closeSync(fd) }
   }
 
   private load(): StoredReaderFont[] {
     if (!existsSync(this.registryPath)) return []
     try {
       const value = JSON.parse(readFileSync(this.registryPath, 'utf8')) as unknown
-      if (!Array.isArray(value)) return []
-      return value.filter(isStoredReaderFont)
-    } catch {
-      return []
+      if (!Array.isArray(value) || !value.every(isStoredReaderFont)) throw new Error('字体注册表已损坏')
+      return value
+    } catch (error) {
+      throw new Error('无法读取字体注册表', { cause: error })
     }
   }
 
@@ -135,4 +149,11 @@ export function mimeForExtension(extension: string): string {
   if (extension === '.woff') return 'font/woff'
   if (extension === '.otf') return 'font/otf'
   return 'font/ttf'
+}
+
+function validateFontHeader(bytes: Buffer, extension: string): string {
+  const signature = bytes.subarray(0, 4).toString('latin1')
+  const expected: Record<string, string[]> = {'.ttf':['\x00\x01\x00\x00','true'], '.otf':['OTTO'], '.woff':['wOFF'], '.woff2':['wOF2']}
+  if (!expected[extension]?.includes(signature)) throw new Error('字体文件头与扩展名不匹配')
+  return mimeForExtension(extension)
 }

@@ -10,7 +10,7 @@ import {
 } from './desktop-group-hierarchy-backup'
 import type { BackupGroup, ConfigurationBackup } from '../../shared/configuration-backup'
 import type { FeedRecord } from '../../shared/library'
-import { createConfigurationBackupFixture } from './configuration-backup-test-support'
+import { createConfigurationBackupFixture } from '../../../tests/helpers/configuration-backup-test-support'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -348,7 +348,7 @@ describe('desktop-group-hierarchy-backup', () => {
       return createConfigurationBackupFixture(dir)
     }
 
-    it('exports metadata and escaped flat paths for nested groups and inspects cleanly', () => {
+    it('exports metadata and escaped flat paths for nested groups and inspects cleanly', async () => {
       const fixture = createFixture()
       const defaultGroup = fixture.library.getCurrentDefaultGroup()
 
@@ -379,7 +379,7 @@ describe('desktop-group-hierarchy-backup', () => {
       fixture.library.upsertGroup(childGroup)
       fixture.library.upsertGroup(grandChildGroup)
 
-      const exportedJson = fixture.backup.exportBackup('')
+      const exportedJson = await fixture.backup.exportBackup('')
       const parsed = JSON.parse(exportedJson)
 
       // 1. schemaVersion 保持为 1
@@ -427,9 +427,9 @@ describe('desktop-group-hierarchy-backup', () => {
       dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true }))
     })
 
-    it('inspects legacy backup without desktopGroupHierarchy successfully', () => {
+    it('inspects legacy backup without desktopGroupHierarchy successfully', async () => {
       const fixture = createFixture()
-      const exportedJson = fixture.backup.exportBackup('')
+      const exportedJson = await fixture.backup.exportBackup('')
       const parsed = JSON.parse(exportedJson)
 
       // 模拟旧版 Android 或桌面备份（删除 desktopGroupHierarchy）
@@ -469,10 +469,10 @@ describe('desktop-group-hierarchy-backup', () => {
       ...overrides
     })
 
-    it('rejects a custom root name colliding with the destination default before writing groups', () => {
+    it('rejects a custom root name colliding with the destination default before writing groups', async () => {
       const fixture = createFixture()
       try {
-        const backup = JSON.parse(fixture.backup.exportBackup('')) as ConfigurationBackup
+        const backup = JSON.parse(await fixture.backup.exportBackup('')) as ConfigurationBackup
         const defaultId = backup.subscriptions.groups.find(group => group.isDefault)!.id
         backup.subscriptions.groups.push({ id: 'custom-default', name: 'Default', isDefault: false })
         backup.desktopGroupHierarchy = { version: 1, groups: [
@@ -480,12 +480,12 @@ describe('desktop-group-hierarchy-backup', () => {
           { id: 'custom-default', name: 'Default', parentId: null }
         ] }
         const before = fixture.library.listGroups()
-        expect(() => fixture.backup.restoreBackup(JSON.stringify(backup))).toThrow('默认分组冲突')
+        await expect(fixture.backup.restoreBackup(JSON.stringify(backup))).rejects.toThrow('默认分组冲突')
         expect(fixture.library.listGroups()).toEqual(before)
       } finally { fixture.database.close() }
     })
 
-    it('round-trips full tree from local export to clean DB and repeated restore is idempotent', () => {
+    it('round-trips full tree from local export to clean DB and repeated restore is idempotent', async () => {
       const sourceFixture = createFixture()
 
       // 构造源数据库中的层级树与订阅 feeds
@@ -560,11 +560,11 @@ describe('desktop-group-hierarchy-backup', () => {
         })
       )
 
-      const backupContent = sourceFixture.backup.exportBackup('')
+      const backupContent = await sourceFixture.backup.exportBackup('')
 
       // 在全新的目标数据库中恢复
       const targetFixture = createFixture()
-      const restoreResult1 = targetFixture.backup.restoreBackup(backupContent)
+      const restoreResult1 = await targetFixture.backup.restoreBackup(backupContent)
 
       expect(restoreResult1.groupsAdded).toBe(4)
       expect(restoreResult1.feedsAdded).toBe(5)
@@ -611,7 +611,7 @@ describe('desktop-group-hierarchy-backup', () => {
       )
 
       // 重复 restore 幂等性验证
-      const restoreResult2 = targetFixture.backup.restoreBackup(backupContent)
+      const restoreResult2 = await targetFixture.backup.restoreBackup(backupContent)
       expect(restoreResult2.groupsAdded).toBe(0)
       expect(restoreResult2.feedsAdded).toBe(0)
       expect(restoreResult2.feedsUpdated).toBe(6)
@@ -625,7 +625,7 @@ describe('desktop-group-hierarchy-backup', () => {
       dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true }))
     })
 
-    it('restores flattened root groups when metadata is stripped (legacy downgrade)', () => {
+    it('restores flattened root groups when metadata is stripped (legacy downgrade)', async () => {
       const sourceFixture = createFixture()
       sourceFixture.library.upsertGroup({
         id: 'g-tech',
@@ -657,13 +657,13 @@ describe('desktop-group-hierarchy-backup', () => {
         })
       )
 
-      const exported = JSON.parse(sourceFixture.backup.exportBackup('')) as ConfigurationBackup
+      const exported = JSON.parse(await sourceFixture.backup.exportBackup('')) as ConfigurationBackup
       // 模拟移除 metadata 降级为旧版平铺备份
       delete (exported as { desktopGroupHierarchy?: unknown }).desktopGroupHierarchy
       const flatBackupContent = JSON.stringify(exported)
 
       const targetFixture = createFixture()
-      const result = targetFixture.backup.restoreBackup(flatBackupContent)
+      const result = await targetFixture.backup.restoreBackup(flatBackupContent)
 
       expect(result.groupsAdded).toBe(3)
       expect(result.feedsAdded).toBe(1)
@@ -693,7 +693,7 @@ describe('desktop-group-hierarchy-backup', () => {
       dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true }))
     })
 
-    it('legacy flat backup without metadata matches only root groups and does not steal child leaf groups', () => {
+    it('legacy flat backup without metadata matches only root groups and does not steal child leaf groups', async () => {
       const fixture = createFixture()
 
       // 现有数据库中存在父分组 A 与子分组 B，但不存在根分组 B
@@ -713,7 +713,7 @@ describe('desktop-group-hierarchy-backup', () => {
       })
 
       // 旧版平铺备份中有一个同名为 'TargetLeaf' 的平铺根分组
-      const legacyBackup = JSON.parse(fixture.backup.exportBackup('')) as ConfigurationBackup
+      const legacyBackup = JSON.parse(await fixture.backup.exportBackup('')) as ConfigurationBackup
       delete (legacyBackup as { desktopGroupHierarchy?: unknown }).desktopGroupHierarchy
       legacyBackup.subscriptions.groups = [
         { id: 'default-id', name: 'Default', isDefault: true },
@@ -728,7 +728,7 @@ describe('desktop-group-hierarchy-backup', () => {
         }) as unknown as ConfigurationBackup['subscriptions']['feeds'][number]
       ]
 
-      const result = fixture.backup.restoreBackup(JSON.stringify(legacyBackup))
+      const result = await fixture.backup.restoreBackup(JSON.stringify(legacyBackup))
       // 必须新建一个根分组 TargetLeaf，而不能误匹配到 ParentA 下的子分组 TargetLeaf
       expect(result.groupsAdded).toBe(1)
       expect(result.feedsAdded).toBe(1)
@@ -751,7 +751,7 @@ describe('desktop-group-hierarchy-backup', () => {
       dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true }))
     })
 
-    it('distinguishes root group and child group with the same name across tree levels', () => {
+    it('distinguishes root group and child group with the same name across tree levels', async () => {
       const sourceFixture = createFixture()
       sourceFixture.library.upsertGroup({
         id: 'g-category',
@@ -791,10 +791,10 @@ describe('desktop-group-hierarchy-backup', () => {
         })
       )
 
-      const backupContent = sourceFixture.backup.exportBackup('')
+      const backupContent = await sourceFixture.backup.exportBackup('')
 
       const targetFixture = createFixture()
-      const result1 = targetFixture.backup.restoreBackup(backupContent)
+      const result1 = await targetFixture.backup.restoreBackup(backupContent)
       expect(result1.groupsAdded).toBe(3)
       expect(result1.feedsAdded).toBe(2)
       expect(result1.feedsUpdated).toBe(1)
@@ -818,7 +818,7 @@ describe('desktop-group-hierarchy-backup', () => {
       )
 
       // 重复恢复保持完全幂等
-      const result2 = targetFixture.backup.restoreBackup(backupContent)
+      const result2 = await targetFixture.backup.restoreBackup(backupContent)
       expect(result2.groupsAdded).toBe(0)
       expect(result2.feedsAdded).toBe(0)
       expect(result2.feedsUpdated).toBe(3)
@@ -828,13 +828,13 @@ describe('desktop-group-hierarchy-backup', () => {
       dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true }))
     })
 
-    it('rejects invalid metadata atomically before any database, preference, or secret mutations', () => {
+    it('rejects invalid metadata atomically before any database, preference, or secret mutations', async () => {
       const fixture = createFixture()
       fixture.settings.update({ readerFontSize: 16, theme: 'light' })
       const initialGroups = fixture.library.listGroups()
       const initialFeeds = fixture.library.listFeeds()
 
-      const baseBackup = JSON.parse(fixture.backup.exportBackup('')) as ConfigurationBackup
+      const baseBackup = JSON.parse(await fixture.backup.exportBackup('')) as ConfigurationBackup
       baseBackup.preferences = {
         'origread.desktop.readerFontSize': 32,
         'origread.desktop.theme': 'dark'
@@ -853,7 +853,7 @@ describe('desktop-group-hierarchy-backup', () => {
         ]
       }
 
-      expect(() => fixture.backup.restoreBackup(JSON.stringify(baseBackup))).toThrow(
+      await expect(fixture.backup.restoreBackup(JSON.stringify(baseBackup))).rejects.toThrow(
         /循环嵌套引用/
       )
 
@@ -867,7 +867,7 @@ describe('desktop-group-hierarchy-backup', () => {
       dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true }))
     })
 
-    it('restoring backup in current account does not affect other accounts in same DB', () => {
+    it('restoring backup in current account does not affect other accounts in same DB', async () => {
       const fixture = createFixture()
 
       // 在同一 SQLite 数据库中预置 account 2 的私自分组与订阅
@@ -880,7 +880,7 @@ describe('desktop-group-hierarchy-backup', () => {
       `)
 
       // 在当前账户 (account 1) 恢复备份
-      const backup = JSON.parse(fixture.backup.exportBackup('')) as ConfigurationBackup
+      const backup = JSON.parse(await fixture.backup.exportBackup('')) as ConfigurationBackup
       backup.subscriptions.groups.push({ id: 'acc1-tech', name: 'Acc1Tech', isDefault: false })
       backup.subscriptions.feeds.push(
         createTestFeed({
@@ -898,7 +898,7 @@ describe('desktop-group-hierarchy-backup', () => {
         ]
       }
 
-      const result = fixture.backup.restoreBackup(JSON.stringify(backup))
+      const result = await fixture.backup.restoreBackup(JSON.stringify(backup))
       expect(result.groupsAdded).toBe(1)
       expect(result.feedsAdded).toBe(1)
 

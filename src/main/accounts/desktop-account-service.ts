@@ -41,8 +41,11 @@ export class DesktopAccountService {
       if(this.accounts.get(previous))this.accounts.switchTo(previous)
       throw error
     }
-    // Android 在 credentials 通过后 enqueue OneTimeWork，不阻塞“添加成功”回调。
-    void this.services.remote.sync(account.id).catch(()=>undefined)
+    try {
+      await this.services.remote.sync(account.id)
+    } catch (error) {
+      throw new Error(`账户已创建，但首次同步失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
+    }
     return this.accounts.get(account.id)!
   }
 

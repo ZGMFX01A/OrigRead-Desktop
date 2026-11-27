@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { WebSearchProviderProfile, WebSearchRequest } from '../../shared/web-search'
 import {
   BraveWebSearchAdapter,
+  DeepSeekWebSearchAdapter,
   ExaWebSearchAdapter,
   FirecrawlWebSearchAdapter,
   KeenableWebSearchAdapter,
@@ -182,4 +183,35 @@ describe('Search redirect and response limits', () => {
     }))
     await expect(new SearxngWebSearchAdapter().search(profile('SEARXNG', source), '', request())).rejects.toThrow('响应体大小超过限制')
   })
+})
+
+
+describe('HTTP 200 search error contracts', () => {
+  const adapters = [new DeepSeekWebSearchAdapter(), new TavilyWebSearchAdapter(), new ExaWebSearchAdapter(), new BraveWebSearchAdapter(), new PerplexityWebSearchAdapter(), new LinkupWebSearchAdapter(), new FirecrawlWebSearchAdapter(), new KeenableWebSearchAdapter(), new SearxngWebSearchAdapter()]
+  it.each(adapters)('$kind rejects missing results and business failures', async adapter => {
+    for (const payload of [{}, { error: { message: 'quota' }, results: [], web: { results: [] }, data: { web: [] } }, { code: 500, results: [], web: { results: [] }, data: { web: [] } }]) {
+      const fixture = await fixtureServer(() => payload)
+      await expect(adapter.search(profile(adapter.kind, fixture.url), 'key', request())).rejects.toThrow()
+    }
+  })
+  it.each(adapters)('$kind rejects unsafe result URLs', async adapter => {
+    for (const url of ['javascript:alert(1)', 'file:///secret', 'not-a-url']) {
+      const results = [{ title: 'bad', url }]
+      const fixture = await fixtureServer(() => ({ results, web: { results }, data: { web: results } }))
+      await expect(adapter.search(profile(adapter.kind, fixture.url), 'key', request())).rejects.toThrow()
+    }
+  })
+})
+
+
+it('bounds even HTTP 200 JSON response bodies before parsing', async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json', 'content-length': String(10 * 1024 * 1024 + 1) })
+    response.end('{}')
+  })
+  servers.push(server)
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('missing port')
+  await expect(new TavilyWebSearchAdapter().search(profile('TAVILY', `http://127.0.0.1:${address.port}`), 'key', request())).rejects.toThrow('响应体大小超过限制')
 })

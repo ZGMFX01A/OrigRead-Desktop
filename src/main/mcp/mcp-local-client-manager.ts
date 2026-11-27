@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'node:child_process'
 import { stat } from 'node:fs/promises'
 import { performance } from 'node:perf_hooks'
 import { Client } from '@modelcontextprotocol/client'
@@ -193,7 +194,7 @@ export class McpLocalClientManager {
     try {
       return await connection.connector.listTools(signal)
     } catch (error) {
-      await this.markConnectionError(serverId, connection.connector, error)
+      if (!signal?.aborted) await this.markConnectionError(serverId, connection.connector, error)
       throw redactErrorForBoundary(error)
     }
   }
@@ -208,7 +209,7 @@ export class McpLocalClientManager {
     try {
       return await connection.connector.callTool(name, argumentsValue, signal)
     } catch (error) {
-      await this.markConnectionError(serverId, connection.connector, error)
+      if (!signal?.aborted) await this.markConnectionError(serverId, connection.connector, error)
       throw redactErrorForBoundary(error)
     }
   }
@@ -250,6 +251,7 @@ export class McpLocalClientManager {
   }
 
   private async markConnectionError(serverId: string, targetConnector: McpLocalConnector, error: unknown): Promise<void> {
+    if (!isLocalConnectionFailure(error)) return
     const id = serverId.trim()
     const existing = this.active.get(id)
     if (existing?.connector === targetConnector) {
@@ -287,17 +289,21 @@ export function createSdkMcpLocalConnectorFactory(
     let client: Client | null = null
     let transport: StdioClientTransport | null = null
     let stderrTail = ''
+    let removeProcessListeners: (() => void) | undefined
 
     const closeCurrent = async (): Promise<void> => {
       const closingClient = client
       const closingTransport = transport
       client = null
       transport = null
+      const removeListeners = removeProcessListeners
+      removeProcessListeners = undefined
       if (closingClient) {
         try { await closingClient.close() } catch { /* best effort */ }
       } else if (closingTransport) {
         try { await closingTransport.close() } catch { /* best effort */ }
       }
+      removeListeners?.()
     }
 
     const connect = async (signal?: AbortSignal): Promise<McpLocalConnectorInfo> => {
@@ -312,6 +318,23 @@ export function createSdkMcpLocalConnectorFactory(
         stderr: 'pipe',
         maxBufferSize: MAX_STDIO_BUFFER_BYTES
       })
+      const pipeFailure = new AbortController()
+      const onPipeError = (error: Error): void => {
+        if (transport !== nextTransport) return
+        pipeFailure.abort(error)
+        void closeCurrent().catch(closeError => console.warn('MCP pipe teardown failed', closeError))
+      }
+      const processStreams = [process.stdin, process.stdout, process.stderr]
+      for (const stream of processStreams) stream.on('error', onPipeError)
+      const onParentEnd = (): void => onPipeError(new Error('MCP parent stdin ended'))
+      process.stdin.once('end', onParentEnd)
+      process.stdin.once('close', onParentEnd)
+      removeProcessListeners = () => {
+        for (const stream of processStreams) stream.removeListener('error', onPipeError)
+        process.stdin.removeListener('end', onParentEnd)
+        process.stdin.removeListener('close', onParentEnd)
+      }
+      guardStdioTransport(nextTransport, onPipeError, options.requestTimeoutMs)
       nextTransport.stderr?.on('data', (chunk: unknown) => {
         const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk)
         stderrTail = tail(`${stderrTail}${text}`, MAX_STDERR_TAIL_CHARS)
@@ -323,7 +346,7 @@ export function createSdkMcpLocalConnectorFactory(
       client = nextClient
       transport = nextTransport
       try {
-        await withAbort(nextClient.connect(nextTransport), signal, options.requestTimeoutMs)
+        await withAbort(nextClient.connect(nextTransport), signal ? AbortSignal.any([signal, pipeFailure.signal]) : pipeFailure.signal, options.requestTimeoutMs)
         return connectorInfo(nextClient)
       } catch (error) {
         const detail = stderrTail.trim()
@@ -364,14 +387,60 @@ function requestOptions(signal: AbortSignal | undefined, timeoutMs: number): { r
   return { requestSignal: signal ? AbortSignal.any([signal, timeout]) : timeout }
 }
 
-async function withAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined, timeoutMs: number): Promise<T> {
-  const timeout = AbortSignal.timeout(timeoutMs)
-  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout
-  if (combined.aborted) throw combined.reason
-  return Promise.race([
-    promise,
-    new Promise<T>((_resolve, reject) => combined.addEventListener('abort', () => reject(combined.reason), { once: true }))
-  ])
+export async function withAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let abort: (() => void) | undefined
+  try {
+    return await Promise.race([
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new DOMException('MCP connect timed out', 'TimeoutError')), timeoutMs)
+        abort = () => reject(signal?.reason ?? new DOMException('MCP connect cancelled', 'AbortError'))
+        if (signal?.aborted) abort()
+        else signal?.addEventListener('abort', abort, { once: true })
+      }),
+      promise
+    ])
+  } finally {
+    clearTimeout(timer)
+    if (abort) signal?.removeEventListener('abort', abort)
+  }
+}
+
+/** SDK 2 exposes stderr but leaves the raw stderr pipe without an error listener. */
+export function guardStdioTransport(transport: StdioClientTransport, onError: (error: Error) => void, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): void {
+  const start = transport.start.bind(transport)
+  transport.stderr?.on('error', onError)
+  transport.start = async () => {
+    const starting = start()
+    // start() spawns synchronously before yielding its Promise. Guard every raw pipe
+    // before spawn/error events can run, including errors during a pending handshake.
+    const child = (transport as unknown as { _process?: ChildProcess })._process
+    for (const stream of [child?.stdin, child?.stdout, child?.stderr]) stream?.on('error', onError)
+    await starting
+  }
+  const send = transport.send.bind(transport)
+  transport.send = message => {
+    const stdin = (transport as unknown as { _process?: ChildProcess })._process?.stdin
+    if (!stdin) return send(message)
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => failed(new Error('MCP stdin drain timed out')), timeoutMs)
+      const cleanup = (): void => {
+        clearTimeout(timer)
+        stdin.removeListener('drain', drained)
+        stdin.removeListener('error', failed)
+        stdin.removeListener('close', closed)
+      }
+      const drained = (): void => { cleanup(); resolve() }
+      const failed = (error: Error): void => { cleanup(); reject(error) }
+      const closed = (): void => failed(new Error('MCP stdin closed before drain'))
+      stdin.once('error', failed)
+      stdin.once('close', closed)
+      stdin.once('drain', drained)
+      try { if (stdin.write(`${JSON.stringify(message)}\n`)) drained() }
+      catch (error) { failed(error instanceof Error ? error : new Error(String(error))) }
+    })
+  }
+
 }
 
 function connectorInfo(client: Client): McpLocalConnectorInfo {
@@ -445,4 +514,12 @@ export function buildGuardianLaunchEnvironment(baseEnv: Record<string, string>, 
     !isBlockedMcpEnvironmentName(name) || ['PATH', 'SYSTEMROOT', 'WINDIR'].includes(name.toUpperCase())
   ))
   return { ...environment, ELECTRON_RUN_AS_NODE: '1', ORIGREAD_MCP_CHILD_ENV_JSON: JSON.stringify(sanitizedUserEnv) }
+}
+
+
+function isLocalConnectionFailure(error: unknown): boolean {
+  if (!(error instanceof Error) || error.name === 'AbortError') return false
+  const detail = error as Error & { code?: string | number }
+  return ['NOT_CONNECTED', 'CONNECTION_CLOSED', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ENOTFOUND', 'UND_ERR_SOCKET'].includes(String(detail.code))
+    || (error.cause !== undefined && isLocalConnectionFailure(error.cause))
 }

@@ -1,4 +1,4 @@
-import { createConfigurationBackupFixture } from './configuration-backup-test-support'
+import { createConfigurationBackupFixture } from '../../../tests/helpers/configuration-backup-test-support'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createDecipheriv, pbkdf2Sync } from 'node:crypto'
 import { tmpdir } from 'node:os'
@@ -17,49 +17,49 @@ const dirs: string[] = []
 afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })))
 
 describe('ConfigurationBackupService Android v1 compatibility', () => {
-  it('keeps incomplete MCP drafts in the Desktop section without invalid Android endpoints or orphan secrets', () => {
+  it('keeps incomplete MCP drafts in the Desktop section without invalid Android endpoints or orphan secrets', async () => {
     const fixture=createFixture()
     try {
       const draft=fixture.mcpRemote.addServer().servers[0]!
       fixture.mcpRemote.updateServer({id:draft.id,authMode:'BEARER',credential:'draft-secret'})
-      const backup=JSON.parse(fixture.backup.exportBackup('backup-pass')) as ConfigurationBackup
+      const backup=JSON.parse(await fixture.backup.exportBackup('backup-pass')) as ConfigurationBackup
       expect(backup.mcp?.remote.servers).toMatchObject([{id:draft.id,url:'',enabled:false}])
       expect(backup.editionConfiguration).toMatchObject({mcpServers:[]})
       expect(readEncryptedSecrets(backup,'backup-pass')).toMatchObject({mcpRemoteCredentials:{[draft.id]:'draft-secret'},editionSecrets:{mcpServers:{}}})
       expect(()=>fixture.backup.inspect(JSON.stringify(backup))).not.toThrow()
       fixture.mcpRemote.removeServer(draft.id)
-      fixture.backup.restoreBackup(JSON.stringify(backup),'backup-pass')
+      await fixture.backup.restoreBackup(JSON.stringify(backup),'backup-pass')
       expect(fixture.mcpRemote.getCredential(draft.id)).toBe('draft-secret')
-      expect(()=>fixture.backup.exportBackup()).not.toThrow()
+      await expect(fixture.backup.exportBackup()).resolves.toEqual(expect.any(String))
     } finally {fixture.database.close()}
   })
 
-  it('exports OAuth lifetimes that remain within Android Long range when Desktop tokens omit an expiry', () => {
+  it('exports OAuth lifetimes that remain within Android Long range when Desktop tokens omit an expiry', async () => {
     const fixture=createFixture()
     try {
       const server=fixture.mcpRemote.addServer().servers[0]!
       fixture.mcpRemote.updateServer({id:server.id,url:'https://mcp.example/mcp',authMode:'OAUTH'})
       fixture.secrets.put(mcpOAuthSecretKey(server.id,'tokens'),JSON.stringify({issuer:'https://auth.example',value:{access_token:'token'}}))
-      const backup=JSON.parse(fixture.backup.exportBackup('backup-pass')) as ConfigurationBackup
+      const backup=JSON.parse(await fixture.backup.exportBackup('backup-pass')) as ConfigurationBackup
       const edition=readEncryptedSecrets(backup,'backup-pass').editionSecrets as {mcpServers:Record<string,{oauthTokenSet:{expiresAtEpochMs:number}}>}
       expect(edition.mcpServers[server.id]!.oauthTokenSet.expiresAtEpochMs).toBe(Number.MAX_SAFE_INTEGER)
     } finally {fixture.database.close()}
   })
 
-  it('keeps slash-containing flat names intact, including legacy backups without hierarchy metadata', () => {
+  it('keeps slash-containing flat names intact, including legacy backups without hierarchy metadata', async () => {
     const fixture=createFixture()
     try {
       fixture.library.upsertGroup({id:'slash-group',name:'News/Daily',parentId:null,isDefault:false,sortOrder:2})
-      const backup=JSON.parse(fixture.backup.exportBackup()) as ConfigurationBackup
+      const backup=JSON.parse(await fixture.backup.exportBackup()) as ConfigurationBackup
       expect(backup.subscriptions.groups.find(group=>group.id==='slash-group')?.name).toBe('News/Daily')
       delete backup.desktopGroupHierarchy
       fixture.database.connection.prepare('DELETE FROM groups WHERE id=?').run('slash-group')
-      fixture.backup.restoreBackup(JSON.stringify(backup))
+      await fixture.backup.restoreBackup(JSON.stringify(backup))
       expect(fixture.library.listGroups().map(group=>group.name)).toContain('News/Daily')
     } finally {fixture.database.close()}
   })
 
-  it('isolates account filters on export and restore and rolls back all four files byte-for-byte', () => {
+  it('isolates account filters on export and restore and rolls back all four files byte-for-byte', async () => {
     const fixture=createFixture()
     try {
       const accounts=new AccountRepository(fixture.database.connection,fixture.secrets)
@@ -72,11 +72,11 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       fixture.filters.add('Current account','KEYWORD',currentFeed.id)
       fixture.filters.add('Old global')
       const otherRules=fixture.filters.getByFeed('other-feed')
-      const exported=JSON.parse(fixture.backup.exportBackup()) as ConfigurationBackup
+      const exported=JSON.parse(await fixture.backup.exportBackup()) as ConfigurationBackup
       expect((exported.articleFilters as {rules:Array<{feedId:string|null}>}).rules.map(rule=>rule.feedId)).not.toContain('other-feed')
-      const incoming=androidBackup(fixture)
+      const incoming=await androidBackup(fixture)
       incoming.encryptedSecrets=null
-      fixture.backup.restoreBackup(JSON.stringify(incoming))
+      await fixture.backup.restoreBackup(JSON.stringify(incoming))
       expect(fixture.filters.getByFeed('other-feed')).toEqual(otherRules)
       expect(fixture.filters.getByFeed(currentFeed.id)).toEqual([])
       expect(fixture.database.connection.prepare('SELECT id FROM feeds WHERE account_id=?').all(other.id)).toEqual([{id:'other-feed'}])
@@ -92,12 +92,12 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
         else writeFileSync(file,raw)
       }
       const before=files.map(file=>readFileSync(file,'utf8'))
-      const target=JSON.parse(fixture.backup.exportBackup()) as ConfigurationBackup
+      const target=JSON.parse(await fixture.backup.exportBackup()) as ConfigurationBackup
       target.subscriptions.feeds.push({...target.subscriptions.feeds[0]!,id:'temporary-feed',url:'https://rollback.example/new.xml'})
       target.websiteParsePreferences={items:[{feedId:'temporary-feed',preferredRuleId:'new-rule'}]}
       const original=fixture.customization.update
       fixture.customization.update=()=>{throw new Error('late failure')}
-      try {expect(()=>fixture.backup.restoreBackup(JSON.stringify(target))).toThrow('late failure')}
+      try {await expect(fixture.backup.restoreBackup(JSON.stringify(target))).rejects.toThrow('late failure')}
       finally {fixture.customization.update=original}
       expect(files.map(file=>readFileSync(file,'utf8'))).toEqual(before)
       expect(fixture.filters.getByFeed('other-feed')).toEqual(otherRules)
@@ -107,23 +107,23 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     } finally {fixture.database.close()}
   })
 
-  it('removes newly created state files on rollback when all four files were originally absent', () => {
+  it('removes newly created state files on rollback when all four files were originally absent', async () => {
     const fixture=createFixture()
     try {
-      const backup=fixture.backup.exportBackup()
+      const backup=await fixture.backup.exportBackup()
       const repositories=[fixture.websiteRules,fixture.jsonRules,fixture.filters,fixture.websitePreferences]
       expect(repositories.map(repo=>repo.exportRawState())).toEqual([null,null,null,null])
       fixture.customization.update=()=>{throw new Error('late failure')}
-      expect(()=>fixture.backup.restoreBackup(backup)).toThrow('late failure')
+      await expect(fixture.backup.restoreBackup(backup)).rejects.toThrow('late failure')
       expect(repositories.map(repo=>repo.exportRawState())).toEqual([null,null,null,null])
       for(const name of ['website-rules.json','json-rules.json','filters.json','website-preferences.json'])expect(existsSync(join(fixture.dir,name))).toBe(false)
     } finally {fixture.database.close()}
   })
 
-  it('updates only matched remote feed preferences without creating groups or rewriting remote identities', () => {
+  it('updates only matched remote feed preferences without creating groups or rewriting remote identities', async () => {
     const fixture=createFixture()
     try {
-      const incoming=androidBackup(fixture)
+      const incoming=await androidBackup(fixture)
       incoming.encryptedSecrets=null
       const accounts=new AccountRepository(fixture.database.connection,fixture.secrets)
       const account=accounts.add({type:'fresh_rss',name:'Remote',serverUrl:'https://reader.example',username:'u',password:'p'})
@@ -136,13 +136,13 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       const service=new ConfigurationBackupService('test',fixture.library,fixture.settings,fixture.websiteRules,fixture.jsonRules,fixture.filters,fixture.websitePreferences,fixture.rssHub,fixture.translation,fixture.ai,accounts,fixture.skills,fixture.quickMessages,fixture.customization,fixture.webSearch,fixture.mcpRemote,fixture.mcpLocal,fixture.database.connection,fixture.secrets)
       const before=fixture.library.listFeeds()[0]!
       const groups=fixture.library.listGroups()
-      const result=service.restoreBackup(JSON.stringify(incoming))
+      const result=await service.restoreBackup(JSON.stringify(incoming))
       expect(result).toMatchObject({groupsAdded:0,feedsAdded:0,feedsUpdated:1})
       expect(fixture.library.listGroups()).toEqual(groups)
       expect(fixture.library.listFeeds()).toHaveLength(1)
       expect(fixture.library.listFeeds()[0]).toMatchObject({...before,isNotification:true,isFullContent:true,isBrowser:true,updatedAt:expect.any(Number)})
       expect(fixture.filters.getByFeed('remote/42').map(rule=>rule.keyword)).toContain('Sponsored')
-      expect(service.restoreBackup(JSON.stringify(incoming))).toMatchObject({groupsAdded:0,feedsAdded:0,feedsUpdated:1})
+      expect(await service.restoreBackup(JSON.stringify(incoming))).toMatchObject({groupsAdded:0,feedsAdded:0,feedsUpdated:1})
     } finally {fixture.database.close()}
   })
 
@@ -152,16 +152,16 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       await fixture.skills.createFromMarkdown('---\nname: android-skill\ndescription: Android skill\n---\nCheck evidence.')
       fixture.skills.setBinding('SUMMARY','android-skill')
       fixture.quickMessages.create('Android message','Check {{article_title}}')
-      const desktop=JSON.parse(fixture.backup.exportBackup()) as ConfigurationBackup
+      const desktop=JSON.parse(await fixture.backup.exportBackup()) as ConfigurationBackup
       const state=desktop.editionConfiguration as {skillState:string;quickMessageState:string}
       expect(JSON.parse(state.skillState).bindings.summary).toBe('android-skill')
-      const incoming=androidBackup(fixture)
+      const incoming=await androidBackup(fixture)
       incoming.editionConfiguration={schemaVersion:2,settings:{skillsEnabled:false,customInstructions:'Android instructions',webSearchEnabled:true,webSearchMode:'FORCE',contextMaxTokens:128000,reasoningEffort:'HIGH',continueGenerationInBackground:false,showReasoning:false},webSearch:{providers:[{id:'android-search',kind:'TAVILY',name:'Android search',endpoint:'https://api.tavily.com/search',enabled:true}],defaultProviderId:'android-search',maxResults:20},mcpServers:[{id:'android-oauth',name:'Android OAuth',endpoint:'https://mcp.example/mcp',enabled:true,authType:'OAUTH'},{id:'android-header',name:'Android headers',endpoint:'https://mcp.example/headers',enabled:true,authType:'CUSTOM_HEADERS'}],skillState:state.skillState,quickMessageState:state.quickMessageState}
-      incoming.encryptedSecrets=encryptConfigurationSecrets({translationApiKeys:{},aiApiKeys:{},editionSecrets:{webSearchApiKeys:{'android-search':'search-key'},mcpServers:{'android-oauth':{oauthRegistration:{issuer:'https://auth.example',clientId:'android-client',authMethod:'NONE'},oauthTokenSet:{issuer:'https://auth.example',accessToken:'android-token',refreshToken:'android-refresh',tokenType:'Bearer',expiresAtEpochMs:1900000000000},oauthPendingScopes:['tools.read'],discovery:{authorizationServerUrl:'http://169.254.169.254/'}},'android-header':{customHeaders:{'X-Api-Key':'header-secret'}}}}},'backup-pass')
+      incoming.encryptedSecrets=await encryptConfigurationSecrets({translationApiKeys:{},aiApiKeys:{},editionSecrets:{webSearchApiKeys:{'android-search':'search-key'},mcpServers:{'android-oauth':{oauthRegistration:{issuer:'https://auth.example',clientId:'android-client',authMethod:'NONE'},oauthTokenSet:{issuer:'https://auth.example',accessToken:'android-token',refreshToken:'android-refresh',tokenType:'Bearer',expiresAtEpochMs:1900000000000},oauthPendingScopes:['tools.read'],discovery:{authorizationServerUrl:'http://169.254.169.254/'}},'android-header':{customHeaders:{'X-Api-Key':'header-secret'}}}}},'backup-pass')
       fixture.skills.delete('android-skill')
       fixture.quickMessages.delete(fixture.quickMessages.current().find(message=>message.title==='Android message')!.id)
       expect(()=>fixture.backup.inspect(JSON.stringify(incoming))).not.toThrow()
-      fixture.backup.restoreBackup(JSON.stringify(incoming),'backup-pass')
+      await fixture.backup.restoreBackup(JSON.stringify(incoming),'backup-pass')
       expect(fixture.customization.current()).toEqual({skillsEnabled:false,customInstructions:'Android instructions'})
       expect(fixture.webSearch.current()).toMatchObject({mode:'AUTO',maxResults:20,defaultProviderId:'android-search'})
       expect(fixture.webSearch.getApiKey('android-search')).toBe('search-key')
@@ -171,7 +171,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       expect(JSON.parse(fixture.secrets.get(mcpOAuthSecretKey('android-oauth','tokens')))).toMatchObject({issuer:'https://auth.example',value:{access_token:'android-token'}})
       expect(fixture.secrets.get(mcpOAuthSecretKey('android-oauth','discovery'))).toBe('')
       expect(fixture.mcpRemote.getCredential('android-header')).toBe('X-Api-Key: header-secret')
-      const exported=JSON.parse(fixture.backup.exportBackup('backup-pass')) as ConfigurationBackup
+      const exported=JSON.parse(await fixture.backup.exportBackup('backup-pass')) as ConfigurationBackup
       expect(exported.llm).toBeDefined();expect(exported.webSearch).toBeDefined();expect(exported.mcp).toBeDefined()
       const edition=exported.editionConfiguration as {settings:unknown;mcpServers:unknown[];skillState:string;quickMessageState:string}
       expect(edition.settings).toMatchObject({skillsEnabled:false,customInstructions:'Android instructions',webSearchEnabled:true,reasoningEffort:'HIGH',continueGenerationInBackground:false,showReasoning:false})
@@ -184,8 +184,8 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       expect(JSON.stringify(exported)).not.toContain('android-token')
       // A second Desktop import of just the Android extension proves both conversion directions.
       delete exported.llm;delete exported.webSearch;delete exported.mcp
-      exported.encryptedSecrets=encryptConfigurationSecrets({translationApiKeys:{},aiApiKeys:{},editionSecrets:secrets},'backup-pass')
-      fixture.backup.restoreBackup(JSON.stringify(exported),'backup-pass')
+      exported.encryptedSecrets=await encryptConfigurationSecrets({translationApiKeys:{},aiApiKeys:{},editionSecrets:secrets},'backup-pass')
+      await fixture.backup.restoreBackup(JSON.stringify(exported),'backup-pass')
       expect(fixture.skills.current().bindings.summarySkillId).toBe('android-skill')
       expect(fixture.mcpRemote.getCredential('android-header')).toBe('X-Api-Key: header-secret')
     } finally {fixture.database.close()}
@@ -214,14 +214,14 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     {mcpServers:[{id:'x',name:'MCP',endpoint:'https://mcp.example',enabled:true,authType:'INVALID'}]},
     {skillState:'{"version":1,"skills":[],"bindings":{"summary":"missing"}}'},
     {quickMessageState:'{}'},
-  ])('rejects malformed Android edition configuration before any writes: %j', patch => {
+  ])('rejects malformed Android edition configuration before any writes: %j', async patch => {
     const fixture=createFixture()
     try {
-      const backup=androidBackup(fixture)
+      const backup=await androidBackup(fixture)
       backup.encryptedSecrets=null
       backup.editionConfiguration={schemaVersion:2,settings:{},webSearch:{},mcpServers:[],...patch}
       const before=fixture.library.listFeeds()
-      expect(()=>fixture.backup.restoreBackup(JSON.stringify(backup))).toThrow()
+      await expect(fixture.backup.restoreBackup(JSON.stringify(backup))).rejects.toThrow()
       expect(fixture.library.listFeeds()).toEqual(before)
       expect(fixture.filters.exportRawState()).toBeNull()
     } finally {fixture.database.close()}
@@ -233,21 +233,21 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     {oauthTokenSet:{issuer:'https://auth.example',accessToken:'token',tokenType:'Basic'}},
     {oauthRegistration:{issuer:'https://auth.example',clientId:''}},
     {oauthRegistration:{issuer:'https://auth.example',clientId:'c',authMethod:'INVALID'}},
-  ])('rejects malformed Android OAuth credentials before restoring subscriptions: %j', credential=>{
+  ])('rejects malformed Android OAuth credentials before restoring subscriptions: %j', async credential=>{
     const fixture=createFixture()
     try {
-      const backup=androidBackup(fixture)
+      const backup=await androidBackup(fixture)
       backup.editionConfiguration={schemaVersion:2,mcpServers:[{id:'oauth',name:'OAuth',endpoint:'https://mcp.example',enabled:true,authType:'OAUTH'}]}
-      backup.encryptedSecrets=encryptConfigurationSecrets({translationApiKeys:{},aiApiKeys:{},editionSecrets:{mcpServers:{oauth:credential}}},'backup-pass')
+      backup.encryptedSecrets=await encryptConfigurationSecrets({translationApiKeys:{},aiApiKeys:{},editionSecrets:{mcpServers:{oauth:credential}}},'backup-pass')
       const before=fixture.library.listFeeds()
-      expect(()=>fixture.backup.restoreBackup(JSON.stringify(backup),'backup-pass')).toThrow(/OAuth/)
+      await expect(fixture.backup.restoreBackup(JSON.stringify(backup),'backup-pass')).rejects.toThrow(/OAuth/)
       expect(fixture.library.listFeeds()).toEqual(before)
       expect(fixture.secrets.snapshot()).toEqual({})
     } finally {fixture.database.close()}
   })
-  it('merges normalized group names and remaps feeds on repeated restores', () => {
+  it('merges normalized group names and remaps feeds on repeated restores', async () => {
     const fixture = createFixture()
-    const backup = JSON.parse(fixture.backup.exportBackup('')) as ConfigurationBackup
+    const backup = JSON.parse(await fixture.backup.exportBackup('')) as ConfigurationBackup
     delete (backup as { desktopGroupHierarchy?: unknown }).desktopGroupHierarchy
     backup.subscriptions.groups.push(
       { id: 'tech-a', name: ' Tech ', isDefault: false },
@@ -260,26 +260,26 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       { ...base, id: 'b', name: 'B', url: 'https://example.com/b.xml', groupId: 'tech-b' },
       { ...base, id: 'c', name: 'C', url: 'https://example.com/c.xml', groupId: 'default-alias' }
     )
-    expect(fixture.backup.restoreBackup(JSON.stringify(backup))).toMatchObject({ groupsAdded: 1 })
+    expect(await fixture.backup.restoreBackup(JSON.stringify(backup))).toMatchObject({ groupsAdded: 1 })
     expect(fixture.library.listGroups().map(group => group.name)).toEqual(['Default', 'Tech'])
     expect(fixture.library.findFeedByUrl('https://example.com/a.xml')?.groupId)
       .toBe(fixture.library.findFeedByUrl('https://example.com/b.xml')?.groupId)
     expect(fixture.library.findFeedByUrl('https://example.com/c.xml')?.groupId).toBe(DEFAULT_GROUP_ID)
-    expect(fixture.backup.restoreBackup(JSON.stringify(backup))).toMatchObject({ groupsAdded: 0, feedsAdded: 0 })
+    expect(await fixture.backup.restoreBackup(JSON.stringify(backup))).toMatchObject({ groupsAdded: 0, feedsAdded: 0 })
     fixture.database.close()
   })
 
-  it('restores legacy mappings even when the new descriptor map is empty or partial', () => {
+  it('restores legacy mappings even when the new descriptor map is empty or partial', async () => {
     const fixture = createFixture()
-    const backup = androidBackup(fixture)
+    const backup = await androidBackup(fixture)
     backup.encryptedSecrets = null
     backup.rssHubSourceUrls = { 'android-existing': 'https://www.cls.cn/', 'android-new': 'https://example.com/new' }
     backup.rssHubSubscriptions = {}
-    fixture.backup.restoreBackup(JSON.stringify(backup))
+    await fixture.backup.restoreBackup(JSON.stringify(backup))
     const existing = fixture.library.findFeedByUrl('https://example.com/feed.xml')!
     expect(fixture.library.getRssHubSourceUrl(existing.id)).toBe('https://www.cls.cn/')
     backup.rssHubSubscriptions = { 'android-new': { originalInput: 'rsshub://zhihu/hot', routePath: '/zhihu/hot', preferredInstance: null, lastResolvedInstance: null, lastResolvedUrl: null } }
-    fixture.backup.restoreBackup(JSON.stringify(backup))
+    await fixture.backup.restoreBackup(JSON.stringify(backup))
     expect(fixture.library.getRssHubSourceUrl(existing.id)).toBe('https://www.cls.cn/')
     expect(fixture.library.getRssHubDescriptor(fixture.library.findFeedByUrl('https://new.example/feed.xml')!.id)?.routePath).toBe('/zhihu/hot')
   })
@@ -289,19 +289,19 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     { 'android-new': { originalInput: 42 } },
     { missing: { originalInput: 'rsshub://zhihu/hot' } },
     { 'android-new': { originalInput: 'rsshub://zhihu/hot', routePath: '/foo/../secret' } }
-  ])('rejects malformed canonical RSSHub subscriptions before any restore writes: %j', (descriptors) => {
+  ])('rejects malformed canonical RSSHub subscriptions before any restore writes: %j', async (descriptors) => {
     const fixture = createFixture()
-    const backup = androidBackup(fixture)
+    const backup = await androidBackup(fixture)
     backup.encryptedSecrets = null
     backup.rssHubSubscriptions = descriptors as any
-    const before = fixture.backup.exportBackup('')
+    const before = await fixture.backup.exportBackup('')
     expect(() => fixture.backup.inspect(JSON.stringify(backup))).toThrow(/RSSHub/)
-    expect(() => fixture.backup.restoreBackup(JSON.stringify(backup))).toThrow(/RSSHub/)
-    const after = fixture.backup.exportBackup('')
+    await expect(fixture.backup.restoreBackup(JSON.stringify(backup))).rejects.toThrow(/RSSHub/)
+    const after = await fixture.backup.exportBackup('')
     expect(JSON.parse(after).subscriptions).toEqual(JSON.parse(before).subscriptions)
   })
 
-  it('merges Android subscriptions, preserves articles, remaps source rules, and restores encrypted credentials', () => {
+  it('merges Android subscriptions, preserves articles, remaps source rules, and restores encrypted credentials', async () => {
     const fixture = createFixture()
     const now = 1_786_700_000_000
     fixture.library.upsertFeed({
@@ -326,8 +326,8 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       articlePaneCollapsed: true
     })
 
-    const backup = androidBackup(fixture)
-    const result = fixture.backup.restoreBackup(JSON.stringify(backup), 'backup-pass')
+    const backup = await androidBackup(fixture)
+    const result = await fixture.backup.restoreBackup(JSON.stringify(backup), 'backup-pass')
 
     expect(result).toMatchObject({ groupsAdded: 1, feedsAdded: 1, feedsUpdated: 1, credentialsRestored: true })
     expect(fixture.library.findFeedByUrl('https://example.com/feed.xml')).toMatchObject({ id: 'existing-feed', name: 'Android Updated' })
@@ -350,13 +350,13 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     })
   })
 
-  it('exports the Android envelope and can omit or include encrypted secrets', () => {
+  it('exports the Android envelope and can omit or include encrypted secrets', async () => {
     const fixture = createFixture()
     fixture.ai.updateProvider({ id: 'default', endpoint: 'https://api.example/v1', defaultModel: 'model', apiKey: 'secret-ai' })
     fixture.translation.updateProvider({ type: 'DEEPL', enabled: true, endpoint: 'https://api-free.deepl.com/v2/translate', apiKey: 'secret-deepl' })
     fixture.settings.update({ layoutMode: 'two-pane', sourcePaneWidth: 300, articlePaneWidth: 440, sourcePaneCollapsed: true })
 
-    const plainContent = fixture.backup.exportBackup('')
+    const plainContent = await fixture.backup.exportBackup('')
     const plain = JSON.parse(plainContent) as ConfigurationBackup
     expect(plain).toMatchObject({ schemaVersion: 1, appName: 'OrigRead', sourceVersion: '0.1.0' })
     expect(plain.preferences).toMatchObject({
@@ -373,7 +373,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     expect(plain.encryptedSecrets).toBeNull()
 
     fixture.settings.update({ layoutMode: 'three-pane', sourcePaneWidth: 220, articlePaneWidth: 320, sourcePaneCollapsed: false, articlePaneCollapsed: true })
-    fixture.backup.restoreBackup(plainContent)
+    await fixture.backup.restoreBackup(plainContent)
     expect(fixture.settings.current()).toMatchObject({
       layoutMode: 'two-pane',
       sourcePaneWidth: 300,
@@ -382,19 +382,19 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       articlePaneCollapsed: false
     })
 
-    const encrypted = JSON.parse(fixture.backup.exportBackup('backup-pass')) as ConfigurationBackup
+    const encrypted = JSON.parse(await fixture.backup.exportBackup('backup-pass')) as ConfigurationBackup
     expect(encrypted.encryptedSecrets).toMatchObject({ kdf: 'PBKDF2WithHmacSHA256', cipher: 'AES-256-GCM', iterations: 210_000 })
   })
 
-  it.each(['replace', 'top', 'bottom'] as const)('restores legacy desktop summary placement %s as right', (legacyPlacement) => {
+  it.each(['replace', 'top', 'bottom'] as const)('restores legacy desktop summary placement %s as right', async (legacyPlacement) => {
     const fixture = createFixture()
-    const backup = androidBackup(fixture)
+    const backup = await androidBackup(fixture)
     backup.preferences = {
       'origread.desktop.aiSummaryPlacement': legacyPlacement,
       'origread.desktop.aiSummaryPanelSize': 430
     }
 
-    fixture.backup.restoreBackup(JSON.stringify(backup), 'backup-pass')
+    await fixture.backup.restoreBackup(JSON.stringify(backup), 'backup-pass')
 
     expect(fixture.settings.current()).toMatchObject({
       aiSummaryPlacement: 'right',
@@ -409,7 +409,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     fixture.quickMessages.create('Compare', 'Compare {{article_title}} with the current evidence.')
     fixture.customization.update({ skillsEnabled: false, customInstructions: 'Prefer concise answers.' })
 
-    const content = fixture.backup.exportBackup('')
+    const content = await fixture.backup.exportBackup('')
     const exported = JSON.parse(content) as ConfigurationBackup
     expect(exported.llm).toMatchObject({
       customization: { skillsEnabled: false, customInstructions: 'Prefer concise answers.' }
@@ -421,7 +421,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     fixture.skills.delete('evidence-reader')
     fixture.quickMessages.delete(fixture.quickMessages.current().find((message) => message.title === 'Compare')!.id)
     fixture.customization.update({ skillsEnabled: true, customInstructions: 'Changed after backup.' })
-    fixture.backup.restoreBackup(content)
+    await fixture.backup.restoreBackup(content)
 
     expect(fixture.skills.skill('evidence-reader')).toMatchObject({ id: 'evidence-reader', enabled: true })
     expect(fixture.skills.current().bindings.summarySkillId).toBe('evidence-reader')
@@ -429,7 +429,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     expect(fixture.customization.current()).toEqual({ skillsEnabled: false, customInstructions: 'Prefer concise answers.' })
   })
 
-  it('round-trips Web Search profiles separately from encrypted API keys and rejects dangling Search secrets', () => {
+  it('round-trips Web Search profiles separately from encrypted API keys and rejects dangling Search secrets', async () => {
     const fixture = createFixture()
     const added = fixture.webSearch.addProvider('TAVILY')
     const provider = added.providers[0]!
@@ -441,7 +441,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     })
     fixture.webSearch.updateSettings({ mode: 'AUTO', defaultProviderId: provider.id, maxResults: 8 })
 
-    const content = fixture.backup.exportBackup('backup-pass')
+    const content = await fixture.backup.exportBackup('backup-pass')
     const exported = JSON.parse(content) as ConfigurationBackup
     expect(exported.webSearch).toMatchObject({
       mode: 'AUTO', defaultProviderId: provider.id, maxResults: 8,
@@ -452,18 +452,18 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
 
     fixture.webSearch.removeProvider(provider.id)
     expect(fixture.webSearch.current().providers).toHaveLength(0)
-    fixture.backup.restoreBackup(content, 'backup-pass')
+    await fixture.backup.restoreBackup(content, 'backup-pass')
     expect(fixture.webSearch.current()).toMatchObject({ mode: 'AUTO', defaultProviderId: provider.id, maxResults: 8 })
     expect(fixture.webSearch.getApiKey(provider.id)).toBe('search-secret-value')
 
     const dangling = { ...exported }
-    dangling.encryptedSecrets = encryptConfigurationSecrets({
+    dangling.encryptedSecrets = await encryptConfigurationSecrets({
       translationApiKeys: {}, aiApiKeys: {}, webSearchApiKeys: { 'missing-provider': 'bad-secret' }
     }, 'backup-pass')
-    expect(() => fixture.backup.restoreBackup(JSON.stringify(dangling), 'backup-pass')).toThrow('Web Search 凭据引用了不存在的 Provider')
+    await expect(fixture.backup.restoreBackup(JSON.stringify(dangling), 'backup-pass')).rejects.toThrow('Web Search 凭据引用了不存在的 Provider')
   })
 
-  it('round-trips Remote/Local MCP profiles and encrypted secrets without restoring transient OAuth state', () => {
+  it('round-trips Remote/Local MCP profiles and encrypted secrets without restoring transient OAuth state', async () => {
     const fixture = createFixture()
     const firstRemote = fixture.mcpRemote.addServer().servers[0]!
     fixture.mcpRemote.updateServer({
@@ -500,7 +500,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       enabled: true
     })
 
-    const content = fixture.backup.exportBackup('backup-pass')
+    const content = await fixture.backup.exportBackup('backup-pass')
     const exported = JSON.parse(content) as ConfigurationBackup
     expect(exported.mcp).toMatchObject({
       remote: { servers: [
@@ -518,7 +518,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     fixture.mcpRemote.removeServer(firstRemote.id)
     fixture.mcpRemote.removeServer(secondRemote.id)
     fixture.mcpLocal.removeServer(local.id)
-    fixture.backup.restoreBackup(content, 'backup-pass')
+    await fixture.backup.restoreBackup(content, 'backup-pass')
 
     expect(fixture.mcpRemote.current().servers).toMatchObject([
       { id: firstRemote.id, name: 'Backup bearer MCP', authMode: 'BEARER', hasCredential: true },
@@ -534,28 +534,28 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     expect(fixture.mcpLocal.getEnvironment(local.id)).toContain('LOCAL_TOKEN=local-env-secret')
 
     const dangling = { ...exported }
-    dangling.encryptedSecrets = encryptConfigurationSecrets({
+    dangling.encryptedSecrets = await encryptConfigurationSecrets({
       translationApiKeys: {},
       aiApiKeys: {},
       mcpRemoteCredentials: { 'missing-mcp-server': 'bad-secret' }
     }, 'backup-pass')
-    expect(() => fixture.backup.restoreBackup(JSON.stringify(dangling), 'backup-pass')).toThrow('Remote MCP 凭据引用了不存在的 Server')
+    await expect(fixture.backup.restoreBackup(JSON.stringify(dangling), 'backup-pass')).rejects.toThrow('Remote MCP 凭据引用了不存在的 Server')
   })
 
-  it('rejects MCP secrets when the backup has no MCP profiles', () => {
+  it('rejects MCP secrets when the backup has no MCP profiles', async () => {
     const fixture = createFixture()
-    const legacy = androidBackup(fixture)
-    legacy.encryptedSecrets = encryptConfigurationSecrets({
+    const legacy = await androidBackup(fixture)
+    legacy.encryptedSecrets = await encryptConfigurationSecrets({
       translationApiKeys: {},
       aiApiKeys: {},
       mcpLocalEnvironments: { 'orphan-local-server': 'TOKEN=orphan-secret' }
     }, 'backup-pass')
 
-    expect(() => fixture.backup.restoreBackup(JSON.stringify(legacy), 'backup-pass'))
-      .toThrow('MCP 凭据存在，但备份缺少对应的 MCP 配置')
+    await expect(fixture.backup.restoreBackup(JSON.stringify(legacy), 'backup-pass'))
+      .rejects.toThrow('MCP 凭据存在，但备份缺少对应的 MCP 配置')
   })
 
-  it('restores plain MCP profiles without inheriting stale credentials from matching server IDs', () => {
+  it('restores plain MCP profiles without inheriting stale credentials from matching server IDs', async () => {
     const fixture = createFixture()
     const remote = fixture.mcpRemote.addServer().servers[0]!
     fixture.mcpRemote.updateServer({
@@ -575,14 +575,14 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       enabled: true
     })
 
-    const content = fixture.backup.exportBackup('')
+    const content = await fixture.backup.exportBackup('')
     const exported = JSON.parse(content) as ConfigurationBackup
     expect(exported.mcp).toBeDefined()
     expect(exported.encryptedSecrets).toBeNull()
 
     fixture.mcpRemote.updateServer({ id: remote.id, credential: 'restore-target-secret' })
     fixture.mcpLocal.updateServer({ id: local.id, environment: 'LOCAL_TOKEN=restore-target-secret' })
-    fixture.backup.restoreBackup(content)
+    await fixture.backup.restoreBackup(content)
 
     expect(fixture.mcpRemote.getCredential(remote.id)).toBe('')
     expect(fixture.mcpRemote.current().servers[0]).toMatchObject({ id: remote.id, hasCredential: false })
@@ -590,7 +590,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     expect(fixture.mcpLocal.current().servers[0]).toMatchObject({ id: local.id, hasEnvironment: false })
   })
 
-  it('round-trips Remote MCP Custom Headers only through encrypted backup secrets', () => {
+  it('round-trips Remote MCP Custom Headers only through encrypted backup secrets', async () => {
     const fixture = createFixture()
     const remote = fixture.mcpRemote.addServer().servers[0]!
     fixture.mcpRemote.updateServer({
@@ -602,7 +602,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       credential: 'X-Api-Key: custom-header-secret\nX-Client: OrigRead'
     })
 
-    const content = fixture.backup.exportBackup('backup-pass')
+    const content = await fixture.backup.exportBackup('backup-pass')
     const exported = JSON.parse(content) as ConfigurationBackup
     expect(exported.mcp?.remote.servers[0]).toMatchObject({
       id: remote.id,
@@ -613,37 +613,37 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     expect(content).not.toContain('custom-header-secret')
 
     fixture.mcpRemote.removeServer(remote.id)
-    fixture.backup.restoreBackup(content, 'backup-pass')
+    await fixture.backup.restoreBackup(content, 'backup-pass')
     expect(fixture.mcpRemote.current().servers[0]).toMatchObject({ id: remote.id, authMode: 'CUSTOM_HEADERS', hasCredential: true })
     expect(fixture.mcpRemote.getCredential(remote.id)).toContain('X-Api-Key: custom-header-secret')
   })
 
-  it('keeps current MCP settings when restoring a pre-D6 backup without MCP fields', () => {
+  it('keeps current MCP settings when restoring a pre-D6 backup without MCP fields', async () => {
     const fixture = createFixture()
     const remote = fixture.mcpRemote.addServer().servers[0]!
     fixture.mcpRemote.updateServer({ id: remote.id, name: 'Keep remote', url: 'https://mcp.example/mcp', enabled: true })
     const local = fixture.mcpLocal.addServer().servers[0]!
     fixture.mcpLocal.updateServer({ id: local.id, name: 'Keep local', command: process.execPath, enabled: true })
 
-    fixture.backup.restoreBackup(JSON.stringify(androidBackup(fixture)), 'backup-pass')
+    await fixture.backup.restoreBackup(JSON.stringify(await androidBackup(fixture)), 'backup-pass')
 
     expect(fixture.mcpRemote.current().servers[0]).toMatchObject({ id: remote.id, name: 'Keep remote' })
     expect(fixture.mcpLocal.current().servers[0]).toMatchObject({ id: local.id, name: 'Keep local' })
   })
 
-  it('keeps current Web Search settings when restoring a pre-D5 backup without Search fields', () => {
+  it('keeps current Web Search settings when restoring a pre-D5 backup without Search fields', async () => {
     const fixture = createFixture()
     const added = fixture.webSearch.addProvider('KEENABLE')
     const provider = added.providers[0]!
     fixture.webSearch.updateSettings({ mode: 'AUTO', defaultProviderId: provider.id, maxResults: 10 })
 
-    fixture.backup.restoreBackup(JSON.stringify(androidBackup(fixture)), 'backup-pass')
+    await fixture.backup.restoreBackup(JSON.stringify(await androidBackup(fixture)), 'backup-pass')
 
     expect(fixture.webSearch.current()).toMatchObject({ mode: 'AUTO', defaultProviderId: provider.id, maxResults: 10 })
     expect(fixture.webSearch.current().providers[0]).toMatchObject({ id: provider.id, kind: 'KEENABLE' })
   })
 
-  it('rolls back SQLite, file-backed rules, and secrets when a late restore step fails', () => {
+  it('rolls back SQLite, file-backed rules, and secrets when a late restore step fails', async () => {
     const fixture = createFixture()
     const aiProviderId = fixture.ai.current().providers[0]!.id
     const filterBundle = JSON.parse(fixture.filters.exportRules()) as { rules: unknown[] }
@@ -656,7 +656,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
       ...filterBundle,
       rules: [{ id: 'target-filter', keyword: 'Target', feedId: null, feedName: null, type: 'KEYWORD', enabled: true }]
     }), new Map())
-    const targetBackup = fixture.backup.exportBackup('target-pass')
+    const targetBackup = await fixture.backup.exportBackup('target-pass')
 
     // Establish the state that must survive the failed restore unchanged.
     fixture.settings.update({ theme: 'light' })
@@ -671,7 +671,7 @@ describe('ConfigurationBackupService Android v1 compatibility', () => {
     const originalUpdate = fixture.customization.update.bind(fixture.customization)
     fixture.customization.update = (() => { throw new Error('injected late restore failure') }) as typeof fixture.customization.update
     try {
-      expect(() => fixture.backup.restoreBackup(targetBackup, 'target-pass')).toThrow(/injected late restore failure/)
+      await expect(fixture.backup.restoreBackup(targetBackup, 'target-pass')).rejects.toThrow(/injected late restore failure/)
     } finally {
       fixture.customization.update = originalUpdate as typeof fixture.customization.update
     }
@@ -700,8 +700,8 @@ function readEncryptedSecrets(backup:ConfigurationBackup,password:string):Record
   return JSON.parse(Buffer.concat([decipher.update(payload.subarray(0,-16)),decipher.final()]).toString('utf8'))
 }
 
-function androidBackup(fixture: ReturnType<typeof createFixture>): ConfigurationBackup {
-  const encryptedSecrets = encryptConfigurationSecrets({
+async function androidBackup(fixture: ReturnType<typeof createFixture>): Promise<ConfigurationBackup> {
+  const encryptedSecrets = await encryptConfigurationSecrets({
     translationApiKeys: { DEEPL: 'android-deepl-key' },
     aiApiKeys: { 'android-ai': 'android-ai-key' }
   }, 'backup-pass')
@@ -770,17 +770,17 @@ function androidBackup(fixture: ReturnType<typeof createFixture>): Configuration
 
 
 describe('MCP discovery backup poisoning', () => {
-  it('discards discovery injected into encrypted secrets and clears an existing cache', () => {
+  it('discards discovery injected into encrypted secrets and clears an existing cache', async () => {
     const fixture = createFixture()
     const server = fixture.mcpRemote.addServer().servers[0]!
     fixture.mcpRemote.updateServer({ id: server.id, url: 'https://mcp.example.com/mcp', authMode: 'OAUTH' })
-    const backup = JSON.parse(fixture.backup.exportBackup('')) as ConfigurationBackup
-    backup.encryptedSecrets = encryptConfigurationSecrets({
+    const backup = JSON.parse(await fixture.backup.exportBackup('')) as ConfigurationBackup
+    backup.encryptedSecrets = await encryptConfigurationSecrets({
       translationApiKeys: {}, aiApiKeys: {},
       mcpRemoteOAuth: { [server.id]: { discovery: '{"authorizationServerUrl":"http://169.254.169.254/latest"}' } }
     }, 'backup-pass')
     fixture.secrets.put(mcpOAuthSecretKey(server.id, 'discovery'), '{"authorizationServerUrl":"https://stale.example.com"}')
-    fixture.backup.restoreBackup(JSON.stringify(backup), 'backup-pass')
+    await fixture.backup.restoreBackup(JSON.stringify(backup), 'backup-pass')
     expect(fixture.secrets.get(mcpOAuthSecretKey(server.id, 'discovery'))).toBe('')
   })
 })

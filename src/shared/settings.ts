@@ -133,6 +133,32 @@ export function normalizeDesktopSettings(value: unknown): DesktopSettings {
 export function normalizeDesktopSettingsPatch(value: unknown): DesktopSettingsPatch {
   if (!isRecord(value)) throw new TypeError('Settings patch must be an object')
 
+  // Patch input is an IPC write contract. Legacy stored-value recovery belongs only to normalizeDesktopSettings.
+  const ranges: Record<string, [number, number]> = {
+    workspaceWidth: [WORKSPACE_PANE_WIDTH_MIN, WORKSPACE_PANE_WIDTH_MAX],
+    sourcePaneWidth: [SOURCE_PANE_WIDTH_MIN, SOURCE_PANE_WIDTH_MAX],
+    articlePaneWidth: [ARTICLE_PANE_WIDTH_MIN, ARTICLE_PANE_WIDTH_MAX],
+    readerFontSize: [14, 22], readerLineHeight: [1.5, 2.2], readerContentWidth: [600, 1000],
+    aiSummaryPanelSize: [READER_AI_PANEL_WIDTH_MIN, READER_AI_PANEL_WIDTH_MAX]
+  }
+  const choices: Record<string, readonly unknown[]> = {
+    theme: ['system', 'light', 'dark'], readerBackground: ['theme', 'paper', 'warm', 'sepia', 'mint', 'custom'],
+    aiSummaryPlacement: ['left', 'right']
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (!Object.hasOwn(DEFAULT_DESKTOP_SETTINGS, key)) throw new TypeError(`Unknown setting: ${key}`)
+    if (ranges[key]) {
+      const [min, max] = ranges[key]
+      if (typeof item !== 'number' || !Number.isFinite(item) || item < min || item > max) throw new TypeError(`${key} must be between ${min} and ${max}`)
+    }
+    if (choices[key] && !choices[key].includes(item)) throw new TypeError(`Invalid ${key}`)
+    if (key === 'language' && item !== 'system' && !isDesktopLanguage(item)) throw new TypeError('Invalid language')
+    if (key === 'readerFontId' || key === 'ttsVoiceURI') {
+      if (typeof item !== 'string' || item.length > (key === 'readerFontId' ? 500 : 2000) || (key === 'readerFontId' && !item.trim())) throw new TypeError(`Invalid ${key}`)
+    }
+    if (key === 'readerBackgroundCustom' && (typeof item !== 'string' || !/^#[0-9a-f]{6}$/i.test(item.trim()))) throw new TypeError('Invalid readerBackgroundCustom')
+  }
+
   const patch: DesktopSettingsPatch = {}
   if ('language' in value) patch.language = normalizeLanguage(value.language)
   if ('theme' in value) patch.theme = normalizeTheme(value.theme)

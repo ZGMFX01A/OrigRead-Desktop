@@ -1,4 +1,4 @@
-import * as cheerio from 'cheerio'
+import { decodeHTML } from 'entities'
 import type { TranslationProviderType } from '../../shared/translation'
 import { NETWORK_REQUEST_TIMEOUT_MS, requestSignal } from '../network/request-policy'
 import { redactSensitiveText } from '../security/sensitive-text'
@@ -132,7 +132,7 @@ function microsoftLanguage(tag:string):string{const k=tag.toLowerCase();return [
 function googleLanguage(tag:string):string{return tag.toLowerCase()==='zh-hans'?'zh-CN':tag.toLowerCase()==='zh-hant'?'zh-TW':tag}
 function deepLLanguage(tag:string,target:boolean):string{const n=tag.replace('_','-').toUpperCase();if(['ZH-CN','ZH-SG','ZH-HANS'].includes(n))return'ZH';if(['ZH-TW','ZH-HK','ZH-HANT'].includes(n))return target?'ZH-HANT':'ZH';if(target&&n==='EN')return'EN-US';return n.split('-')[0]!}
 function dlxLanguage(tag:string):string{const k=tag.toLowerCase();return ['zh-cn','zh-sg','zh-hans','zh-tw','zh-hk','zh-hant'].includes(k)?'ZH':tag.split('-')[0]!.toUpperCase()}
-function decodeHtmlEntities(value:string):string{return cheerio.load(`<body>${value}</body>`)('body').text()}
+function decodeHtmlEntities(value:string):string{return decodeHTML(value)}
 function asRecord(value:unknown):Record<string,unknown>|null{return typeof value==='object'&&value!==null&&!Array.isArray(value)?value as Record<string,unknown>:null}
 function stringValue(value:unknown):string{return typeof value==='string'?value:''}
 function ensureCount(values:string[],expected:number):void{if(values.length!==expected||values.some((item)=>!item))throw new Error('翻译服务返回的段落数量或内容无效')}

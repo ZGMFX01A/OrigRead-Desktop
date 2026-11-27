@@ -6,7 +6,7 @@ import { RssSubscriptionService } from './rss/rss-subscription-service'
 import { RssDiscoveryService } from './rss/rss-discovery-service'
 import type { JsonSubscriptionService } from './json/json-subscription-service'
 import type { WebsiteSubscriptionService } from './website/website-subscription-service'
-import { discoveryFlow, rssDiscovery, rssPayload, rssXml, withLibrary } from './subscription-regression-support'
+import { discoveryFlow, rssDiscovery, rssPayload, rssXml, withLibrary } from '../../../tests/helpers/subscription-regression-support'
 
 /** 代表真实 GitHub Atom 的命名空间、tag 标识及 alternate 链接。 */
 const ATOM = `<feed xmlns="http://www.w3.org/2005/Atom"><title>Release notes from OrigRead</title>

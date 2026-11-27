@@ -7,7 +7,7 @@ import { JsonSubscriptionService } from './json/json-subscription-service'
 import { WebsiteSourceService } from './website/website-source-service'
 import { WebsiteRuleRepository } from './website/website-rule-repository'
 import { WebsiteParsePreferenceRepository } from './website/website-parse-preference-repository'
-import { withLibrary, jsonSource } from './subscription-regression-support'
+import { withLibrary, jsonSource } from '../../../tests/helpers/subscription-regression-support'
 
 describe('Android 审查问题在桌面 OPML、JSON、网站链路的回归', () => {
   it('保留任意深度分组、默认组身份，并按 XML 首次出现顺序去重', async () => withLibrary(async (library) => {

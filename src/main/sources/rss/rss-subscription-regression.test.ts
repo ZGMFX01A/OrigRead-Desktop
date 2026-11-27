@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { sourceUrlComparisonKey } from '../../../shared/source-url-normalizer'
 import { RssDiscoveryService } from './rss-discovery-service'
 import { RssSubscriptionService, toArticleRecord } from './rss-subscription-service'
-import { withLibrary, rssXml, atomXml, rssPayload, rssDiscovery } from '../subscription-regression-support'
+import { withLibrary, rssXml, atomXml, rssPayload, rssDiscovery } from '../../../../tests/helpers/subscription-regression-support'
 
 describe('Android 审查问题在桌面 RSS 链路的回归', () => {
   it('区分非根路径末尾斜杠，仍合并根路径和跟踪参数', () => {

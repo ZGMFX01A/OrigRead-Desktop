@@ -38,7 +38,6 @@ export class SqliteLibraryWriter {
         created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
-        account_id = excluded.account_id,
         feed_id = excluded.feed_id,
         title = excluded.title,
         url = excluded.url,
@@ -49,6 +48,7 @@ export class SqliteLibraryWriter {
         full_content_html = COALESCE(excluded.full_content_html, articles.full_content_html),
         image_url = excluded.image_url,
         updated_at = excluded.updated_at
+      WHERE articles.account_id = excluded.account_id
     `)
   }
 

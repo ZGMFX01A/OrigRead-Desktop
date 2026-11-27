@@ -1885,7 +1885,7 @@ function registerIpcHandlers(): void {
     }
   })
   ipcMain.handle(IPC_CHANNELS.exportConfigurationBackup, async (event, password?: unknown) => {
-    assertTrustedSender(event);if(!configurationBackupService)throw new Error('Backup service is not ready');try{const content=configurationBackupService.exportBackup(password===undefined?'':validateOptionalText(password,'password',1_024));const selected=await showSaveDialog({title:'导出 OrigRead 配置备份',defaultPath:`OrigRead-Configuration-${new Date().toISOString().slice(0,10)}.json`,filters:[{name:'OrigRead JSON Backup',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};await writeFile(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:formatIpcErrorMessage(error)}}
+    assertTrustedSender(event);if(!configurationBackupService)throw new Error('Backup service is not ready');try{const content=await configurationBackupService.exportBackup(password===undefined?'':validateOptionalText(password,'password',1_024));const selected=await showSaveDialog({title:'导出 OrigRead 配置备份',defaultPath:`OrigRead-Configuration-${new Date().toISOString().slice(0,10)}.json`,filters:[{name:'OrigRead JSON Backup',extensions:['json']}]});if(selected.canceled||!selected.filePath)return{ok:false,cancelled:true,path:null,error:null};await writeFile(selected.filePath,content,'utf8');return{ok:true,cancelled:false,path:selected.filePath,error:null}}catch(error){return{ok:false,cancelled:false,path:null,error:formatIpcErrorMessage(error)}}
   })
   ipcMain.handle(IPC_CHANNELS.restoreConfigurationBackup, async (event, password?: unknown) => {
     assertTrustedSender(event)
@@ -1898,7 +1898,7 @@ function registerIpcHandlers(): void {
       const content = await readFile(path,'utf8')
       // 恢复的来源和账户配置必须仍属于开始操作时的目标账户。
       if (accountService.current().id !== targetAccountId) throw new Error('账户已切换，请重新恢复配置')
-      const restoreResult=configurationBackupService.restoreBackup(content,password===undefined?'':validateOptionalText(password,'password',1_024))
+      const restoreResult=await configurationBackupService.restoreBackup(content,password===undefined?'':validateOptionalText(password,'password',1_024))
       mainWindowChrome?.refresh()
       await Promise.allSettled([mcpRemoteClientManager?.disconnectAll(),mcpLocalClientManager?.disconnectAll()])
       mcpToolCatalogService?.invalidateAll()
@@ -2494,7 +2494,10 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
       if (!resolved) {
         return new Response('Font not found', { status: 404 })
       }
-      return net.fetch(pathToFileURL(resolved.filePath).toString())
+      const response = await net.fetch(pathToFileURL(resolved.filePath).toString())
+      const headers = new Headers(response.headers)
+      headers.set('Content-Type', resolved.mime)
+      return new Response(response.body, { status: response.status, headers })
     } catch {
       return new Response('Internal error', { status: 500 })
     }

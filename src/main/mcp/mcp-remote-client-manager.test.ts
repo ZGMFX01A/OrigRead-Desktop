@@ -1,6 +1,6 @@
 import { createMcpRemoteFetch } from './mcp-remote-client-manager'
 import { DatabaseSync } from 'node:sqlite'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MemorySecretStore } from '../security/secret-store'
 import type { McpRemoteConnector, McpRemoteConnectorFactory } from './mcp-remote-client-manager'
 import { McpRemoteClientManager } from './mcp-remote-client-manager'
@@ -413,7 +413,7 @@ describe('McpRemoteClientManager', () => {
             serverInfo: { name: 'old-remote', version: '1', title: null }
           }),
           callTool: async () => {
-            throw new Error('old remote tool failure')
+            throw Object.assign(new Error('old remote tool failure'), { code: 'ECONNRESET' })
           },
           close: () => new Promise<void>((resolve) => {
             resolveOldClose = resolve
@@ -505,4 +505,38 @@ describe('createMcpRemoteFetch security', () => {
     const request = createMcpRemoteFetch('http://127.0.0.1/mcp', { timeoutMs: Infinity, authMode: 'NONE', fetchImpl: async (_input, init) => { init?.signal?.throwIfAborted(); return new Response('ok') } })
     await expect(request('http://127.0.0.1/mcp', { signal: controller.signal })).rejects.toThrow('caller cancelled')
   })
+})
+
+
+it.each([new DOMException('Cancelled', 'AbortError'), Object.assign(new Error('Invalid tool arguments'), { code: -32602 })])('preserves the connection after a single call fails: %s', async error => {
+  const close = vi.fn(async () => {})
+  const callTool = vi.fn().mockRejectedValueOnce(error).mockResolvedValue({ content: [], isError: true })
+  const factory = vi.fn(() => connector({ callTool, close }))
+  const { database, serverId, manager } = setup(factory)
+  try {
+    await expect(manager.callTool(serverId, 'tool', {})).rejects.toThrow(error.message)
+    expect(manager.state(serverId).status).toBe('CONNECTED')
+    expect(close).not.toHaveBeenCalled()
+    expect(await manager.callTool(serverId, 'tool', {})).toEqual({ content: [], isError: true })
+    expect(factory).toHaveBeenCalledOnce()
+  } finally { await manager.disconnectAll(); database.close() }
+})
+
+it('clears the response-header timeout while an SSE body remains open and preserves cancellation', async () => {
+  vi.useFakeTimers()
+  const caller = new AbortController()
+  let requestSignal: AbortSignal | null | undefined
+  const fetcher = createMcpRemoteFetch('http://127.0.0.1/mcp', { timeoutMs: 60_000, authMode: 'NONE', fetchImpl: async (_url, init) => {
+    requestSignal = init?.signal
+    return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(': open\n\n')) } }), { headers: { 'content-type': 'text/event-stream' } })
+  } })
+  try {
+    const response = await fetcher('http://127.0.0.1/mcp', { method: 'GET', signal: caller.signal })
+    await vi.advanceTimersByTimeAsync(60_001)
+    expect(requestSignal?.aborted).toBe(false)
+    caller.abort()
+    expect(requestSignal?.aborted).toBe(true)
+    await response.body?.cancel()
+    expect(vi.getTimerCount()).toBe(0)
+  } finally { vi.useRealTimers() }
 })

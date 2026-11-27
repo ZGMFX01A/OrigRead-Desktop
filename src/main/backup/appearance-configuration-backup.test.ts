@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ConfigurationBackup } from '../../shared/configuration-backup'
 import { UI_FONT_SCALE_OPTIONS } from '../../shared/settings'
-import { createConfigurationBackupFixture } from './configuration-backup-test-support'
+import { createConfigurationBackupFixture } from '../../../tests/helpers/configuration-backup-test-support'
 
 const fixtures: ReturnType<typeof createConfigurationBackupFixture>[] = []
 function createFixture() {
@@ -20,20 +20,20 @@ afterEach(() => {
 })
 
 describe('desktop appearance configuration backup', () => {
-  it.each(['es', 'pt-BR', 'de', 'fr', 'ja'] as const)('round-trips the explicit %s language preference between profiles', language => {
+  it.each(['es', 'pt-BR', 'de', 'fr', 'ja'] as const)('round-trips the explicit %s language preference between profiles', async language => {
     const source = createFixture()
     source.settings.update({ language })
-    const content = source.backup.exportBackup()
+    const content = await source.backup.exportBackup()
     expect(JSON.parse(content).preferences['origread.desktop.language']).toBe(language)
     const target = createFixture()
-    target.backup.restoreBackup(content)
+    await target.backup.restoreBackup(content)
     expect(target.settings.current().language).toBe(language)
   })
 
-  it.each(UI_FONT_SCALE_OPTIONS)('round-trips UI font scale %i and article thumbnails between profiles', (uiFontScale) => {
+  it.each(UI_FONT_SCALE_OPTIONS)('round-trips UI font scale %i and article thumbnails between profiles', async (uiFontScale) => {
     const source = createFixture()
     source.settings.update({ uiFontScale, showArticleThumbnails: true, showArticleSummaries: false, readerIndentParagraphs: true, readerFontSize: 19 })
-    const content = source.backup.exportBackup()
+    const content = await source.backup.exportBackup()
     const backup = JSON.parse(content) as ConfigurationBackup
     expect(backup.preferences).toMatchObject({
       'origread.desktop.uiFontScale': uiFontScale,
@@ -44,17 +44,17 @@ describe('desktop appearance configuration backup', () => {
     })
 
     const target = createFixture()
-    target.backup.restoreBackup(content)
+    await target.backup.restoreBackup(content)
     expect(target.settings.current()).toMatchObject({ uiFontScale, showArticleThumbnails: true, showArticleSummaries: false, readerIndentParagraphs: true, readerFontSize: 19 })
     source.settings.update({ showArticleThumbnails: false, showArticleSummaries: true, readerIndentParagraphs: false })
-    target.backup.restoreBackup(source.backup.exportBackup())
+    await target.backup.restoreBackup(await source.backup.exportBackup())
     expect(target.settings.current()).toMatchObject({ uiFontScale, showArticleThumbnails: false, showArticleSummaries: true, readerIndentParagraphs: false, readerFontSize: 19 })
   })
 
-  it('restores old backups to 100% and hidden thumbnails instead of retaining the target profile preferences', () => {
+  it('restores old backups to 100% and hidden thumbnails instead of retaining the target profile preferences', async () => {
     const source = createFixture()
     source.settings.update({ readerFontSize: 21 })
-    const backup = JSON.parse(source.backup.exportBackup()) as ConfigurationBackup
+    const backup = JSON.parse(await source.backup.exportBackup()) as ConfigurationBackup
     delete backup.preferences['origread.desktop.uiFontScale']
     delete backup.preferences['origread.desktop.showArticleThumbnails']
     delete backup.preferences['origread.desktop.showArticleSummaries']
@@ -62,7 +62,7 @@ describe('desktop appearance configuration backup', () => {
     const target = createFixture()
     target.settings.update({ uiFontScale: 150, showArticleThumbnails: true, showArticleSummaries: false, readerIndentParagraphs: true, readerFontSize: 15 })
 
-    target.backup.restoreBackup(JSON.stringify(backup))
+    await target.backup.restoreBackup(JSON.stringify(backup))
     expect(target.settings.current()).toMatchObject({
       uiFontScale: 100, showArticleThumbnails: false, showArticleSummaries: true, readerIndentParagraphs: false, readerFontSize: 21
     })
@@ -89,16 +89,16 @@ describe('desktop appearance configuration backup', () => {
     ['origread.desktop.readerIndentParagraphs', 1],
     ['origread.desktop.readerIndentParagraphs', null],
     ['origread.desktop.readerIndentParagraphs', {}]
-  ] as const)('rejects invalid %s preference %# before changing any settings', (key, value) => {
+  ] as const)('rejects invalid %s preference %# before changing any settings', async (key, value) => {
     const fixture = createFixture()
-    const backup = JSON.parse(fixture.backup.exportBackup()) as ConfigurationBackup
+    const backup = JSON.parse(await fixture.backup.exportBackup()) as ConfigurationBackup
     backup.preferences[key] = value
     backup.preferences['origread.desktop.theme'] = 'light'
     const before = fixture.settings.update({ uiFontScale: 150, showArticleThumbnails: true, readerIndentParagraphs: true, theme: 'dark' })
     const content = JSON.stringify(backup)
 
     expect(() => fixture.backup.inspect(content)).toThrow(/语言|界面字号|缩略图|文章摘要|段落缩进/)
-    expect(() => fixture.backup.restoreBackup(content)).toThrow(/语言|界面字号|缩略图|文章摘要|段落缩进/)
+    await expect(fixture.backup.restoreBackup(content)).rejects.toThrow(/语言|界面字号|缩略图|文章摘要|段落缩进/)
     expect(fixture.settings.current()).toEqual(before)
   })
 })

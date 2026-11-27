@@ -1,3 +1,6 @@
+import { EventEmitter, getEventListeners } from 'node:events'
+import { PassThrough, Writable } from 'node:stream'
+import type { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -6,7 +9,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
 import { MemorySecretStore } from '../security/secret-store'
 import type { McpLocalConnector, McpLocalConnectorFactory } from './mcp-local-client-manager'
-import { buildGuardianLaunchEnvironment, McpLocalClientManager } from './mcp-local-client-manager'
+import { buildGuardianLaunchEnvironment, McpLocalClientManager, withAbort, guardStdioTransport } from './mcp-local-client-manager'
 import { McpLocalRepository } from './mcp-local-repository'
 
 vi.mock('./mcp-stdio-guardian-path', () => ({ MCP_STDIO_GUARDIAN_PATH: 'mcp-stdio-guardian.cjs' }))
@@ -298,7 +301,7 @@ describe('McpLocalClientManager', () => {
             serverInfo: { name: 'old-server', version: '1', title: null }
           }),
           callTool: async () => {
-            throw new Error('old tool execution failure')
+            throw Object.assign(new Error('old tool execution failure'), { code: 'ECONNRESET' })
           },
           close: () => new Promise<void>((resolve) => {
             resolveOldClose = resolve
@@ -395,5 +398,127 @@ describe('guardian environment isolation', () => {
     expect(resolve({ SystemRoot: 'relative' })).toBe('C:\\Windows\\System32\\taskkill.exe')
     expect(resolve({})).toBe('C:\\Windows\\System32\\taskkill.exe')
     expect(source).toContain('spawnSync(resolveWindowsTaskkillPath(),')
+  })
+})
+
+
+describe('stdio pipe ownership and cleanup', () => {
+  it.each(['resolve', 'reject', 'abort', 'timeout'])('cleans connect listeners and timers after %s', async outcome => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const pending = outcome === 'resolve' ? Promise.resolve('ok') : outcome === 'reject' ? Promise.reject(new Error('failed')) : new Promise<string>(() => {})
+    const result = withAbort(pending, controller.signal, 10)
+    const observed = result.then(value => ({ value }), error => ({ error }))
+    if (outcome === 'abort') controller.abort(new Error('cancelled'))
+    if (outcome === 'timeout') await vi.advanceTimersByTimeAsync(11)
+    try {
+      if (outcome === 'resolve') expect(await observed).toEqual({ value: 'ok' })
+      else expect(await observed).toHaveProperty('error')
+      expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('guards all raw child pipes and rejects blocked writes on close without leaking drain listeners', async () => {
+    let finishWrite: (() => void) | undefined
+    const stdin = new Writable({ highWaterMark: 1, write(_chunk, _encoding, callback) { finishWrite = callback } })
+    const stdout = new PassThrough(), stderr = new PassThrough(), exposed = new PassThrough()
+    const transport = { stderr: exposed, start: async () => {}, send: async () => {}, _process: { stdin, stdout, stderr } } as unknown as StdioClientTransport
+    const onError = vi.fn()
+    guardStdioTransport(transport, onError)
+    await transport.start()
+    const error = new Error('EPIPE')
+    for (const stream of [stdin, stdout, stderr, exposed]) stream.emit('error', error)
+    expect(onError).toHaveBeenCalledTimes(4)
+    const sent = transport.send({ jsonrpc: '2.0', method: 'test' })
+    let settled = false
+    void sent.then(() => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    finishWrite?.()
+    await sent
+    expect(stdin.listenerCount('drain')).toBe(0)
+    const blocked = transport.send({ jsonrpc: '2.0', method: 'blocked' })
+    const rejection = expect(blocked).rejects.toThrow('closed before drain')
+    stdin.emit('close')
+    await rejection
+    expect(stdin.listenerCount('drain')).toBe(0)
+    for (const stream of [stdin, stdout, stderr, exposed]) stream.destroy()
+  })
+
+  function guardian() {
+    const fakeProcess = new EventEmitter() as EventEmitter & Record<string, any>
+    Object.assign(fakeProcess, { argv: ['node', 'guardian', '42', 'node'], env: { SystemRoot: 'C:\\Windows' }, platform: 'win32', cwd: () => '.', stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), exit: vi.fn(), kill: vi.fn() })
+    const child = Object.assign(new EventEmitter(), { pid: 123, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() })
+    const kill = vi.fn()
+    runInNewContext(readFileSync('src/main/mcp/mcp-stdio-guardian.cjs', 'utf8'), {
+      require: (name: string) => name === 'node:path' ? path : { spawn: () => child, spawnSync: kill },
+      process: fakeProcess, setTimeout, setInterval, clearInterval
+    })
+    return { fakeProcess, child, kill }
+  }
+
+  it.each(['stdin', 'stdout', 'stderr', 'child.stdin', 'child.stdout', 'child.stderr'])('reaps the process tree on %s errors', async endpoint => {
+    vi.useFakeTimers()
+    const { fakeProcess, child, kill } = guardian()
+    try {
+      const stream = endpoint.startsWith('child.') ? child[endpoint.slice(6) as 'stdin'] : fakeProcess[endpoint]
+      expect(() => stream.emit('error', Object.assign(new Error('closed pipe'), { code: 'EPIPE' }))).not.toThrow()
+      expect(kill).toHaveBeenCalledWith(expect.any(String), ['/PID', '123', '/T'], expect.any(Object))
+      await vi.advanceTimersByTimeAsync(801)
+      expect(kill).toHaveBeenCalledWith(expect.any(String), ['/PID', '123', '/T', '/F'], expect.any(Object))
+      expect(fakeProcess.exit).toHaveBeenCalledWith(1)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('honors native pipe backpressure and reaps descendants after stdin EOF', async () => {
+    vi.useFakeTimers()
+    const { fakeProcess, child, kill } = guardian()
+    try {
+      child.stdin.pause()
+      fakeProcess.stdin.write(Buffer.alloc(128 * 1024))
+      expect(fakeProcess.stdin.isPaused()).toBe(true)
+      child.stdin.resume()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fakeProcess.stdin.isPaused()).toBe(false)
+      fakeProcess.stdin.end()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(kill).toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(801)
+      expect(fakeProcess.exit).toHaveBeenCalledWith(0)
+    } finally { vi.useRealTimers() }
+  })
+})
+
+
+describe('local request failures do not own the connection', () => {
+  it.each([new DOMException('cancel call', 'AbortError'), Object.assign(new Error('invalid arguments'), { code: -32602 })])('reuses a healthy local client after %s', async error => {
+    const close = vi.fn(async () => {})
+    const callTool = vi.fn().mockRejectedValueOnce(error).mockResolvedValue({ content: [], isError: true })
+    const listTools = vi.fn().mockRejectedValueOnce(error).mockResolvedValue({ tools: [] })
+    const factory = vi.fn(() => connector({ callTool, listTools, close }))
+    const { database, manager, serverId } = setup(factory)
+    try {
+      await expect(manager.callTool(serverId, 'tool', {})).rejects.toThrow(error.message)
+      await expect(manager.listTools(serverId)).rejects.toThrow(error.message)
+      expect(manager.state(serverId).status).toBe('CONNECTED')
+      expect(close).not.toHaveBeenCalled()
+      expect(await manager.callTool(serverId, 'tool', {})).toEqual({ content: [], isError: true })
+      expect(await manager.listTools(serverId)).toEqual({ tools: [] })
+      expect(factory).toHaveBeenCalledOnce()
+    } finally { await manager.disconnectAll(); database.close() }
+  })
+  it('gives a pre-aborted signal priority over a completed operation without listeners or timers', async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const reason = new Error('already cancelled')
+    controller.abort(reason)
+    try {
+      await expect(withAbort(Promise.resolve('done'), controller.signal, 100)).rejects.toBe(reason)
+      await expect(withAbort(Promise.reject(new Error('operation failed')), controller.signal, 100)).rejects.toBe(reason)
+      expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
   })
 })

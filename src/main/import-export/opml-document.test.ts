@@ -126,3 +126,15 @@ describe('parseOpml', () => {
     expect(() => parseOpml(xml)).toThrow('分组层级深度超过最大限制')
   })
 })
+
+
+it('decodes entities once and safely replaces invalid Unicode scalar references', () => {
+  const result = parseOpml('<opml><body><outline text="&amp;amp; &#x110000; &#55296; &#x1F600;" xmlUrl="https://example.com/?a=1&amp;amp;b=2"/></body></opml>')
+  expect(result.feeds[0]?.name).toBe('&amp; � � 😀')
+  expect(result.feeds[0]?.url).toBe('https://example.com/?a=1&amp;b=2')
+})
+
+
+it('does not re-decode entities produced by numeric references', () => {
+  expect(parseOpml('<opml><body><outline text="&#38;lt; &#x26;amp;" xmlUrl="https://example.com/"/></body></opml>').feeds[0]?.name).toBe('&lt; &amp;')
+})

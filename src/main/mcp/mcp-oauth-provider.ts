@@ -23,7 +23,7 @@ export class McpOAuthAuthorizationRequiredError extends Error {
 }
 
 export interface McpOAuthProviderSession extends OAuthClientProvider {
-  setInteractiveAllowed(value: boolean): void
+  setInteractiveAllowed(value: boolean): Promise<void>
   wasAuthorizationRedirected(): boolean
   waitForCallback(signal?: AbortSignal): Promise<URLSearchParams>
   close(): Promise<void>
@@ -36,20 +36,20 @@ export async function createMcpOAuthProviderSession(options: {
   secrets: SecretStore
   openExternal: (url: string) => Promise<void>
 }): Promise<McpOAuthProviderSession> {
-  const listener = await createLoopbackListener(options.serverId)
   let allowLoopbackHttp = false
   try { allowLoopbackHttp = !!options.serverUrl && isLoopbackHost(new URL(options.serverUrl).hostname) } catch { allowLoopbackHttp = false }
-  return new ElectronMcpOAuthProvider({ ...options, ...listener, allowLoopbackHttp })
+  return new ElectronMcpOAuthProvider({ ...options, allowLoopbackHttp })
 }
 
 interface LoopbackListener {
   server: Server
   redirectUrl: URL
-  callback: Promise<URLSearchParams>
+  callback: Promise<{ params: URLSearchParams } | { error: Error }>
   rejectCallback(error: Error): void
 }
 
 class ElectronMcpOAuthProvider implements McpOAuthProviderSession {
+  private listener: LoopbackListener | null = null
   private interactiveAllowed = false
   private authorizationRedirected = false
   private callbackConsumed = false
@@ -60,13 +60,11 @@ class ElectronMcpOAuthProvider implements McpOAuthProviderSession {
     clientName: string
     secrets: SecretStore
     openExternal: (url: string) => Promise<void>
-    server: Server
-    redirectUrl: URL
-    callback: Promise<URLSearchParams>
-    rejectCallback(error: Error): void
   }) {}
 
-  get redirectUrl(): URL { return this.options.redirectUrl }
+  get redirectUrl(): URL {
+    return this.listener?.redirectUrl ?? new URL(`http://127.0.0.1:0${CALLBACK_PATH}?server=${encodeURIComponent(this.options.serverId)}`)
+  }
 
   get clientMetadata(): OAuthClientMetadata {
     return {
@@ -161,8 +159,12 @@ class ElectronMcpOAuthProvider implements McpOAuthProviderSession {
     this.options.secrets.delete(mcpOAuthSecretKey(this.options.serverId, scope))
   }
 
-  setInteractiveAllowed(value: boolean): void {
+  async setInteractiveAllowed(value: boolean): Promise<void> {
     this.interactiveAllowed = value
+    if (value && !this.listener) {
+      this.listener = await createLoopbackListener(this.options.serverId,
+        () => this.options.secrets.get(mcpOAuthSecretKey(this.options.serverId, 'state')))
+    }
   }
 
   wasAuthorizationRedirected(): boolean {
@@ -172,16 +174,27 @@ class ElectronMcpOAuthProvider implements McpOAuthProviderSession {
   async waitForCallback(signal?: AbortSignal): Promise<URLSearchParams> {
     if (this.callbackConsumed) throw new Error('MCP OAuth 回调已处理')
     this.callbackConsumed = true
-    const timeout = AbortSignal.timeout(CALLBACK_TIMEOUT_MS)
-    const combined = signal ? AbortSignal.any([signal, timeout]) : timeout
-    const params = await Promise.race([
-      this.options.callback,
-      new Promise<never>((_resolve, reject) => {
-        const abort = () => reject(combined.reason instanceof Error ? combined.reason : new DOMException('OAuth callback cancelled', 'AbortError'))
-        if (combined.aborted) abort()
-        else combined.addEventListener('abort', abort, { once: true })
-      })
-    ])
+    const listener = this.listener
+    if (!listener) throw new McpOAuthAuthorizationRequiredError()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let abort: (() => void) | undefined
+    let outcome: Awaited<LoopbackListener['callback']>
+    try {
+      outcome = await Promise.race([
+        listener.callback,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('MCP OAuth callback timed out')), CALLBACK_TIMEOUT_MS)
+          abort = () => reject(signal?.reason ?? new DOMException('OAuth callback cancelled', 'AbortError'))
+          if (signal?.aborted) abort()
+          else signal?.addEventListener('abort', abort, { once: true })
+        })
+      ])
+    } finally {
+      clearTimeout(timer)
+      if (abort) signal?.removeEventListener('abort', abort)
+    }
+    if ('error' in outcome) throw outcome.error
+    const params = outcome.params
     const expectedState = this.options.secrets.get(mcpOAuthSecretKey(this.options.serverId, 'state'))
     const actualState = params.get('state') || ''
     if (!expectedState || actualState !== expectedState) throw new Error('MCP OAuth state 校验失败，请重新授权')
@@ -190,10 +203,12 @@ class ElectronMcpOAuthProvider implements McpOAuthProviderSession {
   }
 
   async close(): Promise<void> {
-    this.options.rejectCallback(new DOMException('OAuth session closed', 'AbortError'))
+    const listener = this.listener
+    if (!listener) return
+    listener.rejectCallback(new DOMException('OAuth session closed', 'AbortError'))
     await new Promise<void>((resolve) => {
-      if (!this.options.server.listening) { resolve(); return }
-      this.options.server.close(() => resolve())
+      if (!listener.server.listening) { resolve(); return }
+      listener.server.close(() => resolve())
     })
   }
 
@@ -217,22 +232,14 @@ class ElectronMcpOAuthProvider implements McpOAuthProviderSession {
   }
 }
 
-async function createLoopbackListener(serverId: string): Promise<LoopbackListener> {
-  let resolveCallback!: (params: URLSearchParams) => void
-  let rejectCallback!: (error: Error) => void
+async function createLoopbackListener(serverId: string, expectedState: () => string | undefined): Promise<LoopbackListener> {
+  let resolveCallback!: (outcome: { params: URLSearchParams } | { error: Error }) => void
   let settled = false
-  const callback = new Promise<URLSearchParams>((resolve, reject) => {
-    resolveCallback = resolve
-    rejectCallback = reject
-  })
-  // A session can be closed before any caller starts waiting for the browser callback.
-  // Mark the promise as observed so teardown never creates an unhandled rejection;
-  // waitForCallback still awaits the original promise and receives the same error.
-  void callback.catch(() => undefined)
+  const callback: LoopbackListener['callback'] = new Promise((resolve) => { resolveCallback = resolve })
   const finishReject = (error: Error): void => {
     if (settled) return
     settled = true
-    rejectCallback(error)
+    resolveCallback({ error })
   }
   const server = createServer((request, response) => {
     try {
@@ -247,20 +254,25 @@ async function createLoopbackListener(serverId: string): Promise<LoopbackListene
         response.writeHead(404).end()
         return
       }
+      if (!expectedState() || url.searchParams.get('state') !== expectedState() || settled) {
+        response.writeHead(400).end('Invalid OAuth state')
+        return
+      }
+      settled = true
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
       response.end('<!doctype html><meta charset="utf-8"><title>OrigRead</title><p>Authorization response received. You can close this window and return to OrigRead.</p>')
-      if (!settled) {
-        settled = true
-        resolveCallback(new URLSearchParams(url.searchParams))
-      }
+      resolveCallback({ params: new URLSearchParams(url.searchParams) })
+      server.close()
+
     } catch (error) {
       response.writeHead(500).end()
       finishReject(error instanceof Error ? error : new Error(String(error)))
     }
   })
   await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', resolve)
+    const failed = (error: Error): void => reject(error)
+    server.once('error', failed)
+    server.listen(0, '127.0.0.1', () => { server.removeListener('error', failed); resolve() })
   })
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('MCP OAuth loopback port missing')

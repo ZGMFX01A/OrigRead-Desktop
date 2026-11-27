@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ArticleRecord, FeedRecord } from '../../shared/library'
 import { DesktopDatabase } from './database'
 import { LibraryRepository } from './library-repository'
@@ -298,7 +298,7 @@ describe('LibraryRepository', () => {
     database.close()
   })
 
-  it('keeps large feed and group scopes independent from the global 200-article window', () => {
+  it('limits large feed and group summaries while full-record sync queries remain complete', () => {
     const database = new DesktopDatabase(':memory:')
     const repository = new LibraryRepository(database.connection)
     const feed = createFeed()
@@ -328,8 +328,8 @@ describe('LibraryRepository', () => {
     expect(repository.listArticlesByFeed(feed.id)).toHaveLength(470)
     expect(repository.listArticlesByGroup(secondGroupId)).toHaveLength(470)
     expect(repository.listArticleSummaries()).toHaveLength(200)
-    expect(repository.listArticleSummaries({ kind: 'feed', id: feed.id })).toHaveLength(470)
-    expect(repository.listArticleSummaries({ kind: 'group', id: secondGroupId })).toHaveLength(470)
+    expect(repository.listArticleSummaries({ kind: 'feed', id: feed.id })).toHaveLength(200)
+    expect(repository.listArticleSummaries({ kind: 'group', id: secondGroupId })).toHaveLength(200)
     expect(repository.listFeedArticleStats()).toEqual([
       { feedId: feed.id, total: 470, unread: 469, starred: 1 }
     ])
@@ -515,3 +515,30 @@ function createArticle(feedId: string): ArticleRecord {
     updatedAt: now
   }
 }
+
+
+describe('P2 article boundaries', () => {
+  it('limits all scopes and never transfers an existing article to another account', () => {
+    const database = new DesktopDatabase(':memory:')
+    try {
+      const library = new LibraryRepository(database.connection)
+      const accounts = new AccountRepository(database.connection, new MemorySecretStore())
+      const feed = createFeed()
+      library.upsertFeed(feed)
+      for (let i = 0; i < 5; i++) library.upsertArticle({ ...createArticle(feed.id), id: `bounded-${i}`, title: 'needle', description: 'needle', contentHtml: 'needle' })
+      for (const scope of [{kind:'all'}, {kind:'feed',id:feed.id}, {kind:'group',id:feed.groupId}] as const) {
+        expect(library.listArticleSummaries(scope, 2)).toHaveLength(2)
+      }
+      const prepare = vi.spyOn(database.connection, 'prepare')
+      expect(library.searchArticles('needle')).toHaveLength(5)
+      expect(prepare.mock.calls.filter(([sql]) => sql.includes('LIKE'))).toHaveLength(1)
+      prepare.mockRestore()
+      expect(new Set(library.searchArticles('needle').map(row => row.id)).size).toBe(5)
+      const original = library.getArticleById('bounded-0')!
+      const other = accounts.add({type:'local'})
+      library.upsertArticle({...original, accountId:other.id, title:'stolen'})
+      expect(library.getArticleByIdForAccount(1, original.id)).toEqual(original)
+      expect(library.getArticleByIdForAccount(other.id, original.id)).toBeNull()
+    } finally { database.close() }
+  })
+})

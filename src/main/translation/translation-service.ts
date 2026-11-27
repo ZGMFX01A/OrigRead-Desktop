@@ -345,12 +345,13 @@ export class TranslationService{
 }
 
 interface Segment{sourceIndex:number;text:string}
-function splitAll(texts: string[], max: number): Segment[] {
+export function splitAll(texts: string[], max: number): Segment[] {
+  if (!Number.isInteger(max) || max < 2) throw new RangeError('Segment limit must be an integer >= 2')
   const out: Segment[] = []
   texts.forEach((text, sourceIndex) => {
     let rest = text
     while (rest.length > max) {
-      let cut = Math.max(rest.lastIndexOf('。', max), rest.lastIndexOf('. ', max), rest.lastIndexOf('\n', max), rest.lastIndexOf(' ', max))
+      let cut = Math.max(rest.lastIndexOf('。', max - 1), rest.lastIndexOf('. ', max - 1), rest.lastIndexOf('\n', max - 1), rest.lastIndexOf(' ', max - 1))
       cut = cut < max * 0.4 ? max : cut + 1
       if (/[\uD800-\uDBFF]/.test(rest[cut - 1]!)) cut--
       out.push({ sourceIndex, text: rest.slice(0, cut) }); rest = rest.slice(cut)

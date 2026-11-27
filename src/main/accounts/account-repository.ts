@@ -186,8 +186,10 @@ export class AccountRepository {
   }
 
   private toRecord(row: AccountRow): AccountRecord {
-    let blockList: string[] = []
-    try { const parsed=JSON.parse(row.sync_block_list);if(Array.isArray(parsed))blockList=parsed.map(String) } catch { blockList=[] }
+    const blockList: unknown = JSON.parse(row.sync_block_list)
+    if (!Array.isArray(blockList) || !blockList.every((item): item is string => typeof item === 'string')) {
+      throw new TypeError(`账户 ${row.id} 的 sync_block_list 已损坏`)
+    }
     return {
       id: row.id, name: row.name, type: row.type, updatedAt: row.updated_at,
       lastArticleId: row.last_article_id, syncIntervalMinutes: row.sync_interval_minutes,

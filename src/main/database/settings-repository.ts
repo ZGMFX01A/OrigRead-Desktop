@@ -18,11 +18,7 @@ export class SettingsRepository {
       .get(DESKTOP_SETTINGS_KEY) as { value: string } | undefined
     if (!row) return { ...DEFAULT_DESKTOP_SETTINGS }
 
-    try {
-      return normalizeDesktopSettings(JSON.parse(row.value))
-    } catch {
-      return { ...DEFAULT_DESKTOP_SETTINGS }
-    }
+    return normalizeDesktopSettings(JSON.parse(row.value))
   }
 
   update(patchValue: DesktopSettingsPatch): DesktopSettings {

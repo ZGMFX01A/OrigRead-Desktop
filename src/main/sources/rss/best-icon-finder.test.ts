@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { BestIconFinder, extractIconDomain, type IconFetchPayload, type IconFetcher } from './best-icon-finder'
+import { describe, expect, it, vi } from 'vitest'
+import { BestIconFinder, fetchIconPayload, MAX_ICON_RESPONSE_BYTES, extractIconDomain, type IconFetchPayload, type IconFetcher } from './best-icon-finder'
 
 describe('BestIconFinder Android parity', () => {
   it('prefers apple touch icon before other formats and larger bytes within the same format', async () => {
@@ -50,3 +50,41 @@ function html(value: string, finalUrl: string): IconFetchPayload {
 function image(contentType: string, bytes: number): IconFetchPayload {
   return { finalUrl: '', contentType, bytes: new Uint8Array(bytes) }
 }
+
+
+describe('icon cancellation and bounded responses', () => {
+  it('passes cancellation to page and icon requests and never starts fallback requests after abort', async () => {
+    const controller = new AbortController()
+    const seen: AbortSignal[] = []
+    const fetcher = vi.fn(async (url: string, signal?: AbortSignal) => {
+      seen.push(signal!)
+      if (url === 'http://example.com/') return html('<link rel="icon" href="/one.png">', url)
+      controller.abort(new DOMException('cancel icons', 'AbortError'))
+      signal!.throwIfAborted()
+      return image('image/png', 10)
+    })
+    await expect(new BestIconFinder(fetcher).findBestIcon('example.com', controller.signal)).rejects.toThrow('cancel icons')
+    expect(seen).toEqual([controller.signal, controller.signal])
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+  it('cancels an idle body read as soon as its AbortSignal aborts', async () => {
+    const controller = new AbortController()
+    let fetchSignal: AbortSignal | null | undefined
+    let started!: () => void
+    const reading = new Promise<void>(resolve => { started = resolve })
+    const cancelled = vi.fn()
+    const response = new Response(new ReadableStream({ pull() { started() }, cancel: cancelled }))
+    const pending = fetchIconPayload('https://example.com/icon', { lookup: async () => [{ address: '1.1.1.1' }], fetchImpl: async (_url, init) => { fetchSignal = init?.signal; return response } }, controller.signal)
+    await reading
+    controller.abort(new DOMException('cancel body', 'AbortError'))
+    await expect(pending).rejects.toThrow('cancel body')
+    expect(fetchSignal?.aborted).toBe(true)
+    expect(cancelled).toHaveBeenCalledOnce()
+  })
+  it.each([true, false])('bounds icon bytes with declared size=%s', async declared => {
+    const cancelled = vi.fn()
+    const response = new Response(new ReadableStream({ start(controller) { if (!declared) controller.enqueue(new Uint8Array(MAX_ICON_RESPONSE_BYTES + 1)) }, cancel: cancelled }), { headers: declared ? { 'content-length': String(MAX_ICON_RESPONSE_BYTES + 1) } : {} })
+    await expect(fetchIconPayload('https://example.com/icon', { lookup: async () => [{ address: '1.1.1.1' }], fetchImpl: async () => response })).rejects.toThrow('响应体大小超过限制')
+    expect(cancelled).toHaveBeenCalledOnce()
+  })
+})

@@ -56,3 +56,16 @@ describe('matchLlmSkill', () => {
     expect(matchLlmSkill('Kotlin help', [disabled])).toBeNull()
   })
 })
+
+
+describe('routing boundaries', () => {
+  it('does not match English substrings', () => {
+    expect(matchLlmSkill('javascript compilation', [skill('java-helper', 'Java tasks', { 'origread-triggers': 'java' })])).toBeNull()
+  })
+  it('filters generic Chinese custom triggers', () => {
+    expect(matchLlmSkill('请帮我分析这个问题', [skill('evil', 'Unrelated', { 'origread-triggers': '帮我,分析,这个,问题' })])).toBeNull()
+  })
+  it('keeps a specific skill id above a generic custom trigger', () => {
+    expect(matchLlmSkill('java-helper please review', [skill('evil', 'Other', { 'origread-triggers': 'review' }), skill('java-helper', 'Java tasks')])?.skill.id).toBe('java-helper')
+  })
+})

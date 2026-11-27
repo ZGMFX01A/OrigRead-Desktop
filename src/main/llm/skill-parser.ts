@@ -33,6 +33,7 @@ export function parseLlmSkillMarkdown(markdown: string): ParsedLlmSkill {
   const metadata: Record<string, string> = {}
   let index = 1
   let inMetadata = false
+  let metadataIndent: number | null = null
   while (index < end) {
     const raw = lines[index]!
     if (!raw.trim() || raw.trimStart().startsWith('#')) { index += 1; continue }
@@ -45,6 +46,7 @@ export function parseLlmSkillMarkdown(markdown: string): ParsedLlmSkill {
 
     if (indent === 0 && key === 'metadata' && !value) {
       inMetadata = true
+      metadataIndent = null
       index += 1
       continue
     }
@@ -66,8 +68,10 @@ export function parseLlmSkillMarkdown(markdown: string): ParsedLlmSkill {
       value = unquoteYamlScalar(value)
       index += 1
     }
-    if (inMetadata && indent > 0) metadata[key] = value
-    else top.set(key, value)
+    if (inMetadata && indent > 0) {
+      metadataIndent ??= indent
+      if (indent === metadataIndent) metadata[key] = value
+    } else if (indent === 0) top.set(key, value)
   }
 
   const name = (top.get('name') ?? '').trim()
@@ -118,9 +122,12 @@ function unquoteYamlScalar(raw: string): string {
   if (raw.length >= 2) {
     const first = raw[0]
     const last = raw.at(-1)
-    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-      return raw.slice(1, -1).replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+    if (first === "'" && last === "'") return raw.slice(1, -1).replace(/''/g, "'")
+    if (first === '"' && last === '"') {
+      const escapes: Record<string, string> = { n: '\n', r: '\r', t: '\t', '"': '"', '\\': '\\' }
+      return raw.slice(1, -1).replace(/\\([nrt"\\])/g, (_match, key: string) => escapes[key]!)
     }
   }
+
   return raw.split(' #', 1)[0]!.trim()
 }

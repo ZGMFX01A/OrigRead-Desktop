@@ -44,7 +44,7 @@ export function getGroupDescendantIds(
     if (childId === groupId) {
       throw new Error('检测到分组循环嵌套引用')
     }
-    queue.push({ id: childId, depth: 1 })
+    queue.push({ id: childId, depth: 2 })
   }
 
   while (queue.length > 0) {

@@ -2,6 +2,7 @@ export interface ReaderFontEntry {
   id: string
   name: string
   cssFamily: string
+  mime?: string
   source: 'custom'
   dataUrl: string
 }

@@ -15,12 +15,12 @@ describe('SettingsRepository', () => {
       theme: 'dark',
       layoutMode: 'two-pane',
       workspaceCollapsed: true,
-      workspaceWidth: 999,
-      sourcePaneWidth: 999,
-      articlePaneWidth: 100,
+      workspaceWidth: 560,
+      sourcePaneWidth: 320,
+      articlePaneWidth: 320,
       sourcePaneCollapsed: true,
       articlePaneCollapsed: true,
-      readerFontSize: 25,
+      readerFontSize: 22,
       readerFontId: 'serif',
       readerLineHeight: 1.72,
       readerContentWidth: 880,
@@ -28,7 +28,7 @@ describe('SettingsRepository', () => {
       readerBackgroundCustom: '#E4F6EA',
       ttsVoiceURI: 'voice://reader-e2e',
       aiSummaryPlacement: 'right',
-      aiSummaryPanelSize: 999,
+      aiSummaryPanelSize: 640,
       syncIntervalMinutes: 60,
       syncOnStart: true,
       autoCheckUpdates: false
@@ -108,7 +108,7 @@ describe('SettingsRepository', () => {
     database.close()
   })
 
-  it('falls back for invalid pane widths and clamps finite out-of-range values', () => {
+  it('reads legacy pane defaults but rejects out-of-range writes', () => {
     const database = new DesktopDatabase(':memory:')
     database.connection.prepare(`
       INSERT INTO app_settings (key, value, updated_at)
@@ -120,10 +120,8 @@ describe('SettingsRepository', () => {
     const repository = new SettingsRepository(database.connection)
 
     expect(repository.current()).toMatchObject({ sourcePaneWidth: 260, articlePaneWidth: 380 })
-    expect(repository.update({ sourcePaneWidth: 100, articlePaneWidth: 999 })).toMatchObject({
-      sourcePaneWidth: 220,
-      articlePaneWidth: 480
-    })
+    expect(() => repository.update({ sourcePaneWidth: 100, articlePaneWidth: 999 })).toThrow(TypeError)
+    expect(repository.current()).toMatchObject({ sourcePaneWidth: 260, articlePaneWidth: 380 })
     database.close()
   })
 
@@ -231,4 +229,31 @@ describe('explicit desktop language preferences', () => {
       database.close()
     }
   })
+})
+
+
+it.each([
+  {language:'invalid'}, {theme: false}, {workspaceWidth:999}, {sourcePaneWidth:999}, {articlePaneWidth:100},
+  {readerFontSize:25}, {readerLineHeight:NaN}, {readerContentWidth:'800'}, {readerFontId:null},
+  {readerBackground:'invalid'}, {readerBackgroundCustom:'red'}, {ttsVoiceURI:3}, {aiSummaryPlacement:'top'},
+  {aiSummaryPanelSize:999}
+])('rejects invalid settings atomically: %j', patch => {
+  const database = new DesktopDatabase(':memory:')
+  try {
+    const repository = new SettingsRepository(database.connection)
+    const before = repository.current()
+    expect(() => repository.update({...patch, syncOnStart:true} as never)).toThrow(TypeError)
+    expect(repository.current()).toEqual(before)
+  } finally { database.close() }
+})
+
+it('preserves corrupt stored JSON instead of replacing it on update', () => {
+  const database = new DesktopDatabase(':memory:')
+  try {
+    database.connection.prepare('INSERT INTO app_settings (key,value,updated_at) VALUES (?,?,?)').run('desktop.settings', '{broken', 1)
+    const repository = new SettingsRepository(database.connection)
+    expect(() => repository.current()).toThrow()
+    expect(() => repository.update({theme:'dark'})).toThrow()
+    expect(database.connection.prepare('SELECT value FROM app_settings WHERE key=?').get('desktop.settings')).toEqual({value:'{broken'})
+  } finally { database.close() }
 })

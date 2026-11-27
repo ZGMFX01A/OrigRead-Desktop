@@ -937,7 +937,7 @@ function RemoteMcpSettingsSection():React.JSX.Element{
   </SettingsSection>
 }
 
-function LocalMcpSettingsSection():React.JSX.Element{
+export function LocalMcpSettingsSection():React.JSX.Element{
   const {t}=useTranslation()
   const [settings,setSettings]=useState<McpLocalSettings|null>(null)
   const [catalog,setCatalog]=useState<McpToolCatalogSnapshot>({servers:[]})
@@ -1082,7 +1082,7 @@ function LocalMcpSettingsSection():React.JSX.Element{
             <button type="button" className="icon-button danger" title={t('delete')} aria-label={t('delete')} onClick={()=>void removeServer(server)}><Trash2 size={14}/></button>
           </div>
           <Field label={t('mcpLocalCommand')}><input value={server.command} spellCheck={false} placeholder={t('mcpLocalCommandPlaceholder')} onChange={(event)=>setSettings({...settings,servers:settings.servers.map((item)=>item.id===server.id?{...item,command:event.target.value}:item)})} onBlur={()=>void updateServer(server,{command:settings.servers.find((item)=>item.id===server.id)!.command})}/></Field>
-          <div className="mcp-custom-headers-field mcp-local-args-field"><div><strong>{t('mcpLocalArgs')}</strong><span>{t('mcpLocalArgsDescription')}</span></div><textarea rows={4} spellCheck={false} value={server.args.join('\n')} onChange={(event)=>setSettings({...settings,servers:settings.servers.map((item)=>item.id===server.id?{...item,args:event.target.value.replace(/\r\n/g,'\n').split('\n').filter((line)=>line.length>0)}:item)})} onBlur={()=>void updateServer(server,{args:settings.servers.find((item)=>item.id===server.id)!.args})}/></div>
+          <div className="mcp-custom-headers-field mcp-local-args-field"><div><strong>{t('mcpLocalArgs')}</strong><span>{t('mcpLocalArgsDescription')}</span></div><textarea rows={4} spellCheck={false} value={server.args.join('\n')} onChange={(event)=>setSettings({...settings,servers:settings.servers.map((item)=>item.id===server.id?{...item,args:event.target.value.replace(/\r\n/g,'\n').split('\n')}:item)})} onBlur={()=>void updateServer(server,{args:settings.servers.find((item)=>item.id===server.id)!.args.filter((line)=>line.trim().length>0)})}/></div>
           <div className="mcp-custom-headers-field mcp-local-cwd-field"><div><strong>{t('mcpLocalCwd')}</strong><span>{t('mcpLocalCwdDescription')}</span></div><input value={server.cwd} spellCheck={false} placeholder="C:\\path\\to\\server" onChange={(event)=>setSettings({...settings,servers:settings.servers.map((item)=>item.id===server.id?{...item,cwd:event.target.value}:item)})} onBlur={()=>void updateServer(server,{cwd:settings.servers.find((item)=>item.id===server.id)!.cwd})}/></div>
           <div className="mcp-custom-headers-field mcp-local-environment-field"><div><strong>{t('mcpLocalEnvironment')}</strong><span>{t('mcpLocalEnvironmentDescription')}</span></div><div className="mcp-custom-headers-editor"><textarea rows={4} disabled={server.hasEnvironment&&!visibleEnvironments[server.id]&&!dirtyEnvironments[server.id]} value={environments[server.id]??''} placeholder={server.hasEnvironment&&!visibleEnvironments[server.id]?t('credentialStored',{count:server.environmentLength}):'API_TOKEN=value'} onChange={(event)=>{setEnvironments((current)=>({...current,[server.id]:event.target.value}));setDirtyEnvironments((current)=>({...current,[server.id]:true}));setVisibleEnvironments((current)=>({...current,[server.id]:true}))}}/><div className="inline-controls"><button type="button" className="mini-action secondary" onClick={()=>void toggleEnvironment(server)}>{visibleEnvironments[server.id]?<EyeOff size={13}/>:<Eye size={13}/>} {visibleEnvironments[server.id]?t('mcpLocalHideEnvironment'):t('mcpLocalShowEnvironment')}</button><button type="button" className="mini-action" disabled={!dirtyEnvironments[server.id]} onClick={()=>void saveEnvironment(server)}><Save size={13}/>{t('mcpLocalSaveEnvironment')}</button></div></div></div>
           <div className="mcp-remote-meta"><span>{t('mcpProtocol')}: {connection?.protocolEra?formatMcpProtocol(connection.protocolEra,connection.protocolVersion):t('mcpProtocolAuto')}</span>{connection?.serverInfo&&<span>{connection.serverInfo.title||connection.serverInfo.name} · {connection.serverInfo.version}</span>}{serverCatalog&&<span className={serverCatalog.stale?'warning':''}>{serverCatalog.stale?t('mcpCatalogStale'):t('mcpCatalogCached',{count:serverCatalog.tools.length})}</span>}</div>
@@ -1287,12 +1287,11 @@ function LlmCustomizationSettingsSections({onUnsavedChange}:{onUnsavedChange?:(d
   </>
 }
 
-function TranslationSettingsPage({onOpenAiSettings}:{onOpenAiSettings?:()=>void}):React.JSX.Element{
+export function TranslationSettingsPage({onOpenAiSettings}:{onOpenAiSettings?:()=>void}):React.JSX.Element{
   const {t}=useTranslation()
   const [settings,setSettings]=useState<TranslationSettings|null>(null)
   const [targetLanguageDraft,setTargetLanguageDraft]=useState('zh-CN')
   const [keys,setKeys]=useState<Record<string,string>>({})
-  const [savedKeys,setSavedKeys]=useState<Record<string,string>>({})
   const [visibleKeys,setVisibleKeys]=useState<Record<string,boolean>>({})
   const [status,setStatus]=useState('')
   const [providerStatus,setProviderStatus]=useState<Record<string,string>>({})
@@ -1304,11 +1303,8 @@ function TranslationSettingsPage({onOpenAiSettings}:{onOpenAiSettings?:()=>void}
     void (async()=>{
       try{
         const loaded=await window.origread.getTranslationSettings()
-        const desktop=loaded.providers.filter((provider)=>provider.type!=='ML_KIT')
-        const entries=await Promise.all(desktop.map(async(provider)=>[provider.type,await window.origread.getTranslationApiKey(provider.type)] as const))
         if(cancelled)return
-        const loadedKeys=Object.fromEntries(entries)
-        setSettings(loaded);setTargetLanguageDraft(loaded.targetLanguage);setKeys(loadedKeys);setSavedKeys(loadedKeys)
+        setSettings(loaded);setTargetLanguageDraft(loaded.targetLanguage)
       }catch(error){if(!cancelled)setStatus(errorText(error))}
     })()
     return()=>{cancelled=true}
@@ -1322,9 +1318,9 @@ function TranslationSettingsPage({onOpenAiSettings}:{onOpenAiSettings?:()=>void}
     try{
       const draft=keys[provider.type]??''
       setSettings(await window.origread.updateTranslationProvider({type:provider.type,apiKey:draft}))
-      const saved=await window.origread.getTranslationApiKey(provider.type)
-      setKeys((value)=>({...value,[provider.type]:saved}));setSavedKeys((value)=>({...value,[provider.type]:saved}))
-      setProviderStatus((value)=>({...value,[provider.type]:saved?t('credentialSaved',{count:saved.length}):t('credentialRemoved')}))
+      setKeys((value)=>{const next={...value};delete next[provider.type];return next})
+      setVisibleKeys((value)=>({...value,[provider.type]:false}))
+      setProviderStatus((value)=>({...value,[provider.type]:draft?t('credentialSaved',{count:draft.length}):t('credentialRemoved')}))
     }catch(error){setProviderStatus((value)=>({...value,[provider.type]:`${t('credentialSaveFailed')}: ${errorText(error)}`}))}
   }
   return <><PageIntro icon={<Languages size={22}/>} title={t('translationSettingsTitle')} description={t('translationSettingsDescription')}/>
@@ -1339,10 +1335,10 @@ function TranslationSettingsPage({onOpenAiSettings}:{onOpenAiSettings?:()=>void}
     </SettingsSection>
     <div className="settings-section-title standalone-settings-section-title" data-setting-anchor="translationDefaultTarget" tabIndex={-1}><Languages size={17}/><span>{t('translationDefaultTarget')}</span></div>
     <p className="settings-section-description">{t('translationDefaultTargetDescription')}</p>
-    {desktopProviders.map((provider)=>{const selected=settings.defaultTarget.type==='traditional'&&settings.defaultTarget.provider===provider.type;const dirty=(keys[provider.type]??'')!==(savedKeys[provider.type]??'');const displayName=providerName(provider.type)||provider.type;return <section className="provider-card" key={provider.type}><div className="provider-card-head"><label className="provider-default-radio"><input type="radio" name="translation-default-provider" aria-label={`${t('translationDefaultTarget')}: ${displayName}`} checked={selected} disabled={!provider.enabled} onChange={()=>void update({defaultTarget:{type:'traditional',provider:provider.type}})}/><span/></label><div className="provider-card-title"><strong>{displayName}</strong><span>{t(translationProviderDescriptionKey(provider.type))}</span></div><Toggle ariaLabel={displayName} checked={provider.enabled} onChange={(v)=>void updateProvider(provider,{enabled:v})}/></div><>
+    {desktopProviders.map((provider)=>{const selected=settings.defaultTarget.type==='traditional'&&settings.defaultTarget.provider===provider.type;const dirty=keys[provider.type]!==undefined;const displayName=providerName(provider.type)||provider.type;return <section className="provider-card" key={provider.type}><div className="provider-card-head"><label className="provider-default-radio"><input type="radio" name="translation-default-provider" aria-label={`${t('translationDefaultTarget')}: ${displayName}`} checked={selected} disabled={!provider.enabled} onChange={()=>void update({defaultTarget:{type:'traditional',provider:provider.type}})}/><span/></label><div className="provider-card-title"><strong>{displayName}</strong><span>{t(translationProviderDescriptionKey(provider.type))}</span></div><Toggle ariaLabel={displayName} checked={provider.enabled} onChange={(v)=>void updateProvider(provider,{enabled:v})}/></div><>
       <Field label="Endpoint"><input disabled={!provider.enabled} value={provider.endpoint} onChange={(e)=>setSettings({...settings,providers:settings.providers.map((p)=>p.type===provider.type?{...p,endpoint:e.target.value}:p)})} onBlur={()=>void updateProvider(provider,{endpoint:settings.providers.find((p)=>p.type===provider.type)!.endpoint})}/></Field>
       {provider.type==='MICROSOFT'&&<Field label="Region"><input disabled={!provider.enabled} value={provider.region} onChange={(e)=>setSettings({...settings,providers:settings.providers.map((p)=>p.type===provider.type?{...p,region:e.target.value}:p)})} onBlur={()=>void updateProvider(provider,{region:settings.providers.find((p)=>p.type===provider.type)!.region})}/></Field>}
-      <Field label="API Key"><SecretKeyEditor disabled={!provider.enabled} value={keys[provider.type]??''} savedValue={savedKeys[provider.type]??''} visible={visibleKeys[provider.type]===true} optional={provider.type==='DLX'} onChange={(value)=>setKeys((current)=>({...current,[provider.type]:value}))} onToggle={()=>setVisibleKeys((current)=>({...current,[provider.type]:!current[provider.type]}))} onSave={()=>void saveKey(provider)}/></Field>
+      <Field label="API Key"><div className="secret-key-editor"><input disabled={!provider.enabled} type={visibleKeys[provider.type]?'text':'password'} autoComplete="off" value={keys[provider.type]??''} placeholder={provider.hasApiKey?'••••••••':t('notConfigured')} onChange={(event)=>setKeys((current)=>({...current,[provider.type]:event.target.value}))}/><button type="button" disabled={!dirty} onClick={()=>setVisibleKeys((current)=>({...current,[provider.type]:!current[provider.type]}))}>{t(visibleKeys[provider.type]?'hideCredential':'showCredential')}</button><button type="button" disabled={!provider.enabled||!dirty} onClick={()=>void saveKey(provider)}>{t('saveCredential')}</button>{provider.hasApiKey&&!dirty&&<button type="button" disabled={!provider.enabled} onClick={()=>setKeys((current)=>({...current,[provider.type]:''}))}>{t('removeCredential')}</button>}<small>{t(dirty?'credentialUnsaved':provider.hasApiKey?'credentialConfigured':'credentialNotStored')}</small></div></Field>
       <div className="inline-controls">
         <button className="mini-action" disabled={!provider.enabled||dirty} title={dirty?t('saveCredentialFirst'):undefined} onClick={async()=>{const r=await window.origread.testTranslationProvider(provider.type);setProviderStatus((value)=>({...value,[provider.type]:r.ok?`${t('connectionOk')}: ${r.value}`:r.error??'Error'}))}}>{t('testConnection')}</button>
         {provider.type==='DEEPL'&&<button className="mini-action" disabled={!provider.enabled||dirty||loadingDeepLUsage} title={dirty?t('saveCredentialFirst'):undefined} onClick={async()=>{setLoadingDeepLUsage(true);setDeepLUsageStatus('');try{const usage=await window.origread.getDeepLUsage();setDeepLUsageStatus(t('deepLQuotaValue',{used:usage.characterCount.toLocaleString(),limit:usage.characterLimit.toLocaleString(),remaining:usage.remainingCharacters.toLocaleString(),percent:usage.usagePercent.toFixed(1)}))}catch(error){setDeepLUsageStatus(`${t('deepLQuotaFailed')}: ${errorText(error)}`)}finally{setLoadingDeepLUsage(false)}}}>{loadingDeepLUsage&&<RefreshCw size={13} className="spinning"/>}{t('checkDeepLQuota')}</button>}
@@ -1392,16 +1388,16 @@ function WebsiteRulesSettingsPage():React.JSX.Element{
     </SettingsSection></>
 }
 
-function RuleHeaderActions({kind,onDone,onSaved}:{kind:'json'|'website';onDone:(value:string)=>void;onSaved:()=>void}):React.JSX.Element{
-  const {t,i18n}=useTranslation();const[guide,setGuide]=useState<string|null>(null);const[dialog,setDialog]=useState<'ai'|'test'|null>(null);const[url,setUrl]=useState('');const[busy,setBusy]=useState(false);const[preview,setPreview]=useState<AiGeneratedRulePreview|null>(null);const[error,setError]=useState('');const[aiSettings,setAiSettings]=useState<AiSettings|null>(null);const[selectedProviderId,setSelectedProviderId]=useState('');const[selectedModel,setSelectedModel]=useState('');const[requestId,setRequestId]=useState('');const[progress,setProgress]=useState<AiRuleGenerationProgress|null>(null);const[showJson,setShowJson]=useState(false);const[copied,setCopied]=useState(false)
+export function RuleHeaderActions({kind,onDone,onSaved}:{kind:'json'|'website';onDone:(value:string)=>void;onSaved:()=>void}):React.JSX.Element{
+  const {t,i18n}=useTranslation();const[guide,setGuide]=useState<string|null>(null);const[dialog,setDialog]=useState<'ai'|'test'|null>(null);const[url,setUrl]=useState('');const[busy,setBusy]=useState(false);const[preview,setPreview]=useState<AiGeneratedRulePreview|null>(null);const[error,setError]=useState('');const[aiSettings,setAiSettings]=useState<AiSettings|null>(null);const[selectedProviderId,setSelectedProviderId]=useState('');const[selectedModel,setSelectedModel]=useState('');const requestId=useRef('');const[progress,setProgress]=useState<AiRuleGenerationProgress|null>(null);const[showJson,setShowJson]=useState(false);const[copied,setCopied]=useState(false)
   const language:'zh'|'en'=i18n.resolvedLanguage?.startsWith('zh')?'zh':'en'
   const enabledProviders=aiSettings?.providers.filter((provider)=>provider.enabled)??[]
   const selectedProvider=enabledProviders.find((provider)=>provider.id===selectedProviderId)??enabledProviders[0]??null
   const showGuide=async()=>{try{setGuide(await window.origread.getRuleGuide(kind,language))}catch(e){onDone(errorText(e))}}
   const exportTemplate=async()=>{const r=await window.origread.exportRuleTemplateFile(kind);if(!r.cancelled)onDone(r.ok?t('ruleTemplateExported'):r.error??'Error')}
-  const openAiDialog=async()=>{setDialog('ai');setUrl('');setError('');setProgress(null);setPreview(null);setShowJson(false);setCopied(false);try{const loaded=await window.origread.getAiSettings();const providers=loaded.providers.filter((provider)=>provider.enabled);const provider=providers.find((item)=>item.id===loaded.defaultProviderId)??providers[0];setAiSettings(loaded);setSelectedProviderId(provider?.id??'');setSelectedModel(provider?.defaultModel??provider?.models[0]??'')}catch(e){setError(errorText(e))}}
-  useEffect(()=>window.origread.onAiRuleProgress((value)=>{if(value.requestId===requestId)setProgress(value)}),[requestId])
-  const runDialog=async()=>{if(!url.trim()||!dialog)return;setBusy(true);setError('');try{if(dialog==='test'){const r=await window.origread.testWebsiteRule(url);if(r.ok){onDone(t('websiteRuleTestSuccess',{count:r.articleCount}));setDialog(null);setUrl('')}else setError(t('websiteRuleTestFailed',{error:r.error??''}))}else{const id=globalThis.crypto.randomUUID();setRequestId(id);setProgress({requestId:id,stage:'PREPARING',attempt:1,detail:null,at:Date.now()});setPreview(await window.origread.generateAiRule(kind==='website'?'WEBSITE':'JSON',url,{providerId:selectedProvider?.id,model:selectedModel.trim()||undefined,requestId:id}));setDialog(null)}}catch(e){setProgress((current)=>current?.requestId===requestId?{...current,stage:'FAILED',detail:errorText(e)}:current);setError(errorText(e))}finally{setBusy(false)}}
+  const openAiDialog=async()=>{requestId.current='';setDialog('ai');setUrl('');setError('');setProgress(null);setPreview(null);setShowJson(false);setCopied(false);try{const loaded=await window.origread.getAiSettings();const providers=loaded.providers.filter((provider)=>provider.enabled);const provider=providers.find((item)=>item.id===loaded.defaultProviderId)??providers[0];setAiSettings(loaded);setSelectedProviderId(provider?.id??'');setSelectedModel(provider?.defaultModel??provider?.models[0]??'')}catch(e){setError(errorText(e))}}
+  useEffect(()=>window.origread.onAiRuleProgress((value)=>{if(value.requestId===requestId.current)setProgress(value)}),[])
+  const runDialog=async()=>{if(!url.trim()||!dialog)return;setBusy(true);setError('');try{if(dialog==='test'){const r=await window.origread.testWebsiteRule(url);if(r.ok){onDone(t('websiteRuleTestSuccess',{count:r.articleCount}));setDialog(null);setUrl('')}else setError(t('websiteRuleTestFailed',{error:r.error??''}))}else{const id=globalThis.crypto.randomUUID();requestId.current=id;setProgress({requestId:id,stage:'PREPARING',attempt:1,detail:null,at:Date.now()});setPreview(await window.origread.generateAiRule(kind==='website'?'WEBSITE':'JSON',url,{providerId:selectedProvider?.id,model:selectedModel.trim()||undefined,requestId:id}));setDialog(null)}}catch(e){const failedId=requestId.current;setProgress((current)=>current?.requestId===failedId?{...current,stage:'FAILED',detail:errorText(e)}:current);setError(errorText(e))}finally{requestId.current='';setBusy(false)}}
   const savePreview=async()=>{if(!preview)return;setBusy(true);setError('');try{await window.origread.saveAiGeneratedRule(preview.previewId);setPreview(null);setUrl('');onDone(t('aiRuleSaved'));onSaved()}catch(e){setError(errorText(e))}finally{setBusy(false)}}
   const copyJson=async()=>{if(!preview)return;try{await navigator.clipboard.writeText(preview.ruleJson);setCopied(true);window.setTimeout(()=>setCopied(false),1600)}catch(e){setError(errorText(e))}}
   return <>
@@ -1479,15 +1475,15 @@ function RssHubSettingsPage():React.JSX.Element{
     <SettingsSection icon={<Plus size={17}/>} searchId="rssHubAddInstance" title={t('rssHubAddInstance')}><div className="rsshub-add-row"><label><span>{t('rssHubInstanceUrl')}</span><input disabled={!settings.enabled} value={url} onChange={(e)=>setUrl(e.target.value)} placeholder="https://rsshub.example.com"/><small>{t('rssHubInstanceDescription')}</small></label><button className="mini-action" disabled={!settings.enabled||!url.trim()||testing!==null} onClick={()=>void test(url,true)}>{testing!==null?t('working'):t('rssHubSaveAndTest')}</button></div><button className="mini-action secondary rsshub-restore" onClick={async()=>{setSettings(await window.origread.restoreDefaultRssHubSettings());setResults({});setUrl('');setStatus(t('restoreDefaultsDone'))}}><RotateCcw size={13}/>{t('restoreDefaults')}</button></SettingsSection>{status&&<StatusText text={status}/>}</>
 }
 
-function BackupSettingsPage({onRestored}:{onRestored?:()=>void}):React.JSX.Element{
+export function BackupSettingsPage({onRestored}:{onRestored?:()=>void}):React.JSX.Element{
   const {t}=useTranslation();const[includeSecrets,setIncludeSecrets]=useState(false);const[password,setPassword]=useState('');const[status,setStatus]=useState('');const[busy,setBusy]=useState(false)
   return <><PageIntro icon={<DatabaseBackup size={22}/>} title={t('backupRestore')} description={t('backupRestoreDescription')}/>
     <SettingsSection icon={<DatabaseBackup size={17}/>} title={t('backupScopeTitle')}>
       <div className="settings-banner"><strong>{t('backupScopeTitle')}</strong><span>{t('backupScopeDescription')}</span></div>
       <SettingRow searchId="backupIncludeSecrets" title={t('backupIncludeSecrets')} description={t('backupIncludeSecretsDescription')}><Toggle ariaLabel={t('backupIncludeSecrets')} checked={includeSecrets} onChange={(value)=>{setIncludeSecrets(value);if(!value)setPassword('')}}/></SettingRow>
       {includeSecrets&&<SettingRow title={t('backupPassword')} description={t('backupPasswordDescription')}><input aria-label={t('backupPassword')} type="password" value={password} onChange={(e)=>setPassword(e.target.value)}/></SettingRow>}
-      <SettingsActionRow icon={<Download size={16}/>} searchId="exportBackup" title={t('exportBackup')} description={t('exportBackupDescription')} disabled={busy||(includeSecrets&&password.length<6)} onClick={async()=>{setBusy(true);const r=await window.origread.exportConfigurationBackup(includeSecrets?password:'');setBusy(false);if(!r.cancelled)setStatus(r.ok?`${t('backupSaved')}: ${r.path}`:r.error??'Error')}}/>
-      <SettingsActionRow icon={<Upload size={16}/>} searchId="restoreBackup" title={t('restoreBackup')} description={t('restoreBackupDescription')} disabled={busy} onClick={async()=>{setBusy(true);const r=await window.origread.restoreConfigurationBackup(password);setBusy(false);if(!r.cancelled){setStatus(r.ok?t('restoreSuccess',{feeds:r.restoreResult?.feedsAdded??0,updated:r.restoreResult?.feedsUpdated??0}):r.error??'Error');if(r.ok)onRestored?.()}}}/>
+      <SettingsActionRow icon={<Download size={16}/>} searchId="exportBackup" title={t('exportBackup')} description={t('exportBackupDescription')} disabled={busy||(includeSecrets&&password.length<6)} onClick={async()=>{setBusy(true);try{const r=await window.origread.exportConfigurationBackup(includeSecrets?password:'');if(!r.cancelled)setStatus(r.ok?`${t('backupSaved')}: ${r.path}`:r.error??'Error')}catch(error){setStatus(errorText(error))}finally{setBusy(false)}}}/>
+      <SettingsActionRow icon={<Upload size={16}/>} searchId="restoreBackup" title={t('restoreBackup')} description={t('restoreBackupDescription')} disabled={busy} onClick={async()=>{setBusy(true);try{const r=await window.origread.restoreConfigurationBackup(password);if(!r.cancelled){setStatus(r.ok?t('restoreSuccess',{feeds:r.restoreResult?.feedsAdded??0,updated:r.restoreResult?.feedsUpdated??0}):r.error??'Error');if(r.ok)onRestored?.()}}catch(error){setStatus(errorText(error))}finally{setBusy(false)}}}/>
     </SettingsSection>{status&&<StatusText text={status}/>}</>
 }
 
@@ -1529,7 +1525,7 @@ function RuleModal({title,description,wide=false,onClose,children}:{title:string
     </section>
   </div>
 }
-function MarkdownContent({text}:{text:string}){
+export function MarkdownContent({text}:{text:string}){
   const lines=text.replace(/\r\n/g,'\n').split('\n');const blocks:React.ReactNode[]=[];let index=0
   while(index<lines.length){
     const line=lines[index]??''
@@ -1552,7 +1548,7 @@ function MarkdownContent({text}:{text:string}){
 }
 function parseMarkdownTableRow(value:string):string[]|null{const line=value.trim();if(!line.includes('|'))return null;const cells=line.replace(/^\|/,'').replace(/\|$/,'').split('|').map((cell)=>cell.trim());return cells.length>=2&&cells.some(Boolean)?cells:null}
 function isMarkdownTableSeparator(cells:string[]):boolean{return cells.length>=2&&cells.every((cell)=>/^:?-{3,}:?$/.test(cell.replace(/\s/g,'')))}
-function renderMarkdownInline(value:string):React.ReactNode[]{const tokens=/(\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\[[^\]]+\]\((?:https?:\/\/|mailto:)[^)]+\))/g;const parts=value.split(tokens);return parts.map((part,index)=>{if(!part)return null;if((part.startsWith('**')&&part.endsWith('**'))||(part.startsWith('__')&&part.endsWith('__')))return <strong key={index}>{part.slice(2,-2)}</strong>;if(part.startsWith('`')&&part.endsWith('`'))return <code key={index}>{part.slice(1,-1)}</code>;const link=part.match(/^\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^)]+)\)$/);if(link)return <a key={index} href={link[2]} target="_blank" rel="noreferrer">{link[1]}</a>;return <span key={index}>{part}</span>})}
+function renderMarkdownInline(value:string):React.ReactNode[]{const tokens=/(\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\[[^\]]+\]\((?:https?:\/\/)[^)]+\))/g;const parts=value.split(tokens);return parts.map((part,index)=>{if(!part)return null;if((part.startsWith('**')&&part.endsWith('**'))||(part.startsWith('__')&&part.endsWith('__')))return <strong key={index}>{part.slice(2,-2)}</strong>;if(part.startsWith('`')&&part.endsWith('`'))return <code key={index}>{part.slice(1,-1)}</code>;const link=part.match(/^\[([^\]]+)\]\(((?:https?:\/\/)[^)]+)\)$/);if(link)return <a key={index} href={link[2]} target="_blank" rel="noreferrer" onClick={(event)=>{event.preventDefault();void window.origread.openExternalUrl(link[2]!).catch((error)=>console.error('Failed to open settings link',error))}}>{link[1]}</a>;return <span key={index}>{part}</span>})}
 function GuideMarkdown({text}:{text:string}){return <MarkdownContent text={text}/>}
 function Toggle({checked,onChange,disabled=false,ariaLabel}:{checked:boolean;onChange:(value:boolean)=>void;disabled?:boolean;ariaLabel:string}){return <label className="setting-switch"><input type="checkbox" aria-label={ariaLabel} checked={checked} disabled={disabled} onChange={(e)=>onChange(e.target.checked)}/><span/></label>}
 function StatusText({text}:{text:string}){return <div className="settings-status">{text}</div>}

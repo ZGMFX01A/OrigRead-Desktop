@@ -1,5 +1,5 @@
 import { isDesktopLanguage } from '../../shared/locale'
-import { createDecipheriv, pbkdf2Sync, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import type { AiSettingsRepository } from '../ai/ai-settings-repository'
 import type { LibraryRepository } from '../database/library-repository'
@@ -62,7 +62,7 @@ export class ConfigurationBackupService {
     private readonly secretStore?:SecretStore
   ){}
 
-  exportBackup(password=''):string{
+  async exportBackup(password=''):Promise<string>{
     const groups=this.library.listGroups(),feeds=this.library.listFeeds(),settings=this.desktopSettings.current(),translation=this.translation.current(),ai=this.ai.current(),account=this.accounts?.current()
     const isLocalAccount = !account || account.type === 'local'
     const hasNestedGroups = groups.some((group) => Boolean(group.parentId))
@@ -108,7 +108,7 @@ export class ConfigurationBackupService {
       ...(this.webSearch?{webSearch:this.webSearch.exportStoredSettings()}:{}),
       ...(this.mcpRemote&&this.mcpLocal?{mcp:{remote:this.mcpRemote.exportBackupState(),local:this.mcpLocal.exportBackupState()}}:{}),
       ...(editionConfiguration ? { editionConfiguration } : {}),
-      encryptedSecrets:includeSecrets&&hasSecrets?encryptConfigurationSecrets(secrets,password):null
+      encryptedSecrets:includeSecrets&&hasSecrets?await encryptConfigurationSecrets(secrets,password):null
     }
     if (desktopGroupHierarchy) {
       validateDesktopGroupHierarchyBackup(desktopGroupHierarchy, backup.subscriptions.groups, { isLocalAccount })
@@ -119,9 +119,11 @@ export class ConfigurationBackupService {
 
   inspect(content:string):{sourceVersion:string;createdAtEpochMillis:number;feeds:number;groups:number;hasEncryptedSecrets:boolean}{const backup=this.decodeAndValidate(content);return{sourceVersion:backup.sourceVersion,createdAtEpochMillis:backup.createdAtEpochMillis,feeds:backup.subscriptions.feeds.length,groups:backup.subscriptions.groups.length,hasEncryptedSecrets:Boolean(backup.encryptedSecrets)}}
 
-  restoreBackup(content:string,password=''):ConfigurationRestoreResult{
+  async restoreBackup(content:string,password=''):Promise<ConfigurationRestoreResult>{
     const backup=this.decodeAndValidate(content)
-    const secrets=backup.encryptedSecrets?decryptSecretsWithEdition(backup.encryptedSecrets,password):null
+    const accountId=this.library.getCurrentAccountId()
+    const secrets=backup.encryptedSecrets?await decryptConfigurationSecrets(backup.encryptedSecrets,password):null
+    if(this.library.getCurrentAccountId()!==accountId)throw new Error('账户已切换，请重新导入备份')
     validateWebSearchSecretReferences(backup.webSearch,secrets?.webSearchApiKeys)
     this.validateMcpBackup(backup.mcp,secrets??undefined)
     this.validateEditionBackup(backup.editionConfiguration,secrets?.editionSecrets)
@@ -792,18 +794,5 @@ function exportEditionSecrets(secrets:ConfigurationBackupSecrets,remote?:McpBack
     }
   }
   return {webSearchApiKeys:secrets.webSearchApiKeys??{},mcpServers:servers}
-}
-
-function decryptSecretsWithEdition(value:NonNullable<ConfigurationBackup['encryptedSecrets']>,password:string):ConfigurationBackupSecrets{
-  const secrets=decryptConfigurationSecrets(value,password)
-  // The legacy crypto decoder allowlists Desktop fields. Read the authenticated extension
-  // here as well, keeping the v1 encryption format and its parameter validation unchanged.
-  const payload=Buffer.from(value.ciphertextBase64,'base64')
-  const key=pbkdf2Sync(password,Buffer.from(value.saltBase64,'base64'),value.iterations,32,'sha256')
-  const decipher=createDecipheriv('aes-256-gcm',key,Buffer.from(value.ivBase64,'base64'))
-  decipher.setAAD(Buffer.from('OrigReadConfigurationBackup:v1','utf8'))
-  decipher.setAuthTag(payload.subarray(-16))
-  const decoded=JSON.parse(Buffer.concat([decipher.update(payload.subarray(0,-16)),decipher.final()]).toString('utf8')) as ConfigurationBackupSecrets
-  return {...secrets,...(decoded.editionSecrets===undefined?{}:{editionSecrets:decoded.editionSecrets})}
 }
 

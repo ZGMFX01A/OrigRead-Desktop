@@ -46,6 +46,11 @@ const child = spawn(command, args, {
 let shuttingDown = false
 let parentWatch = null
 
+// Native pipe handles pause/resume and drain; any broken endpoint ends ownership.
+for (const stream of [process.stdin, process.stdout, process.stderr, child.stdin, child.stdout, child.stderr]) {
+  stream.on('error', () => shutdown(1))
+}
+
 process.stdin.pipe(child.stdin)
 child.stdout.pipe(process.stdout)
 child.stderr.pipe(process.stderr)
@@ -56,16 +61,15 @@ child.on('error', (error) => {
 })
 
 child.on('exit', (code, signal) => {
-  if (shuttingDown) return
-  shuttingDown = true
-  stopParentWatch()
-  process.exit(typeof code === 'number' ? code : signal ? 1 : 0)
+  // Descendants may outlive their leader and keep inherited pipes open.
+  shutdown(typeof code === 'number' ? code : signal ? 1 : 0)
 })
 
 // Losing the Main-owned control pipe means nobody can consume MCP output or
 // issue further requests. Reap the whole server tree instead of leaving a
 // half-detached process behind.
 process.stdin.on('end', () => shutdown(0))
+process.stdin.on('close', () => shutdown(0))
 
 for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
   process.on(signal, () => shutdown(0))
@@ -83,12 +87,11 @@ function shutdown(exitCode) {
   try { process.stdin.unpipe(child.stdin) } catch (error) { reportCleanupError(error) }
   try { child.stdin.end() } catch (error) { reportCleanupError(error) }
   terminateProcessTree(child.pid)
-  const timer = setTimeout(() => {
+  setTimeout(() => {
     terminateProcessTree(child.pid, true)
     process.exit(exitCode)
   }, 800)
-  timer.unref()
-  child.once('exit', () => process.exit(exitCode))
+  // Keep the guardian alive until the force pass has reaped resistant descendants.
 }
 
 function stopParentWatch() {
@@ -138,5 +141,5 @@ function resolveWindowsTaskkillPath() {
 
 function reportCleanupError(error) {
   if (error && error.code === 'ESRCH') return
-  process.stderr.write(`OrigRead MCP guardian cleanup failed: ${String(error)}\n`)
+  if (!process.stderr.destroyed && !process.stderr.writableEnded) process.stderr.write(`OrigRead MCP guardian cleanup failed: ${String(error)}\n`)
 }

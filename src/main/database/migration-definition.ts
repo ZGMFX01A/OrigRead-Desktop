@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export const CURRENT_SCHEMA_VERSION = 16
+export const CURRENT_SCHEMA_VERSION = 17
 export const DEFAULT_LOCAL_ACCOUNT_ID = 1
 export const CURRENT_ACCOUNT_SETTING_KEY = 'account.current_id'
 

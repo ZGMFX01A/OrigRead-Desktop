@@ -21,7 +21,7 @@ describe('Remote MCP OAuth integration', () => {
     const secrets = new MemorySecretStore()
     const repository = new McpRemoteRepository(database, secrets)
     const server = repository.addServer().servers[0]!
-    repository.updateServer({ id: server.id, url: fixture.mcpUrl, enabled: true, authMode: 'OAUTH' })
+    repository.updateServer({ id: server.id, url: fixture.mcpUrl, enabled: true, authMode: 'OAUTH', oauthScopes: 'tools.read' })
     const openedAuthorizationUrls: string[] = []
     const manager = new McpRemoteClientManager(
       repository,
@@ -45,6 +45,7 @@ describe('Remote MCP OAuth integration', () => {
     try {
       const authorized = await manager.authorize(server.id)
       expect(authorized).toMatchObject({ status: 'CONNECTED', protocolEra: 'LEGACY', protocolVersion: '2025-11-25' })
+      expect(new URL(openedAuthorizationUrls[0]!).searchParams.get('scope')).toBe('tools.read')
       expect(openedAuthorizationUrls).toHaveLength(1)
       expect(repository.current().servers[0]!.oauthAuthorized).toBe(true)
       expect(fixture.authorizationCodeExchanges).toBe(1)
@@ -52,7 +53,8 @@ describe('Remote MCP OAuth integration', () => {
       expect(await manager.listTools(server.id)).toEqual({ tools: expect.arrayContaining([expect.objectContaining({ name: 'read_article' })]) })
 
       fixture.requireAccessToken('access-2')
-      const refreshedTools = await manager.listTools(server.id)
+      const [refreshedTools, concurrentTools] = await Promise.all([manager.listTools(server.id), manager.listTools(server.id)])
+      expect(concurrentTools.tools).toHaveLength(1)
       expect(refreshedTools.tools).toHaveLength(1)
       expect(fixture.refreshExchanges).toBe(1)
       expect(openedAuthorizationUrls).toHaveLength(1)
@@ -90,7 +92,7 @@ async function startOAuthMcpFixture(): Promise<{
     try {
       const url = new URL(request.url ?? '/', origin || 'http://127.0.0.1')
       if (request.method === 'GET' && url.pathname.startsWith('/.well-known/oauth-protected-resource')) {
-        respondJson(response, { resource: `${origin}/mcp`, authorization_servers: [origin] })
+        respondJson(response, { resource: `${origin}/mcp`, authorization_servers: [origin], scopes_supported: ['tools.read', 'tools.write', 'admin'] })
         return
       }
       if (request.method === 'GET' && (url.pathname === '/.well-known/oauth-authorization-server' || url.pathname === '/.well-known/openid-configuration')) {
@@ -125,9 +127,9 @@ async function startOAuthMcpFixture(): Promise<{
           respondJson(response, { access_token: 'access-1', token_type: 'Bearer', refresh_token: 'refresh-1', expires_in: 3600 })
           return
         }
-        if (form.get('grant_type') === 'refresh_token' && form.get('refresh_token') === 'refresh-1') {
+        if (form.get('grant_type') === 'refresh_token' && form.get('refresh_token') === 'refresh-1' && refreshExchanges === 0) {
           refreshExchanges += 1
-          respondJson(response, { access_token: 'access-2', token_type: 'Bearer', refresh_token: 'refresh-1', expires_in: 3600 })
+          respondJson(response, { access_token: 'access-2', token_type: 'Bearer', refresh_token: 'refresh-2', expires_in: 3600 })
           return
         }
         respondJson(response, { error: 'invalid_grant' }, 400)

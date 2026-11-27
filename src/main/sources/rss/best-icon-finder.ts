@@ -10,7 +10,7 @@ export interface IconFetchPayload {
   bytes: Uint8Array
 }
 
-export type IconFetcher = (url: string) => Promise<IconFetchPayload>
+export type IconFetcher = (url: string, signal?: AbortSignal) => Promise<IconFetchPayload>
 
 type IconFormat = 'apple-touch-icon' | 'svg' | 'png' | 'ico' | 'gif' | 'jpg'
 
@@ -35,7 +35,7 @@ const FORMAT_PRIORITY: Record<IconFormat, number> = {
 }
 
 export interface RssIconFinder {
-  findBestIcon(siteUrl: string): Promise<string | null>
+  findBestIcon(siteUrl: string, signal?: AbortSignal): Promise<string | null>
 }
 
 /**
@@ -43,17 +43,20 @@ export interface RssIconFinder {
  * apple-touch-icon > SVG > PNG > ICO > GIF > JPG；同格式优先字节更大的候选。
  */
 export class BestIconFinder implements RssIconFinder {
-  constructor(private readonly fetcher: IconFetcher = fetchIconPayload) {}
+  constructor(private readonly fetcher: IconFetcher = (url, signal) => fetchIconPayload(url, {}, signal)) {}
 
-  async findBestIcon(siteUrl: string): Promise<string | null> {
+  async findBestIcon(siteUrl: string, signal?: AbortSignal): Promise<string | null> {
+    signal?.throwIfAborted()
     const normalized = normalizeSiteUrl(siteUrl)
     let iconLinks: IconLink[]
     try {
-      const page = await this.fetcher(normalized)
+      const page = await this.fetcher(normalized, signal)
       iconLinks = findIconLinks(decodePayload(page), page.finalUrl || normalized)
       const fallback = new URL('/favicon.ico', normalized).toString()
       if (!iconLinks.some((item) => item.url === fallback)) iconLinks.push({ url: fallback })
-    } catch {
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason
+      if (error instanceof Error && error.name === 'AbortError') throw error
       const origin = new URL(normalized).origin
       iconLinks = [
         { url: `${origin}/apple-touch-icon.png`, forcedFormat: 'apple-touch-icon' },
@@ -64,16 +67,20 @@ export class BestIconFinder implements RssIconFinder {
 
     const candidates: IconCandidate[] = []
     for (const link of distinctLinks(iconLinks)) {
+      signal?.throwIfAborted()
       try {
-        const response = await this.fetcher(link.url)
+        const response = await this.fetcher(link.url, signal)
         const format = link.forcedFormat ?? detectFormat(link.url, response.contentType)
         if (!format) continue
         candidates.push({ url: link.url, format, size: response.bytes.byteLength })
-      } catch {
+      } catch (error) {
+        if (signal?.aborted) throw signal.reason
+        if (error instanceof Error && error.name === 'AbortError') throw error
         // Android 会忽略单个图标候选失败，继续比较剩余项。
       }
     }
 
+    signal?.throwIfAborted()
     return candidates
       .sort((left, right) => FORMAT_PRIORITY[left.format] - FORMAT_PRIORITY[right.format] || right.size - left.size)[0]
       ?.url ?? null
@@ -143,10 +150,12 @@ function distinctLinks(values: IconLink[]): IconLink[] {
   })
 }
 
-export async function fetchIconPayload(url: string, safeFetchOptions: SafeFetchOptions = {}): Promise<IconFetchPayload> {
+export async function fetchIconPayload(url: string, safeFetchOptions: SafeFetchOptions = {}, signal?: AbortSignal): Promise<IconFetchPayload> {
+  const combinedSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000)
+  combinedSignal.throwIfAborted()
   const response = await safeFetch(url, {
     redirect: 'follow',
-    signal: AbortSignal.timeout(20_000),
+    signal: combinedSignal,
     headers: {
       'user-agent': DESKTOP_BROWSER_USER_AGENT,
       Accept: 'text/html,image/avif,image/webp,image/svg+xml,image/png,image/*,*/*;q=0.8'
@@ -156,6 +165,6 @@ export async function fetchIconPayload(url: string, safeFetchOptions: SafeFetchO
   return {
     finalUrl: response.url || url,
     contentType: response.headers.get('content-type'),
-    bytes: await readResponseBytes(response, MAX_ICON_RESPONSE_BYTES)
+    bytes: await readResponseBytes(response, MAX_ICON_RESPONSE_BYTES, combinedSignal)
   }
 }

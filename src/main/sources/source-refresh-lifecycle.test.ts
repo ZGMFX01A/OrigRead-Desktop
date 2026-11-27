@@ -5,7 +5,7 @@ import { RssDiscoveryService } from './rss/rss-discovery-service'
 import { RssSubscriptionService } from './rss/rss-subscription-service'
 import { WebsiteSubscriptionService } from './website/website-subscription-service'
 import type { WebsiteSourceService } from './website/website-source-service'
-import { rssDiscovery, rssPayload, rssXml, withLibrary } from './subscription-regression-support'
+import { rssDiscovery, rssPayload, rssXml, withLibrary } from '../../../tests/helpers/subscription-regression-support'
 
 const XML = rssXml([{ guid: 'one', title: 'Article one', link: 'https://example.com/one' }])
 type Kind = 'rss' | 'website'

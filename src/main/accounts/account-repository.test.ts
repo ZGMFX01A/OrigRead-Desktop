@@ -110,3 +110,14 @@ function article(id:string,accountId:number,feedId:string) {
   const now=1_786_000_000_000
   return { id,accountId,feedId,title:id,url:`https://example.com/${id}`,author:null,publishedAt:now,description:'',contentHtml:'<p>x</p>',fullContentHtml:null,imageUrl:null,isUnread:true,isStarred:false,createdAt:now,updatedAt:now }
 }
+
+
+it.each(['{broken', '{}', '[1]'])('preserves and rejects corrupt sync_block_list %s', value => {
+  const database = new DesktopDatabase(':memory:')
+  try {
+    database.connection.prepare('UPDATE accounts SET sync_block_list=? WHERE id=1').run(value)
+    const accounts = new AccountRepository(database.connection, new MemorySecretStore())
+    expect(() => accounts.get(1)).toThrow()
+    expect(database.connection.prepare('SELECT sync_block_list FROM accounts WHERE id=1').get()).toEqual({sync_block_list:value})
+  } finally { database.close() }
+})

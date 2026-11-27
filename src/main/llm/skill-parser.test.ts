@@ -52,3 +52,17 @@ Read references/GUIDE.md before reviewing claims.
     expect(left).toMatch(/^[a-f0-9]{64}$/)
   })
 })
+
+
+describe('YAML scalar and indentation boundaries', () => {
+  it('decodes double quoted escapes exactly once and preserves single quoted backslashes', () => {
+    const parse = (description: string) => parseLlmSkillMarkdown(`---\nname: demo\ndescription: ${description}\n---\nWork.`).description
+    expect(parse(String.raw`"literal \\n and newline \n end"`)).toBe('literal \\n and newline \n end')
+    expect(parse(String.raw`'literal \n and it''s fine'`)).toBe(String.raw`literal \n and it's fine`)
+  })
+  it('does not promote nested keys into top level or metadata triggers', () => {
+    const parsed = parseLlmSkillMarkdown('---\nname: good\ndescription: Good skill\nextra:\n  name: evil\nmetadata:\n  nested:\n    origread-triggers: everything\n---\nWork.')
+    expect(parsed.name).toBe('good')
+    expect(parsed.metadata['origread-triggers']).toBeUndefined()
+  })
+})

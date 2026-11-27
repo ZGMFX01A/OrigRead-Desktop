@@ -37,7 +37,7 @@ export function matchLlmSkill(userInput: string, skills: readonly LlmSkillRecord
   for (const skill of skills) {
     if (!skill.enabled) continue
     for (const term of activationTerms(skill)) {
-      if (!normalizedInput.includes(term.value)) continue
+      if (!matchesTerm(normalizedInput, term.value)) continue
       matches.push({
         skill,
         trigger: term.value,
@@ -57,12 +57,12 @@ function activationTerms(skill: LlmSkillRecord): ActivationTerm[] {
   const terms = new Map<string, number>()
   const add = (raw: string, weight: number): void => {
     const normalized = raw.trim().replace(/^["'“”‘’]+|["'“”‘’]+$/g, '').toLowerCase()
-    if (normalized.length < 2) return
+    if (normalized.length < 2 || DESCRIPTION_STOP_WORDS.has(normalized)) return
     terms.set(normalized, Math.max(terms.get(normalized) ?? 0, weight))
   }
 
   skill.metadata[TRIGGERS_METADATA_KEY]
-    ?.split(/[,;|\n]/)
+    ?.split(/[,;|\n]/).slice(0, 32)
     .forEach((value) => add(value, EXPLICIT_TRIGGER_WEIGHT))
 
   for (const match of skill.description.matchAll(DOUBLE_QUOTED_TRIGGER)) add(match[1] ?? '', QUOTED_TRIGGER_WEIGHT)
@@ -79,8 +79,8 @@ function activationTerms(skill: LlmSkillRecord): ActivationTerm[] {
 }
 
 const TRIGGERS_METADATA_KEY = 'origread-triggers'
-const EXPLICIT_TRIGGER_WEIGHT = 10_000
-const QUOTED_TRIGGER_WEIGHT = 8_000
+const EXPLICIT_TRIGGER_WEIGHT = 3_000
+const QUOTED_TRIGGER_WEIGHT = 2_000
 const ID_TRIGGER_WEIGHT = 6_000
 const ID_PART_TRIGGER_WEIGHT = 5_000
 const DESCRIPTION_WORD_WEIGHT = 1_000
@@ -88,7 +88,16 @@ const DOUBLE_QUOTED_TRIGGER = /["“]([^"”]{2,80})["”]/gu
 const SINGLE_QUOTED_TRIGGER = /['‘]([^'’]{2,80})['’]/gu
 const DESCRIPTION_WORD = /[\p{L}\p{N}][\p{L}\p{N}+#._-]{2,}/gu
 const DESCRIPTION_STOP_WORDS = new Set([
+  '帮我', '请问', '你好', '这个', '那个', '什么', '怎么', '如何', '问题', '分析', '文章', '内容', '一下', '可以', '需要', '使用', '用户', '进行',
   'about', 'answer', 'answering', 'asks', 'asking', 'description', 'from', 'help', 'helps',
   'into', 'mention', 'mentions', 'request', 'requests', 'skill', 'skills', 'task', 'tasks',
   'that', 'this', 'user', 'users', 'when', 'with', 'your', 'article', 'articles'
 ])
+
+
+function matchesTerm(input: string, term: string): boolean {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const start = /^[a-z0-9_]/i.test(term) ? '(?<![a-z0-9_])' : ''
+  const end = /[a-z0-9_]$/i.test(term) ? '(?![a-z0-9_])' : ''
+  return new RegExp(`${start}${escaped}${end}`, 'u').test(input)
+}

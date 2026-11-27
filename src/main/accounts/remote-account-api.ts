@@ -43,7 +43,7 @@ export class GoogleReaderApi {
   clearAuthorization():void { this.loginToken=null;this.actionToken=null }
 
   async validCredentials():Promise<boolean>{
-    try{await this.authenticate();return true}catch{return false}
+    try{await this.authenticate();return true}catch(error){if(error instanceof GoogleReaderHttpError && [401,403].includes(error.status))return false;throw error}
   }
 
   async authenticate():Promise<void>{
@@ -77,7 +77,7 @@ export class GoogleReaderApi {
     })
     const text=await response.text()
     if(response.status===400)throw new Error('BadRequest for CL Token')
-    if(response.status===401)throw new Error('Unauthorized for CL Token')
+    if(response.status===401)throw new GoogleReaderHttpError(401,'Unauthorized for CL Token')
     if(!response.ok)throw new GoogleReaderHttpError(response.status,text||`HTTP ${response.status}`)
     let token:string|undefined
     try{token=(JSON.parse(text) as {Auth?:string}).Auth}catch{token=undefined}
@@ -186,7 +186,7 @@ export class FeverApi {
   constructor(private readonly serverUrl:string,username:string,password:string,private readonly fetcher:AccountFetch=fetch){
     this.apiKey=createHash('md5').update(`${username}:${password}`).digest('hex')
   }
-  async validCredentials():Promise<boolean>{try{const value=await this.request<{auth?:number}>(null);return (value.auth??0)>0}catch{return false}}
+  async validCredentials():Promise<boolean>{try{const value=await this.request<{auth?:number}>(null);return (value.auth??0)>0}catch(error){if(error instanceof GoogleReaderHttpError && [401,403].includes(error.status))return false;throw error}}
   getGroups(){return this.authed<{groups?:FeverGroup[];feeds_groups?:FeverFeedsGroups[]}>('groups')}
   getFeeds(){return this.authed<{feeds?:FeverFeed[];feeds_groups?:FeverFeedsGroups[]}>('feeds')}
   getFavicons(){return this.authed<{favicons?:Array<{id:number;data?:string}>}>('favicons')}
@@ -202,8 +202,7 @@ export class FeverApi {
     const url=`${this.serverUrl}${separator}api=${query?`&${query}`:''}`
     const form=new URLSearchParams({api_key:this.apiKey})
     const response=await this.fetcher(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:form,signal:AbortSignal.timeout(30_000)})
-    if(response.status===401)throw new Error('Unauthorized')
-    if(!response.ok)throw new Error('Forbidden')
+    if(!response.ok)throw new GoogleReaderHttpError(response.status,`HTTP ${response.status}`)
     const text=await response.text()
     try{const parsed:unknown=JSON.parse(text);if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('Expected JSON object');return parsed as T}catch{throw new Error('Unable to parse response')}
   }

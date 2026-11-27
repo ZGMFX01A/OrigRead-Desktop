@@ -19,7 +19,8 @@ const migrations: Migration[] = [
   ...annotationsMigrations,
   subscriptionMigration,
   readingHistoryMigration,
-  groupHierarchyMigration
+  groupHierarchyMigration,
+  { version: 17, up(database) { database.exec('DROP INDEX IF EXISTS articles_account_id_idx') } }
 ]
 
 export function applyMigrations(database: DatabaseSync): number {

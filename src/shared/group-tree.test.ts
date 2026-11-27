@@ -62,16 +62,16 @@ describe('group-tree pure functions', () => {
     })
 
     it('allows legal boundary where descendant depth equals maxDepth exactly', () => {
-      // g-0 -> g-1 (depth 1) -> g-2 (depth 2)
+      // g-0 (layer 1) -> g-1 (layer 2) -> g-2 (layer 3)
       const chain: GroupRecord[] = [
         { id: 'g-0', accountId: 1, name: 'Root', sortOrder: 0, isDefault: true, parentId: null },
         { id: 'g-1', accountId: 1, name: 'Child', sortOrder: 0, isDefault: false, parentId: 'g-0' },
         { id: 'g-2', accountId: 1, name: 'Grandchild', sortOrder: 0, isDefault: false, parentId: 'g-1' }
       ]
-      // maxDepth = 2: g-2 is at relative depth 2, which is allowed
-      expect(getGroupDescendantIds('g-0', chain, { maxDepth: 2 })).toEqual(['g-1', 'g-2'])
-      // maxDepth = 1: g-2 is at relative depth 2 > 1, which exceeds maxDepth
-      expect(() => getGroupDescendantIds('g-0', chain, { maxDepth: 1 })).toThrow('分组层级深度超过最大限制')
+      // Three layers include the root.
+      expect(getGroupDescendantIds('g-0', chain, { maxDepth: 3 })).toEqual(['g-1', 'g-2'])
+      // Two layers reject the third layer.
+      expect(() => getGroupDescendantIds('g-0', chain, { maxDepth: 2 })).toThrow('分组层级深度超过最大限制')
     })
   })
 
@@ -481,4 +481,11 @@ describe('group-tree pure functions', () => {
       ).toThrow('分组 root-acc-2 不属于指定账户 1')
     })
   })
+})
+
+
+it('counts the descendant root as layer one at the 32 layer boundary', () => {
+  const groups = Array.from({length:33}, (_, i) => ({id:`depth-${i}`,name:`Depth ${i}`,parentId:i ? `depth-${i-1}` : null,sortOrder:i,isDefault:false}))
+  expect(getGroupDescendantIds('depth-0', groups.slice(0,32))).toHaveLength(31)
+  expect(() => getGroupDescendantIds('depth-0', groups)).toThrow(/32/)
 })

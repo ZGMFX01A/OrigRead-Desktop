@@ -72,13 +72,18 @@ describe('DesktopAccountService Android parity', () => {
     fixture.database.close()
   })
 
-  it('returns after successful credential validation and starts the first remote sync without blocking add completion', async () => {
+  it('waits for the first remote sync before reporting successful creation', async () => {
     const fixture = createFixture(true)
     let releaseSync!:()=>void
     const pending = new Promise<void>((resolve)=>{releaseSync=resolve})
     fixture.remote.sync.mockReturnValueOnce(pending)
 
-    const added = await fixture.service.add({ type:'fresh_rss',serverUrl:'https://fresh.example/',username:'user',password:'valid' })
+    let completed = false
+    const adding = fixture.service.add({ type:'fresh_rss',serverUrl:'https://fresh.example/',username:'user',password:'valid' }).then(account => { completed = true; return account })
+    await vi.waitFor(() => expect(fixture.remote.sync).toHaveBeenCalled())
+    expect(completed).toBe(false)
+    releaseSync()
+    const added = await adding
     expect(added.type).toBe('fresh_rss')
     expect(fixture.accounts.currentId()).toBe(added.id)
     expect(fixture.remote.sync).toHaveBeenCalledWith(added.id)
@@ -466,3 +471,13 @@ function createFixture(valid:boolean) {
   const service=new DesktopAccountService(accounts,library,{ remote: remote as never, localSync: localSync as never })
   return{database,library,accounts,remote,localSync,service}
 }
+
+
+it('reports first sync failure after creating a validated account', async () => {
+  const fixture = createFixture(true)
+  try {
+    fixture.remote.sync.mockRejectedValueOnce(new Error('sync unavailable'))
+    await expect(fixture.service.add({type:'fresh_rss',serverUrl:'https://example.com/',username:'u',password:'p'})).rejects.toThrow(/sync unavailable/)
+    expect(fixture.accounts.list()).toHaveLength(2)
+  } finally { fixture.database.close() }
+})

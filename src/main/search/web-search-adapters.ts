@@ -248,10 +248,10 @@ function deepSeekString(record: Record<string, unknown>, name: string): string {
 
 export function parseTavilyResponse(profile: WebSearchProviderProfile, payload: unknown): WebSearchResponse {
   const root = asRecord(payload, 'Tavily')
-  return response(profile, Array.isArray(root.results) ? root.results.flatMap((item) => {
+  return response(profile, requiredResults(root.results).flatMap((item) => {
     const record = isRecord(item) ? item : null
     const url = stringValue(record?.url)
-    if (!record || !url) return []
+    if (!record || !url) throw new WebSearchException('搜索结果缺少有效 URL')
     return [result({
       title: stringValue(record.title) || url,
       url,
@@ -260,15 +260,15 @@ export function parseTavilyResponse(profile: WebSearchProviderProfile, payload: 
       content: stringValue(record.raw_content) || null,
       metadata: typeof record.score === 'number' ? { score: record.score } : undefined
     })]
-  }) : [], stringValue(root.answer) || null)
+  }), stringValue(root.answer) || null)
 }
 
 export function parseExaResponse(profile: WebSearchProviderProfile, payload: unknown): WebSearchResponse {
   const root = asRecord(payload, 'Exa')
-  return response(profile, Array.isArray(root.results) ? root.results.flatMap((item) => {
+  return response(profile, requiredResults(root.results).flatMap((item) => {
     const record = isRecord(item) ? item : null
     const url = stringValue(record?.url)
-    if (!record || !url) return []
+    if (!record || !url) throw new WebSearchException('搜索结果缺少有效 URL')
     const highlights = Array.isArray(record.highlights)
       ? record.highlights.map(stringValue).filter(Boolean).join(' … ')
       : ''
@@ -281,16 +281,16 @@ export function parseExaResponse(profile: WebSearchProviderProfile, payload: unk
       content: text || null,
       metadata: stringValue(record.author) ? { author: stringValue(record.author) } : undefined
     })]
-  }) : [])
+  }))
 }
 
 export function parseBraveResponse(profile: WebSearchProviderProfile, payload: unknown): WebSearchResponse {
   const root = asRecord(payload, 'Brave Search')
   const web = isRecord(root.web) ? root.web : null
-  return response(profile, Array.isArray(web?.results) ? web.results.flatMap((item) => {
+  return response(profile, requiredResults(web?.results).flatMap((item) => {
     const record = isRecord(item) ? item : null
     const url = stringValue(record?.url)
-    if (!record || !url) return []
+    if (!record || !url) throw new WebSearchException('搜索结果缺少有效 URL')
     const extras = Array.isArray(record.extra_snippets) ? record.extra_snippets.map(stringValue).filter(Boolean) : []
     const snippets = [stringValue(record.description), ...extras].filter(Boolean)
     return [result({
@@ -300,15 +300,15 @@ export function parseBraveResponse(profile: WebSearchProviderProfile, payload: u
       publishedAt: stringValue(record.page_age) || null,
       content: null
     })]
-  }) : [])
+  }))
 }
 
 export function parsePerplexityResponse(profile: WebSearchProviderProfile, payload: unknown): WebSearchResponse {
   const root = asRecord(payload, 'Perplexity Search')
-  return response(profile, Array.isArray(root.results) ? root.results.flatMap((item) => {
+  return response(profile, requiredResults(root.results).flatMap((item) => {
     const record = isRecord(item) ? item : null
     const url = stringValue(record?.url)
-    if (!record || !url) return []
+    if (!record || !url) throw new WebSearchException('搜索结果缺少有效 URL')
     return [result({
       title: stringValue(record.title) || url,
       url,
@@ -316,16 +316,16 @@ export function parsePerplexityResponse(profile: WebSearchProviderProfile, paylo
       publishedAt: stringValue(record.date) || null,
       content: null
     })]
-  }) : [])
+  }))
 }
 
 export function parseLinkupResponse(profile: WebSearchProviderProfile, payload: unknown, maxResults = 20): WebSearchResponse {
   const root = asRecord(payload, 'Linkup')
-  const items = Array.isArray(root.results) ? root.results.slice(0, maxResults) : []
+  const items = requiredResults(root.results).slice(0, maxResults)
   return response(profile, items.flatMap((item) => {
     const record = isRecord(item) ? item : null
     const url = stringValue(record?.url)
-    if (!record || !url) return []
+    if (!record || !url) throw new WebSearchException('搜索结果缺少有效 URL')
     return [result({
       title: stringValue(record.name) || url,
       url,
@@ -339,10 +339,10 @@ export function parseLinkupResponse(profile: WebSearchProviderProfile, payload: 
 export function parseFirecrawlResponse(profile: WebSearchProviderProfile, payload: unknown): WebSearchResponse {
   const root = asRecord(payload, 'Firecrawl')
   const data = isRecord(root.data) ? root.data : null
-  return response(profile, Array.isArray(data?.web) ? data.web.flatMap((item) => {
+  return response(profile, requiredResults(data?.web).flatMap((item) => {
     const record = isRecord(item) ? item : null
     const url = stringValue(record?.url)
-    if (!record || !url) return []
+    if (!record || !url) throw new WebSearchException('搜索结果缺少有效 URL')
     return [result({
       title: stringValue(record.title) || url,
       url,
@@ -350,15 +350,15 @@ export function parseFirecrawlResponse(profile: WebSearchProviderProfile, payloa
       publishedAt: null,
       content: stringValue(record.markdown) || null
     })]
-  }) : [])
+  }))
 }
 
 export function parseKeenableResponse(profile: WebSearchProviderProfile, payload: unknown): WebSearchResponse {
   const root = asRecord(payload, 'Keenable')
-  return response(profile, Array.isArray(root.results) ? root.results.flatMap((item) => {
+  return response(profile, requiredResults(root.results).flatMap((item) => {
     const record = isRecord(item) ? item : null
     const url = stringValue(record?.url)
-    if (!record || !url) return []
+    if (!record || !url) throw new WebSearchException('搜索结果缺少有效 URL')
     return [result({
       title: stringValue(record.title) || url,
       url,
@@ -366,16 +366,16 @@ export function parseKeenableResponse(profile: WebSearchProviderProfile, payload
       publishedAt: stringValue(record.published_at) || null,
       content: null
     })]
-  }) : [])
+  }))
 }
 
 export function parseSearxngResponse(profile: WebSearchProviderProfile, payload: unknown, maxResults = 20): WebSearchResponse {
   const root = asRecord(payload, 'SearXNG')
-  const items = Array.isArray(root.results) ? root.results.slice(0, maxResults) : []
+  const items = requiredResults(root.results).slice(0, maxResults)
   return response(profile, items.flatMap((item) => {
     const record = isRecord(item) ? item : null
     const url = stringValue(record?.url)
-    if (!record || !url) return []
+    if (!record || !url) throw new WebSearchException('搜索结果缺少有效 URL')
     return [result({
       title: stringValue(record.title) || url,
       url,
@@ -436,12 +436,21 @@ function response(profile: WebSearchProviderProfile, results: WebSearchResult[],
   }
 }
 
+function requiredResults(value: unknown): unknown[] {
+  if (!Array.isArray(value)) throw new WebSearchException('搜索服务返回缺失或无效的 results 容器')
+  return value
+}
+
 function result(value: Omit<WebSearchResult, 'source'>): WebSearchResult {
   return { ...value, source: sourceFromUrl(value.url) }
 }
 
 function sourceFromUrl(value: string): string | null {
-  try { return new URL(value).hostname || null } catch { return null }
+  try {
+    const url = new URL(value)
+    if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) throw new Error('Unsupported URL protocol')
+    return url.hostname
+  } catch (error) { throw new WebSearchException('搜索结果 URL 必须是有效的 HTTP/HTTPS 地址', { cause: error }) }
 }
 
 function requireProfile(profile: WebSearchProviderProfile, kind: WebSearchProviderKind): void {
@@ -450,6 +459,11 @@ function requireProfile(profile: WebSearchProviderProfile, kind: WebSearchProvid
 
 function asRecord(value: unknown, providerName: string): Record<string, unknown> {
   if (!isRecord(value)) throw new WebSearchException(`${providerName} 返回了无效 JSON`)
+  const code = value.code ?? value.status_code ?? value.error_code ?? (typeof value.status === 'number' || /^\d+$/.test(String(value.status)) ? value.status : undefined)
+  if (value.error || value.errors || value.success === false || value.status === 'error'
+    || (code !== undefined && ![0, 200, '0', '200', 'OK', 'ok', 'success'].includes(code as string | number))) {
+    throw new WebSearchException(`${providerName} 搜索服务返回业务错误${searchErrorSuffix(JSON.stringify(value))}`)
+  }
   return value
 }
 

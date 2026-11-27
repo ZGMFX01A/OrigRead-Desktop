@@ -15,7 +15,7 @@ import { WebsiteSourceService } from './website/website-source-service'
 import { WebsiteSubscriptionService } from './website/website-subscription-service'
 import { WebsiteRuleRepository } from './website/website-rule-repository'
 import { WebsiteParsePreferenceRepository } from './website/website-parse-preference-repository'
-import { discoveryFlow, rssDiscovery, rssXml, jsonSource, withLibrary } from './subscription-regression-support'
+import { discoveryFlow, rssDiscovery, rssXml, jsonSource, withLibrary } from '../../../tests/helpers/subscription-regression-support'
 
 vi.mock('node:fs', async (original) => {
   const actual = await original<typeof import('node:fs')>()
