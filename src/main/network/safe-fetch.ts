@@ -7,6 +7,13 @@ import { readResponseBytes, ResponsePayloadLimitExceededError } from './safe-res
 // Streams must be replayable before sending the first hop. Bound retained request data too.
 export const MAX_REPLAY_REQUEST_BODY_BYTES = 10 * 1024 * 1024
 
+let e2eLoopbackFetchEnabled = false
+
+/** 仅允许未打包的 E2E 运行时测试显式放行本机环回地址（仍拦截其他私网地址）。 */
+export function setE2eLoopbackFetchEnabled(enabled: boolean): void {
+  e2eLoopbackFetchEnabled = enabled
+}
+
 export type DnsLookupFn = (hostname: string) => Promise<ReadonlyArray<{ address: string }>>
 const normalizeHost = (host: string): string => host.replace(/^\[|\]$/g, '').replace(/\.+$/, '').toLowerCase()
 
@@ -107,6 +114,8 @@ export async function safeFetch(input: string | URL | Request, init: RequestInit
     const headers = new Headers(current.headers)
     const hasCredentials = [...sensitive].some((name) => headers.has(name))
     let pinnedAddresses: ReadonlyArray<{address: string}> | undefined
+    const allowE2eLoopback = e2eLoopbackFetchEnabled && options.blockPrivateNetwork !== true && isLoopbackHost(url.hostname)
+    const allowLoopbackHttp = Boolean(options.allowLoopbackHttp) || allowE2eLoopback
     await assertSafeTargetUrl(url, {
       lookup: async (host) => {
         const addresses = await (options.lookup ?? ((name) => dnsLookup(name, {all:true, verbatim:true})))(host)
@@ -114,8 +123,8 @@ export async function safeFetch(input: string | URL | Request, init: RequestInit
         return pinnedAddresses
       },
       requireHttps: crossedOrigin || options.requireHttps || (hasCredentials && options.requireHttpsForSensitiveHeaders !== false && !isLoopbackHost(url.hostname)),
-      allowLoopbackHttp: options.allowLoopbackHttp,
-      allowLoopback: options.allowLoopbackHttp && isLoopbackHost(url.hostname),
+      allowLoopbackHttp,
+      allowLoopback: allowLoopbackHttp && isLoopbackHost(url.hostname),
       blockPrivateNetwork: hop === 0 ? (options.allowedInitialOrigins?.has(url.origin) ? false : options.blockPrivateNetwork !== false) : true
     })
     if (current.body instanceof ReadableStream) {

@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,19 +29,19 @@ jobs:
       - name: Electron runtime suite
         run: npx playwright test
       - name: Build NSIS x64
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npx electron-builder --win nsis --x64 --publish never
       - name: Verify Windows installer
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
           $files = Get-ChildItem release -Filter "OrigRead-*-x64.exe"
           if ($files.Count -lt 1) { throw "Windows NSIS installer was not generated" }
           $files | Format-Table Name, Length
       - uses: actions/upload-artifact@v4
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         with:
           name: origread-windows-x64
           path: release/OrigRead-*-x64.exe
@@ -73,17 +74,17 @@ jobs:
       - name: Electron runtime suite
         run: npx playwright test
       - name: Build unsigned DMG arm64
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npx electron-builder --mac dmg --arm64 --publish never
       - name: Verify macOS package
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         run: |
           ls -lh release/OrigRead-*-arm64.dmg
           test -f $(find release -maxdepth 1 -name 'OrigRead-*-arm64.dmg' -print -quit)
       - uses: actions/upload-artifact@v4
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         with:
           name: origread-macos-arm64
           path: release/OrigRead-*-arm64.dmg
@@ -118,19 +119,19 @@ jobs:
       - name: Electron runtime suite under Xvfb
         run: xvfb-run -a npx playwright test
       - name: Build AppImage and DEB x64
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npx electron-builder --linux AppImage deb --x64 --publish never
       - name: Verify Linux packages
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         run: |
           ls -lh release/OrigRead-*-x64.AppImage
           ls -lh release/OrigRead-*-x64.deb
           test -n "$(find release -maxdepth 1 -name 'OrigRead-*-x64.AppImage' -print -quit)"
           test -n "$(find release -maxdepth 1 -name 'OrigRead-*-x64.deb' -print -quit)"
       - uses: actions/upload-artifact@v4
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         with:
           name: origread-linux-x64
           path: |

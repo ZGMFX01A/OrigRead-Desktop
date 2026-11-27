@@ -59,6 +59,7 @@ import type { OriginalNavigationAction } from '../shared/original-view'
 import { PeriodicSyncScheduler } from './sync/periodic-sync-scheduler'
 import { ElectronSecretStore } from './security/secret-store'
 import { isAllowedRendererUrl, isTrustedIpcSender, resolveRuntimeOverrides } from './security/renderer-trust'
+import { setE2eLoopbackFetchEnabled } from './network/safe-fetch'
 import { AiSettingsRepository } from './ai/ai-settings-repository'
 import { AiSummaryService } from './ai/ai-summary-service'
 import { TranslationSettingsRepository } from './translation/translation-settings-repository'
@@ -134,6 +135,7 @@ import { McpCombinedRuntime } from './mcp/mcp-combined-runtime'
 import type { McpLocalServerPatch, McpRemoteServerPatch } from '../shared/mcp'
 
 const runtimeOverrides = resolveRuntimeOverrides(app.isPackaged, process.env)
+setE2eLoopbackFetchEnabled(runtimeOverrides.allowE2eLoopbackFetch)
 const isDevelopment = runtimeOverrides.isDevelopment
 const productionRendererUrl = pathToFileURL(join(__dirname, '../renderer/index.html')).toString()
 if (runtimeOverrides.e2eUserDataDir) {

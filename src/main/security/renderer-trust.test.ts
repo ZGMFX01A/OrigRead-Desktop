@@ -23,11 +23,11 @@ describe('isAllowedRendererUrl', () => {
 
 
 describe('runtime and frame boundaries', () => {
-  const defaults = { isDevelopment: false, rendererUrl: null, e2eUserDataDir: null, e2eDownloadDir: null, updateApiBase: 'https://api.github.com', disableAutoUpdateCheck: false, disablePeriodicSync: false }
+  const defaults = { isDevelopment: false, rendererUrl: null, e2eUserDataDir: null, e2eDownloadDir: null, allowE2eLoopbackFetch: false, updateApiBase: 'https://api.github.com', disableAutoUpdateCheck: false, disablePeriodicSync: false }
   const env = { ELECTRON_RENDERER_URL: 'http://localhost:5173', ORIGREAD_E2E_USER_DATA_DIR: ' data ', ORIGREAD_E2E_DOWNLOAD_DIR: ' downloads ', ORIGREAD_UPDATE_API_BASE: 'http://localhost:8080', ORIGREAD_DISABLE_AUTO_UPDATE_CHECK: '1', ORIGREAD_DISABLE_PERIODIC_SYNC: '1' }
   it('ignores all overrides in packaged builds', () => {
     expect(resolveRuntimeOverrides(true, env)).toEqual(defaults)
-    expect(resolveRuntimeOverrides(false, env)).toEqual({ ...defaults, isDevelopment: true, rendererUrl: env.ELECTRON_RENDERER_URL, e2eUserDataDir: 'data', e2eDownloadDir: 'downloads', updateApiBase: env.ORIGREAD_UPDATE_API_BASE, disableAutoUpdateCheck: true, disablePeriodicSync: true })
+    expect(resolveRuntimeOverrides(false, env)).toEqual({ ...defaults, isDevelopment: true, rendererUrl: env.ELECTRON_RENDERER_URL, e2eUserDataDir: 'data', e2eDownloadDir: 'downloads', allowE2eLoopbackFetch: true, updateApiBase: env.ORIGREAD_UPDATE_API_BASE, disableAutoUpdateCheck: true, disablePeriodicSync: true })
     for (const value of ['file:///tmp/ui', 'javascript:alert(1)', 'invalid']) {
       expect(resolveRuntimeOverrides(false, { ELECTRON_RENDERER_URL: value, ORIGREAD_UPDATE_API_BASE: value })).toEqual(defaults)
     }

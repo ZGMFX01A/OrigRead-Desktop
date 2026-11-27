@@ -27,7 +27,7 @@ export class SqliteLibraryReader {
   /** Renderer lists never select body columns; full records remain available to sync and Reader. */
   listArticleSummaries(
     scope: ArticleListScope = { kind: 'all' },
-    limit = 200,
+    limit?: number,
     options?: ArticleListFilterOptions
   ): ArticleRecord[] {
     const accountId = this.library.getCurrentAccountId()
@@ -48,7 +48,11 @@ export class SqliteLibraryReader {
     if (options?.isUnread !== undefined) {
       params.push(options.isUnread ? 1 : 0)
     }
-    params.push(Math.min(Math.max(Math.trunc(limit), 1), 1_000))
+    // 全局列表默认 200 篇、上限 1,000 篇；单订阅源/单分组未显式传 limit 时保留大列表完整视图（上限 10,000 篇）。
+    const effectiveLimit = scope.kind === 'all'
+      ? Math.min(Math.max(Math.trunc(limit ?? 200), 1), 1_000)
+      : Math.min(Math.max(Math.trunc(limit ?? 10_000), 1), 10_000)
+    params.push(effectiveLimit)
     return (this.database.prepare(`
       SELECT a.id, a.account_id, a.feed_id, a.title, a.url, a.author, a.published_at, a.description,
              NULL AS content_html, NULL AS full_content_html, a.image_url, a.is_unread, a.is_starred,

@@ -8,6 +8,8 @@ export interface DesktopRuntimeOverrides {
   rendererUrl: string | null
   e2eUserDataDir: string | null
   e2eDownloadDir: string | null
+  // 仅用于非打包 E2E 验收测试访问本机 Mock 服务，正式打包产物始终关闭。
+  allowE2eLoopbackFetch: boolean
   updateApiBase: string
   disableAutoUpdateCheck: boolean
   disablePeriodicSync: boolean
@@ -25,11 +27,13 @@ function httpUrl(value: string | undefined): string | null {
 export function resolveRuntimeOverrides(isPackaged: boolean, env: NodeJS.ProcessEnv): DesktopRuntimeOverrides {
   // 打包产物不接受任何开发/E2E 环境覆盖。
   const rendererUrl = isPackaged ? null : httpUrl(env.ELECTRON_RENDERER_URL)
+  const e2eUserDataDir = isPackaged ? null : env.ORIGREAD_E2E_USER_DATA_DIR?.trim() || null
   return {
     isDevelopment: Boolean(rendererUrl),
     rendererUrl,
-    e2eUserDataDir: isPackaged ? null : env.ORIGREAD_E2E_USER_DATA_DIR?.trim() || null,
+    e2eUserDataDir,
     e2eDownloadDir: isPackaged ? null : env.ORIGREAD_E2E_DOWNLOAD_DIR?.trim() || null,
+    allowE2eLoopbackFetch: !isPackaged && Boolean(e2eUserDataDir),
     updateApiBase: isPackaged ? 'https://api.github.com' : httpUrl(env.ORIGREAD_UPDATE_API_BASE) ?? 'https://api.github.com',
     disableAutoUpdateCheck: !isPackaged && env.ORIGREAD_DISABLE_AUTO_UPDATE_CHECK === '1',
     disablePeriodicSync: !isPackaged && env.ORIGREAD_DISABLE_PERIODIC_SYNC === '1'

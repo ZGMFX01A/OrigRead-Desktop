@@ -131,7 +131,7 @@ export class LibraryRepository {
   upsertFeed(feed: FeedRecord): void { return this.catalog.upsertFeed(feed) }
   upsertArticle(article: ArticleRecord): void { return this.writer.upsertArticle(article) }
   listArticles(limit = 200, options?: ArticleListFilterOptions): ArticleRecord[] { return this.reader.listArticles(limit, options) }
-  listArticleSummaries(scope?: ArticleListScope, limit = 200, options?: ArticleListFilterOptions): ArticleRecord[] { return this.reader.listArticleSummaries(scope, limit, options) }
+  listArticleSummaries(scope?: ArticleListScope, limit?: number, options?: ArticleListFilterOptions): ArticleRecord[] { return this.reader.listArticleSummaries(scope, limit, options) }
   listArticleMetadata(limit = 30, titleQuery = ''): ArticleMetadataRecord[] { return this.search.listArticleMetadata(limit, titleQuery) }
   getArticleMetadataById(articleId: string): ArticleMetadataRecord | null { return this.search.getArticleMetadataById(articleId) }
   listArticlesForAccount(accountId: number, limit = 200, options?: ArticleListFilterOptions): ArticleRecord[] { return this.reader.listArticlesForAccount(accountId, limit, options) }

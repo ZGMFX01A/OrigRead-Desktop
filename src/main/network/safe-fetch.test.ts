@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createServer } from 'node:http'
-import { assertSafeTargetUrl, isLoopbackHost, isPrivateOrReservedIp, safeFetch, MAX_REPLAY_REQUEST_BODY_BYTES } from './safe-fetch'
+import { assertSafeTargetUrl, isLoopbackHost, isPrivateOrReservedIp, safeFetch, setE2eLoopbackFetchEnabled, MAX_REPLAY_REQUEST_BODY_BYTES } from './safe-fetch'
 
 const lookup = async () => [{ address: '1.1.1.1' }]
 const redirect = (location: string, status = 302): Response => new Response(null, { status, headers: { location } })
@@ -135,4 +135,20 @@ it('uses the pinned socket lookup with the native fetch transport', async () => 
     server.closeAllConnections()
     await new Promise<void>(resolve=>server.close(()=>resolve()))
   }
+})
+
+it('allows loopback only when E2E loopback mode is enabled while still blocking other private IPs', async () => {
+  const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response('ok'))
+  try {
+    setE2eLoopbackFetchEnabled(true)
+    const loopbackResponse = await safeFetch('http://127.0.0.1:4321/feed.xml', undefined, { fetchImpl })
+    expect(await loopbackResponse.text()).toBe('ok')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    await expect(safeFetch('http://10.0.0.1/feed.xml', undefined, { fetchImpl })).rejects.toThrow('私网')
+    await expect(safeFetch('https://192.168.1.1/feed.xml', undefined, { fetchImpl })).rejects.toThrow('私网')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  } finally {
+    setE2eLoopbackFetchEnabled(false)
+  }
+  await expect(safeFetch('http://127.0.0.1:4321/feed.xml', undefined, { fetchImpl })).rejects.toThrow('私网')
 })
